@@ -118,8 +118,11 @@ if(ARCH STREQUAL "i386")
             PROPERTIES COMPILE_OPTIONS "-msse2;-mfpmath=sse")
     endif()
 elseif(ARCH STREQUAL "amd64")
+    list(REMOVE_ITEM LIBCNTPR_MATH_SOURCE math/round.c math/roundf.c)
     list(APPEND LIBCNTPR_MATH_SOURCE
         math/amd64/_set_statfp.c
+        math/amd64/round.c
+        math/amd64/roundf.c
         # math/libm_sse2/_chgsign.c
         # math/libm_sse2/_chgsignf.c
         # math/libm_sse2/_copysign.c
@@ -165,6 +168,7 @@ elseif(ARCH STREQUAL "amd64")
         math/libm_sse2/modf.c
         math/libm_sse2/modff.c
         math/libm_sse2/pow_special.c
+        math/powf.c
         # math/libm_sse2/remainder.c
         math/libm_sse2/remainder_piby2.c
         # math/libm_sse2/remainder_piby2f.c
@@ -285,6 +289,10 @@ else()
         math/libm_sse2/remainder_piby2.c
         math/sqrt.c
         math/trig.c
+        math/cosf.c
+        math/powf.c
+        math/sinf.c
+        math/sqrtf.c
     )
     list(APPEND CRT_MATH_SOURCE
         math/_hypotf.c
@@ -300,9 +308,7 @@ else()
         math/fmodf.c
         math/ldexp.c
         math/modff.c
-        math/sinf.c
         math/sinhf.c
-        math/sqrtf.c
         math/tanf.c
         math/tanhf.c
     )
@@ -352,6 +358,7 @@ list(APPEND CRT_MATH_SOURCE
     math/trunc.c
     math/truncf.c
 )
+list(REMOVE_DUPLICATES CRT_MATH_SOURCE)
 
 list(APPEND CRT_MATH_ASM_SOURCE
     ${LIBCNTPR_MATH_ASM_SOURCE}

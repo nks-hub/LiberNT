@@ -1,0 +1,42 @@
+# Keeps main-nt10 equal to LiberNT/LiberNT and merges it into the nks branch, which carries our patches.
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Fast-forward main-nt10 from upstream
+        run: gh api -X POST "repos/$REPO/merge-upstream" -f branch=main-nt10
+
+      - name: Merge main-nt10 into nks
+        run: |
+          set +e
+          out=$(gh api -X POST "repos/$REPO/merges" -f base=nks -f head=main-nt10 \
+                -f commit_message="chore: merge upstream main-nt10" -i 2>&1)
+          set -e
+          status=$(printf '%s\n' "$out" | awk 'NR==1 {print $2}')
+          echo "merge status: $status"
+          case "$status" in
+            201) echo "upstream merged into nks" ;;
+            204) echo "nks already contains main-nt10" ;;
+            409)
+              title="Upstream merge conflict"
+              if [ -z "$(gh issue list -R "$REPO" --state open --search "$title in:title" --json number --jq '.[].number')" ]; then
+                gh issue create -R "$REPO" --title "$title" \
+                  --body "Merging main-nt10 into nks conflicts. Merge it by hand: git fetch upstream && git checkout nks && git merge upstream/main-nt10. Run: ${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}"
+              fi
+              exit 1 ;;
+            *) printf '%s\n' "$out"; exit 1 ;;
+          esac

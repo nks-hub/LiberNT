@@ -7,9 +7,18 @@ extern void func_stub_surface(void);
 extern void func_d3d11_render_probe(void);
 extern void func_dwm_render(void);
 extern void func_completion_event(void);
+extern void func_shared_fence(void);
+extern void func_shared_name(void);
+extern void func_gpu_priority(void);
+extern void func_kmt_outputdupl(void);
+extern void func_offer_resources(void);
+extern void func_subresource_surface(void);
 extern void func_counters(void);
+extern void func_query_order(void);
 extern void func_composition(void);
 extern void func_composition_damage(void);
+extern void func_composition_source(void);
+extern void func_hwnd_source(void);
 extern void func_composition_lifetime(void);
 extern void func_texture_dimensions(void);
 extern void func_multisample(void);
@@ -28,9 +37,18 @@ const struct test winetest_testlist[] =
     { "d3d11_render_probe", func_d3d11_render_probe },
     { "dwm_render", func_dwm_render },
     { "completion_event", func_completion_event },
+    { "shared_fence", func_shared_fence },
+    { "shared_name", func_shared_name },
+    { "gpu_priority", func_gpu_priority },
+    { "kmt_outputdupl", func_kmt_outputdupl },
+    { "offer_resources", func_offer_resources },
+    { "subresource_surface", func_subresource_surface },
     { "counters", func_counters },
+    { "query_order", func_query_order },
     { "composition", func_composition },
     { "composition_damage", func_composition_damage },
+    { "composition_source", func_composition_source },
+    { "hwnd_source", func_hwnd_source },
     { "composition_lifetime", func_composition_lifetime },
     { "texture_dimensions", func_texture_dimensions },
     { "multisample", func_multisample },

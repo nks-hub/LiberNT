@@ -6,9 +6,18 @@ add_executable(dxgi_apitest
     texture_dimensions.cpp
     composition.cpp
     composition_damage.cpp
+    composition_source.cpp
+    hwnd_source.cpp
     composition_lifetime.cpp
     completion_event.cpp
+    shared_fence.cpp
+    shared_name.cpp
+    gpu_priority.cpp
+    kmt_outputdupl.cpp
+    offer_resources.cpp
+    subresource_surface.cpp
     counters.cpp
+    query_order.cpp
     buffer_copy.cpp
     copy_depth_stencil.cpp
     volume_readback.cpp

@@ -755,6 +755,30 @@ LxInstanceMountSynthetic(
 
 static
 LONG
+LxInstanceMountDevpts(
+    _In_opt_ PLX_PROCESS Process,
+    _In_ PLX_NS Ns,
+    _In_ PCSTR Target,
+    _In_ PCSTR Source,
+    _In_ ULONG Flags,
+    _In_opt_ PCSTR Data,
+    _Out_ PLX_MOUNT *Out)
+{
+    PLX_DEVPTS Devpts;
+    LONG Error;
+
+    *Out = NULL;
+    Error = LxDevptsCreate(Process, Ns->Instance, Data, &Devpts);
+    if (Error != 0)
+        return Error;
+    Error = LxInstanceMountSynthetic(Ns, Target, Source, "devpts", Flags, LxFsDevpts, LX_MAGIC_DEVPTS, Out);
+    if (Error == 0)
+        (*Out)->Devpts = Devpts;
+    return Error;
+}
+
+static
+LONG
 LxInstanceTmpfs(
     _In_ PLX_NS Ns,
     _In_ PCSTR Target,
@@ -852,7 +876,7 @@ LxInstanceCreate(
 {
     static const WCHAR TmpSuffix[] = L".lxtmp";
     PLX_INSTANCE Instance;
-    PLX_MOUNT Dev;
+    PLX_MOUNT Dev, Pts;
     UCHAR Random[16];
     ULONG Index;
     PLX_NS Ns;
@@ -864,7 +888,7 @@ LxInstanceCreate(
     Instance->RefCount = 1;
     ExInitializeFastMutex(&Instance->Lock);
     InitializeListHead(&Instance->AllMounts);
-    InitializeListHead(&Instance->Ptys);
+    InitializeListHead(&Instance->DevptsList);
     Instance->NextMountId = 20;
     Instance->NextPid = 1;
     Instance->Booted = Boot;
@@ -875,6 +899,7 @@ LxInstanceCreate(
     Instance->TmpNt.MaximumLength = RootNt->Length + sizeof(TmpSuffix) + 16 * sizeof(WCHAR);
     Instance->TmpNt.Buffer = LxAlloc(Instance->TmpNt.MaximumLength);
     Instance->RootCgroup = LxCgroupCreateRoot();
+    LxDevptsCreate(NULL, Instance, NULL, &Instance->Devpts);
     KeInitializeEvent(&Instance->InitExited, NotificationEvent, FALSE);
     if (Instance->RootCgroup != NULL)
         Instance->RootCgroup->Instance = Instance;
@@ -886,7 +911,7 @@ LxInstanceCreate(
             break;
     }
     if ((Instance->RootNt.Buffer == NULL) || (Instance->TmpNt.Buffer == NULL) || (Instance->RootCgroup == NULL) ||
-        (Index != LxNsCount))
+        (Instance->Devpts == NULL) || (Index != LxNsCount))
     {
         for (Index = 0; Index < LxNsCount; Index++)
         {
@@ -897,6 +922,7 @@ LxInstanceCreate(
         LxFree(Instance->TmpNt.Buffer);
         if (Instance->RootCgroup != NULL)
             LxCgroupFreeTree(Instance->RootCgroup);
+        LxDevptsFreeAll(Instance);
         LxFree(Instance);
         return NULL;
     }
@@ -946,8 +972,14 @@ LxInstanceCreate(
                              LX_MS_NOSUID | LX_MS_NODEV | LX_MS_NOEXEC, LxFsCgroup, LX_MAGIC_CGROUP2, NULL);
     if (LxInstanceTmpfs(Ns, "/dev", "devtmpfs", LX_MS_NOSUID, 0755, &Dev) == 0)
         LxPopulateDev(Dev);
-    LxInstanceMountSynthetic(Ns, "/dev/pts", "devpts", "devpts", LX_MS_NOSUID | LX_MS_NOEXEC,
-                             LxFsDevpts, LX_MAGIC_DEVPTS, NULL);
+    Instance->Devpts->Mode = 0620;
+    Instance->Devpts->Gid = 5;
+    Instance->Devpts->GidSet = TRUE;
+    if (LxInstanceMountSynthetic(Ns, "/dev/pts", "devpts", "devpts", LX_MS_NOSUID | LX_MS_NOEXEC,
+                                 LxFsDevpts, LX_MAGIC_DEVPTS, &Pts) == 0)
+    {
+        Pts->Devpts = Instance->Devpts;
+    }
     LxInstanceTmpfs(Ns, "/dev/shm", "tmpfs", LX_MS_NOSUID | LX_MS_NODEV, 01777, NULL);
     LxInstanceTmpfs(Ns, "/run", "tmpfs", LX_MS_NOSUID | LX_MS_NODEV, 0755, NULL);
 
@@ -1028,6 +1060,7 @@ LxInstanceDereference(
     LxVcachePurgeInstance(Instance);
     if (Instance->Console != NULL)
         LxTtyDereference(Instance->Console);
+    LxDevptsFreeAll(Instance);
     LxCgroupFreeTree(Instance->RootCgroup);
     LxNtDeleteTree(&Instance->TmpNt);
     LxFree(Instance->RootNt.Buffer);
@@ -1268,7 +1301,7 @@ LxMountAdd(
     else if (strcmp(FsType, "cgroup2") == 0)
         Error = LxInstanceMountSynthetic(Ns, Target, Source, "cgroup2", Flags, LxFsCgroup, LX_MAGIC_CGROUP2, &Mount);
     else if (strcmp(FsType, "devpts") == 0)
-        Error = LxInstanceMountSynthetic(Ns, Target, Source, "devpts", Flags, LxFsDevpts, LX_MAGIC_DEVPTS, &Mount);
+        Error = LxInstanceMountDevpts(Process, Ns, Target, Source, Flags, Data, &Mount);
     else if (strcmp(FsType, "mqueue") == 0)
         Error = LxInstanceMountSynthetic(Ns, Target, Source, "mqueue", Flags, LxFsMqueue, LX_MAGIC_MQUEUE, &Mount);
     else
@@ -1448,7 +1481,7 @@ LxMountCreateDetached(
     else if (strcmp(FsType, "cgroup2") == 0)
         Error = LxInstanceMountSynthetic(Ns, Target, Source, "cgroup2", Flags, LxFsCgroup, LX_MAGIC_CGROUP2, Mount);
     else if (strcmp(FsType, "devpts") == 0)
-        Error = LxInstanceMountSynthetic(Ns, Target, Source, "devpts", Flags, LxFsDevpts, LX_MAGIC_DEVPTS, Mount);
+        Error = LxInstanceMountDevpts(Process, Ns, Target, Source, Flags, NULL, Mount);
     else if (strcmp(FsType, "mqueue") == 0)
         Error = LxInstanceMountSynthetic(Ns, Target, Source, "mqueue", Flags, LxFsMqueue, LX_MAGIC_MQUEUE, Mount);
     else if ((strcmp(FsType, "tmpfs") == 0) || (strcmp(FsType, "ramfs") == 0) || (strcmp(FsType, "devtmpfs") == 0))
@@ -1499,6 +1532,7 @@ LxMountClone(
     Mount->PidNs = Source->PidNs;
     Mount->NsFile = Source->NsFile;
     Mount->Tmpfs = Source->Tmpfs;
+    Mount->Devpts = Source->Devpts;
     if (Source->Kind == LxFsNt)
     {
         UNICODE_STRING Root;
@@ -2177,6 +2211,7 @@ LxMountNsCopy(
         Copy->PidNs = Source->PidNs;
         Copy->NsFile = Source->NsFile;
         Copy->Tmpfs = Source->Tmpfs;
+        Copy->Devpts = Source->Devpts;
         Copy->Unbindable = Source->Unbindable;
         Copy->PeerGroup = Source->PeerGroup;
         Copy->MasterGroup = Source->MasterGroup;
@@ -2732,6 +2767,33 @@ LxNodeQuery(
 
     LxFreePaged(NtPath.Buffer);
     return 0;
+}
+
+LONG
+LxDevptsForPtmx(
+    _In_ PLX_PROCESS Process,
+    _In_ PCSTR Path,
+    _Out_ PLX_DEVPTS *Devpts)
+{
+    PCSTR Slash = strrchr(Path, '/'), Relative;
+    PLX_MOUNT Mount;
+    PSTR Pts;
+    ULONG Type;
+    LONG Error;
+
+    *Devpts = NULL;
+    if (Slash == NULL)
+        return -LX_ENOENT;
+    Pts = LxStrPrintf("%.*spts", (int)(Slash - Path + 1), Path);
+    if (Pts == NULL)
+        return -LX_ENOMEM;
+    Error = LxNodeQuery(Process, Pts, &Mount, &Relative, &Type, NULL, NULL);
+    if ((Error == 0) && ((Mount->Kind != LxFsDevpts) || (Relative[0] != '\0') || (Mount->Devpts == NULL)))
+        Error = -LX_ENODEV;
+    if (Error == 0)
+        *Devpts = Mount->Devpts;
+    LxFree(Pts);
+    return Error;
 }
 
 static

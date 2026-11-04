@@ -68,6 +68,8 @@ public:
     using Native12Child::Native12Child;
     ~Native12Fence();
     HRESULT Initialize(UINT64 initial_value, D3D12_FENCE_FLAGS flags);
+    HRESULT InitializeOpened(D3DKMT_HANDLE opened, const volatile UINT64 *cpu_value, D3DGPU_VIRTUAL_ADDRESS gpu_value);
+    HRESULT CreateDriverFence(D3DGPU_VIRTUAL_ADDRESS gpu_value);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **) override;
     UINT64 STDMETHODCALLTYPE GetCompletedValue() override;
     HRESULT STDMETHODCALLTYPE SetEventOnCompletion(UINT64 value, HANDLE event) override;
@@ -93,7 +95,6 @@ public:
     SRWLOCK context_lock = SRWLOCK_INIT;
     SRWLOCK submit_lock = SRWLOCK_INIT;
     HANDLE contexts[D3DDDI_MAX_BROADCAST_CONTEXT] = {};
-    bool submitted[D3DDDI_MAX_BROADCAST_CONTEXT] = {};
     UINT context_count = 0;
 
     using Native12Child::Native12Child;
@@ -101,8 +102,6 @@ public:
     HRESULT Initialize(const D3D12_COMMAND_QUEUE_DESC *input);
     void AddContext(HANDLE context);
     void RemoveContext(HANDLE context);
-    bool NoteSubmission(HANDLE context);
-    UINT SignalContexts(HANDLE *out);
     UINT WaitContexts(HANDLE *out);
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void **) override;
     void STDMETHODCALLTYPE UpdateTileMappings(ID3D12Resource *resource, UINT region_count,
@@ -205,6 +204,7 @@ public:
     using Native12Child::Native12Child;
     ~Native12Resource();
     D3D12_MIP_REGION mip_region = {};
+    const Native12CreationLayout *creation_layout = NULL;
 
     HRESULT Initialize(const D3D12_HEAP_PROPERTIES *properties, D3D12_HEAP_FLAGS flags,
             const D3D12_RESOURCE_DESC *input, D3D12_RESOURCE_STATES initial_state,

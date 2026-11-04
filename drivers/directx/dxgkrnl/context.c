@@ -1054,6 +1054,10 @@ DxgkDereferenceProcessRecord(
          * New openers pin it and wait, so CreateProcess cannot overlap this
          * DestroyProcess for the same (process, adapter) identity.
          */
+        (VOID)KeWaitForSingleObject(&ProcessRecord->Adapter->StablePowerMutex, Executive, KernelMode, FALSE, NULL);
+        if (DxgkCapsCoreStablePowerRelease(&ProcessRecord->StablePowerReferences, &ProcessRecord->Adapter->StablePowerReferences))
+            DxgkStablePowerNotify(ProcessRecord->Adapter, FALSE);
+        KeReleaseMutex(&ProcessRecord->Adapter->StablePowerMutex, FALSE);
 #if (REACTOS_WDDM_TARGET_LEVEL >= 2000)
         DxgkGpuVaDestroyProcess(ProcessRecord->Adapter, ProcessRecord);
 #endif
@@ -3178,6 +3182,7 @@ DxgkProcessCleanup(
     DxgkAdapterProcessCleanup(Process);
     DxgkVidMmProcessCleanup(Process);
     DxgkD3dkmtProcessCleanup(Process);
+    DxgkOutputDuplProcessCleanup(Process);
     DxgkKeyedMutexProcessCleanup(Process);
     DxgkTrimNotificationProcessCleanup(Process);
     DxgkProcessPriorityCleanup(Process);

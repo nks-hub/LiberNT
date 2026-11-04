@@ -22,6 +22,7 @@ list(APPEND SOURCE
     dosdev.c
     EnumSystemCodePages.c
     FindActCtxSectionStringW.c
+    FileStorageInfo.c
     FindFiles.c
     FindPackagesByPackageFamily.c
     FLS.c
@@ -57,11 +58,17 @@ list(APPEND SOURCE
     LoadLibraryExW.c
     LockFileEx.c
     OpenFileByIdRename.c
+    LoaderLock.c
+    PagingFileOpen.c
+    QuantumRoundRobin.c
+    RegisterWaitPeriodic.c
     SandboxLaunch.c
     SystemImageCatalog.c
     TebSegmentAfterWait.c
     SharedMemorySecurity.c
     SharedMemoryTransfer.c
+    StarvationBoost.c
+    SystemTimeChangeTimers.c
     StdHandleInheritance.c
     LocaleNameToLCID.c
     lstrcpynW.c
@@ -69,6 +76,7 @@ list(APPEND SOURCE
     Mailslot.c
     MuiResources.c
     MultiByteToWideChar.c
+    NumaApis.c
     Pipes.c
     PackageNames.c
     PixeloramaCompat.c

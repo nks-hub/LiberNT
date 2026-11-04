@@ -118,6 +118,7 @@ typedef struct _D3DUMDRT_DEVICE
 #if (D3D_UMD_INTERFACE_VERSION >= D3D_UMD_INTERFACE_VERSION_WDDM2_1_2)
     PD3DUMDRT_SYNC_TOKEN     SyncTokens;
 #endif
+    INT                      SchedulingPriority;
     struct _D3DUMDRT_DEVICE *Next;
 } D3DUMDRT_DEVICE, *PD3DUMDRT_DEVICE;
 
@@ -139,10 +140,13 @@ static BOOL D3DUmdRtDeviceLockReady;
 static PFND3DKMT_CREATEALLOCATION  pfnCreateAllocation;
 static PFND3DKMT_CREATEALLOCATION2 pfnCreateAllocation2;
 static PFND3DKMT_DESTROYALLOCATION pfnDestroyAllocation;
+static PFND3DKMT_SETALLOCATIONPRIORITY pfnSetAllocationPriority;
+static PFND3DKMT_QUERYALLOCATIONRESIDENCY pfnQueryAllocationResidency;
 static PFND3DKMT_LOCK              pfnLock;
 static PFND3DKMT_UNLOCK            pfnUnlock;
 static PFND3DKMT_RENDER            pfnRender;
 static PFND3DKMT_CREATECONTEXT     pfnCreateContext;
+static PFND3DKMT_SETCONTEXTSCHEDULINGPRIORITY pfnSetContextSchedulingPriority;
 static PFND3DKMT_DESTROYCONTEXT    pfnDestroyContext;
 static PFND3DKMT_ESCAPE            pfnEscape;
 static PFND3DKMT_SETDISPLAYMODE    pfnSetDisplayMode;
@@ -184,6 +188,7 @@ static PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMCPU pfnSignalSynchronizationObje
 static PFND3DKMT_WAITFORSYNCHRONIZATIONOBJECTFROMGPU pfnWaitForSynchronizationObjectFromGpu;
 static PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU  pfnSignalSynchronizationObjectFromGpu;
 static PFND3DKMT_SIGNALSYNCHRONIZATIONOBJECTFROMGPU2 pfnSignalSynchronizationObjectFromGpu2;
+static PFND3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 pfnOpenSyncObjectFromNtHandle2;
 #endif
 #if (D3D_UMD_INTERFACE_VERSION >= D3D_UMD_INTERFACE_VERSION_WDDM2_1_1)
 static PFND3DKMT_UPDATEALLOCATIONPROPERTY pfnUpdateAllocationProperty;
@@ -208,10 +213,13 @@ static BOOL D3DUmdRtResolveProcs(VOID)
     RESOLVE(CreateAllocation, CREATEALLOCATION);
     RESOLVE(CreateAllocation2, CREATEALLOCATION2);
     RESOLVE(DestroyAllocation, DESTROYALLOCATION);
+    RESOLVE(SetAllocationPriority, SETALLOCATIONPRIORITY);
+    RESOLVE(QueryAllocationResidency, QUERYALLOCATIONRESIDENCY);
     RESOLVE(Lock, LOCK);
     RESOLVE(Unlock, UNLOCK);
     RESOLVE(Render, RENDER);
     RESOLVE(CreateContext, CREATECONTEXT);
+    RESOLVE(SetContextSchedulingPriority, SETCONTEXTSCHEDULINGPRIORITY);
     RESOLVE(DestroyContext, DESTROYCONTEXT);
     RESOLVE(Escape, ESCAPE);
     RESOLVE(SetDisplayMode, SETDISPLAYMODE);
@@ -252,6 +260,7 @@ static BOOL D3DUmdRtResolveProcs(VOID)
     RESOLVE(WaitForSynchronizationObjectFromGpu, WAITFORSYNCHRONIZATIONOBJECTFROMGPU);
     RESOLVE(SignalSynchronizationObjectFromGpu, SIGNALSYNCHRONIZATIONOBJECTFROMGPU);
     RESOLVE(SignalSynchronizationObjectFromGpu2, SIGNALSYNCHRONIZATIONOBJECTFROMGPU2);
+    RESOLVE(OpenSyncObjectFromNtHandle2, OPENSYNCOBJECTFROMNTHANDLE2);
 #endif
 #if (D3D_UMD_INTERFACE_VERSION >= D3D_UMD_INTERFACE_VERSION_WDDM2_1_1)
     RESOLVE(UpdateAllocationProperty, UPDATEALLOCATIONPROPERTY);
@@ -347,18 +356,62 @@ D3DUmdRtEndOverlayCall(
     LeaveCriticalSection(&D3DUmdRtDeviceLock);
 }
 
+static HRESULT D3DUmdRtStatusToHresult(NTSTATUS Status);
+
 static VOID
 D3DUmdRtTrackContext(
     PD3DUMDRT_DEVICE Device,
     PD3DUMDRT_CONTEXT Context,
     D3DKMT_HANDLE hContext)
 {
+    INT Priority;
+
     Context->hContext = hContext;
     EnterCriticalSection(&D3DUmdRtDeviceLock);
     Context->Next = Device->Contexts;
     Device->Contexts = Context;
     InterlockedIncrement(&Device->LiveObjectCount);
+    Priority = Device->SchedulingPriority;
     LeaveCriticalSection(&D3DUmdRtDeviceLock);
+    if (Priority != 0 && pfnSetContextSchedulingPriority != NULL)
+    {
+        D3DKMT_SETCONTEXTSCHEDULINGPRIORITY Set;
+
+        Set.hContext = hContext;
+        Set.Priority = Priority;
+        (VOID)pfnSetContextSchedulingPriority(&Set);
+    }
+}
+
+/* IDXGIDevice::SetGPUThreadPriority: every context of the device, present and future. */
+HRESULT WINAPI
+D3DUmdRtSetContextSchedulingPriority(HANDLE hRuntimeDevice, INT Priority)
+{
+    PD3DUMDRT_DEVICE Device = D3DUmdRtDevice(hRuntimeDevice);
+    D3DKMT_SETCONTEXTSCHEDULINGPRIORITY Set;
+    PD3DUMDRT_CONTEXT Context;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    if (Device == NULL || Priority < -7 || Priority > 7)
+        return E_INVALIDARG;
+    if (pfnSetContextSchedulingPriority == NULL)
+        return E_NOTIMPL;
+    EnterCriticalSection(&D3DUmdRtDeviceLock);
+    Device->SchedulingPriority = Priority;
+    for (Context = Device->Contexts; Context != NULL; Context = Context->Next)
+    {
+        NTSTATUS ContextStatus;
+
+        if (Context->Destroying)
+            continue;
+        Set.hContext = Context->hContext;
+        Set.Priority = Priority;
+        ContextStatus = pfnSetContextSchedulingPriority(&Set);
+        if (ContextStatus < 0 && Status >= 0)
+            Status = ContextStatus;
+    }
+    LeaveCriticalSection(&D3DUmdRtDeviceLock);
+    return D3DUmdRtStatusToHresult(Status);
 }
 
 static HRESULT
@@ -1333,6 +1386,88 @@ static HRESULT APIENTRY D3DUmdRtRenderCb(HANDLE hDevice, D3DDDICB_RENDER *pData)
     pData->NewCommandBuffer = Render.NewCommandBuffer;
 #endif
     return S_OK;
+}
+
+/* ------------------------------------------------------------------------ *
+ * Allocation priority and residency
+ * ------------------------------------------------------------------------ */
+
+C_ASSERT(sizeof(D3DDDI_RESIDENCYSTATUS) == sizeof(D3DKMT_ALLOCATIONRESIDENCYSTATUS));
+C_ASSERT((INT)D3DDDI_RESIDENCYSTATUS_RESIDENTINGPUMEMORY == (INT)D3DKMT_ALLOCATIONRESIDENCYSTATUS_RESIDENTINGPUMEMORY);
+C_ASSERT((INT)D3DDDI_RESIDENCYSTATUS_RESIDENTINSHAREDMEMORY == (INT)D3DKMT_ALLOCATIONRESIDENCYSTATUS_RESIDENTINSHAREDMEMORY);
+C_ASSERT((INT)D3DDDI_RESIDENCYSTATUS_NOTRESIDENT == (INT)D3DKMT_ALLOCATIONRESIDENCYSTATUS_NOTRESIDENT);
+
+/* A runtime resource names all of its allocations; otherwise the handle list does. */
+static HRESULT
+D3DUmdRtAllocationTarget(
+    _In_ PD3DUMDRT_DEVICE Device,
+    _In_opt_ HANDLE hResource,
+    _In_ UINT NumAllocations,
+    _In_opt_ CONST D3DKMT_HANDLE *HandleList,
+    _Out_ D3DKMT_HANDLE *KmResource)
+{
+    D3DKMT_HANDLE *Handles;
+    HRESULT Result;
+
+    *KmResource = 0;
+    if (hResource == NULL)
+        return (NumAllocations == 0 || HandleList == NULL) ? E_INVALIDARG : S_OK;
+    Result = D3DUmdRtTranslateResourceHandles(Device, &hResource, 1, &Handles);
+    if (FAILED(Result))
+        return Result;
+    *KmResource = Handles[0];
+    HeapFree(GetProcessHeap(), 0, Handles);
+    return S_OK;
+}
+
+static HRESULT APIENTRY
+D3DUmdRtSetPriorityCb(
+    HANDLE hDevice,
+    D3DDDICB_SETPRIORITY *pData)
+{
+    PD3DUMDRT_DEVICE Device = D3DUmdRtDevice(hDevice);
+    D3DKMT_SETALLOCATIONPRIORITY Set;
+    HRESULT Result;
+
+    if (Device == NULL || pData == NULL || pData->pPriorities == NULL || pfnSetAllocationPriority == NULL)
+        return E_INVALIDARG;
+    ZeroMemory(&Set, sizeof(Set));
+    Result = D3DUmdRtAllocationTarget(Device, pData->hResource, pData->NumAllocations, pData->HandleList, &Set.hResource);
+    if (FAILED(Result))
+        return Result;
+    Set.hDevice = Device->hDevice;
+    if (Set.hResource == 0)
+    {
+        Set.phAllocationList = pData->HandleList;
+        Set.AllocationCount = pData->NumAllocations;
+    }
+    Set.pPriorities = pData->pPriorities;
+    return D3DUmdRtStatusToHresult(pfnSetAllocationPriority(&Set));
+}
+
+static HRESULT APIENTRY
+D3DUmdRtQueryResidencyCb(
+    HANDLE hDevice,
+    CONST D3DDDICB_QUERYRESIDENCY *pData)
+{
+    PD3DUMDRT_DEVICE Device = D3DUmdRtDevice(hDevice);
+    D3DKMT_QUERYALLOCATIONRESIDENCY Query;
+    HRESULT Result;
+
+    if (Device == NULL || pData == NULL || pData->pResidencyStatus == NULL || pfnQueryAllocationResidency == NULL)
+        return E_INVALIDARG;
+    ZeroMemory(&Query, sizeof(Query));
+    Result = D3DUmdRtAllocationTarget(Device, pData->hResource, pData->NumAllocations, pData->HandleList, &Query.hResource);
+    if (FAILED(Result))
+        return Result;
+    Query.hDevice = Device->hDevice;
+    if (Query.hResource == 0)
+    {
+        Query.phAllocationList = pData->HandleList;
+        Query.AllocationCount = pData->NumAllocations;
+    }
+    Query.pResidencyStatus = (D3DKMT_ALLOCATIONRESIDENCYSTATUS *)pData->pResidencyStatus;
+    return D3DUmdRtStatusToHresult(pfnQueryAllocationResidency(&Query));
 }
 
 /* ------------------------------------------------------------------------ *
@@ -2890,6 +3025,42 @@ D3DUmdRtCreateSynchronizationObject2Cb(
     return S_OK;
 }
 
+HRESULT WINAPI
+D3DUmdRtOpenSyncObjectFromNtHandle(HANDLE hRuntimeDevice, HANDLE NtHandle, D3DKMT_HANDLE *SyncObjectHandle,
+                                   PVOID *CpuValue, D3DGPU_VIRTUAL_ADDRESS *GpuValue)
+{
+    PD3DUMDRT_DEVICE Device = D3DUmdRtDevice(hRuntimeDevice);
+    D3DKMT_OPENSYNCOBJECTFROMNTHANDLE2 Open;
+    PD3DUMDRT_SYNC_OBJECT SyncObject;
+    NTSTATUS Status;
+
+    if (SyncObjectHandle != NULL) *SyncObjectHandle = 0;
+    if (CpuValue != NULL) *CpuValue = NULL;
+    if (GpuValue != NULL) *GpuValue = 0;
+    if (Device == NULL || NtHandle == NULL || SyncObjectHandle == NULL || CpuValue == NULL || GpuValue == NULL)
+        return E_INVALIDARG;
+    if (pfnOpenSyncObjectFromNtHandle2 == NULL)
+        return E_NOTIMPL;
+    SyncObject = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*SyncObject));
+    if (SyncObject == NULL)
+        return E_OUTOFMEMORY;
+    ZeroMemory(&Open, sizeof(Open));
+    Open.hNtHandle = NtHandle;
+    Open.hDevice = Device->hDevice;
+    Status = pfnOpenSyncObjectFromNtHandle2(&Open);
+    if (Status < 0 || Open.hSyncObject == 0)
+    {
+        HeapFree(GetProcessHeap(), 0, SyncObject);
+        return Status < 0 ? D3DUmdRtStatusToHresult(Status) : E_FAIL;
+    }
+    SyncObject->MonitoredFence = TRUE;
+    D3DUmdRtTrackSynchronizationObject(Device, SyncObject, Open.hSyncObject);
+    *SyncObjectHandle = Open.hSyncObject;
+    *CpuValue = Open.MonitoredFence.FenceValueCPUVirtualAddress;
+    *GpuValue = Open.MonitoredFence.FenceValueGPUVirtualAddress;
+    return S_OK;
+}
+
 static HRESULT APIENTRY
 D3DUmdRtWaitForSynchronizationObject2Cb(
     HANDLE hDevice,
@@ -3434,6 +3605,8 @@ D3DUmdRtCreateDeviceCallbacksEx(
     ZeroMemory(pCallbacks, sizeof(*pCallbacks));
     pCallbacks->pfnAllocateCb = D3DUmdRtAllocateCb;
     pCallbacks->pfnDeallocateCb = D3DUmdRtDeallocateCb;
+    pCallbacks->pfnSetPriorityCb = D3DUmdRtSetPriorityCb;
+    pCallbacks->pfnQueryResidencyCb = D3DUmdRtQueryResidencyCb;
     pCallbacks->pfnSetDisplayModeCb = D3DUmdRtSetDisplayModeCb;
     pCallbacks->pfnLockCb = D3DUmdRtLockCb;
     pCallbacks->pfnUnlockCb = D3DUmdRtUnlockCb;

@@ -80,6 +80,8 @@ typedef struct _WND_REDIRECT
     LONG      DxClientY;
     ULONG     DxDrawWidth;
     ULONG     DxDrawHeight;
+    ULONG     DxSourceWidth;
+    ULONG     DxSourceHeight;
     LONG      DxLayerX;
     LONG      DxLayerY;
     RECTL     DxLayerClip;
@@ -188,6 +190,11 @@ VOID IntCompositionBatchComplete(VOID);
  * previous FRONT. */
 VOID IntCompositionCommitOpenGLFrame(_In_opt_ PSURFACE psurf,
                                      _In_ const RECTL *prcDest);
+
+NTSTATUS
+IntCompositionQueryRedirectedBltClient(
+    _In_ const DXGKRNL_REDIRECTED_BLT_PRESENT *Present,
+    _Out_ RECT *ClientRect);
 
 NTSTATUS
 IntCompositionAdmitRedirectedBltPresent(

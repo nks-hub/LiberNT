@@ -898,17 +898,10 @@ GpuVaProtectionValid(
     _In_ D3DDDIGPUVIRTUALADDRESS_PROTECTION_TYPE Protection,
     _In_ BOOLEAN UnmapProtection)
 {
-    if (Protection.SystemUseOnly || Protection.Reserved != 0)
+    if (Protection.SystemUseOnly || Protection.Reserved != 0 ||
+        !DxgkGpuVaCoreProtectionValid((ULONG)Protection.Value))
         return FALSE;
-    if (Protection.Zero || Protection.NoAccess)
-    {
-        if (Protection.Write || Protection.Execute || Protection.Zero == Protection.NoAccess)
-            return FALSE;
-        return TRUE;
-    }
-    if (UnmapProtection)
-        return FALSE;
-    return TRUE;
+    return !UnmapProtection || Protection.Zero || Protection.NoAccess;
 }
 
 static NTSTATUS
@@ -2211,15 +2204,16 @@ DxgkpGpuVaFlushPageTableUpdatesOnce(
      * until it has a placement in the miniport's page-table segment.  Native
      * VidMm maps it with the process device and implicit allocation identity,
      * so acquire that identity before publishing any parent or root address. */
-    Status = DxgkGpuVaPlacePendingPageTables(Adapter,
-                                             Process,
-                                             PagingMiniportDevice);
-    if (!NT_SUCCESS(Status))
-        goto Complete;
-
     for (;;)
     {
         PLIST_ENTRY Entry;
+        BOOLEAN AwaitPlacement = FALSE;
+
+        Status = DxgkGpuVaPlacePendingPageTables(Adapter,
+                                                 Process,
+                                                 PagingMiniportDevice);
+        if (!NT_SUCCESS(Status))
+            goto Complete;
 
         ExAcquireFastMutex(&Process->GpuVaLock);
         if (!Process->PageTableUpdatePending)
@@ -2249,7 +2243,20 @@ DxgkpGpuVaFlushPageTableUpdatesOnce(
         RtlZeroMemory(Tables, (SIZE_T)TableCapacity * sizeof(*Tables));
 
         ExAcquireFastMutex(&Process->GpuVaLock);
-        if (Process->GpuVaPageTableCount > TableCapacity)
+        ResendSpan = Process->PageTableResendSpan;
+        for (Entry = Process->GpuVaPageTableList.Flink;
+             Entry != &Process->GpuVaPageTableList && !AwaitPlacement;
+             Entry = Entry->Flink)
+        {
+            PDXGKRNL_GPUVA_PAGE_TABLE Table = CONTAINING_RECORD(Entry, DXGKRNL_GPUVA_PAGE_TABLE, PageTableListEntry);
+
+            AwaitPlacement = DxgkGpuVaCoreTableSnapshot(Table->PlacementPending,
+                                                        Table->InitialUpdatePending,
+                                                        ResendSpan,
+                                                        Table->DirtyEndIndex > Table->DirtyStartIndex) ==
+                             DxgkGpuVaTableSnapshotAwaitPlacement;
+        }
+        if (AwaitPlacement || Process->GpuVaPageTableCount > TableCapacity)
         {
             ExReleaseFastMutex(&Process->GpuVaLock);
             ExFreePoolWithTag(Tables, TAG_DXGK_GPUVA_PT);
@@ -2259,7 +2266,6 @@ DxgkpGpuVaFlushPageTableUpdatesOnce(
 
         Start = Process->PageTableUpdateStart;
         End = Process->PageTableUpdateEnd;
-        ResendSpan = Process->PageTableResendSpan;
         if (End <= Start)
         {
             Process->PageTableUpdatePending = FALSE;
@@ -2310,6 +2316,7 @@ DxgkpGpuVaFlushPageTableUpdatesOnce(
             ULONG EndIndex;
             ULONG EntryCount;
             BOOLEAN DualHalf;
+            DXGK_GPUVA_TABLE_SNAPSHOT Describe;
 
             if (TableCount >= TableCapacity)
                 break;
@@ -2328,17 +2335,21 @@ DxgkpGpuVaFlushPageTableUpdatesOnce(
             }
             TableCoverage = Table->EntryCount * EntryCoverage;
             TableEnd = Table->CoverageBase + TableCoverage;
-            if (Table->InitialUpdatePending)
+            Describe = DxgkGpuVaCoreTableSnapshot(Table->PlacementPending,
+                                                  Table->InitialUpdatePending,
+                                                  ResendSpan,
+                                                  Table->DirtyEndIndex > Table->DirtyStartIndex);
+            if (Describe == DxgkGpuVaTableSnapshotWhole)
             {
                 OverlapStart = Table->CoverageBase;
                 OverlapEnd = TableEnd;
             }
-            else if (ResendSpan)
+            else if (Describe == DxgkGpuVaTableSnapshotSpan)
             {
                 OverlapStart = max(Start, Table->CoverageBase);
                 OverlapEnd = min(End, TableEnd);
             }
-            else if (Table->DirtyEndIndex > Table->DirtyStartIndex)
+            else if (Describe == DxgkGpuVaTableSnapshotDirty)
             {
                 OverlapStart = Table->CoverageBase +
                                (ULONGLONG)Table->DirtyStartIndex * EntryCoverage;

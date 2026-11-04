@@ -63,6 +63,8 @@
     CTL_CODE(DXGKRNL_DEVICE_TYPE, 0x1D5, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define IOCTL_RXGK_REGISTERDWMPROCESS \
     CTL_CODE(DXGKRNL_DEVICE_TYPE, 0x1D8, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_RXGK_OUTPUTDUPL \
+    CTL_CODE(DXGKRNL_DEVICE_TYPE, 0x1DA, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #if (REACTOS_WDDM_TARGET_LEVEL >= 2100)
 #define IOCTL_D3DKMT_SETFSEBLOCK \
     CTL_CODE(DXGKRNL_DEVICE_TYPE, 0x1CC, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -104,7 +106,9 @@
 #endif
 #define RXGK_CONTEXTINPROCESSPRIORITY_PACKET_V1_SIZE 16U
 #define RXGK_GETSHAREDRESOURCEADAPTERLUID_PACKET_V1_SIZE 32U
-#define RXGK_SHAREOBJECTS_PACKET_V1_SIZE       40U
+#define RXGK_SHAREOBJECTS_PACKET_V3_SIZE       72U
+#define RXGK_OUTPUTDUPL_PACKET_V1_SIZE         56U
+#define RXGK_SHAREOBJECTS_PACKET_VERSION_3     3U
 #define RXGK_RESOLVESHAREDRESOURCENTHANDLE_PACKET_V1_SIZE 24U
 #define RXGK_VALIDATESHAREDRESOURCEOWNER_PACKET_V1_SIZE 24U
 #define RXGK_SETCOMPOSITORSOURCEOWNER_PACKET_V1_SIZE 56U
@@ -142,8 +146,34 @@ typedef enum _RXGK_PUBLIC_OPERATION
     RxgkPublicNotifyWorkSubmission,
     RxgkPublicOpenNativeFenceFromNtHandle,
     RxgkPublicOutputDuplPresentToHwQueue,
-    RxgkPublicRegisterVailProcess
+    RxgkPublicRegisterVailProcess,
+    RxgkPublicOpenSyncObjectFromNtHandle,
+    RxgkPublicOpenSyncObjectFromNtHandle2,
+    RxgkPublicOpenNtHandleFromName,
+    RxgkPublicOpenSyncObjectNtHandleFromName,
+    RxgkPublicSharedPrimaryUnLockNotification,
+    RxgkPublicCancelPresents
 } RXGK_PUBLIC_OPERATION;
+
+typedef enum _RXGK_OUTPUTDUPL_OPERATION
+{
+    RxgkOutputDuplCreate = 1,
+    RxgkOutputDuplDestroy,
+    RxgkOutputDuplFrameAccess
+} RXGK_OUTPUTDUPL_OPERATION;
+
+typedef struct _RXGK_OUTPUTDUPL_PACKET
+{
+    ULONG Size;
+    ULONG Version;
+    ULONG Operation;
+    ULONG hAdapter;
+    ULONG VidPnSourceId;
+    ULONG SurfaceCount;
+    ULONG RequiredSurfaceCount;
+    ULONG Reserved;
+    ULONGLONG Surfaces[3];
+} RXGK_OUTPUTDUPL_PACKET, *PRXGK_OUTPUTDUPL_PACKET;
 
 typedef struct _RXGK_PUBLIC_OPERATION_PACKET
 {
@@ -449,6 +479,13 @@ typedef struct _RXGK_SHAREOBJECTS_PACKET
     ULONG       ObjectHandles[D3DKMT_MAX_OBJECTS_PER_HANDLE];
     ULONG       ObjectAttributesPresent;
     ULONGLONG   SharedNtHandle;
+    /* The caller's object attributes: the name and security descriptor are
+     * win32k's captured copies, the root directory is the caller's handle. */
+    ULONG       Attributes;
+    ULONG       Reserved;
+    ULONGLONG   SecurityDescriptor;
+    ULONGLONG   RootDirectory;
+    ULONGLONG   ObjectName;
 } RXGK_SHAREOBJECTS_PACKET, *PRXGK_SHAREOBJECTS_PACKET;
 
 /*

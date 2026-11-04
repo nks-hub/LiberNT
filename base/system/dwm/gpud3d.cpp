@@ -130,6 +130,7 @@ struct Constants
     FLOAT SampleExtent[4], SampleOrigin[4];
     FLOAT FrameKey[4], FrameClient[4], FrameButtons[4];
     FLOAT Taps[33][4];
+    FLOAT SourceScale[4];
 };
 
 struct ConstantBuffer
@@ -1156,18 +1157,20 @@ BOOL ForeignAdapter(const DWM_WIN *Window)
 
 Texture *ImportForeign(const DWM_WIN *Window, DXGI_FORMAT Format)
 {
-    if (Window->DxUpdateId == 0 || Window->DxPitch < Window->DxWidth * sizeof(ULONG))
+    if (Window->DxUpdateId == 0)
         return NULL;
     Surface *Slot = FindSurface(Window, TRUE);
     if (Slot->Image.Resource == NULL || Slot->Share != Window->DxGlobalShare ||
         Slot->Generation != Window->DxGeneration || Slot->UpdateId != Window->DxUpdateId)
     {
-        const BYTE *Pixels = DwmDxGetSurfaceSnapshot(Window);
-        if (Pixels == NULL ||
-            !EnsureTexture(Slot->Image, (LONG)Window->DxWidth, (LONG)Window->DxHeight, FALSE, Format))
+        ULONG Pitch;
+        const BYTE *Pixels = DwmDxGetSurfacePixels(Window, &Pitch);
+        if (Pixels == NULL || Pitch < Window->DxWidth * sizeof(ULONG) ||
+            !EnsureTexture(Slot->Image, (LONG)Window->DxWidth, (LONG)Window->DxHeight, FALSE,
+                           Window->DxPitch == 0 ? DXGI_FORMAT_B8G8R8A8_UNORM : Format))
             return NULL;
         UnbindTextures();
-        State.Context->UpdateSubresource(Slot->Image.Resource, 0, NULL, Pixels, Window->DxPitch, 0);
+        State.Context->UpdateSubresource(Slot->Image.Resource, 0, NULL, Pixels, Pitch, 0);
         State.WorkPending = TRUE;
         Slot->Share = Window->DxGlobalShare;
         Slot->Generation = Window->DxGeneration;
@@ -1498,6 +1501,12 @@ BOOL DrawLayer(const DWM_WIN *Window, const BYTE *Pixels, BOOL Client, LONG Orig
     Data.SourceSize[1] = Client ? Window->DxHeight : Window->cy;
     Data.SourceSize[2] = Alpha;
     Data.SourceSize[3] = Client ? 0 : min(Window->CornerRadius, (ULONG)min(Window->cx / 2, Window->cy / 2));
+    if (Client && Window->DxWidth != 0 && Window->DxHeight != 0 &&
+        (Window->DxSourceWidth < Window->DxWidth || Window->DxSourceHeight < Window->DxHeight))
+    {
+        Data.SourceScale[0] = (FLOAT)Window->DxSourceWidth / Window->DxWidth;
+        Data.SourceScale[1] = (FLOAT)Window->DxSourceHeight / Window->DxHeight;
+    }
     RECTL Interior;
     DwmFrameInterior(Window, &Interior);
     Data.ClientRect[0] = (FLOAT)Interior.left;

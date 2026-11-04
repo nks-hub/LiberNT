@@ -162,6 +162,7 @@ list(APPEND SOURCE
     RtlGetProductInfo.c
     RtlGetUnloadEventTrace.c
     RtlHandle.c
+    RtlHeapDecommit.c
     RtlHeapFreeCoalesce.c
     RtlImageDirectoryEntryToData.c
     RtlImageRvaToVa.c
@@ -190,6 +191,7 @@ list(APPEND SOURCE
     RtlWaitOnAddress.c
     RtlxUnicodeStringToAnsiSize.c
     RtlxUnicodeStringToOemSize.c
+    SatisfiedWait.c
     ScanfSecure.c
     StackOverflow.c
     StackProbe.c

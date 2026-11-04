@@ -7241,6 +7241,22 @@ DxgkGetSharedPrimaryHandle(
     }
 
     (VOID)KeWaitForSingleObject(&Adapter->SharedPrimaryMutex, Executive, KernelMode, FALSE, NULL);
+    if (pGetSharedPrimaryHandle->VidPnSourceId < Adapter->NumberOfVideoPresentSources)
+    {
+        D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId;
+
+        /* FIXME: one shared primary per adapter; a second desktop source of a multi-output adapter gets none */
+        if ((Adapter->SharedPrimaryAllocationHandle != NULL &&
+             Adapter->SharedPrimaryVidPnSourceId != pGetSharedPrimaryHandle->VidPnSourceId) ||
+            (Adapter->SharedPrimaryAllocationHandle == NULL && Adapter->VidPnCommitted &&
+             !NT_SUCCESS(DxgkVidPnResolveTargetForSource(Adapter, pGetSharedPrimaryHandle->VidPnSourceId, &TargetId))))
+        {
+            pGetSharedPrimaryHandle->hSharedPrimary = 0;
+            KeReleaseMutex(&Adapter->SharedPrimaryMutex, FALSE);
+            Status = STATUS_SUCCESS;
+            goto Cleanup;
+        }
+    }
     Status = DxgkpEnsureSharedPrimaryLocked(Adapter, pGetSharedPrimaryHandle->VidPnSourceId);
     if (!NT_SUCCESS(Status))
     {
@@ -7614,11 +7630,34 @@ DxgkVidPnQueryMonitorPreferredMode(
         if (Signal != NULL && Signal->ActiveSize.cx != 0 && Signal->ActiveSize.cy != 0 &&
             Signal->VSyncFreq.Denominator != 0)
         {
+            PDXGKP_VIDPN_TARGET_MODESET TargetSet = VidPn->TargetModeSets[TargetIndex];
+            ULONG OfferedRate = 0;
+
             *Width = Signal->ActiveSize.cx;
             *Height = Signal->ActiveSize.cy;
             *RefreshRate = (ULONG)(((ULONGLONG)Signal->VSyncFreq.Numerator +
                                     Signal->VSyncFreq.Denominator / 2) /
                                    Signal->VSyncFreq.Denominator);
+            for (Index = 0; TargetSet != NULL && Index < TargetSet->NumModes; Index++)
+            {
+                CONST D3DKMDT_VIDEO_SIGNAL_INFO *Offered = &TargetSet->Modes[Index].VideoSignalInfo;
+                ULONG Rate;
+
+                if (Offered->ActiveSize.cx != Signal->ActiveSize.cx ||
+                    Offered->ActiveSize.cy != Signal->ActiveSize.cy ||
+                    !DxgkpIsRefreshRateSpecified(&Offered->VSyncFreq))
+                    continue;
+                Rate = Offered->VSyncFreq.Numerator / Offered->VSyncFreq.Denominator;
+                if (Rate == *RefreshRate)
+                {
+                    OfferedRate = 0;
+                    break;
+                }
+                if (OfferedRate == 0)
+                    OfferedRate = Rate;
+            }
+            if (OfferedRate != 0)
+                *RefreshRate = OfferedRate;
         }
     }
     KeReleaseMutex(&Adapter->VidPnMutex, FALSE);

@@ -361,6 +361,9 @@ GetFileStatInformation(_In_ PVolumeContextBlock VolCB,
     Status = GetFileReparseTag(FileCB, Basic.FileAttributes, &Buffer->ReparseTag);
     if (NT_SUCCESS(Status) && Lx)
         Status = NtfsQueryLxMetadata(FileCB, Buffer);
+    /* Windows 11 reports no effective access for a file that carries a Linux mode */
+    if (NT_SUCCESS(Status) && Lx && (Buffer->LxFlags & LX_FILE_METADATA_HAS_MODE))
+        Buffer->EffectiveAccess = 0;
     if (NT_SUCCESS(Status))
         *Length -= Size;
     return Status;
@@ -2661,6 +2664,7 @@ NtfsFsdSetInformation(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     BOOLEAN ResourceAcquired = FALSE;
     BOOLEAN PagingResourceAcquired = FALSE;
     BOOLEAN MetadataResourceAcquired = FALSE;
+    BOOLEAN PagingMapStale = FALSE;
 
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
     FileObject = IrpSp->FileObject;
@@ -3038,6 +3042,7 @@ NtfsFsdSetInformation(_In_ PDEVICE_OBJECT VolumeDeviceObject,
             FO_FILE_MODIFIED |
             FO_FILE_SIZE_CHANGED;
         FileCB->NotifyFilter |= FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
+        PagingMapStale = FileCB->PagingFileOpen;
     }
 
 Complete:
@@ -3052,6 +3057,8 @@ Complete:
         ExReleaseResourceLite(NtfsGetMainResource(FileCB));
         KeLeaveCriticalRegion();
     }
+    if (PagingMapStale)
+        NtfsPagingFileRefresh(VolCB, FileCB);
     Irp->IoStatus.Status = Status;
     Irp->IoStatus.Information = 0;
     IoCompleteRequest(Irp, IO_DISK_INCREMENT);

@@ -7581,6 +7581,7 @@ DxgkCbQueryFeatureSupport(
         return STATUS_INVALID_PARAMETER;
     }
 
+    Adapter->DriverFeatureSupportState[(ULONG)Args->FeatureId & DXGK_FEATURE_ID_MASK] = (UCHAR)Args->DriverSupportState;
     if (Args->FeatureId == DXGK_FEATURE_KMD_SIGNAL_CPU_EVENT &&
         Args->DriverSupportState >= DXGK_FEATURE_SUPPORT_STABLE)
     {
@@ -12677,12 +12678,8 @@ DxgkpMessageIsrTrampoline(
 
 /*
  * DxgkpQueryDriverCaps — DXGKQAITYPE_DRIVERCAPS into a caller buffer of
- * DXGKP_DRIVERCAPS_QUERY_SIZE bytes (see dxgkrnl_private.h).
- *
- * First asks with our own sizeof; if the miniport was built against a
- * newer WDK whose DXGK_DRIVERCAPS is bigger it fails the size check
- * (STATUS_BUFFER_TOO_SMALL/INVALID_PARAMETER) — retry with the large
- * zeroed buffer so callers can read the stable head fields.
+ * DXGKP_DRIVERCAPS_QUERY_SIZE bytes (see dxgkrnl_private.h), sized for the
+ * miniport's DDI version.
  */
 NTSTATUS
 DxgkpQueryDriverCaps(
@@ -12691,8 +12688,10 @@ DxgkpQueryDriverCaps(
 {
     PDXGKDDI_QUERY_ADAPTER_INFO PfnQueryAdapterInfo;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
-    ULONG Attempt;
+    ULONG CapsSize;
     NTSTATUS Status;
+
+    C_ASSERT(sizeof(DXGK_DRIVERCAPS) <= DXGKP_DRIVERCAPS_QUERY_SIZE);
 
     if (Caps == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -12702,35 +12701,29 @@ DxgkpQueryDriverCaps(
     if (Adapter == NULL || Adapter->MiniportContext == NULL)
         return STATUS_INVALID_PARAMETER;
 
+    CapsSize = DxgkCapsCoreDriverCapsSize(Adapter->MiniportContext->InitData.s.Version);
+    if (CapsSize == 0)
+        return STATUS_NOT_SUPPORTED;
     PfnQueryAdapterInfo = DXGK_CB(Adapter, DxgkDdiQueryAdapterInfo);
     if (PfnQueryAdapterInfo == NULL)
         return STATUS_NOT_SUPPORTED;
     if (!DxgkAcquireKmdCall(Adapter))
         return STATUS_DELETE_PENDING;
 
-    Status = STATUS_UNSUCCESSFUL;
-    for (Attempt = 0; Attempt < 2; Attempt++)
+    RtlZeroMemory(&QueryArgs, sizeof(QueryArgs));
+    QueryArgs.Type = DXGKQAITYPE_DRIVERCAPS;
+    QueryArgs.pOutputData = Caps;
+    QueryArgs.OutputDataSize = CapsSize;
+
+    _SEH2_TRY
     {
-        RtlZeroMemory(Caps, DXGKP_DRIVERCAPS_QUERY_SIZE);
-        RtlZeroMemory(&QueryArgs, sizeof(QueryArgs));
-        QueryArgs.Type = DXGKQAITYPE_DRIVERCAPS;
-        QueryArgs.pOutputData = Caps;
-        QueryArgs.OutputDataSize = (Attempt == 0) ? sizeof(DXGK_DRIVERCAPS)
-                                                  : DXGKP_DRIVERCAPS_QUERY_SIZE;
-
-        _SEH2_TRY
-        {
-            Status = PfnQueryAdapterInfo(Adapter->MiniportDeviceContext, &QueryArgs);
-        }
-        _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-        {
-            Status = _SEH2_GetExceptionCode();
-        }
-        _SEH2_END;
-
-        if (NT_SUCCESS(Status))
-            break;
+        Status = PfnQueryAdapterInfo(Adapter->MiniportDeviceContext, &QueryArgs);
     }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Status = _SEH2_GetExceptionCode();
+    }
+    _SEH2_END;
 
     DxgkReleaseKmdCall(Adapter);
     return Status;
@@ -14208,12 +14201,65 @@ DxgkAdapterStart(
         Adapter->SupportMultiPlaneOverlay = FALSE;
         Adapter->MaxOverlayPlanes = 0;
         Adapter->GdiHardwareAcceleration = FALSE;
+        Adapter->DisplayableSupport = FALSE;
+        Adapter->DriverCapsWddmVersion = 0;
         Caps = ExAllocatePoolWithTag(NonPagedPool, DXGKP_DRIVERCAPS_QUERY_SIZE, TAG_DXGK_ADAPTER);
         if (Caps != NULL)
         {
             CapsStatus = DxgkpQueryDriverCaps(Adapter, Caps);
+            /* TODO: native GPU fences; until then the NativeFence feature is disabled */
+            if (NT_SUCCESS(CapsStatus))
+                CapsStatus = DxgkAdapterStartNativeFenceStatus(Caps->SchedulingCaps.NativeGpuFence, FALSE);
             if (NT_SUCCESS(CapsStatus))
             {
+                DXGK_ADAPTER_START_CAPS StartCaps;
+                BOOLEAN FullTable = !Adapter->MiniportContext->UseDodLayout;
+
+                RtlZeroMemory(&StartCaps, sizeof(StartCaps));
+                StartCaps.InterfaceVersion = Adapter->MiniportContext->InitData.s.Version;
+                StartCaps.WddmVersion = Caps->WDDMVersion;
+                StartCaps.MiscCaps = Caps->MiscCaps.Value;
+                StartCaps.MemoryManagementCaps = Caps->MemoryManagementCaps.Value;
+                StartCaps.SupportPerEngineTdr = Caps->SupportPerEngineTDR;
+                StartCaps.SupportKernelModeCommandBuffer = Caps->PresentationCaps.SupportKernelModeCommandBuffer;
+                StartCaps.SupportRuntimePowerManagement = Caps->SupportRuntimePowerManagement;
+                StartCaps.HasControlInterrupt3 = FullTable && DXGK_CB_FULL(Adapter, DxgkDdiControlInterrupt3) != NULL;
+                StartCaps.HasEngineResetDdis = FullTable &&
+                    DXGK_CB_FULL(Adapter, DxgkDdiResetEngine) != NULL &&
+                    DXGK_CB_FULL(Adapter, DxgkDdiQueryEngineStatus) != NULL &&
+                    DXGK_CB_FULL(Adapter, DxgkDdiQueryDependentEngineGroup) != NULL;
+                StartCaps.HasRenderKm = FullTable && DXGK_CB_FULL(Adapter, DxgkDdiRenderKm) != NULL;
+                StartCaps.HasRuntimePowerDdis = FullTable &&
+                    DXGK_CB_FULL(Adapter, DxgkDdiSetPowerComponentFState) != NULL &&
+                    DXGK_CB_FULL(Adapter, DxgkDdiPowerRuntimeControlRequest) != NULL;
+                StartCaps.SupportMultiPlaneOverlay = Caps->SupportMultiPlaneOverlay;
+                StartCaps.SupportDirectFlip = Caps->SupportDirectFlip;
+                StartCaps.MaxOverlayPlanes = Caps->MaxOverlayPlanes;
+                StartCaps.HasMpoSetAddress = FullTable &&
+                    (DXGK_CB_FULL(Adapter, DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay) != NULL ||
+                     DXGK_CB_FULL(Adapter, DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay2) != NULL ||
+                     DXGK_CB_FULL(Adapter, DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3) != NULL);
+                StartCaps.HasMpoCheck = FullTable &&
+                    (DXGK_CB_FULL(Adapter, DxgkDdiCheckMultiPlaneOverlaySupport) != NULL ||
+                     DXGK_CB_FULL(Adapter, DxgkDdiCheckMultiPlaneOverlaySupport2) != NULL ||
+                     DXGK_CB_FULL(Adapter, DxgkDdiCheckMultiPlaneOverlaySupport3) != NULL);
+                StartCaps.ColorTransformCaps = Caps->ColorTransformCaps.Value;
+                StartCaps.HasUpdateActiveVidPnPresentPath = FullTable && DXGK_CB_FULL(Adapter, DxgkDdiUpdateActiveVidPnPresentPath) != NULL;
+                StartCaps.HasSetTargetGamma = FullTable && DXGK_CB_FULL(Adapter, DxgkDdiSetTargetGamma) != NULL;
+                StartCaps.HasQueryDiagnosticTypesSupport = FullTable && DXGK_CB_FULL(Adapter, DxgkDdiQueryDiagnosticTypesSupport) != NULL;
+                StartCaps.HasControlDiagnosticReporting = FullTable && DXGK_CB_FULL(Adapter, DxgkDdiControlDiagnosticReporting) != NULL;
+                StartCaps.HybridDiscrete = Caps->HybridDiscrete;
+                StartCaps.HybridIntegrated = Caps->HybridIntegrated;
+                StartCaps.NumberOfVideoPresentSources = Adapter->NumberOfVideoPresentSources;
+                StartCaps.NumberOfChildren = Adapter->NumberOfChildren;
+                CapsStatus = DxgkAdapterStartValidateCaps(&StartCaps);
+                if (!NT_SUCCESS(CapsStatus))
+                    DXGKRNL_ERR("DxgkAdapterStart: driver caps rejected 0x%08lX (WDDM 0x%x misc 0x%x vidmm 0x%x)\n",
+                                CapsStatus, StartCaps.WddmVersion, StartCaps.MiscCaps, StartCaps.MemoryManagementCaps);
+            }
+            if (NT_SUCCESS(CapsStatus))
+            {
+                Adapter->DriverCapsWddmVersion = Caps->WDDMVersion;
                 (VOID)DxgkpInitializeBlockList(Adapter, Caps->WDDMVersion);
                 if (Caps->MemoryManagementCaps.IoMmuSecureModeSupported)
                     CapsStatus = DxgkpCreateFrameBufferSaveArea(Adapter);
@@ -14230,7 +14276,8 @@ DxgkAdapterStart(
                     DxgkCapsCoreInterfaceVersionAtLeast(Adapter->MiniportContext->InitData.s.Version, DXGK_CAPS_CORE_LEVEL_WDDM_1_2) &&
                     Caps->SupportPerEngineTDR &&
                     DXGK_CB_FULL(Adapter, DxgkDdiResetEngine) != NULL &&
-                    DXGK_CB_FULL(Adapter, DxgkDdiQueryEngineStatus) != NULL;
+                    DXGK_CB_FULL(Adapter, DxgkDdiQueryEngineStatus) != NULL &&
+                    DXGK_CB_FULL(Adapter, DxgkDdiQueryDependentEngineGroup) != NULL;
                 Adapter->HybridDiscrete = Caps->HybridDiscrete;
                 Adapter->HybridIntegrated = Caps->HybridIntegrated;
                 /* Ranges are usable only with both swizzling-range DDIs. */
@@ -14256,6 +14303,9 @@ DxgkAdapterStart(
                     Adapter->IndependentVidPnVSyncControl =
                         DxgkCapsCoreInterfaceVersionAtLeast(Adapter->MiniportContext->InitData.s.Version, DXGK_CAPS_CORE_LEVEL_WDDM_2_7) &&
                         Caps->MiscCaps.IndependentVidPnVSyncControl;
+                    Adapter->DisplayableSupport =
+                        DxgkCapsCoreInterfaceVersionAtLeast(Adapter->MiniportContext->InitData.s.Version, DXGK_CAPS_CORE_LEVEL_WDDM_3_0) &&
+                        Caps->MiscCaps.DisplayableSupport;
                     DXGKRNL_TRACE("DxgkAdapterStart: %lu GPU node(s) reported\n", Adapter->NodeCount);
                     CapsStatus = DxgkpQueryStartNodeMetadata(Adapter);
                 }
@@ -14390,7 +14440,7 @@ DxgkAdapterStart(
         QueryArgs.pInputData = &CapsIn;
         QueryArgs.InputDataSize = sizeof(CapsIn);
         QueryArgs.pOutputData = &Adapter->PhysicalAdapterCaps;
-        QueryArgs.OutputDataSize = sizeof(Adapter->PhysicalAdapterCaps);
+        QueryArgs.OutputDataSize = DxgkCapsCorePhysicalAdapterCapsSize(Adapter->MiniportContext->InitData.s.Version);
         CapsStatus = DXGK_CB_FULL(Adapter, DxgkDdiQueryAdapterInfo)(Adapter->MiniportDeviceContext, &QueryArgs);
         DxgkReleaseKmdCall(Adapter);
         Adapter->PhysicalAdapterCapsValid = NT_SUCCESS(CapsStatus);
@@ -17178,6 +17228,7 @@ DxgkpAddDeviceRegistered(
     KeInitializeSpinLock(&Adapter->DmaBufferCacheLock);
     KeInitializeSpinLock(&Adapter->TdrHistoryLock);
     KeInitializeMutex(&Adapter->AdapterMutex, 0);
+    KeInitializeMutex(&Adapter->StablePowerMutex, 0);
     KeInitializeMutex(&Adapter->VidPnMutex, 0);
     KeInitializeMutex(&Adapter->OverlayMutex, 0);
     KeInitializeEvent(&Adapter->AdapterStartCompletedEvent, NotificationEvent, TRUE);

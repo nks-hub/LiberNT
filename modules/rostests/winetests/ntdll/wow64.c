@@ -93,6 +93,9 @@ static USHORT native_machine = IMAGE_FILE_MACHINE_ARMNT;
 #elif defined __aarch64__
 static USHORT current_machine = IMAGE_FILE_MACHINE_ARM64;
 static USHORT native_machine = IMAGE_FILE_MACHINE_ARM64;
+#elif defined(__REACTOS__) && defined(__riscv)
+static USHORT current_machine = IMAGE_FILE_MACHINE_RISCV64;
+static USHORT native_machine = IMAGE_FILE_MACHINE_RISCV64;
 #else
 static USHORT current_machine;
 static USHORT native_machine;
@@ -222,6 +225,11 @@ static void init(void)
         case PROCESSOR_ARCHITECTURE_AMD64:
             native_machine = IMAGE_FILE_MACHINE_AMD64;
             break;
+#ifdef __REACTOS__
+        case PROCESSOR_ARCHITECTURE_RISCV64:
+            native_machine = IMAGE_FILE_MACHINE_RISCV64;
+            break;
+#endif
         }
     }
 
@@ -668,7 +676,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
 
     addr = VirtualAllocEx( process, NULL, 0x1234, MEM_COMMIT, PAGE_READWRITE );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualAlloc, NULL, 0x1234,
                                          MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE, 0, 0xcccccccc );
@@ -679,7 +691,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
 
     VirtualProtectEx( process, (char *)addr + 0x333, 17, PAGE_READONLY, &old_prot );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualProtect,
                                          (char *)addr + 0x333, 17,
@@ -691,7 +707,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
 
     VirtualFreeEx( process, addr, 0, MEM_RELEASE );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualFree, addr, 0,
                                          MEM_RELEASE, 0, 0xcccccccc, 0xcccccccc );
@@ -706,7 +726,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     ok( status == STATUS_CONFLICTING_ADDRESSES || status == STATUS_INVALID_PARAMETER,
         "NtAllocateVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualAlloc, addr, 0x321,
                                          MEM_COMMIT, PAGE_EXECUTE_READ, 0, 0xcccccccc );
@@ -720,7 +744,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     status = NtAllocateVirtualMemory( process, &addr, 0, &size, 0, PAGE_EXECUTE_READ );
     ok( status == STATUS_INVALID_PARAMETER, "NtAllocateVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualAlloc, addr, 0x321,
                                          0, PAGE_EXECUTE_READ, 0, 0xcccccccc );
@@ -734,7 +762,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     status = NtAllocateVirtualMemory( process, &addr, 0, &size, MEM_RESERVE, PAGE_EXECUTE_READWRITE );
     ok( !status, "NtAllocateVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualAlloc, NULL, 0x4321,
                                          MEM_RESERVE, PAGE_EXECUTE_READWRITE, 0, 0xcccccccc );
@@ -747,7 +779,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     status = NtAllocateVirtualMemory( process, &addr, 0, &size, MEM_COMMIT, PAGE_READWRITE );
     ok( !status, "NtAllocateVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualAlloc, addr, 0x4321,
                                          MEM_COMMIT, PAGE_READWRITE, 0, 0xcccccccc );
@@ -761,7 +797,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     status = NtProtectVirtualMemory( process, &addr2, &size, PAGE_EXECUTE_READWRITE, &old_prot );
     ok( !status, "NtProtectVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualProtect, (char *)addr + 0x111, 23,
                                          PAGE_EXECUTE_READWRITE, 0, 0xcccccccc, 0xcccccccc );
@@ -776,7 +816,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     ok( status == STATUS_INVALID_PARAMETER_4 || status == STATUS_INVALID_PAGE_PROTECTION,
         "NtProtectVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualProtect,
                                          (char *)addr + 0x222, 34,
@@ -797,7 +841,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     status = NtFreeVirtualMemory( process, &addr2, &size, MEM_DECOMMIT );
     ok( !status, "NtFreeVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualFree, (char *)addr + 0x1234, 45,
                                          MEM_DECOMMIT, 0, 0xcccccccc, 0xcccccccc );
@@ -810,7 +858,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     status = NtFreeVirtualMemory( process, &addr, &size, MEM_RELEASE );
     ok( !status, "NtFreeVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualFree, addr, 0,
                                          MEM_RELEASE, 0, 0xcccccccc, 0xcccccccc );
@@ -825,7 +877,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     ok( status == STATUS_MEMORY_NOT_ALLOCATED || status == STATUS_INVALID_PARAMETER,
         "NtFreeVirtualMemory failed %lx\n", status );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualFree, addr, 0,
                                          MEM_RELEASE, 0, 0xcccccccc, 0xcccccccc );
@@ -854,7 +910,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
 
     NtFlushInstructionCache( process, addr, 0x1234 );
     entry = pop_from_work_list( &list->work_list );
+#ifdef __REACTOS__
+    if (current_machine != native_machine)
+#else
     if (current_machine != IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         entry = expect_cross_work_entry( list, entry, CrossProcessFlushCache, addr, 0x1234,
                                          0xcccccccc, 0xcccccccc, 0xcccccccc, 0xcccccccc );
@@ -865,7 +925,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
     entry = pop_from_work_list( &list->work_list );
     entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualProtect,
                                      (char *)addr + 0x1000, 0x2000, 0x60000000 | PAGE_EXECUTE_WRITECOPY,
+#ifdef __REACTOS__
+                                     (current_machine != native_machine) ? 0 : 0xcccccccc,
+#else
                                      (current_machine != IMAGE_FILE_MACHINE_ARM64) ? 0 : 0xcccccccc,
+#endif
                                      0xcccccccc, 0xcccccccc );
     entry = expect_cross_work_entry( list, entry, CrossProcessPostVirtualProtect,
                                      (char *)addr + 0x1000, 0x2000,
@@ -875,7 +939,11 @@ static void test_cross_process_notifications( HANDLE process, ULONG_PTR section,
                                      0xcccccccc, 0xcccccccc, 0xcccccccc, 0xcccccccc );
     entry = expect_cross_work_entry( list, entry, CrossProcessPreVirtualProtect,
                                      (char *)addr + 0x1000, 0x2000, 0x60000000 | PAGE_EXECUTE_READ,
+#ifdef __REACTOS__
+                                     (current_machine != native_machine) ? 0 : 0xcccccccc,
+#else
                                      (current_machine != IMAGE_FILE_MACHINE_ARM64) ? 0 : 0xcccccccc,
+#endif
                                      0xcccccccc, 0xcccccccc );
     entry = expect_cross_work_entry( list, entry, CrossProcessPostVirtualProtect,
                                      (char *)addr + 0x1000, 0x2000,
@@ -1472,7 +1540,11 @@ static void test_image_mappings(void)
             "NtMapViewOfSection returned %08lx\n", status );
         NtUnmapViewOfSection( process, ptr );
     }
+#ifdef __REACTOS__
+    else if (current_machine == IMAGE_FILE_MACHINE_ARM64 || current_machine == IMAGE_FILE_MACHINE_RISCV64)
+#else
     else if (current_machine == IMAGE_FILE_MACHINE_ARM64)
+#endif
     {
         todo_wine
         ok( status == STATUS_IMAGE_MACHINE_TYPE_MISMATCH, "NtMapViewOfSection returned %08lx\n", status );

@@ -53,7 +53,8 @@ C_ASSERT(sizeof(RXGK_ISFEATUREENABLED_PACKET) == RXGK_ISFEATUREENABLED_PACKET_SI
 #endif
 C_ASSERT(sizeof(RXGK_GETRESOURCEPRESENTPRIVATE_PACKET) == RXGK_GETRESOURCEPRESENTPRIVATE_PACKET_V1_SIZE);
 C_ASSERT(sizeof(RXGK_INVALIDATECACHE_PACKET) == RXGK_INVALIDATECACHE_PACKET_V1_SIZE);
-C_ASSERT(sizeof(RXGK_SHAREOBJECTS_PACKET) == RXGK_SHAREOBJECTS_PACKET_V1_SIZE);
+C_ASSERT(sizeof(RXGK_SHAREOBJECTS_PACKET) == RXGK_SHAREOBJECTS_PACKET_V3_SIZE);
+C_ASSERT(sizeof(RXGK_OUTPUTDUPL_PACKET) == RXGK_OUTPUTDUPL_PACKET_V1_SIZE);
 C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, Size) == 0);
 C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, Version) == 4);
 C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, ObjectCount) == 8);
@@ -61,6 +62,10 @@ C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, DesiredAccess) == 12);
 C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, ObjectHandles) == 16);
 C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, ObjectAttributesPresent) == 28);
 C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, SharedNtHandle) == 32);
+C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, Attributes) == 40);
+C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, SecurityDescriptor) == 48);
+C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, RootDirectory) == 56);
+C_ASSERT(FIELD_OFFSET(RXGK_SHAREOBJECTS_PACKET, ObjectName) == 64);
 C_ASSERT(sizeof(RXGK_RESOLVESHAREDRESOURCENTHANDLE_PACKET) ==
          RXGK_RESOLVESHAREDRESOURCENTHANDLE_PACKET_V1_SIZE);
 C_ASSERT(sizeof(RXGK_VALIDATESHAREDRESOURCEOWNER_PACKET) == RXGK_VALIDATESHAREDRESOURCEOWNER_PACKET_V1_SIZE);
@@ -328,9 +333,10 @@ DxgkSharedObjectsInitialize(VOID)
     OBJECT_TYPE_INITIALIZER TypeInitializer;
     GENERIC_MAPPING GenericMapping;
     UNICODE_STRING TypeName;
+    NTSTATUS Status;
 
     if (DxgkSharedResourceObjectType != NULL)
-        return STATUS_SUCCESS;
+        return DxgkSyncSharedObjectsInitialize();
 
     GenericMapping.GenericRead = STANDARD_RIGHTS_READ;
     GenericMapping.GenericWrite = STANDARD_RIGHTS_WRITE |
@@ -354,10 +360,45 @@ DxgkSharedObjectsInitialize(VOID)
     TypeInitializer.DeleteProcedure =
         DxgkpDeleteSharedResourceObject;
 
-    return ObCreateObjectType(&TypeName,
-                              &TypeInitializer,
-                              NULL,
-                              &DxgkSharedResourceObjectType);
+    Status = ObCreateObjectType(&TypeName,
+                                &TypeInitializer,
+                                NULL,
+                                &DxgkSharedResourceObjectType);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    return DxgkSyncSharedObjectsInitialize();
+}
+
+POBJECT_TYPE
+DxgkSharedResourceType(VOID)
+{
+    return DxgkSharedResourceObjectType;
+}
+
+static NTSTATUS
+DxgkpOutputDupl(
+    _Inout_ PRXGK_OUTPUTDUPL_PACKET Packet)
+{
+    HANDLE Surfaces[RTL_NUMBER_OF(Packet->Surfaces)];
+    ULONG Index;
+
+    if (Packet->Size != RXGK_OUTPUTDUPL_PACKET_V1_SIZE || Packet->Version != RXGK_WDDM_PACKET_VERSION_1 ||
+        Packet->Reserved != 0 || Packet->SurfaceCount > RTL_NUMBER_OF(Packet->Surfaces))
+        return STATUS_INVALID_PARAMETER;
+    switch (Packet->Operation)
+    {
+        case RxgkOutputDuplCreate:
+            for (Index = 0; Index < Packet->SurfaceCount; ++Index)
+                Surfaces[Index] = (HANDLE)(ULONG_PTR)Packet->Surfaces[Index];
+            return DxgkOutputDuplCreate(Packet->hAdapter, Packet->VidPnSourceId, Packet->SurfaceCount, Surfaces,
+                                        &Packet->RequiredSurfaceCount);
+        case RxgkOutputDuplDestroy:
+            return DxgkOutputDuplDestroy(Packet->hAdapter, Packet->VidPnSourceId);
+        case RxgkOutputDuplFrameAccess:
+            return DxgkOutputDuplFrameAccess(Packet->hAdapter, Packet->VidPnSourceId);
+        default:
+            return STATUS_INVALID_PARAMETER;
+    }
 }
 
 static NTSTATUS
@@ -365,31 +406,47 @@ DxgkpShareObjects(
     _Inout_ PRXGK_SHAREOBJECTS_PACKET Packet)
 {
     PDXGKRNL_SHARED_RESOURCE_OBJECT SharedObject;
+    OBJECT_ATTRIBUTES ObjectAttributes;
     PDXGKVMM_RESOURCE Resource;
     HANDLE SharedNtHandle;
     NTSTATUS Status;
 
     if (Packet == NULL ||
-        Packet->Size != RXGK_SHAREOBJECTS_PACKET_V1_SIZE ||
-        Packet->Version != RXGK_WDDM_PACKET_VERSION_1 ||
+        Packet->Size != RXGK_SHAREOBJECTS_PACKET_V3_SIZE ||
+        Packet->Version != RXGK_SHAREOBJECTS_PACKET_VERSION_3 ||
         Packet->ObjectCount != 1 ||
         Packet->ObjectHandles[0] == 0 ||
         Packet->ObjectHandles[1] != 0 ||
         Packet->ObjectHandles[2] != 0 ||
         Packet->ObjectAttributesPresent != 1 ||
-        Packet->SharedNtHandle != 0)
+        Packet->SharedNtHandle != 0 ||
+        (Packet->Attributes & ~(OBJ_INHERIT | OBJ_EXCLUSIVE | OBJ_CASE_INSENSITIVE | OBJ_OPENIF)) != 0 ||
+        Packet->Reserved != 0 ||
+        Packet->SecurityDescriptor > (ULONGLONG)(ULONG_PTR)-1 ||
+        Packet->RootDirectory > (ULONGLONG)(ULONG_PTR)-1 ||
+        Packet->ObjectName > (ULONGLONG)(ULONG_PTR)-1)
     {
         return STATUS_INVALID_PARAMETER;
     }
     if (DxgkSharedResourceObjectType == NULL)
         return STATUS_DEVICE_NOT_READY;
+    InitializeObjectAttributes(&ObjectAttributes,
+                               (PUNICODE_STRING)(ULONG_PTR)Packet->ObjectName,
+                               Packet->Attributes,
+                               (HANDLE)(ULONG_PTR)Packet->RootDirectory,
+                               (PSECURITY_DESCRIPTOR)(ULONG_PTR)Packet->SecurityDescriptor);
 
     Status = DxgkVidMmReferenceResource(Packet->ObjectHandles[0],
                                         FALSE,
                                         NULL,
                                         &Resource);
     if (!NT_SUCCESS(Status))
-        return STATUS_INVALID_PARAMETER;
+    {
+        Status = DxgkSyncShareNtObject(Packet->ObjectHandles[0], Packet->DesiredAccess, &ObjectAttributes, &SharedNtHandle);
+        if (NT_SUCCESS(Status))
+            Packet->SharedNtHandle = (ULONGLONG)(ULONG_PTR)SharedNtHandle;
+        return Status;
+    }
     if (Resource->Device == NULL ||
         Resource->Device->OwnerProcess != PsGetCurrentProcess() ||
         !Resource->Shareable ||
@@ -402,7 +459,7 @@ DxgkpShareObjects(
 
     Status = ObCreateObject(KernelMode,
                             DxgkSharedResourceObjectType,
-                            NULL,
+                            &ObjectAttributes,
                             KernelMode,
                             NULL,
                             sizeof(*SharedObject),
@@ -519,7 +576,6 @@ DxgkpKmtIoctlMinimumConfiguredLevel(
         case IOCTL_D3DKMT_OPENADAPTERFROMHDC:
         case IOCTL_D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME:
         case IOCTL_D3DKMT_OPENADAPTERFROMDEVICENAME:
-        case IOCTL_RXGK_OPENLOGICALADAPTERFROMDEVICENAME:
         case IOCTL_D3DKMT_PUBLIC_OPERATION:
         case IOCTL_D3DKMT_CREATEDEVICE:
         case IOCTL_D3DKMT_DESTROYDEVICE:
@@ -619,6 +675,7 @@ DxgkpKmtIoctlMinimumConfiguredLevel(
         case IOCTL_D3DKMT_GETSHAREDRESOURCEADAPTERLUID:
         case IOCTL_D3DKMT_SHAREOBJECTS:
         case IOCTL_RXGK_RESOLVESHAREDRESOURCENTHANDLE:
+        case IOCTL_RXGK_OUTPUTDUPL:
         case IOCTL_DXGKRNL_GET_DOD_INIT_ENTRY:
             return DXGK_CAPS_CORE_LEVEL_WDDM_1_2;
 
@@ -644,6 +701,7 @@ DxgkpKmtIoctlMinimumConfiguredLevel(
         case IOCTL_D3DKMT_EVICT:
         case IOCTL_D3DKMT_QUERYCLOCKCALIBRATION:
         case IOCTL_D3DKMT_CHANGEVIDEOMEMORYRESERVATION:
+        case IOCTL_D3DKMT_SETSTABLEPOWERSTATE:
         case IOCTL_D3DKMT_REGISTERTRIMNOTIFICATION:
         case IOCTL_D3DKMT_UNREGISTERTRIMNOTIFICATION:
         case IOCTL_D3DKMT_CREATEPAGINGQUEUE:
@@ -756,6 +814,22 @@ DxgkpAdapterSupportsRender(
            DXGK_CB_FULL(Adapter, DxgkDdiCreateContext) != NULL;
 }
 
+static VOID
+DxgkpQueryWddmCapsInput(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _Out_ PDXGK_WDDM_CAPS_CORE_INPUT Input)
+{
+    RtlZeroMemory(Input, sizeof(*Input));
+    Input->RenderCapable = Adapter->MiniportContext != NULL &&
+                           !Adapter->MiniportContext->UseDodLayout &&
+                           !Adapter->MiniportContext->IsDisplayOnlyDriver;
+    Input->HwSchSupportState = Adapter->DriverFeatureSupportState[DXGK_DRIVER_FEATURE_HWSCH];
+    Input->HwFlipQueueSupportState = Adapter->DriverFeatureSupportState[DXGK_DRIVER_FEATURE_HWFLIPQUEUE];
+    Input->IndependentVidPnVSyncControl = Adapter->IndependentVidPnVSyncControl;
+    Input->DisplayableSupport = Adapter->DisplayableSupport;
+    /* TODO: hardware scheduling and the hardware flip queue; both stay disabled, as by Windows default policy */
+}
+
 static NTSTATUS
 DxgkpOpenAdapterDriverKey(
     _In_ PDXGKRNL_ADAPTER Adapter,
@@ -773,6 +847,27 @@ DxgkpOpenAdapterDriverKey(
                                    PLUGPLAY_REGKEY_DRIVER,
                                    KEY_READ,
                                    KeyHandle);
+}
+
+static BOOLEAN
+DxgkpDriverKeyDwordSet(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ PCWSTR Name)
+{
+    ULONG Buffer[(sizeof(KEY_VALUE_PARTIAL_INFORMATION) + sizeof(ULONG) + sizeof(ULONG) - 1) / sizeof(ULONG)];
+    PKEY_VALUE_PARTIAL_INFORMATION Info = (PKEY_VALUE_PARTIAL_INFORMATION)Buffer;
+    UNICODE_STRING ValueName;
+    HANDLE Key;
+    ULONG Size;
+    NTSTATUS Status;
+
+    if (!NT_SUCCESS(DxgkpOpenAdapterDriverKey(Adapter, &Key)))
+        return FALSE;
+    RtlInitUnicodeString(&ValueName, Name);
+    Status = ZwQueryValueKey(Key, &ValueName, KeyValuePartialInformation, Info, sizeof(Buffer), &Size);
+    ZwClose(Key);
+    return NT_SUCCESS(Status) && Info->Type == REG_DWORD && Info->DataLength == sizeof(ULONG) &&
+           *(const ULONG *)Info->Data != 0;
 }
 
 static NTSTATUS
@@ -2627,16 +2722,13 @@ DxgkpEqualDeviceInterfaceName(
 static NTSTATUS
 DxgkpOpenAdapterByDeviceObjectName(
     _In_ PCWSTR DeviceName,
-    _In_ BOOLEAN PreferRenderPair,
     _Out_ D3DKMT_HANDLE *OutHandle,
     _Out_ LUID *OutLuid)
 {
     PDXGKRNL_ADAPTER Snapshot[DXGKP_MAX_ADAPTERS];
     PDXGKRNL_ADAPTER Selected = NULL;
-    PDXGKRNL_ADAPTER RenderPair = NULL;
     UNICODE_STRING Name;
     ULONG Count;
-    ULONG RenderPairCount = 0;
     ULONG i;
     NTSTATUS Status = STATUS_INVALID_PARAMETER;
 
@@ -2664,27 +2756,6 @@ DxgkpOpenAdapterByDeviceObjectName(
             continue;
         Selected = Snapshot[i];
         break;
-    }
-
-    /* A display-only fallback may own the desktop HDC while a unique vendor
-     * adapter supplies rendering.  Pair only this private win32k path; public
-     * device-name opens and VidPn ownership queries retain exact identity. */
-    if (PreferRenderPair &&
-        Selected != NULL &&
-        Selected->MiniportContext != NULL &&
-        Selected->MiniportContext->IsBasicDisplayFallback)
-    {
-        RenderPair = DxgkpFirstRenderPair(Snapshot, Count, Selected, &RenderPairCount);
-        if (RenderPair != NULL)
-        {
-            if (RenderPairCount > 1)
-            {
-                DXGKRNL_TRACE("DxgkpOpenAdapterByDeviceObjectName: %lu render adapters "
-                              "eligible for the basic-display DC, pairing with the first\n",
-                              RenderPairCount);
-            }
-            Selected = RenderPair;
-        }
     }
 
     if (Selected != NULL)
@@ -3904,6 +3975,17 @@ DxgkpQueryAdapterInfoCaptured(
             AdapterType.SoftwareDevice = Adapter->MiniportContext != NULL && Adapter->MiniportContext->IsBasicDisplayFallback;
             AdapterType.HybridDiscrete = Adapter->HybridDiscrete ? 1 : 0;
             AdapterType.HybridIntegrated = Adapter->HybridIntegrated ? 1 : 0;
+            AdapterType.ACGSupported =
+                DxgkAdapterTypeCoreAcgSupported(DxgkpDriverKeyDwordSet(Adapter, L"ACGSupported"),
+                                                Adapter->DriverCapsWddmVersion);
+            AdapterType.SupportSetTimingsFromVidPn =
+                Adapter->MiniportContext != NULL && !Adapter->MiniportContext->UseDodLayout &&
+                DxgkAdapterTypeCoreSetTimingsFromVidPn(Adapter->DriverCapsWddmVersion,
+                                                       Adapter->MiniportContext->InitData.s.Version,
+                                                       DXGK_CB_FULL(Adapter, DxgkDdiSetTimingsFromVidPn) != NULL,
+                                                       !Adapter->MiniportContext->IsDisplayOnlyDriver,
+                                                       DXGK_CB_FULL(Adapter, DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3) != NULL);
+            AdapterType.RuntimePowerManagement = Adapter->PoFxHandle != NULL;
             _SEH2_TRY
             {
                 *pAdapterType = AdapterType;
@@ -4042,13 +4124,15 @@ DxgkpQueryAdapterInfoCaptured(
         case KMTQAITYPE_WDDM_2_7_CAPS:
         {
             D3DKMT_WDDM_2_7_CAPS Caps;
+            DXGK_WDDM_CAPS_CORE_INPUT CapsInput;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Caps))
             {
                 DXGKP_QUERY_RETURN(STATUS_BUFFER_TOO_SMALL);
             }
-            RtlZeroMemory(&Caps, sizeof(Caps));
+            DxgkpQueryWddmCapsInput(Adapter, &CapsInput);
+            Caps.Value = DxgkWddmCapsCore27(&CapsInput);
             _SEH2_TRY
             {
                 *(D3DKMT_WDDM_2_7_CAPS *)pQueryAdapterInfo->pPrivateDriverData = Caps;
@@ -4064,14 +4148,15 @@ DxgkpQueryAdapterInfoCaptured(
         case KMTQAITYPE_WDDM_2_9_CAPS:
         {
             D3DKMT_WDDM_2_9_CAPS Caps;
+            DXGK_WDDM_CAPS_CORE_INPUT CapsInput;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Caps))
             {
                 DXGKP_QUERY_RETURN(STATUS_BUFFER_TOO_SMALL);
             }
-            RtlZeroMemory(&Caps, sizeof(Caps));
-            Caps.HwSchSupportState = DXGK_FEATURE_SUPPORT_ALWAYS_OFF;
+            DxgkpQueryWddmCapsInput(Adapter, &CapsInput);
+            Caps.Value = DxgkWddmCapsCore29(&CapsInput);
             _SEH2_TRY
             {
                 *(D3DKMT_WDDM_2_9_CAPS *)pQueryAdapterInfo->pPrivateDriverData = Caps;
@@ -4087,14 +4172,15 @@ DxgkpQueryAdapterInfoCaptured(
         case KMTQAITYPE_WDDM_3_0_CAPS:
         {
             D3DKMT_WDDM_3_0_CAPS Caps;
+            DXGK_WDDM_CAPS_CORE_INPUT CapsInput;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Caps))
             {
                 DXGKP_QUERY_RETURN(STATUS_BUFFER_TOO_SMALL);
             }
-            RtlZeroMemory(&Caps, sizeof(Caps));
-            Caps.HwFlipQueueSupportState = DXGK_FEATURE_SUPPORT_ALWAYS_OFF;
+            DxgkpQueryWddmCapsInput(Adapter, &CapsInput);
+            Caps.Value = DxgkWddmCapsCore30(&CapsInput);
             _SEH2_TRY
             {
                 *(D3DKMT_WDDM_3_0_CAPS *)pQueryAdapterInfo->pPrivateDriverData = Caps;
@@ -9158,8 +9244,14 @@ DxgkCreateSynchronizationObject2(
         /* A shared monitored fence asked for without the NT security
          * parameters is a bad parameter on Windows 11, not an unsupported
          * operation -- answer that before the generic unsupported-bit sweep. */
-        if (pData->Info.Flags.Shared)
+        if (pData->Info.Flags.Shared &&
+            (pData->Info.Type != D3DDDI_MONITORED_FENCE || !pData->Info.Flags.NtSecuritySharing))
             return STATUS_INVALID_PARAMETER;
+        if (pData->Info.Flags.Shared)
+        {
+            SupportedFlags.Shared = 1;
+            SupportedFlags.NtSecuritySharing = 1;
+        }
         if ((pData->Info.Flags.Value & ~SupportedFlags.Value) != 0)
             return STATUS_NOT_SUPPORTED;
     }
@@ -10803,6 +10895,48 @@ DxgkpAdapterSchedulesInHardware(
     return FALSE;
 }
 
+VOID
+DxgkStablePowerNotify(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ BOOLEAN Enabled)
+{
+    DXGKARG_SETSTABLEPOWERSTATE Args;
+
+    if (DXGK_CB_FULL(Adapter, DxgkDdiSetStablePowerState) == NULL || !DxgkAcquireKmdCall(Adapter))
+        return;
+    Args.Enabled = Enabled;
+    DXGK_CB_FULL(Adapter, DxgkDdiSetStablePowerState)(Adapter->MiniportDeviceContext, &Args);
+    DxgkReleaseKmdCall(Adapter);
+}
+
+static NTSTATUS
+NTAPI
+DxgkSetStablePowerState(
+    _In_ CONST D3DKMT_SETSTABLEPOWERSTATE *pData)
+{
+    PDXGKRNL_ADAPTER Adapter;
+    PDXGKRNL_PROCESS Process = NULL;
+    NTSTATUS Status = STATUS_INVALID_PARAMETER;
+
+    PAGED_CODE();
+
+    Adapter = DxgkpValidateAdapterHandle(pData->hAdapter);
+    if (Adapter == NULL)
+        return STATUS_INVALID_PARAMETER;
+    if (NT_SUCCESS(DxgkReferenceProcessRecordByAdapter(Adapter, PsGetCurrentProcess(), &Process)))
+    {
+        /* TODO: a display-only adapter resolves to its render pair, refused until the process opened that one */
+        (VOID)KeWaitForSingleObject(&Adapter->StablePowerMutex, Executive, KernelMode, FALSE, NULL);
+        if (DxgkCapsCoreStablePowerSet(&Process->StablePowerReferences, &Adapter->StablePowerReferences, pData->Enabled != FALSE))
+            DxgkStablePowerNotify(Adapter, pData->Enabled != FALSE);
+        KeReleaseMutex(&Adapter->StablePowerMutex, FALSE);
+        DxgkDereferenceProcessRecord(Process);
+        Status = STATUS_SUCCESS;
+    }
+    DxgkDereferenceAdapter(Adapter);
+    return Status;
+}
+
 static NTSTATUS
 NTAPI
 DxgkCreateHwQueue(
@@ -11429,7 +11563,7 @@ DxgkpDispatchPublicOperation(_Inout_ PRXGK_PUBLIC_OPERATION_PACKET Packet)
 #endif
     NTSTATUS Status;
 
-    if (Packet == NULL || Packet->Size != sizeof(*Packet) || Packet->Version != RXGK_WDDM_PACKET_VERSION_1 || Packet->Reserved != 0 || Packet->Operation < RxgkPublicAdjustFullscreenGamma || Packet->Operation > RxgkPublicRegisterVailProcess)
+    if (Packet == NULL || Packet->Size != sizeof(*Packet) || Packet->Version != RXGK_WDDM_PACKET_VERSION_1 || Packet->Reserved != 0 || Packet->Operation < RxgkPublicAdjustFullscreenGamma || Packet->Operation > RxgkPublicCancelPresents)
         return STATUS_INVALID_PARAMETER;
 
     switch ((RXGK_PUBLIC_OPERATION)Packet->Operation)
@@ -11440,6 +11574,79 @@ DxgkpDispatchPublicOperation(_Inout_ PRXGK_PUBLIC_OPERATION_PACKET Packet)
 
         case RxgkPublicRegisterVailProcess:
             return STATUS_GRAPHICS_VAIL_STATE_CHANGED;
+
+        case RxgkPublicOpenSyncObjectFromNtHandle:
+        {
+            D3DKMT_HANDLE hSyncObject;
+
+            Status = DxgkSyncOpenFromNtHandle((HANDLE)(ULONG_PTR)Packet->Pointer0, &hSyncObject);
+            if (NT_SUCCESS(Status))
+                Packet->Handle1 = hSyncObject;
+            return Status;
+        }
+
+        case RxgkPublicSharedPrimaryUnLockNotification:
+        {
+            PDXGKRNL_ADAPTER Adapters[16];
+            ULONG Count = DxgkReferenceStartedAdapters(Adapters, RTL_NUMBER_OF(Adapters));
+            ULONG Index;
+
+            /* FIXME: GDI CPU locks of the shared primary are not tracked; Windows 11 refuses the unlock of every source of a known adapter */
+            Status = STATUS_SUCCESS;
+            for (Index = 0; Index < Count; ++Index)
+            {
+                if (Adapters[Index]->AdapterLuid.LowPart == (ULONG)Packet->Value0 &&
+                    Adapters[Index]->AdapterLuid.HighPart == (LONG)(Packet->Value0 >> 32) &&
+                    Packet->Handle1 < Adapters[Index]->NumberOfVideoPresentSources)
+                    Status = STATUS_INVALID_PARAMETER;
+                DxgkDereferenceAdapter(Adapters[Index]);
+            }
+            return Status;
+        }
+
+        case RxgkPublicCancelPresents:
+        {
+            PDXGKRNL_DEVICE Device;
+
+            if (Packet->Value0 == 0 || !NT_SUCCESS(DxgkpValidateDeviceHandleForIoctl(Packet->Handle0, NULL, &Device)))
+                return STATUS_INVALID_PARAMETER;
+            DxgkDereferenceDevice(Device);
+            /* TODO: composition surfaces; until they exist no present is queued on one, so nothing is cancelled */
+            return STATUS_SUCCESS;
+        }
+
+        case RxgkPublicOpenNtHandleFromName:
+        case RxgkPublicOpenSyncObjectNtHandleFromName:
+        {
+            POBJECT_TYPE Type = Packet->Operation == RxgkPublicOpenNtHandleFromName ?
+                                DxgkSharedResourceObjectType : DxgkSyncSharedObjectType();
+            HANDLE NtHandle = NULL;
+
+            if (Type == NULL)
+                return STATUS_DEVICE_NOT_READY;
+            Status = ObOpenObjectByName((POBJECT_ATTRIBUTES)(ULONG_PTR)Packet->Pointer0, Type,
+                                        UserMode, NULL, Packet->Flags, NULL, &NtHandle);
+            if (NT_SUCCESS(Status))
+                Packet->Pointer0 = (ULONGLONG)(ULONG_PTR)NtHandle;
+            return Status;
+        }
+
+        case RxgkPublicOpenSyncObjectFromNtHandle2:
+        {
+            D3DGPU_VIRTUAL_ADDRESS GpuVa;
+            D3DKMT_HANDLE hSyncObject;
+            PVOID CpuVa;
+
+            Status = DxgkSyncOpenFromNtHandle2((HANDLE)(ULONG_PTR)Packet->Pointer0, Packet->Handle0, Packet->Flags,
+                                               &hSyncObject, &CpuVa, &GpuVa);
+            if (NT_SUCCESS(Status))
+            {
+                Packet->Handle1 = hSyncObject;
+                Packet->Pointer0 = (ULONGLONG)(ULONG_PTR)CpuVa;
+                Packet->Value0 = GpuVa;
+            }
+            return Status;
+        }
 
 #if (REACTOS_WDDM_TARGET_LEVEL >= 2200)
         case RxgkPublicGetPostCompositionCaps:
@@ -12039,7 +12246,6 @@ DxgkpDispatchBufferedIoctlWorker(
         }
 
         case IOCTL_D3DKMT_OPENADAPTERFROMDEVICENAME:
-        case IOCTL_RXGK_OPENLOGICALADAPTERFROMDEVICENAME:
         {
             D3DKMT_OPENADAPTERFROMDEVICENAME *pData;
             WCHAR NameBuffer[260];
@@ -12056,7 +12262,6 @@ DxgkpDispatchBufferedIoctlWorker(
 
             Status = DxgkpOpenAdapterByDeviceObjectName(
                          NameBuffer,
-                         IoControlCode == IOCTL_RXGK_OPENLOGICALADAPTERFROMDEVICENAME,
                          &pData->hAdapter,
                          &pData->AdapterLuid);
             if (!NT_SUCCESS(Status))
@@ -12957,7 +13162,7 @@ DxgkpDispatchBufferedIoctlWorker(
             pMap->MinimumAddress &= ~(DXGKP_GPUVA_PAGE_SIZE - 1);
             pMap->MaximumAddress &= ~(DXGKP_GPUVA_PAGE_SIZE - 1);
             StateProtection = pMap->Protection.Zero || pMap->Protection.NoAccess;
-            if (pMap->hPagingQueue == 0 || pMap->SizeInPages == 0 || pMap->SizeInPages > MAXULONGLONG / DXGKP_GPUVA_PAGE_SIZE || pMap->OffsetInPages > MAXULONGLONG / DXGKP_GPUVA_PAGE_SIZE || pMap->Reserved0 != 0 || pMap->Reserved1 != 0 || pMap->Protection.SystemUseOnly || pMap->Protection.Reserved != 0 || (pMap->Protection.Zero && pMap->Protection.NoAccess) || (StateProtection && (pMap->Protection.Write || pMap->Protection.Execute || pMap->hAllocation != 0)) || (!StateProtection && pMap->hAllocation == 0) || (pMap->BaseAddress & (DXGKP_GPUVA_PAGE_SIZE - 1)) != 0 || (pMap->BaseAddress == 0 && ((pMap->MinimumAddress & (DXGKP_GPUVA_PAGE_SIZE - 1)) != 0 || (pMap->MaximumAddress & (DXGKP_GPUVA_PAGE_SIZE - 1)) != 0 || (pMap->MaximumAddress != 0 && pMap->MinimumAddress >= pMap->MaximumAddress))))
+            if (pMap->hPagingQueue == 0 || pMap->SizeInPages == 0 || pMap->SizeInPages > MAXULONGLONG / DXGKP_GPUVA_PAGE_SIZE || pMap->OffsetInPages > MAXULONGLONG / DXGKP_GPUVA_PAGE_SIZE || pMap->Reserved0 != 0 || pMap->Reserved1 != 0 || pMap->Protection.SystemUseOnly || pMap->Protection.Reserved != 0 || (pMap->Protection.NoAccess && (pMap->Protection.Zero || pMap->Protection.Write || pMap->Protection.Execute)) || (StateProtection && pMap->hAllocation != 0) || (!StateProtection && pMap->hAllocation == 0) || (pMap->BaseAddress & (DXGKP_GPUVA_PAGE_SIZE - 1)) != 0 || (pMap->BaseAddress == 0 && ((pMap->MinimumAddress & (DXGKP_GPUVA_PAGE_SIZE - 1)) != 0 || (pMap->MaximumAddress & (DXGKP_GPUVA_PAGE_SIZE - 1)) != 0 || (pMap->MaximumAddress != 0 && pMap->MinimumAddress >= pMap->MaximumAddress))))
                 return STATUS_INVALID_PARAMETER;
 
             Status = DxgkpReferencePagingQueueDevice(pMap->hPagingQueue, PsGetCurrentProcess(), &Adapter, &Device);
@@ -13703,8 +13908,8 @@ DxgkpDispatchBufferedIoctlWorker(
             {
                 return STATUS_ACCESS_DENIED;
             }
-            if (InputLength < RXGK_SHAREOBJECTS_PACKET_V1_SIZE ||
-                OutputLength < RXGK_SHAREOBJECTS_PACKET_V1_SIZE ||
+            if (InputLength < RXGK_SHAREOBJECTS_PACKET_V3_SIZE ||
+                OutputLength < RXGK_SHAREOBJECTS_PACKET_V3_SIZE ||
                 SystemBuffer == NULL)
             {
                 return STATUS_BUFFER_TOO_SMALL;
@@ -13713,7 +13918,25 @@ DxgkpDispatchBufferedIoctlWorker(
             Packet = (PRXGK_SHAREOBJECTS_PACKET)SystemBuffer;
             Status = DxgkpShareObjects(Packet);
             if (NT_SUCCESS(Status))
-                KmtRequest->Information = RXGK_SHAREOBJECTS_PACKET_V1_SIZE;
+                KmtRequest->Information = RXGK_SHAREOBJECTS_PACKET_V3_SIZE;
+            return Status;
+        }
+
+        case IOCTL_RXGK_OUTPUTDUPL:
+        {
+            if (!KmtRequest->Internal ||
+                KmtRequest->RequestorMode != KernelMode)
+            {
+                return STATUS_ACCESS_DENIED;
+            }
+            if (InputLength < RXGK_OUTPUTDUPL_PACKET_V1_SIZE ||
+                OutputLength < RXGK_OUTPUTDUPL_PACKET_V1_SIZE ||
+                SystemBuffer == NULL)
+            {
+                return STATUS_BUFFER_TOO_SMALL;
+            }
+            Status = DxgkpOutputDupl((PRXGK_OUTPUTDUPL_PACKET)SystemBuffer);
+            KmtRequest->Information = RXGK_OUTPUTDUPL_PACKET_V1_SIZE;
             return Status;
         }
 
@@ -14097,6 +14320,13 @@ DxgkpDispatchBufferedIoctlWorker(
             if (InputLength < sizeof(D3DKMT_CHANGEVIDEOMEMORYRESERVATION) || SystemBuffer == NULL)
                 return STATUS_BUFFER_TOO_SMALL;
             return DxgkChangeVideoMemoryReservation((CONST D3DKMT_CHANGEVIDEOMEMORYRESERVATION *)SystemBuffer);
+        }
+
+        case IOCTL_D3DKMT_SETSTABLEPOWERSTATE:
+        {
+            if (InputLength < sizeof(D3DKMT_SETSTABLEPOWERSTATE) || SystemBuffer == NULL)
+                return STATUS_BUFFER_TOO_SMALL;
+            return DxgkSetStablePowerState((CONST D3DKMT_SETSTABLEPOWERSTATE *)SystemBuffer);
         }
 
         case IOCTL_D3DKMT_CREATEHWQUEUE:
@@ -15049,7 +15279,6 @@ DxgkpIsBufferedKmtIoctl(
         case IOCTL_D3DKMT_OPENADAPTERFROMHDC:
         case IOCTL_D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME:
         case IOCTL_D3DKMT_OPENADAPTERFROMDEVICENAME:
-        case IOCTL_RXGK_OPENLOGICALADAPTERFROMDEVICENAME:
         case IOCTL_D3DKMT_CREATEDEVICE:
         case IOCTL_D3DKMT_DESTROYDEVICE:
         case IOCTL_D3DKMT_CREATEALLOCATION:
@@ -15110,6 +15339,7 @@ DxgkpIsBufferedKmtIoctl(
 #endif
         case IOCTL_D3DKMT_PUBLIC_OPERATION:
         case IOCTL_D3DKMT_SHAREOBJECTS:
+        case IOCTL_RXGK_OUTPUTDUPL:
         case IOCTL_RXGK_RESOLVESHAREDRESOURCENTHANDLE:
         case IOCTL_RXGK_VALIDATESHAREDRESOURCEOWNER:
         case IOCTL_RXGK_SETCOMPOSITORSOURCEOWNER:
@@ -15162,6 +15392,7 @@ DxgkpIsBufferedKmtIoctl(
         case IOCTL_D3DKMT_RELEASEKEYEDMUTEX:
         case IOCTL_D3DKMT_QUERYCLOCKCALIBRATION:
         case IOCTL_D3DKMT_CHANGEVIDEOMEMORYRESERVATION:
+        case IOCTL_D3DKMT_SETSTABLEPOWERSTATE:
         case IOCTL_D3DKMT_CREATEHWQUEUE:
         case IOCTL_D3DKMT_DESTROYHWQUEUE:
         case IOCTL_D3DKMT_SUBMITCOMMANDTOHWQUEUE:

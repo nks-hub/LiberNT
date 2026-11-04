@@ -144,6 +144,7 @@ extern void func_RtlGetProcessHeaps(void);
 extern void func_RtlGetProductInfo(void);
 extern void func_RtlGetUnloadEventTrace(void);
 extern void func_RtlHandle(void);
+extern void func_RtlHeapDecommit(void);
 extern void func_RtlHeapFreeCoalesce(void);
 extern void func_RtlImageDirectoryEntryToData(void);
 extern void func_RtlImageRvaToVa(void);
@@ -177,6 +178,7 @@ extern void func_RtlVirtualUnwind(void);
 extern void func_RtlVirtualUnwindChainedHandler(void);
 extern void func_RtlxUnicodeStringToAnsiSize(void);
 extern void func_RtlxUnicodeStringToOemSize(void);
+extern void func_SatisfiedWait(void);
 extern void func_StackOverflow(void);
 extern void func_ScanfSecure(void);
 extern void func_StackProbe(void);
@@ -334,6 +336,7 @@ const struct test winetest_testlist[] =
     { "RtlGetProductInfo",              func_RtlGetProductInfo },
     { "RtlGetUnloadEventTrace",         func_RtlGetUnloadEventTrace },
     { "RtlHandle",                      func_RtlHandle },
+    { "RtlHeapDecommit",                func_RtlHeapDecommit },
     { "RtlHeapFreeCoalesce",            func_RtlHeapFreeCoalesce },
     { "RtlImageDirectoryEntryToData",   func_RtlImageDirectoryEntryToData },
     { "RtlImageRvaToVa",                func_RtlImageRvaToVa },
@@ -364,6 +367,7 @@ const struct test winetest_testlist[] =
     { "RtlValidateUnicodeString",       func_RtlValidateUnicodeString },
     { "RtlWaitOnAddress",               func_RtlWaitOnAddress },
     { "RtlWaitOnAddressPriority",       func_RtlWaitOnAddressPriority },
+    { "SatisfiedWait",                  func_SatisfiedWait },
     { "StackOverflow",                  func_StackOverflow },
     { "ScanfSecure",                    func_ScanfSecure },
     { "StackProbe",                     func_StackProbe },

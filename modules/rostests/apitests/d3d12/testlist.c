@@ -9,6 +9,7 @@
 #include <apitest.h>
 
 extern void func_allocator(void);
+extern void func_barrier(void);
 extern void func_budget(void);
 extern void func_bgwork(void);
 extern void func_blend(void);
@@ -29,6 +30,9 @@ extern void func_renderpass(void);
 extern void func_rootsig(void);
 extern void func_rootstate(void);
 extern void func_sampler(void);
+extern void func_sharedfence(void);
+extern void func_stablepower(void);
+extern void func_swapchain(void);
 extern void func_swizzle(void);
 extern void func_topology(void);
 extern void func_uav(void);
@@ -40,6 +44,7 @@ extern void func_vrs(void);
 const struct test winetest_testlist[] =
 {
     { "allocator", func_allocator },
+    { "barrier", func_barrier },
     { "budget", func_budget },
     { "bgwork", func_bgwork },
     { "blend", func_blend },
@@ -60,6 +65,9 @@ const struct test winetest_testlist[] =
     { "rootsig", func_rootsig },
     { "rootstate", func_rootstate },
     { "sampler", func_sampler },
+    { "sharedfence", func_sharedfence },
+    { "stablepower", func_stablepower },
+    { "swapchain", func_swapchain },
     { "swizzle", func_swizzle },
     { "topology", func_topology },
     { "uav", func_uav },

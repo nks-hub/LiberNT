@@ -9,10 +9,20 @@ on:
 permissions:
   contents: write
   issues: write
+  actions: write
+
+concurrency:
+  group: nks-upstream-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
+    if: github.repository == 'nks-hub/LiberNT'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -40,3 +50,12 @@ jobs:
               exit 1 ;;
             *) printf '%s\n' "$out"; exit 1 ;;
           esac
+
+      - name: Disable inherited workflows on this fork
+        if: always()
+        run: |
+          gh api --paginate "repos/$REPO/actions/workflows?per_page=100" \
+            --jq '.workflows[] | select(.state == "active" and .path != ".github/workflows/nks-sync-upstream.yml") | .id' |
+          while IFS= read -r id; do
+            gh api --method PUT "repos/$REPO/actions/workflows/$id/disable"
+          done

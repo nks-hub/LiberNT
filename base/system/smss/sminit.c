@@ -2590,7 +2590,8 @@ SmpLoadDataFromRegistry(OUT PUNICODE_STRING InitialCommand)
         RtlFreeHeap(RtlGetProcessHeap(), 0, RegEntry);
     }
 
-    /* Now do any pending file rename operations... */
+    Status = SmpInitializeUpdateRegistry();
+    if (!NT_SUCCESS(Status)) return Status;
     if (!MiniNTBoot) SmpProcessFileRenames();
 
     /* And initialize known DLLs... */
@@ -2627,9 +2628,6 @@ SmpLoadDataFromRegistry(OUT PUNICODE_STRING InitialCommand)
         /* Now create all the paging files for the descriptors that we have */
         SmpCreatePagingFiles();
     }
-
-    /* Tell Cm it's now safe to fully enable write access to the registry */
-    NtInitializeRegistry(CM_BOOT_FLAG_SMSS);
 
     /* Create all the system-based environment variables for later inheriting */
     Status = SmpCreateDynamicEnvironmentVariables();

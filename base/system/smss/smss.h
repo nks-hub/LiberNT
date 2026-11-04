@@ -217,6 +217,7 @@ SmpSetProcessMuSessionId(
 );
 
 /* smss.c */
+NTSTATUS NTAPI SmpInitializeUpdateRegistry(VOID);
 
 NTSTATUS
 NTAPI

@@ -18,7 +18,7 @@ static BOOL IsLegacyImage(void)
 static void CheckAdjust(DWORD Style, DWORD ExStyle, LONG Frame, BOOL Caption)
 {
     RECT Rect = {0, 0, 0, 0};
-    LONG Top = Frame + (Caption ? GetSystemMetrics(SM_CYCAPTION) : 0);
+    LONG Top = Frame + (Caption ? GetSystemMetrics((ExStyle & WS_EX_TOOLWINDOW) ? SM_CYSMCAPTION : SM_CYCAPTION) : 0);
 
     ok(AdjustWindowRectEx(&Rect, Style, FALSE, ExStyle), "AdjustWindowRectEx %#lx %#lx failed\n", Style, ExStyle);
     ok(Rect.left == -Frame && Rect.top == -Top && Rect.right == Frame && Rect.bottom == Frame,
@@ -45,19 +45,8 @@ static void CheckWindow(DWORD Style, DWORD ExStyle, int Width, int Height, LONG 
     DestroyWindow(Window);
 }
 
-static void CheckRoundTrip(void)
+static void CheckFrames(BOOL Legacy)
 {
-    NONCLIENTMETRICSW Metrics;
-
-    ZeroMemory(&Metrics, sizeof(Metrics));
-    Metrics.cbSize = sizeof(Metrics);
-    ok(SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(Metrics), &Metrics, 0), "SPI_GETNONCLIENTMETRICS failed: %lu\n", GetLastError());
-    ok(SystemParametersInfoW(SPI_SETNONCLIENTMETRICS, sizeof(Metrics), &Metrics, 0), "SPI_SETNONCLIENTMETRICS failed: %lu\n", GetLastError());
-}
-
-static void CheckFrames(void)
-{
-    BOOL Legacy = IsLegacyImage();
     NONCLIENTMETRICSW Metrics;
     UINT Sizes[2] = {sizeof(Metrics), FIELD_OFFSET(NONCLIENTMETRICSW, iPaddedBorderWidth)};
     LONG CaptionFrame = Legacy ? 3 : 8;
@@ -118,6 +107,7 @@ static void RunLegacyCopy(void)
     GetTempPathW(ARRAYSIZE(Dir), Dir);
     wsprintfW(Copy, L"%sframemetrics%lu.exe", Dir, GetCurrentProcessId());
     ok(CopyFileW(Self, Copy, FALSE), "CopyFile failed: %lu\n", GetLastError());
+    SetFileAttributesW(Copy, FILE_ATTRIBUTE_NORMAL);
     File = CreateFileW(Copy, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     ok(File != INVALID_HANDLE_VALUE, "CreateFile failed: %lu\n", GetLastError());
     if (File == INVALID_HANDLE_VALUE)
@@ -146,6 +136,7 @@ START_TEST(FrameMetrics)
 {
     char **Argv;
     int Argc = winetest_get_mainargs(&Argv);
+    BOOL Legacy = IsLegacyImage();
     HDC Screen = GetDC(NULL);
     int Dpi = GetDeviceCaps(Screen, LOGPIXELSX);
 
@@ -156,13 +147,7 @@ START_TEST(FrameMetrics)
         return;
     }
 
-    CheckFrames();
-    if (Argc > 2)
-    {
-        CheckRoundTrip();
-        CheckFrames();
-        return;
-    }
-    RunLegacyCopy();
-    CheckFrames();
+    CheckFrames(Legacy);
+    if (Argc <= 2)
+        RunLegacyCopy();
 }

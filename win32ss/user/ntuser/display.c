@@ -408,7 +408,7 @@ NtUserEnumDisplayDevices(
 {
     UNICODE_STRING ustrDevice;
     WCHAR awcDevice[CCHDEVICENAME];
-    DISPLAY_DEVICEW dispdev;
+    DISPLAY_DEVICEW dispdev = { 0 };
     NTSTATUS Status;
 
     TRACE("Enter NtUserEnumDisplayDevices(%wZ, %lu)\n",

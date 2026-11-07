@@ -15,3 +15,4 @@
 @ stdcall BCryptOpenAlgorithmProvider(ptr wstr wstr long) ksecdd.BCryptOpenAlgorithmProvider
 @ stdcall BCryptSetProperty(ptr wstr ptr long long) ksecdd.BCryptSetProperty
 @ stdcall BCryptVerifySignature(ptr ptr ptr long ptr long long) ksecdd.BCryptVerifySignature
+@ stdcall SystemPrng(ptr long) ksecdd.SystemPrng

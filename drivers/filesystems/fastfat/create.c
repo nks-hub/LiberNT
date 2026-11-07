@@ -2326,13 +2326,13 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION IrpSp;
 
 #ifndef __REACTOS__
-    IO_STATUS_BLOCK Iosb = {0,0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0,0};
 #else
-    IO_STATUS_BLOCK Iosb = {{0}};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {{0}};
 #endif
 
     BOOLEAN CleanedVolume = FALSE;
@@ -2341,10 +2341,10 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN UnwindCounts = FALSE;
-    BOOLEAN UnwindVolumeLock = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindCounts = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindVolumeLock = FALSE;
 
     PAGED_CODE();
 
@@ -2624,16 +2624,16 @@ Arguments:
 
 {
     PDCB RootDcb;
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     //
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN UnwindCounts = FALSE;
-    BOOLEAN RootDcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindCounts = FALSE;
+    BOOLEAN _SEH2_VOLATILE RootDcbAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -2810,7 +2810,7 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
     PBCB DirentBcb = NULL;
     PDIRENT Dirent;
 
@@ -2818,9 +2818,9 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN DcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE DcbAcquired = FALSE;
 
 #if (NTDDI_VERSION <= NTDDI_WIN7)
     UNREFERENCED_PARAMETER( OpenRequiringOplock );
@@ -3253,7 +3253,7 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     PBCB DirentBcb = NULL;
     PDIRENT Dirent;
@@ -3264,10 +3264,10 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
     BOOLEAN DecrementFcbOpenCount = FALSE;
-    BOOLEAN FcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE FcbAcquired = FALSE;
 
 
     PAGED_CODE();
@@ -3962,15 +3962,15 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     //
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN DcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE DcbAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -4206,14 +4206,14 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     //
     //  The following variables are for abnormal termination
     //
 
-    PDCB UnwindDcb = NULL;
-    PCCB UnwindCcb = NULL;
+    PDCB _SEH2_VOLATILE UnwindDcb = NULL;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
 
     BOOLEAN CountsIncremented = FALSE;
 
@@ -4502,7 +4502,7 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     ACCESS_MASK AddedAccess = 0;
 
@@ -4512,8 +4512,8 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    PFCB UnwindFcb = NULL;
-    PCCB UnwindCcb = NULL;
+    PFCB _SEH2_VOLATILE UnwindFcb = NULL;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
     BOOLEAN CountsIncremented = FALSE;
 
 
@@ -5695,7 +5695,7 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     PFCB Fcb = NULL;
 
@@ -5742,11 +5742,11 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    PDIRENT UnwindDirent = NULL;
-    PFCB UnwindFcb = NULL;
-    BOOLEAN UnwindAllocation = FALSE;
+    PDIRENT _SEH2_VOLATILE UnwindDirent = NULL;
+    PFCB _SEH2_VOLATILE UnwindFcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindAllocation = FALSE;
     BOOLEAN CountsIncremented = FALSE;
-    PCCB UnwindCcb = NULL;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
 
     ULONG LocalAbnormalTermination = FALSE;
 
@@ -6408,7 +6408,7 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     PDIRENT Dirent;
     PBCB DirentBcb;
@@ -6427,8 +6427,8 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    PCCB UnwindCcb = NULL;
-    USHORT UnwindEa = 0;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    USHORT _SEH2_VOLATILE UnwindEa = 0;
 
     PAGED_CODE();
 

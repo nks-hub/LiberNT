@@ -3611,6 +3611,40 @@ ReenumerateDeviceInstance(
 }
 
 
+/*
+ * Takes a software device (SWD\...) out of the device tree when its last
+ * SwDevice handle closes. Its registry keys stay, so the next SwDeviceCreate
+ * of the same instance finds its settings again.
+ */
+static CONFIGRET
+RemoveSoftwareDeviceInstance(
+    _In_ LPWSTR pszDeviceInstance)
+{
+    PLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData;
+    PLUGPLAY_CONTROL_ENUMERATE_DEVICE_DATA EnumerateData;
+    NTSTATUS Status;
+
+    if (!IsValidDeviceInstanceID(pszDeviceInstance) ||
+        _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0)
+    {
+        return CR_INVALID_DEVINST;
+    }
+
+    RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceInstance);
+    Status = NtPlugPlayControl(PlugPlayControlDeregisterDevice, &ControlData, sizeof(ControlData));
+    if (Status == STATUS_NO_SUCH_DEVICE)
+        return CR_SUCCESS;
+    if (!NT_SUCCESS(Status))
+        return NtStatusToCrError(Status);
+
+    /* The root bus no longer reports the device; enumerating it deletes the device node */
+    RtlInitUnicodeString(&EnumerateData.DeviceInstance, szRootDeviceInstanceID);
+    EnumerateData.Flags = 0;
+    Status = NtPlugPlayControl(PlugPlayControlEnumerateDevice, &EnumerateData, sizeof(EnumerateData));
+    return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
+}
+
+
 /* Function 29 */
 DWORD
 WINAPI
@@ -3643,6 +3677,11 @@ PNP_DeviceInstanceAction(
         case PNP_DEVINST_REENUMERATE:
             ret = ReenumerateDeviceInstance(pszDeviceInstance1,
                                             ulMinorAction);
+            break;
+
+        case PNP_DEVINST_REMOVE_SOFTWARE:
+            ret = (ulMinorAction != 0) ? CR_INVALID_FLAG :
+                  RemoveSoftwareDeviceInstance(pszDeviceInstance1);
             break;
 
         default:

@@ -71,8 +71,10 @@ SmpInitializeUpdateRegistry(VOID)
     ULONG Version = 1;
     RTL_QUERY_REGISTRY_TABLE Query[2] = {{0}};
 
+    /* As before UpdateExecute existed, a failure here does not stop the boot */
     Status = NtInitializeRegistry(CM_BOOT_FLAG_SMSS);
-    if (!NT_SUCCESS(Status)) return Status;
+    if (!NT_SUCCESS(Status))
+        DPRINT1("SMSS: NtInitializeRegistry failed: %lx\n", Status);
 
     /* HARDWARE is a volatile hive, including keys created by an earlier boot component. */
     RtlInitUnicodeString(&Path, L"\\Registry\\Machine\\HARDWARE\\LiberNTUpdate");

@@ -278,11 +278,23 @@ FindModelSection(HINF hInf, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
     return FALSE;
 }
 
-/* Full path of a package file: the package folder, or the spooler driver folder for core driver files */
+/*
+ * Full path of a package file: where SourceDisksFiles and SourceDisksNames
+ * put it below the package folder, or the spooler driver folder for core
+ * driver files that the package does not carry.
+ */
 static BOOL
-LocatePackageFile(PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
+LocatePackageFile(HINF hInf, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
 {
-    if (SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\%s", PackageDir, Name)) &&
+    WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"";
+    UINT SourceId;
+
+    if (SetupGetSourceFileLocationW(hInf, NULL, Name, &SourceId, SubDir, ARRAYSIZE(SubDir), NULL))
+        SetupGetSourceInfoW(hInf, SourceId, SRCINFO_PATH, SourcePath, ARRAYSIZE(SourcePath), NULL);
+
+    if (SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s%s%s%s%s\\%s", PackageDir,
+                                   *SourcePath ? L"\\" : L"", SourcePath,
+                                   *SubDir ? L"\\" : L"", SubDir, Name)) &&
         GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
     {
         return TRUE;
@@ -414,10 +426,10 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         }
     }
 
-    if (!LocatePackageFile(PackageDir, DriverDir, DriverFile, DriverPath, ARRAYSIZE(DriverPath)) ||
-        !LocatePackageFile(PackageDir, DriverDir, ConfigFile, ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !LocatePackageFile(PackageDir, DriverDir, DataFile, DataPath, ARRAYSIZE(DataPath)) ||
-        (*HelpFile && !LocatePackageFile(PackageDir, DriverDir, HelpFile, HelpPath, ARRAYSIZE(HelpPath))))
+    if (!LocatePackageFile(hInf, PackageDir, DriverDir, DriverFile, DriverPath, ARRAYSIZE(DriverPath)) ||
+        !LocatePackageFile(hInf, PackageDir, DriverDir, ConfigFile, ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !LocatePackageFile(hInf, PackageDir, DriverDir, DataFile, DataPath, ARRAYSIZE(DataPath)) ||
+        (*HelpFile && !LocatePackageFile(hInf, PackageDir, DriverDir, HelpFile, HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         goto Cleanup;
@@ -426,7 +438,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     /* Every other copied file is a dependent file */
     for (i = 0; i < Files.Count; i++)
     {
-        if (!LocatePackageFile(PackageDir, DriverDir, Files.Names[i], FilePath, ARRAYSIZE(FilePath)))
+        if (!LocatePackageFile(hInf, PackageDir, DriverDir, Files.Names[i], FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
             goto Cleanup;
@@ -450,7 +462,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             continue;
         }
 
-        LocatePackageFile(PackageDir, DriverDir, Files.Names[i], Next, DependentLength - (DWORD)(Next - DependentFiles));
+        LocatePackageFile(hInf, PackageDir, DriverDir, Files.Names[i], Next, DependentLength - (DWORD)(Next - DependentFiles));
         Next += wcslen(Next) + 1;
     }
     *Next = UNICODE_NULL;

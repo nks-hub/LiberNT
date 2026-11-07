@@ -176,11 +176,9 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
     HDEVINFO DevInfo;
     HRESULT hr = S_OK;
 
+    /* Nothing can match a device without IDs; SwDeviceCreate requires them with DriverRequired */
     if (!HasIds)
-    {
-        /* Nothing can match a device without IDs; it stays without a driver unless one is required */
-        return DriverRequired ? HRESULT_FROM_WIN32(ERROR_NO_DRIVER_SELECTED) : S_OK;
-    }
+        return S_OK;
 
     hSetupApi = LoadLibraryW(L"setupapi.dll");
     hNewDev = LoadLibraryW(L"newdev.dll");
@@ -215,11 +213,13 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
     {
         DWORD Error = GetLastError();
 
-        /* Without SWDeviceCapabilitiesDriverRequired the device is created even when no driver installs */
+        /*
+         * The device is created also when no driver installs. A device that
+         * requires one shows a problem, as a device without a needed driver.
+         */
+        WARN("No driver installed for %s (error %lu)\n", debugstr_w(Device->InstanceId), Error);
         if (DriverRequired)
-            hr = HRESULT_FROM_WIN32(Error ? Error : ERROR_NO_DRIVER_SELECTED);
-        else
-            WARN("No driver installed for %s (error %lu)\n", debugstr_w(Device->InstanceId), Error);
+            CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
     }
 
     pSetupDiDestroyDeviceInfoList(DevInfo);
@@ -556,6 +556,9 @@ SwDeviceCreate(
         !pszParentDeviceInstance || !pCreateInfo || pCreateInfo->cbSize < sizeof(*pCreateInfo) ||
         !pCreateInfo->pszInstanceId || !*pCreateInfo->pszInstanceId || wcschr(pCreateInfo->pszInstanceId, L'\\') ||
         !pCallback ||
+        ((pCreateInfo->CapabilityFlags & SWDeviceCapabilitiesDriverRequired) &&
+         !(pCreateInfo->pszzHardwareIds && *pCreateInfo->pszzHardwareIds) &&
+         !(pCreateInfo->pszzCompatibleIds && *pCreateInfo->pszzCompatibleIds)) ||
         (pCreateInfo->CapabilityFlags & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall |
                                           SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
     {

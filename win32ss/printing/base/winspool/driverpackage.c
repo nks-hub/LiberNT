@@ -110,33 +110,51 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     return ReturnString(StoreInf, pszDestInfPath, pcchDestInfPath);
 }
 
-/* TRUE when the InfPath value of an installed version 3 driver names this package */
-static BOOL
+/*
+ * S_OK when the InfPath value of an installed version 3 driver names this
+ * package, S_FALSE when none does, and an error when that cannot be told.
+ */
+static HRESULT
 IsDriverPackageInUse(PCWSTR InfPath)
 {
     WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH];
-    BOOL InUse = FALSE;
+    HRESULT hr = S_FALSE;
     HKEY hDrivers;
     DWORD i, Size;
+    LSTATUS Error;
 
-    if (FAILED(StringCchPrintfW(Key, ARRAYSIZE(Key), DRIVERS_KEY, wszCurrentEnvironment)) ||
-        RegOpenKeyExW(HKEY_LOCAL_MACHINE, Key, 0, KEY_READ, &hDrivers) != ERROR_SUCCESS)
-    {
-        return FALSE;
-    }
+    if (FAILED(StringCchPrintfW(Key, ARRAYSIZE(Key), DRIVERS_KEY, wszCurrentEnvironment)))
+        return E_FAIL;
+    Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, Key, 0, KEY_READ, &hDrivers);
+    if (Error == ERROR_FILE_NOT_FOUND)
+        return S_FALSE;
+    if (Error != ERROR_SUCCESS)
+        return HRESULT_FROM_WIN32(Error);
 
-    for (i = 0; !InUse; i++)
+    for (i = 0; hr == S_FALSE; i++)
     {
         Size = ARRAYSIZE(Name);
-        if (RegEnumKeyExW(hDrivers, i, Name, &Size, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
+        Error = RegEnumKeyExW(hDrivers, i, Name, &Size, NULL, NULL, NULL, NULL);
+        if (Error == ERROR_NO_MORE_ITEMS)
             break;
+        if (Error != ERROR_SUCCESS)
+        {
+            hr = HRESULT_FROM_WIN32(Error);
+            break;
+        }
         Size = sizeof(Value);
-        InUse = RegGetValueW(hDrivers, Name, L"InfPath", RRF_RT_REG_SZ, NULL, Value, &Size) == ERROR_SUCCESS &&
-                _wcsicmp(Value, InfPath) == 0;
+        Error = RegGetValueW(hDrivers, Name, L"InfPath", RRF_RT_REG_SZ, NULL, Value, &Size);
+        /* A driver installed without a package has no InfPath */
+        if (Error == ERROR_FILE_NOT_FOUND)
+            continue;
+        if (Error != ERROR_SUCCESS)
+            hr = HRESULT_FROM_WIN32(Error);
+        else if (_wcsicmp(Value, InfPath) == 0)
+            hr = S_OK;
     }
 
     RegCloseKey(hDrivers);
-    return InUse;
+    return hr;
 }
 
 HRESULT WINAPI
@@ -153,7 +171,10 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (FAILED(hr))
         return hr;
 
-    if (IsDriverPackageInUse(pszInfPath))
+    hr = IsDriverPackageInUse(pszInfPath);
+    if (FAILED(hr))
+        return hr;
+    if (hr == S_OK)
         return HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
 
     return DriverStoreDeleteDriverPackageW(pszInfPath, NULL, NULL);
@@ -506,13 +527,21 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         goto Cleanup;
     }
 
-    /* As on Windows, the driver key names its package; DeletePrinterDriverPackage checks it */
-    if (SUCCEEDED(StringCchPrintfW(FilePath, ARRAYSIZE(FilePath), DRIVERS_KEY L"\\%s",
-                                   wszCurrentEnvironment, pszDriverName)) &&
-        RegSetKeyValueW(HKEY_LOCAL_MACHINE, FilePath, L"InfPath", REG_SZ, pszInfPath,
-                        (DWORD)((wcslen(pszInfPath) + 1) * sizeof(WCHAR))) != ERROR_SUCCESS)
+    /*
+     * As on Windows, the driver key names its package; DeletePrinterDriverPackage
+     * checks it. A driver whose package is not recorded would let the package go.
+     */
+    hr = StringCchPrintfW(FilePath, ARRAYSIZE(FilePath), DRIVERS_KEY L"\\%s", wszCurrentEnvironment, pszDriverName);
+    if (SUCCEEDED(hr))
     {
-        ERR("Could not record the package of driver %S\n", pszDriverName);
+        hr = HRESULT_FROM_WIN32(RegSetKeyValueW(HKEY_LOCAL_MACHINE, FilePath, L"InfPath", REG_SZ, pszInfPath,
+                                                (DWORD)((wcslen(pszInfPath) + 1) * sizeof(WCHAR))));
+    }
+    if (FAILED(hr))
+    {
+        ERR("Could not record the package of driver %S (0x%08lx)\n", pszDriverName, hr);
+        DeletePrinterDriverW(NULL, (PWSTR)wszCurrentEnvironment, (PWSTR)pszDriverName);
+        goto Cleanup;
     }
 
     hr = S_OK;

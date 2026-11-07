@@ -355,10 +355,10 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DefaultDataType[MAX_PATH], PackageDir[MAX_PATH], DriverDir[MAX_PATH];
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     PCWSTR Sections[16];
-    DWORD SectionCount = 0, Field, FieldCount, Size, i, DependentLength = 1;
+    DWORD SectionCount = 0, Field, FieldCount, Size, i, j, DependentLength = 1;
     PACKAGE_FILES Files = { 0 };
     PWSTR DependentFiles = NULL, Next, Slash;
-    DRIVER_INFO_3W DriverInfo = { 0 };
+    DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
     HINF hInf;
     HRESULT hr;
@@ -401,27 +401,47 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     }
     Sections[SectionCount++] = ActualSection;
 
-    /* Include= appends other INF files (usually ntprint.inf), Needs= names their sections we use */
-    if (SetupFindFirstLineW(hInf, ActualSection, L"Include", &Context))
+    /*
+     * Include= appends other INF files (usually ntprint.inf), Needs= names their
+     * sections we use. Needed sections can need others; each one is taken once.
+     */
+    for (i = 0; i < SectionCount; i++)
     {
-        FieldCount = SetupGetFieldCount(&Context);
-        for (Field = 1; Field <= FieldCount; Field++)
+        if (SetupFindFirstLineW(hInf, Sections[i], L"Include", &Context))
         {
-            if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL) &&
-                !SetupOpenAppendInfFileW(Include, hInf, NULL))
+            FieldCount = SetupGetFieldCount(&Context);
+            for (Field = 1; Field <= FieldCount; Field++)
             {
-                hr = HRESULT_FROM_WIN32(GetLastError());
-                goto Cleanup;
+                if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL) &&
+                    !SetupOpenAppendInfFileW(Include, hInf, NULL))
+                {
+                    hr = HRESULT_FROM_WIN32(GetLastError());
+                    goto Cleanup;
+                }
             }
         }
-    }
-    if (SetupFindFirstLineW(hInf, ActualSection, L"Needs", &Context))
-    {
+
+        if (!SetupFindFirstLineW(hInf, Sections[i], L"Needs", &Context))
+            continue;
         FieldCount = SetupGetFieldCount(&Context);
         for (Field = 1; Field <= FieldCount; Field++)
         {
-            if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL))
+            if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL) ||
+                !*NeedsSection)
+            {
                 continue;
+            }
+            for (j = 0; j < SectionCount && _wcsicmp(Sections[j], NeedsSection) != 0; j++);
+            if (j < SectionCount)
+                continue;
+
+            /* A needed section that neither this INF nor an included one has leaves out what it installs */
+            if (SetupGetLineCountW(hInf, NeedsSection) < 0)
+            {
+                ERR("Needed section %S not found\n", NeedsSection);
+                hr = HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND);
+                goto Cleanup;
+            }
             if (SectionCount == ARRAYSIZE(Sections))
             {
                 hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW);
@@ -518,29 +538,14 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
+    /* The spooler records the package in the driver key, DeletePrinterDriverPackage checks it */
+    DriverInfo.pszInfPath = (PWSTR)pszInfPath;
 
-    if (!AddPrinterDriverExW(NULL, 3, (PBYTE)&DriverInfo,
+    if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
                              APD_COPY_FROM_DIRECTORY |
                              ((dwFlags & IPDFP_COPY_ALL_FILES) ? APD_COPY_ALL_FILES : APD_COPY_NEW_FILES)))
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
-        goto Cleanup;
-    }
-
-    /*
-     * As on Windows, the driver key names its package; DeletePrinterDriverPackage
-     * checks it. A driver whose package is not recorded would let the package go.
-     */
-    hr = StringCchPrintfW(FilePath, ARRAYSIZE(FilePath), DRIVERS_KEY L"\\%s", wszCurrentEnvironment, pszDriverName);
-    if (SUCCEEDED(hr))
-    {
-        hr = HRESULT_FROM_WIN32(RegSetKeyValueW(HKEY_LOCAL_MACHINE, FilePath, L"InfPath", REG_SZ, pszInfPath,
-                                                (DWORD)((wcslen(pszInfPath) + 1) * sizeof(WCHAR))));
-    }
-    if (FAILED(hr))
-    {
-        ERR("Could not record the package of driver %S (0x%08lx)\n", pszDriverName, hr);
-        DeletePrinterDriverW(NULL, (PWSTR)wszCurrentEnvironment, (PWSTR)pszDriverName);
         goto Cleanup;
     }
 

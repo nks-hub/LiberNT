@@ -16,6 +16,8 @@
 #include <strsafe.h>
 
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"
+#define NEEDS_DRIVER_NAME L"LiberNT Package Needs Printer"
+#define BROKEN_DRIVER_NAME L"LiberNT Package Broken Printer"
 
 #if defined(_M_AMD64)
 #define TEST_ENVIRONMENT L"Windows x64"
@@ -25,6 +27,11 @@
 #define TEST_ENVIRONMENT L"Windows NT x86"
 #endif
 #define TEST_DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\" TEST_ENVIRONMENT L"\\Drivers\\Version-3"
+
+#define TEST_MODELS \
+    "\"LiberNT Package Test Printer\"=TESTPKG.GPD,LiberNT_Package_Test\r\n" \
+    "\"LiberNT Package Needs Printer\"=TESTNEEDS,LiberNT_Package_Needs\r\n" \
+    "\"LiberNT Package Broken Printer\"=TESTBROKEN,LiberNT_Package_Broken\r\n"
 
 static const char TestInf[] =
     "[Version]\r\n"
@@ -38,15 +45,32 @@ static const char TestInf[] =
     "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
     "[Models.NTamd64]\r\n"
-    "\"" "LiberNT Package Test Printer" "\"=TESTPKG.GPD,LiberNT_Package_Test\r\n"
+    TEST_MODELS
     "[Models.NTx86]\r\n"
-    "\"" "LiberNT Package Test Printer" "\"=TESTPKG.GPD,LiberNT_Package_Test\r\n"
+    TEST_MODELS
     "[Models.NTarm64]\r\n"
-    "\"" "LiberNT Package Test Printer" "\"=TESTPKG.GPD,LiberNT_Package_Test\r\n"
+    TEST_MODELS
     "\r\n"
     "[TESTPKG.GPD]\r\n"
     "CopyFiles=@TESTPKG.GPD,TESTPKG_FILES\r\n"
     "DataSection=TESTPKG_DATA\r\n"
+    "\r\n"
+    "[TESTNEEDS]\r\n"
+    "CopyFiles=@TESTPKG.GPD\r\n"
+    "DataSection=TESTPKG_DATA\r\n"
+    "Needs=NEEDS_A\r\n"
+    "\r\n"
+    "[NEEDS_A]\r\n"
+    "Needs=NEEDS_B\r\n"
+    "\r\n"
+    "[NEEDS_B]\r\n"
+    "Needs=NEEDS_A\r\n"
+    "CopyFiles=TESTPKG_FILES\r\n"
+    "\r\n"
+    "[TESTBROKEN]\r\n"
+    "CopyFiles=@TESTPKG.GPD,TESTPKG_FILES\r\n"
+    "DataSection=TESTPKG_DATA\r\n"
+    "Needs=NO_SUCH_SECTION\r\n"
     "\r\n"
     "[TESTPKG_DATA]\r\n"
     "DriverFile=TESTDRV.DLL\r\n"
@@ -144,17 +168,55 @@ DriverFileExists(PCWSTR Name)
     return GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES;
 }
 
-/* Removes the test driver without DeletePrinterDriver, which the local spooler does not implement yet */
+static HKEY
+OpenDriverKey(PCWSTR DriverName)
+{
+    WCHAR Key[MAX_PATH];
+    HKEY hKey;
+
+    StringCchPrintfW(Key, ARRAYSIZE(Key), L"%s\\%s", TEST_DRIVERS_KEY, DriverName);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Key, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
+        return NULL;
+    return hKey;
+}
+
+static BOOL
+FilesMatch(PCWSTR First, PCWSTR Second)
+{
+    char A[256], B[256];
+    DWORD ReadA = 0, ReadB = 0;
+    HANDLE hA, hB;
+
+    hA = CreateFileW(First, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    hB = CreateFileW(Second, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hA != INVALID_HANDLE_VALUE)
+    {
+        ReadFile(hA, A, sizeof(A), &ReadA, NULL);
+        CloseHandle(hA);
+    }
+    if (hB != INVALID_HANDLE_VALUE)
+    {
+        ReadFile(hB, B, sizeof(B), &ReadB, NULL);
+        CloseHandle(hB);
+    }
+    return ReadA != 0 && ReadA == ReadB && memcmp(A, B, ReadA) == 0;
+}
+
+/* Removes the test drivers without DeletePrinterDriver, which the local spooler does not implement yet */
 static VOID
 DeleteTestDriver(VOID)
 {
     static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT" };
+    static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
     UINT i;
 
-    StringCchPrintfW(Key, ARRAYSIZE(Key), L"%s\\%s", TEST_DRIVERS_KEY, TEST_DRIVER_NAME);
-    RegDeleteKeyW(HKEY_LOCAL_MACHINE, Key);
+    for (i = 0; i < ARRAYSIZE(Drivers); i++)
+    {
+        StringCchPrintfW(Key, ARRAYSIZE(Key), L"%s\\%s", TEST_DRIVERS_KEY, Drivers[i]);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, Key);
+    }
 
     if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Dir, Size, &Size))
         return;
@@ -225,6 +287,64 @@ START_TEST(DriverPackage)
         ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
         if (hr == S_OK)
             ok(_wcsicmp(Again, StoreInf) == 0, "Second upload returned %S\n", Again);
+    }
+
+    /* UPDP_UPLOAD_ALWAYS copies the files of a package that is in the store already */
+    {
+        WCHAR StoreDir[MAX_PATH], StoreFile[MAX_PATH], SourceFile[MAX_PATH], Again[MAX_PATH];
+        static const char Changed[] = "changed in the store\r\n";
+        PWSTR Last;
+
+        StringCchCopyW(StoreDir, ARRAYSIZE(StoreDir), StoreInf);
+        Last = wcsrchr(StoreDir, L'\\');
+        if (Last)
+            *Last = UNICODE_NULL;
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTPKG.DAT", StoreDir);
+        ok(DeleteFileW(StoreFile), "Deleting %S failed with %lu\n", StoreFile, GetLastError());
+        ok(WriteTestFile(StoreDir, L"TESTPKG.HLP", Changed, sizeof(Changed) - 1), "Changing TESTPKG.HLP failed\n");
+
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+        if (hr == S_OK)
+            ok(_wcsicmp(Again, StoreInf) == 0, "Forced upload returned %S\n", Again);
+        ok(GetFileAttributesW(StoreFile) != INVALID_FILE_ATTRIBUTES, "%S was not copied again\n", StoreFile);
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTPKG.HLP", StoreDir);
+        StringCchPrintfW(SourceFile, ARRAYSIZE(SourceFile), L"%s\\TESTPKG.HLP", Dir);
+        ok(FilesMatch(StoreFile, SourceFile), "%S was not copied again\n", StoreFile);
+    }
+
+    /* A needed section that the INF does not have fails before anything is registered */
+    hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, BROKEN_DRIVER_NAME, NULL, 0);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+    {
+        HKEY hBroken = OpenDriverKey(BROKEN_DRIVER_NAME);
+        ok(hBroken == NULL, "Driver %S is registered\n", BROKEN_DRIVER_NAME);
+        if (hBroken)
+            RegCloseKey(hBroken);
+    }
+
+    /* Needed sections that need each other are read once, their files are dependent files */
+    hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, NEEDS_DRIVER_NAME, NULL, IPDFP_COPY_ALL_FILES);
+    ok(hr == S_OK, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+    {
+        WCHAR Value[MAX_PATH * 2];
+        DWORD Size = sizeof(Value);
+        HKEY hNeeds = OpenDriverKey(NEEDS_DRIVER_NAME);
+
+        ok(hNeeds != NULL, "Driver %S is not registered\n", NEEDS_DRIVER_NAME);
+        if (hNeeds)
+        {
+            ZeroMemory(Value, sizeof(Value));
+            ok(RegQueryValueExW(hNeeds, L"Dependent Files", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS,
+               "No Dependent Files\n");
+            for (Dependent = Value; *Dependent && _wcsicmp(Dependent, L"TESTPKG.DAT"); Dependent += wcslen(Dependent) + 1);
+            ok(*Dependent != UNICODE_NULL, "TESTPKG.DAT from NEEDS_B is not a dependent file\n");
+            Size = sizeof(Value);
+            ok(RegQueryValueExW(hNeeds, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+               !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
+            RegCloseKey(hNeeds);
+        }
     }
 
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, L"No Such Printer", NULL, 0);

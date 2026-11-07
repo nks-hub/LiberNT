@@ -46,10 +46,20 @@ NetioLuidIndex(
     _In_ const NET_LUID *Luid)
 {
     NET_IFINDEX Index;
+    NET_LUID AdapterLuid;
 
     if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
         return Index;
-    return (ULONG)Luid->Info.NetLuidIndex;
+
+    /*
+     * Only an interface without an NDIS adapter has a LUID made from its index
+     * (see NetioInterfaceLuid). An interface with an adapter at that index is
+     * another one; 0 matches no interface.
+     */
+    Index = (NET_IFINDEX)Luid->Info.NetLuidIndex;
+    if (NdisIfGetNetLuidFromInterfaceIndex(Index, &AdapterLuid) == NDIS_STATUS_SUCCESS && AdapterLuid.Value)
+        return 0;
+    return Index;
 }
 
 typedef struct _NETIO_TDI_ROUTE
@@ -338,8 +348,13 @@ GetBestRoute2(
     {
         return STATUS_NOT_SUPPORTED;
     }
-    if (InterfaceLuid != NULL && InterfaceIndex == 0)
+    if (InterfaceLuid != NULL && InterfaceIndex == 0 && InterfaceLuid->Value != 0)
+    {
+        /* An unknown LUID names no interface, not any of them */
         InterfaceIndex = NetioLuidIndex(InterfaceLuid);
+        if (InterfaceIndex == 0)
+            return STATUS_NOT_FOUND;
+    }
     if (DestinationAddress->si_family == AF_INET6)
         return NetioGetBestRoute6(InterfaceIndex, SourceAddress, DestinationAddress, BestRoute, BestSourceAddress);
 
@@ -781,6 +796,7 @@ static
 NTSTATUS
 NetioQueryIpInterfaces(
     _In_ ADDRESS_FAMILY Family,
+    _In_ BOOLEAN Complete,
     _Outptr_result_maybenull_ PMIB_IPINTERFACE_ROW *Rows,
     _Out_ PULONG Count)
 {
@@ -834,9 +850,13 @@ NetioQueryIpInterfaces(
 
             RtlZeroMemory(&Info, sizeof(Info));
             Info.Index = Entry->if_index;
-            if (!NT_SUCCESS(NetioDeviceIoControl(L"\\Device\\Ip", IOCTL_IP_QUERY_INTERFACE,
-                                                 &Info, sizeof(Info), &Info, sizeof(Info))))
+            Status = NetioDeviceIoControl(L"\\Device\\Ip", IOCTL_IP_QUERY_INTERFACE,
+                                          &Info, sizeof(Info), &Info, sizeof(Info));
+            if (!NT_SUCCESS(Status))
             {
+                /* An interface removed since the enumeration is left out */
+                if (Complete)
+                    goto Done;
                 continue;
             }
             NetioFillIpInterface4(Entry, &Info, &Result[Found++]);
@@ -946,7 +966,7 @@ GetIpInterfaceEntry(
     if (Index == 0)
         return STATUS_INVALID_PARAMETER;
 
-    Status = NetioQueryIpInterfaces(Row->Family, &Rows, &Count);
+    Status = NetioQueryIpInterfaces(Row->Family, FALSE, &Rows, &Count);
     if (!NT_SUCCESS(Status))
         return Status;
 
@@ -1040,9 +1060,7 @@ SetIpInterfaceEntry(
     if (!NT_SUCCESS(Status))
         return Status;
 
-    /* An IPv4 row reads back a site prefix length of 64 */
-    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != NETIO_UNCHANGED_ULONG &&
-        Row->SitePrefixLength != Current.SitePrefixLength)
+    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != NETIO_UNCHANGED_ULONG)
         return STATUS_INVALID_PARAMETER;
     if (Row->RouterDiscoveryBehavior != RouterDiscoveryUnchanged &&
         (ULONG)Row->RouterDiscoveryBehavior > RouterDiscoveryDhcp)
@@ -1090,7 +1108,7 @@ SetIpInterfaceEntry(
         Set.RouterDiscoveryBehavior = NetioValue(Row->RouterDiscoveryBehavior, Current.RouterDiscoveryBehavior, FALSE);
         Set.PathMtuDiscoveryTimeout = NetioValue(Row->PathMtuDiscoveryTimeout, Current.PathMtuDiscoveryTimeout, TRUE);
         Set.LinkLocalAddressTimeout = NetioValue(Row->LinkLocalAddressTimeout, Current.LinkLocalAddressTimeout, FALSE);
-        Set.SitePrefixLength = NetioValue(Row->SitePrefixLength, Current.SitePrefixLength, FALSE);
+        Set.SitePrefixLength = (Row->SitePrefixLength == NETIO_UNCHANGED_ULONG) ? Current.SitePrefixLength : 0;
         NetioZones(Row, &Current, Set.ZoneIndices);
         Set.Forwarding = NetioFlag(Row->ForwardingEnabled, Current.ForwardingEnabled);
         Set.WeakHostSend = NetioFlag(Row->WeakHostSend, Current.WeakHostSend);
@@ -1140,6 +1158,7 @@ NTSTATUS
 NetioQueryRoutes4(
     _In_ PUCHAR Entries,
     _In_ ULONG EntryCount,
+    _In_ BOOLEAN Complete,
     _Inout_ PMIB_IPFORWARD_ROW2 *Rows,
     _Inout_ PULONG Count,
     _Inout_ PULONG Capacity)
@@ -1176,9 +1195,12 @@ NetioQueryRoutes4(
 
         /* Size the buffer from the route count, with room for routes added meanwhile */
         RtlZeroMemory(&Snmp, sizeof(Snmp));
-        if (!NT_SUCCESS(NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
-                                      IP_MIB_STATS_ID, &Snmp, sizeof(Snmp), &Returned)))
+        Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
+                               IP_MIB_STATS_ID, &Snmp, sizeof(Snmp), &Returned);
+        if (!NT_SUCCESS(Status))
         {
+            if (Complete)
+                goto Done;
             continue;
         }
         Size = (Snmp.ipsi_numroutes + 16) * sizeof(NETIO_TDI_ROUTE);
@@ -1188,12 +1210,16 @@ NetioQueryRoutes4(
             Status = STATUS_INSUFFICIENT_RESOURCES;
             goto Done;
         }
-        if (!NT_SUCCESS(NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
-                                      IP_MIB_ARPTABLE_ENTRY_ID, Routes, Size, &Returned)) ||
-            Returned > Size)
+        Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
+                               IP_MIB_ARPTABLE_ENTRY_ID, Routes, Size, &Returned);
+        if (NT_SUCCESS(Status) && Returned > Size)
+            Status = STATUS_BUFFER_OVERFLOW;
+        if (!NT_SUCCESS(Status))
         {
             ExFreePoolWithTag(Routes, NETIO_IPHLP_TAG);
             Routes = NULL;
+            if (Complete)
+                goto Done;
             continue;
         }
         RouteCount = Returned / sizeof(NETIO_TDI_ROUTE);
@@ -1326,6 +1352,7 @@ static
 NTSTATUS
 NetioQueryRoutes(
     _In_ ADDRESS_FAMILY Family,
+    _In_ BOOLEAN Complete,
     _Outptr_result_maybenull_ PMIB_IPFORWARD_ROW2 *Rows,
     _Out_ PULONG Count)
 {
@@ -1342,7 +1369,7 @@ NetioQueryRoutes(
         return Status;
 
     if (Family == AF_INET || Family == AF_UNSPEC)
-        Status = NetioQueryRoutes4(Entries, EntryCount, &Result, &Found, &Capacity);
+        Status = NetioQueryRoutes4(Entries, EntryCount, Complete, &Result, &Found, &Capacity);
     if (NT_SUCCESS(Status) && (Family == AF_INET6 || Family == AF_UNSPEC))
     {
         Status = NetioQueryRoutes6(Entries, EntryCount, &Result, &Found, &Capacity);
@@ -1381,7 +1408,7 @@ GetIpForwardTable2(
     if (Family != AF_INET && Family != AF_INET6 && Family != AF_UNSPEC)
         return STATUS_INVALID_PARAMETER;
 
-    Status = NetioQueryRoutes(Family, &Rows, &Count);
+    Status = NetioQueryRoutes(Family, FALSE, &Rows, &Count);
     if (!NT_SUCCESS(Status))
         return Status;
 
@@ -1428,7 +1455,10 @@ typedef struct _NETIO_CHANGE_NOTIFY
 
 static LIST_ENTRY NetioChangeList = { &NetioChangeList, &NetioChangeList };
 static KSPIN_LOCK NetioChangeLock;
-static BOOLEAN NetioChangeStarted;
+#define NETIO_CHANGE_STOPPED 0
+#define NETIO_CHANGE_STARTING 1
+#define NETIO_CHANGE_RUNNING 2
+static volatile LONG NetioChangeState;
 static KEVENT NetioChangeKick;
 static PETHREAD NetioChangeThread;
 
@@ -1636,15 +1666,31 @@ NetioFreeSnapshot(
     RtlZeroMemory(Snapshot, sizeof(*Snapshot));
 }
 
+/*
+ * A snapshot is complete or fails: an interface or route missing only because
+ * a query failed would be reported as deleted.
+ */
 static
-VOID
+NTSTATUS
 NetioTakeSnapshot(
     _Out_ PNETIO_SNAPSHOT Snapshot)
 {
+    NTSTATUS Status;
+
     RtlZeroMemory(Snapshot, sizeof(*Snapshot));
-    NetioQueryRoutes(AF_UNSPEC, &Snapshot->Routes, &Snapshot->RouteCount);
-    NetioQueryIpInterfaces(AF_INET, &Snapshot->Interfaces[0], &Snapshot->InterfaceCount[0]);
-    NetioQueryIpInterfaces(AF_INET6, &Snapshot->Interfaces[1], &Snapshot->InterfaceCount[1]);
+    Status = NetioQueryRoutes(AF_UNSPEC, TRUE, &Snapshot->Routes, &Snapshot->RouteCount);
+    if (NT_SUCCESS(Status))
+        Status = NetioQueryIpInterfaces(AF_INET, TRUE, &Snapshot->Interfaces[0], &Snapshot->InterfaceCount[0]);
+    if (NT_SUCCESS(Status))
+    {
+        Status = NetioQueryIpInterfaces(AF_INET6, TRUE, &Snapshot->Interfaces[1], &Snapshot->InterfaceCount[1]);
+        /* A system without IPv6 has no IPv6 interfaces */
+        if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
+            Status = STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(Status))
+        NetioFreeSnapshot(Snapshot);
+    return Status;
 }
 
 static
@@ -1663,13 +1709,13 @@ NetioChangeWorker(
     PVOID Objects[2];
     KWAIT_BLOCK WaitBlocks[2];
     ULONG Generation = 0, i;
-    BOOLEAN Pending = FALSE, Changed;
+    BOOLEAN Pending = FALSE, Changed, HaveOld, Stale = FALSE;
     NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(StartContext);
 
     NetioChangeThread = PsGetCurrentThread();
-    NetioTakeSnapshot(&Old);
+    HaveOld = NT_SUCCESS(NetioTakeSnapshot(&Old));
     Retry.QuadPart = -50000000LL; /* 5 s */
 
     InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
@@ -1709,11 +1755,16 @@ NetioChangeWorker(
             Objects[0] = &NetioChangeKick;
             Objects[1] = Completed;
             Status = KeWaitForMultipleObjects(Pending ? 2 : 1, Objects, WaitAny, Executive, KernelMode,
-                                              FALSE, Pending ? NULL : &Retry, WaitBlocks);
+                                              FALSE, (Pending && HaveOld && !Stale) ? NULL : &Retry, WaitBlocks);
             if (Status == STATUS_WAIT_1)
             {
                 Pending = FALSE;
                 Changed = NT_SUCCESS(Io.Status);
+            }
+            else if (Status == STATUS_TIMEOUT && (Stale || !HaveOld))
+            {
+                /* A change came while the last snapshot failed */
+                Changed = TRUE;
             }
         }
 
@@ -1723,12 +1774,22 @@ NetioChangeWorker(
         if (!Changed)
             continue;
 
-        NetioTakeSnapshot(&New);
-        NetioCompareRoutes(Old.Routes, Old.RouteCount, New.Routes, New.RouteCount);
-        for (i = 0; i < 2; i++)
-            NetioCompareInterfaces(Old.Interfaces[i], Old.InterfaceCount[i], New.Interfaces[i], New.InterfaceCount[i]);
-        NetioFreeSnapshot(&Old);
+        if (!NT_SUCCESS(NetioTakeSnapshot(&New)))
+        {
+            Stale = TRUE;
+            continue;
+        }
+        Stale = FALSE;
+        /* Without an earlier snapshot there is nothing to compare with */
+        if (HaveOld)
+        {
+            NetioCompareRoutes(Old.Routes, Old.RouteCount, New.Routes, New.RouteCount);
+            for (i = 0; i < 2; i++)
+                NetioCompareInterfaces(Old.Interfaces[i], Old.InterfaceCount[i], New.Interfaces[i], New.InterfaceCount[i]);
+            NetioFreeSnapshot(&Old);
+        }
         Old = New;
+        HaveOld = TRUE;
     }
 }
 
@@ -1743,10 +1804,13 @@ NetioRegisterChange(
     _Inout_ HANDLE *NotificationHandle)
 {
     PNETIO_CHANGE_NOTIFY Notify;
-    BOOLEAN Start = FALSE;
+    LARGE_INTEGER StartWait;
     HANDLE Thread;
     KIRQL OldIrql;
     NTSTATUS Status;
+    LONG State;
+
+    StartWait.QuadPart = -10000LL; /* 1 ms */
 
     if (Callback == NULL || NotificationHandle == NULL ||
         (Family != AF_UNSPEC && Family != AF_INET && Family != AF_INET6))
@@ -1767,30 +1831,36 @@ NetioRegisterChange(
     Notify->InitialPending = InitialNotification;
     KeInitializeEvent(&Notify->Released, NotificationEvent, FALSE);
 
-    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-    if (!NetioChangeStarted)
+    /*
+     * One registration starts the worker; the others wait until it runs, so
+     * none of them is listed without a worker. A failed start fails only the
+     * registration that tried it, and the next one tries again.
+     */
+    for (;;)
     {
-        KeInitializeEvent(&NetioChangeKick, SynchronizationEvent, FALSE);
-        NetioChangeStarted = TRUE;
-        Start = TRUE;
+        State = InterlockedCompareExchange(&NetioChangeState, NETIO_CHANGE_STARTING, NETIO_CHANGE_STOPPED);
+        if (State == NETIO_CHANGE_RUNNING)
+            break;
+        if (State == NETIO_CHANGE_STOPPED)
+        {
+            KeInitializeEvent(&NetioChangeKick, SynchronizationEvent, FALSE);
+            Status = PsCreateSystemThread(&Thread, THREAD_ALL_ACCESS, NULL, NULL, NULL, NetioChangeWorker, NULL);
+            if (!NT_SUCCESS(Status))
+            {
+                InterlockedExchange(&NetioChangeState, NETIO_CHANGE_STOPPED);
+                ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
+                return Status;
+            }
+            ZwClose(Thread);
+            InterlockedExchange(&NetioChangeState, NETIO_CHANGE_RUNNING);
+            break;
+        }
+        KeDelayExecutionThread(KernelMode, FALSE, &StartWait);
     }
+
+    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
     InsertTailList(&NetioChangeList, &Notify->Link);
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-
-    if (Start)
-    {
-        Status = PsCreateSystemThread(&Thread, THREAD_ALL_ACCESS, NULL, NULL, NULL, NetioChangeWorker, NULL);
-        if (!NT_SUCCESS(Status))
-        {
-            KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-            RemoveEntryList(&Notify->Link);
-            NetioChangeStarted = FALSE;
-            KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-            ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
-            return Status;
-        }
-        ZwClose(Thread);
-    }
 
     if (InitialNotification)
         KeSetEvent(&NetioChangeKick, IO_NO_INCREMENT, FALSE);

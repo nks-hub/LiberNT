@@ -319,7 +319,7 @@ OwnerIsGone(_In_ PCWSTR InstanceId)
         return FALSE;
 
     /* A reused process ID has another start time */
-    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, ProcessId);
     if (Process == NULL)
         return GetLastError() == ERROR_INVALID_PARAMETER;
     Gone = !GetProcessStart(Process, &Start) || Start != Recorded ||

@@ -488,10 +488,12 @@ Ndis6RegisterMiniportDriverInternal(
          * never see our adapter FDO — interpose a per-device demux. */
         for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
         {
-            if (DriverObject->MajorFunction[i] == NULL)
-                DriverObject->MajorFunction[i] = Ndis6DispatchUnknown;
-            else if (Block->IsWdfHybrid && i != IRP_MJ_PNP && i != IRP_MJ_POWER && i != IRP_MJ_SYSTEM_CONTROL)
-                DriverObject->MajorFunction[i] = Ndis6DispatchHybridGeneric;
+            if (i == IRP_MJ_PNP || i == IRP_MJ_POWER || i == IRP_MJ_SYSTEM_CONTROL)
+                continue;
+            /* The slots are never NULL here (IopInvalidDeviceRequest fills them),
+             * and like Windows NDIS we own them all; a miniport may hook
+             * them after NdisMRegisterMiniportDriver. */
+            DriverObject->MajorFunction[i] = Block->IsWdfHybrid ? Ndis6DispatchHybridGeneric : Ndis6DispatchUnknown;
         }
     }
 

@@ -1452,6 +1452,7 @@ InitializeSoftwareSas(
     SECURITY_ATTRIBUTES EventSecurity;
     PSECURITY_DESCRIPTOR SecurityDescriptor;
     WCHAR EventName[64];
+    DWORD dwError;
 
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)",
                                                               SDDL_REVISION_1,
@@ -1468,10 +1469,21 @@ InitializeSoftwareSas(
     EventSecurity.lpSecurityDescriptor = SecurityDescriptor;
     EventSecurity.bInheritHandle = FALSE;
     Session->SoftwareSasEvent = CreateEventW(&EventSecurity, FALSE, FALSE, EventName);
+    dwError = GetLastError();
     LocalFree(SecurityDescriptor);
     if (!Session->SoftwareSasEvent)
     {
-        ERR("WL: Failed to create the software SAS event (%lu)\n", GetLastError());
+        ERR("WL: Failed to create the software SAS event (%lu)\n", dwError);
+        return;
+    }
+
+    /* An event someone created first has their security and reset mode, so
+     * anyone they allow could raise the SAS; software SAS stays off then */
+    if (dwError == ERROR_ALREADY_EXISTS)
+    {
+        ERR("WL: The software SAS event already exists, software SAS is disabled\n");
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
         return;
     }
 

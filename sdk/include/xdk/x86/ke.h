@@ -340,7 +340,7 @@ KeGetPcr(VOID)
 }
 #endif
 
-#if (NTDDI_VERSION >= NTDDI_WIN7)
+#if (NTDDI_VERSION >= NTDDI_WIN7) && !defined(_NTOSKRNL_) && !defined(_NTSYSTEM_)
 _CRT_DEPRECATE_TEXT("KeGetCurrentProcessorNumber is deprecated. Use KeGetCurrentProcessorNumberEx or KeGetCurrentProcessorIndex instead.")
 #endif
 FORCEINLINE

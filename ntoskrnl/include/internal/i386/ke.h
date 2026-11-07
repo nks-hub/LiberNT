@@ -280,7 +280,7 @@ extern const PULONG KiNtVdmState;
 // more time, this way we don't redefine ALL opcode handlers to have 3 parameters,
 // which would be forcing stack usage in all other scenarios.
 //
-#ifdef __GNUC__
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
 #endif
@@ -292,7 +292,7 @@ FORCEINLINE ULONG KiVdmClearVdmEFlags(ULONG EFlags)
 {
     return InterlockedAnd((PLONG)KiNtVdmState, ~EFlags);
 }
-#ifdef __GNUC__
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
 

@@ -29,6 +29,8 @@ typedef struct _SW_DEVICE
     PWSTR Location;
     GUID ContainerId;
     BOOL HasContainerId;
+    PSECURITY_DESCRIPTOR SecurityDescriptor;
+    ULONG SecurityDescriptorSize;
     ULONG PropertyCount;
     DEVPROPERTY *Properties;
     SW_DEVICE_CREATE_CALLBACK Callback;
@@ -66,6 +68,18 @@ DupBuffer(_In_opt_ const VOID *Buffer, _In_ SIZE_T Size)
     if (Copy)
         memcpy(Copy, Buffer, Size);
     return Copy;
+}
+
+/* SW_DEVICE_CREATE_INFO takes a self-relative security descriptor */
+static BOOL
+IsSelfRelativeSecurityDescriptor(_In_ PSECURITY_DESCRIPTOR SecurityDescriptor)
+{
+    SECURITY_DESCRIPTOR_CONTROL Control;
+    DWORD Revision;
+
+    return IsValidSecurityDescriptor(SecurityDescriptor) &&
+           GetSecurityDescriptorControl(SecurityDescriptor, &Control, &Revision) &&
+           (Control & SE_SELF_RELATIVE);
 }
 
 static VOID
@@ -127,6 +141,7 @@ FreeSwDevice(_In_ PSW_DEVICE Device)
     HeapFree(GetProcessHeap(), 0, Device->CompatibleIds);
     HeapFree(GetProcessHeap(), 0, Device->Description);
     HeapFree(GetProcessHeap(), 0, Device->Location);
+    HeapFree(GetProcessHeap(), 0, Device->SecurityDescriptor);
     FreeProperties(Device->PropertyCount, Device->Properties);
     HeapFree(GetProcessHeap(), 0, Device);
 }
@@ -469,6 +484,13 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
         if (Cr != CR_SUCCESS)
             return CrToHresult(Cr);
     }
+    if (Device->SecurityDescriptor)
+    {
+        Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_SECURITY, Device->SecurityDescriptor,
+                                               Device->SecurityDescriptorSize, 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
     if (Device->HasContainerId)
     {
         Cr = CM_Set_DevNode_PropertyW(Device->DevInst, &DEVPKEY_Device_ContainerId, DEVPROP_TYPE_GUID,
@@ -556,6 +578,7 @@ SwDeviceCreate(
         !pszParentDeviceInstance || !pCreateInfo || pCreateInfo->cbSize < sizeof(*pCreateInfo) ||
         !pCreateInfo->pszInstanceId || !*pCreateInfo->pszInstanceId || wcschr(pCreateInfo->pszInstanceId, L'\\') ||
         !pCallback ||
+        (pCreateInfo->pSecurityDescriptor && !IsSelfRelativeSecurityDescriptor((PSECURITY_DESCRIPTOR)pCreateInfo->pSecurityDescriptor)) ||
         ((pCreateInfo->CapabilityFlags & SWDeviceCapabilitiesDriverRequired) &&
          !(pCreateInfo->pszzHardwareIds && *pCreateInfo->pszzHardwareIds) &&
          !(pCreateInfo->pszzCompatibleIds && *pCreateInfo->pszzCompatibleIds)) ||
@@ -563,6 +586,17 @@ SwDeviceCreate(
                                           SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
     {
         return E_INVALIDARG;
+    }
+
+    /*
+     * The root bus reports the capabilities of its devices and has no way to
+     * take them from here. SilentInstall needs nothing: no UI is shown when
+     * the driver of a software device installs.
+     */
+    if (pCreateInfo->CapabilityFlags & (SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI))
+    {
+        FIXME("Capabilities 0x%lx are not supported\n", pCreateInfo->CapabilityFlags);
+        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
 
     /* PnP creates device nodes below the root device only */
@@ -607,7 +641,15 @@ SwDeviceCreate(
         Device->HasContainerId = TRUE;
     }
     if (pCreateInfo->pSecurityDescriptor)
-        FIXME("Security descriptor of %s ignored\n", debugstr_w(Device->InstanceId));
+    {
+        Device->SecurityDescriptorSize = GetSecurityDescriptorLength((PSECURITY_DESCRIPTOR)pCreateInfo->pSecurityDescriptor);
+        Device->SecurityDescriptor = DupBuffer(pCreateInfo->pSecurityDescriptor, Device->SecurityDescriptorSize);
+        if (!Device->SecurityDescriptor)
+        {
+            FreeSwDevice(Device);
+            return E_OUTOFMEMORY;
+        }
+    }
 
     hr = CopyProperties(cPropertyCount, pProperties, &Device->Properties);
     if (FAILED(hr))

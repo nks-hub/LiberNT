@@ -161,7 +161,7 @@ IgnoreNotify(PVOID Parameter)
     UNREFERENCED_PARAMETER(Parameter);
 }
 
-/* A manager handle takes database changes only, a service handle state changes only */
+/* Windows 11: a mixed mask is an invalid parameter, a mask of the other kind of handle a wrong handle */
 static void
 test_Masks(SC_HANDLE Manager)
 {
@@ -176,7 +176,7 @@ test_Masks(SC_HANDLE Manager)
         Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a manager handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_RUNNING, &Notify);
-        ok(Error == ERROR_INVALID_PARAMETER, "State mask on a manager handle returned %lu\n", Error);
+        ok(Error == ERROR_INVALID_HANDLE, "State mask on a manager handle returned %lu\n", Error);
         CloseServiceHandle(Own);
     }
 
@@ -185,7 +185,7 @@ test_Masks(SC_HANDLE Manager)
     if (Service)
     {
         Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_CREATED, &Notify);
-        ok(Error == ERROR_INVALID_PARAMETER, "Database mask on a service handle returned %lu\n", Error);
+        ok(Error == ERROR_INVALID_HANDLE, "Database mask on a service handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a service handle returned %lu\n", Error);
         DeleteService(Service);

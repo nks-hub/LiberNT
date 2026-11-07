@@ -13,6 +13,7 @@
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
+#include <setupapi.h>
 #include <strsafe.h>
 
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"

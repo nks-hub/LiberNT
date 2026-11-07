@@ -138,10 +138,9 @@ NciGetConnectionName(
     Error = RegGetValueW(HKEY_LOCAL_MACHINE, Path, L"Name", RRF_RT_REG_SZ, NULL, Name, &Size);
     if (Error == ERROR_SUCCESS || Error == ERROR_MORE_DATA)
     {
+        /* Windows 11 answers a size query without a buffer with success */
         if (OutDestNameBytes)
             *OutDestNameBytes = Size;
-        if (Name == NULL && Error == ERROR_SUCCESS)
-            Error = ERROR_MORE_DATA;
     }
     return Error;
 }

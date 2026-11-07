@@ -46,10 +46,20 @@ NetioLuidIndex(
     _In_ const NET_LUID *Luid)
 {
     NET_IFINDEX Index;
+    NET_LUID AdapterLuid;
 
     if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
         return Index;
-    return (ULONG)Luid->Info.NetLuidIndex;
+
+    /*
+     * Only an interface without an NDIS adapter has a LUID made from its index
+     * (see NetioInterfaceLuid). An interface with an adapter at that index is
+     * another one; 0 matches no interface.
+     */
+    Index = (NET_IFINDEX)Luid->Info.NetLuidIndex;
+    if (NdisIfGetNetLuidFromInterfaceIndex(Index, &AdapterLuid) == NDIS_STATUS_SUCCESS && AdapterLuid.Value)
+        return 0;
+    return Index;
 }
 
 typedef struct _NETIO_TDI_ROUTE
@@ -338,8 +348,13 @@ GetBestRoute2(
     {
         return STATUS_NOT_SUPPORTED;
     }
-    if (InterfaceLuid != NULL && InterfaceIndex == 0)
+    if (InterfaceLuid != NULL && InterfaceIndex == 0 && InterfaceLuid->Value != 0)
+    {
+        /* An unknown LUID names no interface, not any of them */
         InterfaceIndex = NetioLuidIndex(InterfaceLuid);
+        if (InterfaceIndex == 0)
+            return STATUS_NOT_FOUND;
+    }
     if (DestinationAddress->si_family == AF_INET6)
         return NetioGetBestRoute6(InterfaceIndex, SourceAddress, DestinationAddress, BestRoute, BestSourceAddress);
 

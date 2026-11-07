@@ -274,11 +274,15 @@ ScmReleaseNotify(PNOTIFY_HANDLE pNotify)
 }
 
 
-/* lpService is NULL for a notification of the service database */
+/*
+ * lpService is NULL for a notification of the service database, which names
+ * the created or deleted service in lpServiceName instead
+ */
 static VOID
 ScmFillNotify(PNOTIFY_HANDLE pNotify,
               PSERVICE lpService,
-              DWORD dwTriggered)
+              DWORD dwTriggered,
+              LPCWSTR lpServiceName)
 {
     PSC_RPC_NOTIFY_PARAMS_LIST pList;
     PSERVICE_NOTIFY_STATUS_CHANGE_PARAMS_2 pParams;
@@ -301,6 +305,18 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
         RtlCopyMemory(&pParams->ServiceStatus, &lpService->Status, sizeof(SERVICE_STATUS));
         if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
             pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
+    }
+    if (lpServiceName != NULL)
+    {
+        /* As on Windows, the name of a created service starts with a slash */
+        SIZE_T cchName = wcslen(lpServiceName) + 2;
+
+        pParams->pszServiceNames = HeapAlloc(GetProcessHeap(), 0, cchName * sizeof(WCHAR));
+        if (pParams->pszServiceNames != NULL)
+        {
+            wcscpy(pParams->pszServiceNames, (dwTriggered & SERVICE_NOTIFY_CREATED) ? L"/" : L"");
+            wcscat(pParams->pszServiceNames, lpServiceName);
+        }
     }
     pParams->dwNotificationStatus = ERROR_SUCCESS;
     pParams->dwNotificationTriggered = dwTriggered;
@@ -333,7 +349,7 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
         if (hSvc->pNotify != NULL && (hSvc->pNotify->dwNotifyMask & dwMask))
         {
-            ScmFillNotify(hSvc->pNotify, lpService, dwMask);
+            ScmFillNotify(hSvc->pNotify, lpService, dwMask, NULL);
             ScmReleaseNotify(hSvc->pNotify);
             hSvc->pNotify = NULL;
             hSvc->bStatusNotified = TRUE;
@@ -349,9 +365,10 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
 
 /* Completes the pending database notifications that wait for dwTrigger
- * (SERVICE_NOTIFY_CREATED or SERVICE_NOTIFY_DELETED) */
-static VOID
-ScmNotifyServiceDatabase(DWORD dwTrigger)
+ * (SERVICE_NOTIFY_CREATED or SERVICE_NOTIFY_DELETED) of lpServiceName */
+VOID
+ScmNotifyServiceDatabase(DWORD dwTrigger,
+                         LPCWSTR lpServiceName)
 {
     PLIST_ENTRY Entry, Next;
     PMANAGER_HANDLE hManager;
@@ -366,7 +383,7 @@ ScmNotifyServiceDatabase(DWORD dwTrigger)
             continue;
 
         RemoveEntryList(Entry);
-        ScmFillNotify(hManager->pNotify, NULL, dwTrigger);
+        ScmFillNotify(hManager->pNotify, NULL, dwTrigger, lpServiceName);
         ScmReleaseNotify(hManager->pNotify);
         hManager->pNotify = NULL;
     }
@@ -1518,9 +1535,6 @@ RDeleteService(
 Done:
     /* Unlock the service database */
     ScmUnlockDatabase();
-
-    if (dwError == ERROR_SUCCESS)
-        ScmNotifyServiceDatabase(SERVICE_NOTIFY_DELETED);
 
     DPRINT("RDeleteService() done\n");
 
@@ -2991,7 +3005,7 @@ done:
         if (lpdwTagId != NULL)
             *lpdwTagId = lpService->dwTag;
 
-        ScmNotifyServiceDatabase(SERVICE_NOTIFY_CREATED);
+        ScmNotifyServiceDatabase(SERVICE_NOTIFY_CREATED, lpService->lpServiceName);
     }
     else
     {
@@ -7104,7 +7118,7 @@ RNotifyServiceStatusChange(
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
     if (!hSvc->bStatusNotified && (pNotify->dwNotifyMask & dwMask))
     {
-        ScmFillNotify(pNotify, lpService, dwMask);
+        ScmFillNotify(pNotify, lpService, dwMask, NULL);
         hSvc->bStatusNotified = TRUE;
     }
     else

@@ -545,10 +545,11 @@ HalpPhase0SetPciDataByOffset(
 
 /* HAL PCI CALLBACKS *********************************************************/
 
+/* The mini HAL of the boot loader has no extended configuration window */
+#ifndef _MINIHAL_
 static ULONGLONG HalpPciExtendedConfigBase;
 static ULONG HalpPciExtendedConfigStartBus;
 static ULONG HalpPciExtendedConfigEndBus;
-#ifndef _MINIHAL_
 static PUCHAR HalpPciExtendedConfigBus[PCI_MAX_BRIDGE_NUMBER + 1];
 #endif
 
@@ -559,9 +560,15 @@ HalpPciSetExtendedConfigWindow(
     _In_ ULONG StartBus,
     _In_ ULONG EndBus)
 {
+#ifndef _MINIHAL_
     HalpPciExtendedConfigBase = BaseAddress;
     HalpPciExtendedConfigStartBus = StartBus;
     HalpPciExtendedConfigEndBus = min(EndBus, PCI_MAX_BRIDGE_NUMBER);
+#else
+    UNREFERENCED_PARAMETER(BaseAddress);
+    UNREFERENCED_PARAMETER(StartBus);
+    UNREFERENCED_PARAMETER(EndBus);
+#endif
 }
 
 static

@@ -1,4 +1,10 @@
-/* SPDX-License-Identifier: BSD-2-Clause */
+/*
+ * PROJECT:     LiberNT Session Manager
+ * LICENSE:     BSD-2-Clause (https://spdx.org/licenses/BSD-2-Clause)
+ * PURPOSE:     UpdateExecute commands that run after the registry is initialized
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ */
+
 #include "smss.h"
 
 #define NDEBUG
@@ -10,6 +16,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
 {
     UNICODE_STRING Command, FileName, Directory, Arguments;
     RTL_USER_PROCESS_INFORMATION ProcessInfo;
+    PROCESS_BASIC_INFORMATION BasicInfo;
     ULONG Flags = 0;
     NTSTATUS Status;
 
@@ -38,8 +45,23 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
             {
                 if (ProcessInfo.ImageInformation.SubSystemType == IMAGE_SUBSYSTEM_NATIVE)
                 {
-                    NtResumeThread(ProcessInfo.ThreadHandle, NULL);
-                    NtWaitForSingleObject(ProcessInfo.ProcessHandle, FALSE, NULL);
+                    Status = NtResumeThread(ProcessInfo.ThreadHandle, NULL);
+                    if (NT_SUCCESS(Status))
+                        Status = NtWaitForSingleObject(ProcessInfo.ProcessHandle, FALSE, NULL);
+                    if (Status == STATUS_WAIT_0)
+                    {
+                        /* The command reports its own failure through its exit status */
+                        Status = NtQueryInformationProcess(ProcessInfo.ProcessHandle, ProcessBasicInformation,
+                                                           &BasicInfo, sizeof(BasicInfo), NULL);
+                        if (NT_SUCCESS(Status))
+                            Status = BasicInfo.ExitStatus;
+                    }
+                    else
+                    {
+                        NtTerminateProcess(ProcessInfo.ProcessHandle, Status);
+                        if (NT_SUCCESS(Status))
+                            Status = STATUS_UNSUCCESSFUL;
+                    }
                 }
                 else
                 {

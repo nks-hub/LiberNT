@@ -38,7 +38,7 @@ typedef struct _SW_DEVICE
     HANDLE Thread;
     DWORD ThreadId;
     BOOL Reopened;
-    /* SwDeviceClose waits for the calls that use the handle */
+    /* One reference for the handle and one for each call that uses it */
     volatile LONG ActiveCalls;
     volatile LONG Closing;
     HANDLE Idle;
@@ -149,18 +149,29 @@ CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source
 static BOOL
 EnterSwDevice(_In_ PSW_DEVICE Device)
 {
-    InterlockedIncrement(&Device->ActiveCalls);
-    if (!Device->Closing)
-        return TRUE;
-    if (!InterlockedDecrement(&Device->ActiveCalls))
-        SetEvent(Device->Idle);
-    return FALSE;
+    LONG Count = Device->ActiveCalls, Previous;
+
+    /* Once SwDeviceClose dropped the handle reference the count never rises again */
+    for (;;)
+    {
+        if (!Count || Device->Closing)
+            return FALSE;
+        Previous = InterlockedCompareExchange(&Device->ActiveCalls, Count + 1, Count);
+        if (Previous == Count)
+            return TRUE;
+        Count = Previous;
+    }
 }
 
+/*
+ * Only the call that drops the last reference touches Device afterwards, and
+ * SwDeviceClose, which dropped the handle reference before, frees nothing
+ * until that call has set Idle.
+ */
 static VOID
 LeaveSwDevice(_In_ PSW_DEVICE Device)
 {
-    if (!InterlockedDecrement(&Device->ActiveCalls) && Device->Closing)
+    if (!InterlockedDecrement(&Device->ActiveCalls))
         SetEvent(Device->Idle);
 }
 
@@ -674,6 +685,7 @@ SwDeviceCreate(
     }
     InitializeCriticalSection(&Device->LifetimeLock);
 
+    Device->ActiveCalls = 1;
     Device->Lifetime = SWDeviceLifetimeHandle;
     Device->Capabilities = pCreateInfo->CapabilityFlags;
     Device->Callback = pCallback;
@@ -759,7 +771,7 @@ SwDeviceClose(
 
     /* Calls that already use the handle finish first; later ones fail */
     InterlockedExchange(&Device->Closing, TRUE);
-    if (Device->ActiveCalls)
+    if (InterlockedDecrement(&Device->ActiveCalls))
         WaitForSingleObject(Device->Idle, INFINITE);
 
     /* Let a pending creation finish, unless the callback itself closes the handle */

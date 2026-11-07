@@ -5308,16 +5308,17 @@ static DWORD
 ScmQueryDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, LPBYTE lpBuffer, DWORD cbBufSize,
                     LPBOUNDED_DWORD_8K pcbBytesNeeded)
 {
-    /* Windows documents a default pre-shutdown timeout of three minutes */
-    DWORD dwValue = (dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO) ? 180000 : 0;
-    DWORD dwData, dwSize = sizeof(dwData), dwType = REG_NONE;
+    /* Since Windows 10 1703 the default pre-shutdown timeout is 10 seconds */
+    DWORD dwValue = (dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO) ? 10000 : 0;
+    DWORD dwData = 0, dwSize = sizeof(dwData), dwType = REG_NONE;
 
     *pcbBytesNeeded = sizeof(DWORD);
     if (cbBufSize < sizeof(DWORD))
         return ERROR_INSUFFICIENT_BUFFER;
 
     if (RegQueryValueExW(hServiceKey, ScmDwordConfigValueName(dwInfoLevel), NULL, &dwType,
-                         (LPBYTE)&dwData, &dwSize) == ERROR_SUCCESS && dwType == REG_DWORD)
+                         (LPBYTE)&dwData, &dwSize) == ERROR_SUCCESS && dwType == REG_DWORD &&
+        dwSize == sizeof(DWORD))
     {
         dwValue = dwData;
     }

@@ -2749,6 +2749,83 @@ ScmIsDeferredDuringSetup(
 }
 
 
+/* A DWORD of the service key, or Default when it has none */
+static DWORD
+ScmGetServiceDword(
+    _In_ PSERVICE pService,
+    _In_ PCWSTR pszValueName,
+    _In_ DWORD dwDefault)
+{
+    DWORD dwValue = dwDefault, dwSize = sizeof(dwValue), dwType = REG_NONE;
+    HKEY hServiceKey;
+
+    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hServiceKey) != ERROR_SUCCESS)
+        return dwDefault;
+    if (RegQueryValueExW(hServiceKey, pszValueName, NULL, &dwType, (LPBYTE)&dwValue, &dwSize) != ERROR_SUCCESS ||
+        dwType != REG_DWORD || dwSize != sizeof(DWORD))
+    {
+        dwValue = dwDefault;
+    }
+    RegCloseKey(hServiceKey);
+    return dwValue;
+}
+
+/* Windows starts delayed automatic services about two minutes after the others */
+#define SCM_DELAYED_AUTO_START_DELAY (120 * 1000)
+
+static DWORD
+WINAPI
+ScmDelayedAutoStartThread(
+    _In_ PVOID Context)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService, *Services;
+    ULONG Count = 0, i;
+
+    UNREFERENCED_PARAMETER(Context);
+
+    Sleep(SCM_DELAYED_AUTO_START_DELAY);
+    if (ScmShutdown)
+        return 0;
+
+    /* Starting needs the database unlocked; the references keep the services */
+    ScmLockDatabaseShared();
+    for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
+        Count++;
+    Services = HeapAlloc(GetProcessHeap(), 0, max(Count, 1) * sizeof(*Services));
+    Count = 0;
+    for (ServiceEntry = ServiceListHead.Flink;
+         Services != NULL && ServiceEntry != &ServiceListHead;
+         ServiceEntry = ServiceEntry->Flink)
+    {
+        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+        if (CurrentService->dwStartType == SERVICE_AUTO_START && !CurrentService->bDeleted &&
+            CurrentService->Status.dwCurrentState == SERVICE_STOPPED &&
+            ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
+        {
+            ScmReferenceService(CurrentService);
+            Services[Count++] = CurrentService;
+        }
+    }
+    ScmUnlockDatabase();
+    if (Services == NULL)
+        return ERROR_NOT_ENOUGH_MEMORY;
+
+    for (i = 0; i < Count && !ScmShutdown; i++)
+    {
+        DWORD dwError = ScmStartService(Services[i], 0, NULL);
+        if (dwError != ERROR_SUCCESS && dwError != ERROR_SERVICE_ALREADY_RUNNING)
+            DPRINT1("Delayed start of %S failed (Error %lu)\n", Services[i]->lpServiceName, dwError);
+    }
+
+    ScmLockDatabaseExclusive();
+    for (i = 0; i < Count; i++)
+        ScmDereferenceService(Services[i]);
+    ScmUnlockDatabase();
+    HeapFree(GetProcessHeap(), 0, Services);
+    return 0;
+}
+
 VOID
 ScmAutoStartServices(VOID)
 {
@@ -2759,6 +2836,8 @@ ScmAutoStartServices(VOID)
     PSERVICE CurrentService;
     DWORD SafeBootEnabled;
     HKEY hSafeBootKey = NULL;
+    BOOL bDelayed = FALSE;
+    HANDLE hThread;
     ULONG i;
 
     /*
@@ -2789,6 +2868,14 @@ ScmAutoStartServices(VOID)
             ((SafeBootEnabled != 0) &&
              !ScmIsSafeBootServiceAllowed(CurrentService, hSafeBootKey)) ||
             ScmIsDeferredDuringSetup(CurrentService);
+
+        /* A delayed automatic service starts after all the others */
+        if (!CurrentService->ServiceVisited && CurrentService->dwStartType == SERVICE_AUTO_START &&
+            ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
+        {
+            CurrentService->ServiceVisited = TRUE;
+            bDelayed = TRUE;
+        }
 
         ServiceEntry = ServiceEntry->Flink;
     }
@@ -2891,6 +2978,15 @@ ScmAutoStartServices(VOID)
 
     /* Release the critical section */
     LeaveCriticalSection(&ControlServiceCriticalSection);
+
+    if (bDelayed)
+    {
+        hThread = CreateThread(NULL, 0, ScmDelayedAutoStartThread, NULL, 0, NULL);
+        if (hThread != NULL)
+            CloseHandle(hThread);
+        else
+            DPRINT1("Cannot start the delayed automatic services (Error %lu)\n", GetLastError());
+    }
 }
 
 

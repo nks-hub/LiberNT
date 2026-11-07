@@ -235,6 +235,25 @@ Ndis6ReadNetLuidIndex(
     return Value;
 }
 
+/* Reserves the next free index for IfType in Next; only a collision moves on, 0x10000 of them fail */
+static NTSTATUS
+Ndis6ReserveNextNetLuidIndex(
+    _In_ NET_IFTYPE IfType,
+    _Out_ PLONG Next)
+{
+    NTSTATUS Status;
+    ULONG Tries;
+
+    for (Tries = 0; Tries < 0x10000; Tries++)
+    {
+        *Next = (LONG)Ndis6AllocateInterfaceIndex();
+        Status = Ndis6ReserveNetLuidIndex(IfType, (UINT32)*Next);
+        if (Status != STATUS_OBJECT_NAME_COLLISION)
+            return Status;
+    }
+    return STATUS_INSUFFICIENT_RESOURCES;
+}
+
 static NTSTATUS
 Ndis6AllocateInterfaceIdentity(
     _In_opt_ PDEVICE_OBJECT Pdo,
@@ -243,7 +262,6 @@ Ndis6AllocateInterfaceIdentity(
     LONG Next;
     NET_IFTYPE IfType;
     UINT32 LuidIndex;
-    ULONG Tries;
     NTSTATUS Status = STATUS_OBJECT_NAME_COLLISION;
 
     /* The network class installer stores the NetLuidIndex of the adapter in
@@ -257,27 +275,52 @@ Ndis6AllocateInterfaceIdentity(
         Status = Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
     if (Status == STATUS_INSUFFICIENT_RESOURCES)
         return Status;
-    Next = (LONG)Ndis6AllocateInterfaceIndex();
     if (Status == STATUS_OBJECT_NAME_COLLISION)
     {
-        /* Only a collision moves on to the next index; no free one in 0x10000 tries fails */
-        for (Tries = 0; Tries < 0x10000; Tries++)
-        {
-            Status = Ndis6ReserveNetLuidIndex(IfType, (UINT32)Next);
-            if (Status != STATUS_OBJECT_NAME_COLLISION)
-                break;
-            Next = (LONG)Ndis6AllocateInterfaceIndex();
-        }
-        if (Status == STATUS_OBJECT_NAME_COLLISION)
-            Status = STATUS_INSUFFICIENT_RESOURCES;
+        Status = Ndis6ReserveNextNetLuidIndex(IfType, &Next);
         if (!NT_SUCCESS(Status))
             return Status;
         LuidIndex = (UINT32)Next;
+    }
+    else
+    {
+        Next = (LONG)Ndis6AllocateInterfaceIndex();
     }
 
     Ext->NetLuidIndexReserved = TRUE;
     Ext->IfIndex = (NET_IFINDEX)Next;
     Ext->NetLuid.Value = 0;
+    Ext->NetLuid.Info.IfType = IfType;
+    Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
+    return STATUS_SUCCESS;
+}
+
+/*
+ * Moves the reserved NetLuidIndex of Ext to IfType: the new pair is reserved
+ * before the old one is freed, so a failure keeps the old identity.
+ */
+static NTSTATUS
+Ndis6RetypeInterfaceIdentity(
+    _Inout_ PNDIS6_ADAPTER_EXT Ext,
+    _In_ NET_IFTYPE IfType)
+{
+    UINT32 LuidIndex = (UINT32)Ext->NetLuid.Info.NetLuidIndex;
+    LONG Next;
+    NTSTATUS Status;
+
+    if (Ext->NetLuid.Info.IfType == IfType)
+        return STATUS_SUCCESS;
+
+    Status = Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    if (Status == STATUS_OBJECT_NAME_COLLISION)
+    {
+        Status = Ndis6ReserveNextNetLuidIndex(IfType, &Next);
+        LuidIndex = (UINT32)Next;
+    }
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    NdisIfFreeNetLuidIndex((NET_IFTYPE)Ext->NetLuid.Info.IfType, (UINT32)Ext->NetLuid.Info.NetLuidIndex);
     Ext->NetLuid.Info.IfType = IfType;
     Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
     return STATUS_SUCCESS;
@@ -2100,8 +2143,14 @@ Ndis6CreateLwmInstance(
     }
 
     Ext = NDIS6_EXT(Adapter);
+    Status = Ndis6RetypeInterfaceIdentity(Ext, IfType);
+    if (!NT_SUCCESS(Status))
+    {
+        RtlFreeUnicodeString(&ConfigurationPath);
+        Ndis6DestroyLogicalAdapter(Adapter);
+        return NDIS_STATUS_RESOURCES;
+    }
     Ext->MiniportAdapterContext = MiniportAdapterContext;
-    Ext->NetLuid.Info.IfType = IfType;
     Ext->LwmConfigurationPath = ConfigurationPath;
     KeInitializeEvent(&Ext->LwmStartDoneEvent, NotificationEvent, TRUE);
     Ndis6ImSeedTcpipRegistry(&Name);

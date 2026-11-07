@@ -25,6 +25,104 @@ GetProcessToken(
     return Token;
 }
 
+static
+PTOKEN_GROUPS
+QueryGroups(
+    _In_ HANDLE Token)
+{
+    NTSTATUS Status;
+    ULONG Size = 0;
+    PTOKEN_GROUPS Groups;
+
+    Status = NtQueryInformationToken(Token, TokenGroups, NULL, 0, &Size);
+    if (Status != STATUS_BUFFER_TOO_SMALL)
+        return NULL;
+    Groups = RtlAllocateHeap(RtlGetProcessHeap(), 0, Size);
+    if (Groups && !NT_SUCCESS(NtQueryInformationToken(Token, TokenGroups, Groups, Size, &Size)))
+    {
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Groups);
+        Groups = NULL;
+    }
+    return Groups;
+}
+
+/* Disabling one group leaves the others alone, and a reset enables it again */
+static
+VOID
+AdjustOneGroup(VOID)
+{
+    NTSTATUS Status;
+    HANDLE ProcessToken, Token;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    PTOKEN_GROUPS Before = NULL, After = NULL, Reset = NULL;
+    TOKEN_GROUPS Disable;
+    ULONG Index, Target = MAXULONG;
+
+    ProcessToken = GetProcessToken(TOKEN_DUPLICATE);
+    if (!ProcessToken)
+        return;
+    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
+    Status = NtDuplicateToken(ProcessToken, TOKEN_ADJUST_GROUPS | TOKEN_QUERY, &ObjectAttributes,
+                              FALSE, TokenPrimary, &Token);
+    CloseHandle(ProcessToken);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    Before = QueryGroups(Token);
+    for (Index = 0; Before && Index < Before->GroupCount; Index++)
+    {
+        if ((Before->Groups[Index].Attributes & (SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_MANDATORY)) ==
+            (SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT))
+        {
+            Target = Index;
+            break;
+        }
+    }
+    if (Target == MAXULONG)
+    {
+        skip("The token has no optional group that is enabled by default\n");
+        goto Cleanup;
+    }
+
+    Disable.GroupCount = 1;
+    Disable.Groups[0].Sid = Before->Groups[Target].Sid;
+    Disable.Groups[0].Attributes = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, NULL, NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+
+    After = QueryGroups(Token);
+    ok(After != NULL && After->GroupCount == Before->GroupCount, "The group count changed\n");
+    for (Index = 0; After && Index < After->GroupCount && Index < Before->GroupCount; Index++)
+    {
+        if (Index == Target)
+            ok(After->Groups[Index].Attributes == (Before->Groups[Index].Attributes & ~SE_GROUP_ENABLED),
+               "Group %lu has attributes 0x%lx, expected 0x%lx\n", Index, After->Groups[Index].Attributes,
+               Before->Groups[Index].Attributes & ~SE_GROUP_ENABLED);
+        else
+            ok(After->Groups[Index].Attributes == Before->Groups[Index].Attributes,
+               "Group %lu has attributes 0x%lx, expected 0x%lx\n", Index, After->Groups[Index].Attributes,
+               Before->Groups[Index].Attributes);
+    }
+
+    Status = NtAdjustGroupsToken(Token, TRUE, NULL, 0, NULL, NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    Reset = QueryGroups(Token);
+    ok(Reset != NULL && Reset->GroupCount == Before->GroupCount, "The group count changed\n");
+    for (Index = 0; Reset && Index < Reset->GroupCount && Index < Before->GroupCount; Index++)
+    {
+        ok(Reset->Groups[Index].Attributes == Before->Groups[Index].Attributes,
+           "Group %lu has attributes 0x%lx after the reset, expected 0x%lx\n", Index,
+           Reset->Groups[Index].Attributes, Before->Groups[Index].Attributes);
+    }
+
+Cleanup:
+    if (Before) RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+    if (After) RtlFreeHeap(RtlGetProcessHeap(), 0, After);
+    if (Reset) RtlFreeHeap(RtlGetProcessHeap(), 0, Reset);
+    CloseHandle(Token);
+}
+
 START_TEST(NtAdjustGroupsToken)
 {
     HANDLE TokenHandle;
@@ -74,4 +172,6 @@ START_TEST(NtAdjustGroupsToken)
     ok_hex(Status, STATUS_SUCCESS);
 
     CloseHandle(TokenHandle);
+
+    AdjustOneGroup();
 }

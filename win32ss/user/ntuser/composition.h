@@ -172,6 +172,8 @@ VOID IntCompositionOnDisplayChangeEnd(VOID);
 
 /* Damage: a window (NULL = the whole frame) changed — schedule a recompose. */
 VOID IntCompositionDamageWindow(_In_opt_ PWND Wnd);
+VOID IntCompositionPointerChanged(VOID);
+VOID IntCompositionPrepareScreenRead(_In_opt_ HDC hDC);
 VOID IntCompositionAnimateMove(_In_opt_ PWND Wnd, _In_opt_ const RECTL *From);
 VOID IntCompositionDamageWindowMetadata(_In_opt_ PWND Wnd);
 BOOLEAN IntCompositionIsFrameAtom(_In_ ATOM Atom);

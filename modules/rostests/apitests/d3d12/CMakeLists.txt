@@ -6,11 +6,16 @@ list(APPEND SOURCE
     bgwork.cpp
     blend.cpp
     bundle.cpp
+    capsuse.cpp
+    ddibuild.cpp
     device.cpp
     dred.cpp
     factory.cpp
+    fencekill.cpp
+    mesh.cpp
     feedback.cpp
     features.cpp
+    formatsupport.cpp
     heaps.cpp
     interfaces.cpp
     pipeline.cpp
@@ -37,6 +42,7 @@ list(APPEND SOURCE
     vrs.cpp
     testlist.c)
 
+set_source_files_properties(ddibuild.cpp PROPERTIES COMPILE_FLAGS "-UD3D_UMD_INTERFACE_VERSION -DD3D_UMD_INTERFACE_VERSION=0x11000")
 add_executable(d3d12_apitest ${SOURCE})
 set_module_type(d3d12_apitest win32cui)
 target_compile_definitions(d3d12_apitest PRIVATE WIDL_EXPLICIT_AGGREGATE_RETURNS)

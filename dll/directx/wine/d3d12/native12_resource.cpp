@@ -132,12 +132,95 @@ static bool Native12DisplayFormat(DXGI_FORMAT format)
             || format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
-void Native12FormatSupport(DXGI_FORMAT format, UINT ddi_support, D3D12_FORMAT_SUPPORT1 *support1,
-        D3D12_FORMAT_SUPPORT2 *support2)
+struct NATIVE_FORMAT_REQUIREMENT
+{
+    DXGI_FORMAT Format;
+    UINT Support[3];
+    UINT Allowed[3];
+    UINT RequiredLevels;
+};
+
+struct NATIVE_LEVEL9_FORMAT
+{
+    DXGI_FORMAT Format;
+    UINT Required[3];
+    UINT Allowed[3];
+};
+
+#include "../d3d11/native_formats.inl"
+
+static const UINT Native12VideoSupport = D3D12_FORMAT_SUPPORT1_DECODER_OUTPUT
+        | D3D12_FORMAT_SUPPORT1_VIDEO_PROCESSOR_OUTPUT | D3D12_FORMAT_SUPPORT1_VIDEO_PROCESSOR_INPUT
+        | D3D12_FORMAT_SUPPORT1_VIDEO_ENCODER;
+static const UINT Native12UnlistedSupport = Native12VideoSupport | D3D12_FORMAT_SUPPORT1_BACK_BUFFER_CAST
+        | D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
+static const UINT Native12D3D11OnlySupport = D3D11_FORMAT_SUPPORT_MIP_AUTOGEN | D3D11_FORMAT_SUPPORT_CPU_LOCKABLE;
+static const UINT Native12Level11Column = 2;
+
+static bool Native12ListedAllows(DXGI_FORMAT format, UINT support)
+{
+    const NATIVE_FORMAT_REQUIREMENT *found = NULL;
+
+    for (const NATIVE_FORMAT_REQUIREMENT &entry : NativeFormatRequirements)
+    {
+        if (entry.Format == format) found = &entry;
+    }
+    return found && (found->Allowed[Native12Level11Column] & support) == support;
+}
+
+static UINT Native12ListedSupport(DXGI_FORMAT format, UINT support)
+{
+    const NATIVE_FORMAT_REQUIREMENT *found = NULL;
+
+    for (const NATIVE_FORMAT_REQUIREMENT &entry : NativeFormatRequirements)
+    {
+        if (entry.Format == format) found = &entry;
+    }
+    if (format <= DXGI_FORMAT_B4G4R4A4_UNORM)
+        support &= Native12UnlistedSupport | (found ? found->Allowed[Native12Level11Column] : 0);
+    if (found) support |= found->Support[Native12Level11Column] & ~Native12VideoSupport;
+    return support & ~Native12D3D11OnlySupport;
+}
+
+static bool Native12LogicOpFormat(DXGI_FORMAT format)
+{
+    switch (format)
+    {
+        case DXGI_FORMAT_R32G32B32A32_UINT: case DXGI_FORMAT_R32G32B32_UINT:
+        case DXGI_FORMAT_R16G16B16A16_UINT: case DXGI_FORMAT_R32G32_UINT:
+        case DXGI_FORMAT_R10G10B10A2_UINT: case DXGI_FORMAT_R8G8B8A8_UINT:
+        case DXGI_FORMAT_R16G16_UINT: case DXGI_FORMAT_R32_UINT:
+        case DXGI_FORMAT_R8G8_UINT: case DXGI_FORMAT_R16_UINT: case DXGI_FORMAT_R8_UINT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool Native12TiledFormat(DXGI_FORMAT format)
+{
+    if (format > DXGI_FORMAT_B4G4R4A4_UNORM || (format >= DXGI_FORMAT_AYUV && format <= DXGI_FORMAT_A8P8)) return false;
+    switch (format)
+    {
+        case DXGI_FORMAT_R32G32B32_TYPELESS: case DXGI_FORMAT_R32G32B32_FLOAT:
+        case DXGI_FORMAT_R32G32B32_UINT: case DXGI_FORMAT_R32G32B32_SINT:
+        case DXGI_FORMAT_R32G8X24_TYPELESS: case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+        case DXGI_FORMAT_R32_FLOAT_X8X24_TYPELESS: case DXGI_FORMAT_X32_TYPELESS_G8X24_UINT:
+        case DXGI_FORMAT_R24G8_TYPELESS: case DXGI_FORMAT_D24_UNORM_S8_UINT:
+        case DXGI_FORMAT_R24_UNORM_X8_TYPELESS: case DXGI_FORMAT_X24_TYPELESS_G8_UINT:
+        case DXGI_FORMAT_R1_UNORM: case DXGI_FORMAT_R8G8_B8G8_UNORM: case DXGI_FORMAT_G8R8_G8B8_UNORM:
+            return false;
+        default:
+            return true;
+    }
+}
+
+void Native12FormatSupport(DXGI_FORMAT format, UINT ddi_support, bool logic_op, bool tiled,
+        D3D12_FORMAT_SUPPORT1 *support1, D3D12_FORMAT_SUPPORT2 *support2)
 {
     UINT first = 0, second = 0;
     Native12FormatInfo info = {};
-    bool known = Native12GetFormatInfo(format, &info);
+    Native12GetFormatInfo(format, &info);
     bool integer = Native12IntegerFormat(format);
     bool depth = Native12DepthFormat(format);
     bool block_compressed = info.block_width == 4 && info.block_height == 4;
@@ -162,12 +245,14 @@ void Native12FormatSupport(DXGI_FORMAT format, UINT ddi_support, D3D12_FORMAT_SU
         if (ddi_support & D3D11_1DDI_FORMAT_SUPPORT_VIDEO_PROCESSOR_INPUT)
             first |= D3D12_FORMAT_SUPPORT1_VIDEO_PROCESSOR_INPUT;
         if (ddi_support & D3D11_1DDI_FORMAT_SUPPORT_VIDEO_ENCODER) first |= D3D12_FORMAT_SUPPORT1_VIDEO_ENCODER;
-        if (ddi_support & D3D11_1DDI_FORMAT_SUPPORT_UAV_WRITES)
+        /* A driver's typed UAV beyond the format list needs writes; reads alone imply it only where the list allows it. */
+        if ((ddi_support & D3D11_1DDI_FORMAT_SUPPORT_UAV_WRITES) || ((ddi_support & D3DWDDM2_0DDI_FORMAT_SUPPORT_UAV_READS)
+                && Native12ListedAllows(format, D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW)))
         {
             first |= D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW;
             second |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE;
+            if (ddi_support & D3DWDDM2_0DDI_FORMAT_SUPPORT_UAV_READS) second |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
         }
-        if (ddi_support & D3DWDDM2_0DDI_FORMAT_SUPPORT_UAV_READS) second |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
         if (ddi_support & D3D11_1DDI_FORMAT_SUPPORT_OUTPUT_MERGER_LOGIC_OP)
             second |= D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
         if (ddi_support & D3D11_1DDI_FORMAT_SUPPORT_MULTIPLANE_OVERLAY)
@@ -196,8 +281,18 @@ void Native12FormatSupport(DXGI_FORMAT format, UINT ddi_support, D3D12_FORMAT_SU
     }
     if (format == DXGI_FORMAT_R16_UINT || format == DXGI_FORMAT_R32_UINT)
         first |= D3D12_FORMAT_SUPPORT1_IA_INDEX_BUFFER;
-    if (known && info.block_bytes && !block_compressed && !depth && info.planes == 1)
-        first |= D3D12_FORMAT_SUPPORT1_BUFFER | D3D12_FORMAT_SUPPORT1_IA_VERTEX_BUFFER;
+    first = Native12ListedSupport(format, first);
+    if (first & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) second |= D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE;
+    if (format == DXGI_FORMAT_R32_FLOAT && (second & D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE))
+        second |= D3D12_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE;
+    if (logic_op && (first & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) && Native12LogicOpFormat(format))
+        second |= D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
+    if (tiled && Native12TiledFormat(format)) second |= D3D12_FORMAT_SUPPORT2_TILED;
+    if ((first & D3D12_FORMAT_SUPPORT1_DISPLAY) && (format == DXGI_FORMAT_R8G8B8A8_UNORM
+            || format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB || format == DXGI_FORMAT_R10G10B10A2_UNORM
+            || format == DXGI_FORMAT_R10G10B10_XR_BIAS_A2_UNORM || format == DXGI_FORMAT_B8G8R8A8_UNORM
+            || format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB))
+        first |= D3D12_FORMAT_SUPPORT1_BACK_BUFFER_CAST;
     *support1 = static_cast<D3D12_FORMAT_SUPPORT1>(first);
     *support2 = static_cast<D3D12_FORMAT_SUPPORT2>(second);
 }
@@ -316,8 +411,8 @@ static UINT16 Native12MipLevels(const D3D12_RESOURCE_DESC *desc)
     return levels;
 }
 
-static void Native12ResourceArguments(const D3D12_RESOURCE_DESC *desc, D3D12_RESOURCE_STATES initial_state,
-        D3D12DDIARG_CREATERESOURCE_0109 *args)
+static void Native12ResourceArguments(UINT ddi_build, const D3D12_RESOURCE_DESC *desc,
+        D3D12_RESOURCE_STATES initial_state, D3D12DDIARG_CREATERESOURCE_0109 *args)
 {
     ZeroMemory(args, sizeof(*args));
     args->ResourceType = static_cast<D3D12DDI_RESOURCE_TYPE>(desc->Dimension);
@@ -329,7 +424,8 @@ static void Native12ResourceArguments(const D3D12_RESOURCE_DESC *desc, D3D12_RES
     args->SampleDesc = desc->SampleDesc;
     args->Layout = static_cast<D3D12DDI_TEXTURE_LAYOUT>(desc->Layout);
     args->Flags = Native12ResourceFlags(desc);
-    args->InitialBarrierLayout = Native12InitialLayout(desc, initial_state);
+    args->InitialBarrierLayout = Native12InitialSlot(ddi_build, Native12InitialLayout(desc, initial_state),
+            desc->Dimension, initial_state);
 }
 
 static void Native12ApplyCreationLayout(const Native12CreationLayout *layout, D3D12DDIARG_CREATERESOURCE_0109 *args)
@@ -368,7 +464,7 @@ HRESULT Native12Resource::Initialize(const D3D12_HEAP_PROPERTIES *properties, D3
     identity = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(InterlockedIncrement64(&device->resource_sequence)));
 
     D3D12DDIARG_CREATERESOURCE_0109 resource_args;
-    Native12ResourceArguments(&desc, initial_state, &resource_args);
+    Native12ResourceArguments(device->ddi_build, &desc, initial_state, &resource_args);
     Native12ApplyCreationLayout(creation_layout, &resource_args);
     memcpy(&resource_args.SamplerFeedbackMipRegion, &mip_region, sizeof(resource_args.SamplerFeedbackMipRegion));
 
@@ -603,7 +699,7 @@ HRESULT Native12Heap::Initialize(const D3D12_HEAP_DESC *input)
     whole.SampleDesc.Count = 1;
     whole.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     D3D12DDIARG_CREATERESOURCE_0109 resource_args;
-    Native12ResourceArguments(&whole, D3D12_RESOURCE_STATE_COMMON, &resource_args);
+    Native12ResourceArguments(device->ddi_build, &whole, D3D12_RESOURCE_STATE_COMMON, &resource_args);
 
     D3D12DDI_HPROTECTEDRESOURCESESSION_0030 session = {};
     D3D12DDI_HEAP_AND_RESOURCE_SIZES sizes = device->functions.pfnCalcPrivateHeapAndResourceSizes(
@@ -691,7 +787,7 @@ HRESULT Native12Resource::InitializeReserved(const D3D12_RESOURCE_DESC *input, D
     identity = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(InterlockedIncrement64(&device->resource_sequence)));
 
     D3D12DDIARG_CREATERESOURCE_0109 resource_args;
-    Native12ResourceArguments(&desc, initial_state, &resource_args);
+    Native12ResourceArguments(device->ddi_build, &desc, initial_state, &resource_args);
     Native12ApplyCreationLayout(creation_layout, &resource_args);
     D3D12DDI_HPROTECTEDRESOURCESESSION_0030 session = {};
     D3D12DDI_HEAP_AND_RESOURCE_SIZES sizes = device->functions.pfnCalcPrivateHeapAndResourceSizes(
@@ -742,7 +838,7 @@ HRESULT Native12Resource::InitializePlaced(Native12Heap *parent, UINT64 offset, 
     identity = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(InterlockedIncrement64(&device->resource_sequence)));
 
     D3D12DDIARG_CREATERESOURCE_0109 resource_args;
-    Native12ResourceArguments(&desc, initial_state, &resource_args);
+    Native12ResourceArguments(device->ddi_build, &desc, initial_state, &resource_args);
     Native12ApplyCreationLayout(creation_layout, &resource_args);
     memcpy(&resource_args.SamplerFeedbackMipRegion, &mip_region, sizeof(resource_args.SamplerFeedbackMipRegion));
     D3D12DDI_RESOURCE_ALLOCATION_INFO_0022 allocation = {};
@@ -1283,7 +1379,7 @@ D3D12_RESOURCE_ALLOCATION_INFO *Native12Device::GetResourceAllocationInfoRegion(
             out->Alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
             return out;
         }
-        Native12ResourceArguments(&desc, D3D12_RESOURCE_STATE_COMMON, &args);
+        Native12ResourceArguments(ddi_build, &desc, D3D12_RESOURCE_STATE_COMMON, &args);
         if (mip_region) memcpy(&args.SamplerFeedbackMipRegion, mip_region, sizeof(args.SamplerFeedbackMipRegion));
         D3D12DDI_RESOURCE_ALLOCATION_INFO_0022 info = {};
         functions.pfnCheckResourceAllocationInfo(driver_device, &args, D3D12DDI_RESOURCE_OPTIMIZATION_FLAG_NONE,

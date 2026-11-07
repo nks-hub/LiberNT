@@ -2004,6 +2004,16 @@ ULONG NTAPI DxgkAllocateSubmissionFenceId(_In_ PDXGKRNL_ADAPTER Adapter)
     return ProviderFence;
 }
 
+VOID NTAPI DxgkReturnSubmissionFenceId(_In_ PDXGKRNL_ADAPTER Adapter, _In_ ULONG FenceId)
+{
+    DXGMMS2_SCHEDULER_TIMELINE_INTERFACE_V1 Timeline;
+
+    if (Adapter == NULL || FenceId == 0 || !DxgkpAcquireMms2TimelineCall(Adapter, &Timeline))
+        return;
+    (VOID)Timeline.ReturnFence(Timeline.TimelineHandle, Timeline.Generation, FenceId);
+    DxgkpReleaseMms2TimelineCall(Adapter);
+}
+
 BOOLEAN NTAPI DxgkReserveSubmissionFenceIdentity(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _In_ ULONG NodeOrdinal,
@@ -13306,7 +13316,6 @@ DxgkpCloseAndRetireReverseCallbacks(
     if (InterlockedCompareExchange(&Adapter->ReverseCallbackRundownStarted, 1, 0) != 0)
         return STATUS_DELETE_PENDING;
     ExWaitForRundownProtectionRelease(&Adapter->ReverseCallbackRundownRef);
-    DxgkpReleaseMapMemory(Adapter);
     DxgkpReleaseSpbResources(Adapter);
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_4)
     DxgkpReleaseCallbackMemory(Adapter);

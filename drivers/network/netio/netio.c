@@ -1402,6 +1402,189 @@ Done:
     return STATUS_PENDING;
 }
 
+typedef struct _NETIO_SEND_BATCH
+{
+    PIRP UserIrp;
+    PWSK_SOCKET_INTERNAL Socket;
+    PTDI_CONNECTION_INFORMATION Target;
+    LONG Pending;
+    NTSTATUS Status;
+    LONG_PTR Bytes;
+} NETIO_SEND_BATCH, *PNETIO_SEND_BATCH;
+
+typedef struct _NETIO_SEND_ITEM
+{
+    PNETIO_SEND_BATCH Batch;
+    PVOID Copy;
+} NETIO_SEND_ITEM, *PNETIO_SEND_ITEM;
+
+static VOID
+NetioSendItemDone(
+    _In_ PNETIO_SEND_BATCH Batch)
+{
+    if (InterlockedDecrement(&Batch->Pending) != 0)
+        return;
+    Batch->UserIrp->IoStatus.Status = Batch->Status;
+    Batch->UserIrp->IoStatus.Information = NT_SUCCESS(Batch->Status) ? Batch->Bytes : 0;
+    IoCompleteRequest(Batch->UserIrp, IO_NETWORK_INCREMENT);
+    ExFreePoolWithTag(Batch->Target, TAG_AFD_TDI_CONNECTION_INFORMATION);
+    DereferenceSocket(Batch->Socket);
+    ExFreePoolWithTag(Batch, TAG_NETIO);
+}
+
+static NTSTATUS NTAPI
+NetioSendItemComplete(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp,
+    _In_opt_ PVOID Context)
+{
+    PNETIO_SEND_ITEM Item = Context;
+    PNETIO_SEND_BATCH Batch = Item->Batch;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (NT_SUCCESS(Irp->IoStatus.Status))
+        InterlockedExchangeAddSizeT((volatile SIZE_T *)&Batch->Bytes, Irp->IoStatus.Information);
+    else
+        InterlockedCompareExchange(&Batch->Status, Irp->IoStatus.Status, STATUS_SUCCESS);
+    if (Item->Copy)
+        ExFreePoolWithTag(Item->Copy, TAG_NETIO);
+    ExFreePoolWithTag(Item, TAG_NETIO);
+    NetioSendItemDone(Batch);
+    return STATUS_SUCCESS;
+}
+
+/* Sends each buffer as one datagram. Send-side control data (IP_PKTINFO) is not applied:
+ * tcpip picks the source address by its routing. */
+static NTSTATUS WSKAPI
+WskSendMessages(
+    _In_ PWSK_SOCKET SocketParam,
+    _In_ PWSK_BUF_LIST BufferList,
+    _Reserved_ ULONG Flags,
+    _In_opt_ PSOCKADDR RemoteAddress,
+    _In_ ULONG ControlInfoLength,
+    _In_reads_bytes_opt_(ControlInfoLength) PCMSGHDR ControlInfo,
+    _Inout_ PIRP Irp)
+{
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+    PNETIO_SEND_BATCH Batch;
+    PWSK_BUF_LIST Entry;
+    NTSTATUS Status;
+
+    UNREFERENCED_PARAMETER(Flags);
+    UNREFERENCED_PARAMETER(ControlInfoLength);
+    UNREFERENCED_PARAMETER(ControlInfo);
+
+    IoSetNextIrpStackLocation(Irp);
+
+    if (RemoteAddress == NULL || RemoteAddress->sa_family != AF_INET || Socket->LocalAddressFile == NULL)
+    {
+        Status = (Socket->LocalAddressFile == NULL) ? STATUS_INVALID_DEVICE_STATE : STATUS_INVALID_PARAMETER;
+        goto Fail;
+    }
+
+    Batch = ExAllocatePoolZero(NonPagedPool, sizeof(*Batch), TAG_NETIO);
+    if (Batch == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Fail;
+    }
+    Batch->Target = TdiConnectionInfoFromSocketAddress(RemoteAddress);
+    if (Batch->Target == NULL)
+    {
+        ExFreePoolWithTag(Batch, TAG_NETIO);
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Fail;
+    }
+    Batch->UserIrp = Irp;
+    Batch->Socket = Socket;
+    Batch->Status = STATUS_SUCCESS;
+    Batch->Pending = 1;
+    ReferenceSocket(Socket);
+    IoMarkIrpPending(Irp);
+
+    for (Entry = BufferList; Entry != NULL; Entry = Entry->Next)
+    {
+        PNETIO_SEND_ITEM Item;
+        PIRP TdiIrp = NULL;
+        PUCHAR Data = NULL;
+        PMDL Mdl = Entry->Buffer.Mdl;
+        SIZE_T Offset = Entry->Buffer.Offset, Length = Entry->Buffer.Length;
+
+        Item = ExAllocatePoolZero(NonPagedPool, sizeof(*Item), TAG_NETIO);
+        if (Item == NULL)
+        {
+            InterlockedCompareExchange(&Batch->Status, STATUS_INSUFFICIENT_RESOURCES, STATUS_SUCCESS);
+            break;
+        }
+        Item->Batch = Batch;
+
+        if (Mdl != NULL && Offset + Length <= MmGetMdlByteCount(Mdl))
+        {
+            Data = MmGetSystemAddressForMdlSafe(Mdl, NormalPagePriority);
+            if (Data)
+                Data += Offset;
+        }
+        else if (Mdl != NULL)
+        {
+            /* The datagram spans an MDL chain; tcpip takes one flat buffer */
+            SIZE_T Copied = 0;
+
+            Item->Copy = ExAllocatePoolWithTag(NonPagedPool, max(Length, 1), TAG_NETIO);
+            for (; Item->Copy && Mdl && Copied < Length; Mdl = Mdl->Next)
+            {
+                PUCHAR Source = MmGetSystemAddressForMdlSafe(Mdl, NormalPagePriority);
+                SIZE_T Count = MmGetMdlByteCount(Mdl);
+
+                if (Source == NULL)
+                    break;
+                if (Offset >= Count)
+                {
+                    Offset -= Count;
+                    continue;
+                }
+                Count = min(Count - Offset, Length - Copied);
+                RtlCopyMemory((PUCHAR)Item->Copy + Copied, Source + Offset, Count);
+                Copied += Count;
+                Offset = 0;
+            }
+            if (Item->Copy && Copied == Length)
+                Data = Item->Copy;
+        }
+
+        if (Data == NULL && Length != 0)
+        {
+            if (Item->Copy)
+                ExFreePoolWithTag(Item->Copy, TAG_NETIO);
+            ExFreePoolWithTag(Item, TAG_NETIO);
+            InterlockedCompareExchange(&Batch->Status, STATUS_INSUFFICIENT_RESOURCES, STATUS_SUCCESS);
+            break;
+        }
+
+        InterlockedIncrement(&Batch->Pending);
+        Status = TdiSendDatagram(&TdiIrp, Socket->LocalAddressFile, (PCHAR)Data, (UINT)Length,
+                                 Batch->Target, NetioSendItemComplete, Item);
+        if (TdiIrp == NULL)
+        {
+            /* The IRP was never sent, so its completion routine does not run */
+            InterlockedCompareExchange(&Batch->Status, Status, STATUS_SUCCESS);
+            if (Item->Copy)
+                ExFreePoolWithTag(Item->Copy, TAG_NETIO);
+            ExFreePoolWithTag(Item, TAG_NETIO);
+            InterlockedDecrement(&Batch->Pending);
+            break;
+        }
+    }
+
+    NetioSendItemDone(Batch);
+    return STATUS_PENDING;
+
+Fail:
+    Irp->IoStatus.Status = Status;
+    IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+    return STATUS_PENDING;
+}
+
 static NTSTATUS WSKAPI
 WskGetRemoteAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR RemoteAddress, _Inout_ PIRP Irp)
 {
@@ -1524,6 +1707,7 @@ static WSK_PROVIDER_DATAGRAM_DISPATCH UdpDispatch = {
     .WskReceiveFrom = WskReceiveFrom,
     .WskRelease = WskReleaseUdp,
     .WskGetLocalAddress = WskGetLocalAddress,
+    .WskSendMessages = WskSendMessages,
 };
 
 /* Connection oriented routines (TCP/IP) */

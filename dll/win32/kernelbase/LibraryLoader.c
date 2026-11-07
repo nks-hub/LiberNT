@@ -9,10 +9,10 @@
 
 /*
  * As on Windows, KernelBase resolves GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
- * with ntdll!RtlPcToFileHeader. Loaders that map DLLs from memory, such as
- * WireGuard's, hook that import of KernelBase so that addresses inside such
- * a DLL resolve to their executable. Reference counting, pinning and the
- * lookup by name stay in kernel32.
+ * with ntdll!RtlPcToFileHeader. Loaders that map DLLs from memory hook that
+ * import of KernelBase so that addresses inside such a DLL resolve to their
+ * executable. Reference counting, pinning and the lookup by name stay in
+ * kernel32.
  */
 
 /* Invalid flags go to kernel32 unchanged, which rejects them before any lookup */

@@ -249,9 +249,15 @@ static BOOLEAN KdbContextRecordActive;
 static PKDB_KTRAP_FRAME KdbSavedTrapFrame;
 #ifdef _WIN64
 static CONTEXT KdbFrameBaseContext;
-#endif
 static BOOLEAN KdbFrameBaseValid;
 static ULONG KdbSelectedFrame;
+#define KdbpInvalidateFrameBase() (KdbFrameBaseValid = FALSE)
+#define KdbpResetSelectedFrame() (KdbFrameBaseValid = FALSE, KdbSelectedFrame = 0)
+#else
+/* Frame selection exists on 64-bit targets only */
+#define KdbpInvalidateFrameBase() ((VOID)0)
+#define KdbpResetSelectedFrame() ((VOID)0)
+#endif
 static LONG KdbSelectedProcessor = -1;
 
 static VOID
@@ -261,8 +267,7 @@ KdbpDiscardStaleContextRecord(VOID)
     {
         KdbContextRecordActive = FALSE;
         KdbSavedTrapFrame = NULL;
-        KdbFrameBaseValid = FALSE;
-        KdbSelectedFrame = 0;
+        KdbpResetSelectedFrame();
         KdbSelectedProcessor = -1;
     }
 }
@@ -277,8 +282,7 @@ KdbpResetContextRecord(IN BOOLEAN Announce)
     KdbCurrentTrapFrame = KdbSavedTrapFrame;
     KdbSavedTrapFrame = NULL;
     KdbContextRecordActive = FALSE;
-    KdbFrameBaseValid = FALSE;
-    KdbSelectedFrame = 0;
+    KdbpResetSelectedFrame();
     KdbSelectedProcessor = -1;
     if (Announce)
         KdbpPrint("Resetting default context.\n");
@@ -3118,7 +3122,7 @@ KdbpCmdContextRecord(ULONG Argc, PCHAR Argv[])
         KdbSavedTrapFrame = KdbCurrentTrapFrame;
     KdbCurrentTrapFrame = (PKDB_KTRAP_FRAME)&KdbSavedContextRecord;
     KdbContextRecordActive = TRUE;
-    KdbFrameBaseValid = FALSE;
+    KdbpInvalidateFrameBase();
 
     /* Display the context */
     KdbpPrint("Context record @ 0x%p:\n", (PVOID)Address);
@@ -3208,7 +3212,7 @@ KdbpCmdTrapFrame(ULONG Argc, PCHAR Argv[])
     KdbSavedContextRecord = Context;
     KdbCurrentTrapFrame = (PKDB_KTRAP_FRAME)&KdbSavedContextRecord;
     KdbContextRecordActive = TRUE;
-    KdbFrameBaseValid = FALSE;
+    KdbpInvalidateFrameBase();
 
     KdbpPrint("Trap frame @ %p (inspection only):\n", (PVOID)Address);
 #if defined(_M_ARM64)
@@ -8098,7 +8102,7 @@ KdbpCmdCpu(ULONG Argc, PCHAR Argv[])
     KdbCurrentTrapFrame = (PKDB_KTRAP_FRAME)&KdbSavedContextRecord;
     KdbContextRecordActive = TRUE;
     KdbSelectedProcessor = (LONG)Processor;
-    KdbFrameBaseValid = FALSE;
+    KdbpInvalidateFrameBase();
 
     KdbpPrint("CPU %lu frozen context (inspection only):\n", Processor);
     KdbpPrintContext(&KdbSavedContextRecord);

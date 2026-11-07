@@ -323,17 +323,33 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         FieldCount = SetupGetFieldCount(&Context);
         for (Field = 1; Field <= FieldCount; Field++)
         {
-            if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL))
-                SetupOpenAppendInfFileW(Include, hInf, NULL);
+            if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL) &&
+                !SetupOpenAppendInfFileW(Include, hInf, NULL))
+            {
+                hr = HRESULT_FROM_WIN32(GetLastError());
+                goto Cleanup;
+            }
         }
     }
     if (SetupFindFirstLineW(hInf, ActualSection, L"Needs", &Context))
     {
         FieldCount = SetupGetFieldCount(&Context);
-        for (Field = 1; Field <= FieldCount && SectionCount < ARRAYSIZE(Sections); Field++)
+        for (Field = 1; Field <= FieldCount; Field++)
         {
-            if (SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL))
-                Sections[SectionCount++] = AllocSplStr(NeedsSection);
+            if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL))
+                continue;
+            if (SectionCount == ARRAYSIZE(Sections))
+            {
+                hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW);
+                goto Cleanup;
+            }
+            Sections[SectionCount] = AllocSplStr(NeedsSection);
+            if (!Sections[SectionCount])
+            {
+                hr = E_OUTOFMEMORY;
+                goto Cleanup;
+            }
+            SectionCount++;
         }
     }
 

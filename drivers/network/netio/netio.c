@@ -73,6 +73,12 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 // #define FUNCTION_TRACE DPRINT1("%s() ...\n", __FUNCTION__)
 #define FUNCTION_TRACE do { } while (0)
 
+/* What WSK_SET_STATIC_EVENT_CALLBACKS enabled for the sockets of one WSK client */
+typedef struct _NETIO_WSK_CLIENT
+{
+    ULONG EventMask;
+} NETIO_WSK_CLIENT, *PNETIO_WSK_CLIENT;
+
 typedef struct _WSK_SOCKET_INTERNAL
 {
     WSK_SOCKET Socket;
@@ -1078,15 +1084,62 @@ WskControlClient(
     _Out_writes_bytes_opt_(OutputSize) PVOID OutputBuffer,
     _Out_opt_ SIZE_T * OutputSizeReturned, _Inout_opt_ PIRP Irp)
 {
+    /* Only IPv4 sockets exist (see WskSocket) */
+    static const WSK_TRANSPORT Transports[] =
+    {
+        { 0, SOCK_STREAM, IPPROTO_TCP, AF_INET },
+        { 0, SOCK_DGRAM, IPPROTO_UDP, AF_INET },
+    };
+    PNETIO_WSK_CLIENT ClientContext = (PNETIO_WSK_CLIENT)Client;
+    NTSTATUS Status;
+
     FUNCTION_TRACE;
 
-    UNIMPLEMENTED;
+    if (OutputSizeReturned)
+        *OutputSizeReturned = 0;
+
+    switch (ControlCode)
+    {
+        case WSK_TRANSPORT_LIST_QUERY:
+            if (OutputSizeReturned)
+                *OutputSizeReturned = sizeof(Transports);
+            if (OutputBuffer == NULL || OutputSize < sizeof(Transports))
+            {
+                Status = STATUS_BUFFER_OVERFLOW;
+                break;
+            }
+            RtlCopyMemory(OutputBuffer, Transports, sizeof(Transports));
+            Status = STATUS_SUCCESS;
+            break;
+
+        case WSK_SET_STATIC_EVENT_CALLBACKS:
+            if (ClientContext == NULL || InputBuffer == NULL || InputSize < sizeof(WSK_EVENT_CALLBACK_CONTROL))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            ClientContext->EventMask = ((PWSK_EVENT_CALLBACK_CONTROL)InputBuffer)->EventMask;
+            Status = STATUS_SUCCESS;
+            break;
+
+        case WSK_TDI_BEHAVIOR:
+            /* Sockets always go to the TDI transports; there is no other path to choose */
+            Status = (InputBuffer != NULL && InputSize >= sizeof(ULONG)) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+            break;
+
+        default:
+            DPRINT1("WskControlClient: control code %lu not supported\n", ControlCode);
+            Status = STATUS_NOT_SUPPORTED;
+            break;
+    }
+
     if (Irp != NULL)
     {
-        Irp->IoStatus.Status = STATUS_NOT_IMPLEMENTED;
+        Irp->IoStatus.Status = Status;
+        Irp->IoStatus.Information = OutputSizeReturned ? *OutputSizeReturned : 0;
         IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
     }
-    return STATUS_NOT_IMPLEMENTED;
+    return Status;
 }
 
 static WSK_PROVIDER_DATAGRAM_DISPATCH UdpDispatch = {
@@ -1485,10 +1538,23 @@ WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PR
 {
     FUNCTION_TRACE;
 
-    npi->Client = NULL;
-    npi->Dispatch = &provider_dispatch;
+    PNETIO_WSK_CLIENT ClientContext;
+    NTSTATUS Status;
 
-    return StartSocketDereferenceThread();
+    ClientContext = ExAllocatePoolZero(NonPagedPool, sizeof(*ClientContext), TAG_NETIO);
+    if (ClientContext == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    Status = StartSocketDereferenceThread();
+    if (!NT_SUCCESS(Status))
+    {
+        ExFreePoolWithTag(ClientContext, TAG_NETIO);
+        return Status;
+    }
+    reg->ReservedRegistrationContext = ClientContext;
+    npi->Client = (PWSK_CLIENT)ClientContext;
+    npi->Dispatch = &provider_dispatch;
+    return STATUS_SUCCESS;
 }
 
 VOID WSKAPI
@@ -1497,6 +1563,11 @@ WskReleaseProviderNPI(_In_ PWSK_REGISTRATION reg)
     FUNCTION_TRACE;
 
     StopSocketDereferenceThread();
+    if (reg->ReservedRegistrationContext)
+    {
+        ExFreePoolWithTag(reg->ReservedRegistrationContext, TAG_NETIO);
+        reg->ReservedRegistrationContext = NULL;
+    }
 }
 
 VOID WSKAPI

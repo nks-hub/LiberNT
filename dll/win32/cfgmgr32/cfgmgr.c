@@ -2414,9 +2414,15 @@ CM_Enable_DevNode_Ex(
 }
 
 
-/* Takes a software device out of the device tree and keeps its registry keys (SwDeviceClose) */
-CONFIGRET
-CfgmgrRemoveSoftwareDevice(
+/*
+ * PNP_DEVINST_REMOVE_SOFTWARE takes a software device out of the device tree
+ * and keeps its registry keys (SwDeviceClose). PNP_DEVINST_WATCH_SOFTWARE
+ * removes it when the process ulMinorAction ends, or stops that for 0.
+ */
+static CONFIGRET
+SoftwareDeviceAction(
+    _In_ ULONG ulMajorAction,
+    _In_ ULONG ulMinorAction,
     _In_ PCWSTR pszInstanceId)
 {
     RPC_BINDING_HANDLE BindingHandle = NULL;
@@ -2431,8 +2437,8 @@ CfgmgrRemoveSoftwareDevice(
     RpcTryExcept
     {
         ret = PNP_DeviceInstanceAction(BindingHandle,
-                                       PNP_DEVINST_REMOVE_SOFTWARE,
-                                       0,
+                                       ulMajorAction,
+                                       ulMinorAction,
                                        (LPWSTR)pszInstanceId,
                                        NULL);
     }
@@ -2443,6 +2449,23 @@ CfgmgrRemoveSoftwareDevice(
     RpcEndExcept;
 
     return ret;
+}
+
+
+CONFIGRET
+CfgmgrRemoveSoftwareDevice(
+    _In_ PCWSTR pszInstanceId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, 0, pszInstanceId);
+}
+
+
+CONFIGRET
+CfgmgrWatchSoftwareDevice(
+    _In_ PCWSTR pszInstanceId,
+    _In_ DWORD dwProcessId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_WATCH_SOFTWARE, dwProcessId, pszInstanceId);
 }
 
 

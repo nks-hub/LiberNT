@@ -3645,6 +3645,129 @@ RemoveSoftwareDeviceInstance(
 }
 
 
+/*
+ * A software device with a handle lifetime leaves when the process that
+ * holds its handle ends, also when that process never closes the handle.
+ */
+typedef struct _SOFTWARE_DEVICE_WATCH
+{
+    LIST_ENTRY ListEntry;
+    HANDLE Process;
+    HANDLE Wait;
+    WCHAR szDeviceInstance[MAX_DEVICE_ID_LEN];
+} SOFTWARE_DEVICE_WATCH, *PSOFTWARE_DEVICE_WATCH;
+
+static LIST_ENTRY SoftwareDeviceWatches = { &SoftwareDeviceWatches, &SoftwareDeviceWatches };
+static SRWLOCK SoftwareDeviceWatchLock = SRWLOCK_INIT;
+
+static PSOFTWARE_DEVICE_WATCH
+TakeSoftwareDeviceWatch(
+    _In_opt_ PCWSTR pszDeviceInstance,
+    _In_opt_ PSOFTWARE_DEVICE_WATCH Watch)
+{
+    PLIST_ENTRY Entry;
+    PSOFTWARE_DEVICE_WATCH Found = NULL;
+
+    AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
+    for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches; Entry = Entry->Flink)
+    {
+        PSOFTWARE_DEVICE_WATCH Current = CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry);
+
+        if (Current == Watch ||
+            (pszDeviceInstance && _wcsicmp(Current->szDeviceInstance, pszDeviceInstance) == 0))
+        {
+            RemoveEntryList(&Current->ListEntry);
+            Found = Current;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+    return Found;
+}
+
+static VOID
+StopSoftwareDeviceWatch(
+    _In_ PCWSTR pszDeviceInstance)
+{
+    PSOFTWARE_DEVICE_WATCH Watch = TakeSoftwareDeviceWatch(pszDeviceInstance, NULL);
+
+    if (!Watch)
+        return;
+
+    /* Waits for a callback that already runs; that callback finds no watch and returns */
+    UnregisterWaitEx(Watch->Wait, INVALID_HANDLE_VALUE);
+    CloseHandle(Watch->Process);
+    HeapFree(GetProcessHeap(), 0, Watch);
+}
+
+static VOID
+CALLBACK
+SoftwareDeviceOwnerEnded(
+    _In_ PVOID Context,
+    _In_ BOOLEAN TimedOut)
+{
+    PSOFTWARE_DEVICE_WATCH Watch = TakeSoftwareDeviceWatch(NULL, Context);
+    CONFIGRET ret;
+
+    UNREFERENCED_PARAMETER(TimedOut);
+
+    if (!Watch)
+        return;
+
+    ret = RemoveSoftwareDeviceInstance(Watch->szDeviceInstance);
+    DPRINT("Owner of %S ended, removing it returned %lu\n", Watch->szDeviceInstance, ret);
+    UnregisterWait(Watch->Wait);
+    CloseHandle(Watch->Process);
+    HeapFree(GetProcessHeap(), 0, Watch);
+}
+
+static CONFIGRET
+WatchSoftwareDeviceInstance(
+    _In_ LPWSTR pszDeviceInstance,
+    _In_ DWORD dwProcessId)
+{
+    PSOFTWARE_DEVICE_WATCH Watch;
+
+    if (!IsValidDeviceInstanceID(pszDeviceInstance) ||
+        _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0 ||
+        wcslen(pszDeviceInstance) >= MAX_DEVICE_ID_LEN)
+    {
+        return CR_INVALID_DEVINST;
+    }
+
+    StopSoftwareDeviceWatch(pszDeviceInstance);
+    if (dwProcessId == 0)
+        return CR_SUCCESS;
+
+    Watch = HeapAlloc(GetProcessHeap(), 0, sizeof(*Watch));
+    if (!Watch)
+        return CR_OUT_OF_MEMORY;
+    wcscpy(Watch->szDeviceInstance, pszDeviceInstance);
+    Watch->Process = OpenProcess(SYNCHRONIZE, FALSE, dwProcessId);
+    if (!Watch->Process)
+    {
+        DPRINT1("Cannot open the owner %lu of %S (error %lu)\n", dwProcessId, pszDeviceInstance, GetLastError());
+        HeapFree(GetProcessHeap(), 0, Watch);
+        return CR_FAILURE;
+    }
+
+    /* The lock holds back a callback for an ended process until the watch is listed */
+    AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
+    if (!RegisterWaitForSingleObject(&Watch->Wait, Watch->Process, SoftwareDeviceOwnerEnded, Watch,
+                                     INFINITE, WT_EXECUTEONLYONCE))
+    {
+        ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+        DPRINT1("Cannot watch the owner of %S (error %lu)\n", pszDeviceInstance, GetLastError());
+        CloseHandle(Watch->Process);
+        HeapFree(GetProcessHeap(), 0, Watch);
+        return CR_FAILURE;
+    }
+    InsertTailList(&SoftwareDeviceWatches, &Watch->ListEntry);
+    ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+    return CR_SUCCESS;
+}
+
+
 /* Function 29 */
 DWORD
 WINAPI
@@ -3680,8 +3803,18 @@ PNP_DeviceInstanceAction(
             break;
 
         case PNP_DEVINST_REMOVE_SOFTWARE:
-            ret = (ulMinorAction != 0) ? CR_INVALID_FLAG :
-                  RemoveSoftwareDeviceInstance(pszDeviceInstance1);
+            if (ulMinorAction != 0)
+            {
+                ret = CR_INVALID_FLAG;
+                break;
+            }
+            ret = RemoveSoftwareDeviceInstance(pszDeviceInstance1);
+            if (ret == CR_SUCCESS)
+                StopSoftwareDeviceWatch(pszDeviceInstance1);
+            break;
+
+        case PNP_DEVINST_WATCH_SOFTWARE:
+            ret = WatchSoftwareDeviceInstance(pszDeviceInstance1, ulMinorAction);
             break;
 
         default:

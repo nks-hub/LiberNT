@@ -233,9 +233,10 @@ done:
 
 /*
  * Windows removes a software device when the process holding its handle ends.
- * Every device made here records its owner in a volatile key; a later
- * SwDeviceCreate of the same instance removes the device when that process
- * is gone, so a crashed client does not block its own restart.
+ * The PnP manager service watches that process. Every device made here also
+ * records its owner in a volatile key; a later SwDeviceCreate of the same
+ * instance removes the device when that process is gone and the service
+ * missed it, so a crashed client does not block its own restart.
  */
 #define SW_DEVICE_OWNERS L"SYSTEM\\CurrentControlSet\\Control\\SoftwareDevices"
 
@@ -423,6 +424,9 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     else
     {
         RecordOwner(Device->InstanceId);
+        /* A new handle has the handle lifetime */
+        if (CfgmgrWatchSoftwareDevice(Device->InstanceId, GetCurrentProcessId()) != CR_SUCCESS)
+            WARN("%s stays after this process ends\n", debugstr_w(Device->InstanceId));
     }
 
     /* The callback may close the handle; nothing touches Device afterwards */
@@ -570,6 +574,10 @@ SwDeviceClose(
         if (Cr != CR_SUCCESS)
             WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
     }
+    else if (Device->DevInst)
+    {
+        CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
+    }
     if (Device->DevInst)
         ForgetOwner(Device->InstanceId);
 
@@ -588,6 +596,15 @@ SwDeviceSetLifetime(
         return E_INVALIDARG;
 
     Device->Lifetime = Lifetime;
+
+    /* Only a device with the handle lifetime leaves with this process */
+    if (Device->DevInst)
+    {
+        CONFIGRET Cr = CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                                 Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
     return S_OK;
 }
 

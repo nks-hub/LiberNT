@@ -2590,9 +2590,11 @@ SmpLoadDataFromRegistry(OUT PUNICODE_STRING InitialCommand)
         RtlFreeHeap(RtlGetProcessHeap(), 0, RegEntry);
     }
 
+    /* As on Windows, renames scheduled by the last session are done before the
+     * registry is initialized, so the update commands see the renamed files */
+    if (!MiniNTBoot) SmpProcessFileRenames();
     Status = SmpInitializeUpdateRegistry();
     if (!NT_SUCCESS(Status)) return Status;
-    if (!MiniNTBoot) SmpProcessFileRenames();
 
     /* And initialize known DLLs... */
     Status = SmpInitializeKnownDlls();

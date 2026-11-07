@@ -552,8 +552,9 @@ DWORD WINAPI SetIpInterfaceEntry(PMIB_IPINTERFACE_ROW Row)
     Other = interface_flag(Row->OtherStatefulConfigurationSupported, Current.OtherStatefulConfigurationSupported);
     if (Row->Family == AF_INET && Advertising)
         return ERROR_INVALID_PARAMETER;
-    if ((Managed != Current.ManagedAddressConfigurationSupported || Other != Current.OtherStatefulConfigurationSupported) &&
-        (Row->Family == AF_INET || (!Advertising && !Current.AdvertisingEnabled)))
+    /* The DHCPv6 flags do not apply to IPv4, which ignores them */
+    if (Row->Family == AF_INET6 && !Advertising && !Current.AdvertisingEnabled &&
+        (Managed != Current.ManagedAddressConfigurationSupported || Other != Current.OtherStatefulConfigurationSupported))
         return ERROR_INVALID_PARAMETER;
 
     Automatic = interface_flag(Row->UseAutomaticMetric, Current.UseAutomaticMetric);

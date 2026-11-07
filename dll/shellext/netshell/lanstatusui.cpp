@@ -1062,14 +1062,14 @@ LANStatusUiDlg(
             {
                 if (pContext)
                 {
-                    ShowNetConnectionProperties(pContext->pNet, GetParent(pContext->hwndDlg));
+                    ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), GetParent(pContext->hwndDlg));
                     BringWindowToTop(GetParent(pContext->hwndDlg));
                 }
                 break;
             }
             else if (LOWORD(wParam) == IDC_ENDISABLE)
             {
-                DisableNetworkAdapter(pContext->pNet, pContext, hwndDlg);
+                DisableNetworkAdapter(CComPtr<INetConnection>(pContext->pNet), pContext, hwndDlg);
                 break;
             }
         case WM_NOTIFY:
@@ -1211,7 +1211,7 @@ ShowStatusPropertyDialog(
         else if (pProperties->Status == NCS_MEDIA_DISCONNECTED || pProperties->Status == NCS_DISCONNECTED ||
                  pProperties->Status == NCS_HARDWARE_DISABLED)
         {
-            ShowNetConnectionProperties(pContext->pNet, pContext->hwndDlg);
+            ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), pContext->hwndDlg);
         }
 
         NcFreeNetconProperties(pProperties);
@@ -1520,11 +1520,11 @@ LANStatusDlg(
                     break;
 
                 case IDM_NETICON_REPAIR:
-                    RepairConnection(pContext->pNet, hwndDlg);
+                    RepairConnection(CComPtr<INetConnection>(pContext->pNet), hwndDlg);
                     break;
 
                 case IDM_NETICON_PROPERTIES:
-                    ShowNetConnectionProperties(pContext->pNet, hwndDlg);
+                    ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), hwndDlg);
                     break;
 
                 case IDM_NETICON_OPEN_CONNECTIONS:

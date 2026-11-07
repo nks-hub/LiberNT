@@ -94,7 +94,15 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (FAILED(hr))
         return hr;
 
-    /* The local spooler shares the driver store with the caller, an existing package is reused */
+    /*
+     * The local spooler shares the driver store with the caller, an existing
+     * package is reused. UPDP_UPLOAD_ALWAYS copies the package again first.
+     */
+    if ((dwFlags & UPDP_UPLOAD_ALWAYS) &&
+        !SetupCopyOEMInfW(pszInfPath, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL))
+    {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
     hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, GetNativeArchitecture(), StoreInf, &Length);
     if (FAILED(hr))
         return hr;

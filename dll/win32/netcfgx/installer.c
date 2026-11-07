@@ -944,6 +944,60 @@ ReinstallNetDevice(
     return SetupDiInstallDevice(DeviceInfoSet, DeviceInfoData) ? ERROR_SUCCESS : GetLastError();
 }
 
+/* Software adapters (WireGuard, Wintun) ask for a stable GUID through the
+ * SuggestedInstanceId value of their driver key; it is used unless another
+ * adapter already has it */
+static
+BOOL
+GetSuggestedInstanceId(
+    _In_ HDEVINFO DeviceInfoSet,
+    _In_ PSP_DEVINFO_DATA DeviceInfoData,
+    _Out_ UUID *Uuid)
+{
+    WCHAR Suggested[40], SubKey[MAX_PATH], Existing[40];
+    DWORD Index, cchSubKey, dwType, dwSize = sizeof(*Uuid);
+    HKEY hKey, hClassKey, hAdapterKey;
+    BOOL Used = FALSE;
+    LONG rc;
+
+    hKey = SetupDiOpenDevRegKey(DeviceInfoSet, DeviceInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_QUERY_VALUE);
+    if (hKey == INVALID_HANDLE_VALUE)
+        return FALSE;
+    rc = RegQueryValueExW(hKey, L"SuggestedInstanceId", NULL, &dwType, (LPBYTE)Uuid, &dwSize);
+    RegCloseKey(hKey);
+    if (rc != ERROR_SUCCESS || dwType != REG_BINARY || dwSize != sizeof(*Uuid) ||
+        !StringFromGUID2(Uuid, Suggested, ARRAYSIZE(Suggested)))
+    {
+        return FALSE;
+    }
+
+    hClassKey = SetupDiOpenClassRegKey(&GUID_DEVCLASS_NET, KEY_ENUMERATE_SUB_KEYS);
+    if (hClassKey == INVALID_HANDLE_VALUE)
+        return FALSE;
+    for (Index = 0; !Used; Index++)
+    {
+        cchSubKey = ARRAYSIZE(SubKey);
+        rc = RegEnumKeyExW(hClassKey, Index, SubKey, &cchSubKey, NULL, NULL, NULL, NULL);
+        if (rc == ERROR_NO_MORE_ITEMS)
+            break;
+        if (rc != ERROR_SUCCESS || RegOpenKeyExW(hClassKey, SubKey, 0, KEY_QUERY_VALUE, &hAdapterKey) != ERROR_SUCCESS)
+            continue;
+        dwSize = sizeof(Existing) - sizeof(WCHAR);
+        ZeroMemory(Existing, sizeof(Existing));
+        if (RegQueryValueExW(hAdapterKey, L"NetCfgInstanceId", NULL, &dwType, (LPBYTE)Existing, &dwSize) == ERROR_SUCCESS &&
+            dwType == REG_SZ && _wcsicmp(Existing, Suggested) == 0)
+        {
+            Used = TRUE;
+        }
+        RegCloseKey(hAdapterKey);
+    }
+    RegCloseKey(hClassKey);
+
+    if (Used)
+        WARN("Suggested instance ID %S is in use\n", Suggested);
+    return !Used;
+}
+
 static
 DWORD
 InstallNetClient(VOID)
@@ -1112,13 +1166,17 @@ NetClassInstaller(
         }
     }
 
-    /* Create a new UUID */
-    RpcStatus = UuidCreate(&Uuid);
-    if (RpcStatus != RPC_S_OK && RpcStatus != RPC_S_UUID_LOCAL_ONLY)
+    /* Use the suggested UUID of the adapter or create a new one */
+    if (!IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET) ||
+        !GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, &Uuid))
     {
-        ERR("UuidCreate() failed with RPC status 0x%lx\n", RpcStatus);
-        rc = ERROR_GEN_FAILURE;
-        goto cleanup;
+        RpcStatus = UuidCreate(&Uuid);
+        if (RpcStatus != RPC_S_OK && RpcStatus != RPC_S_UUID_LOCAL_ONLY)
+        {
+            ERR("UuidCreate() failed with RPC status 0x%lx\n", RpcStatus);
+            rc = ERROR_GEN_FAILURE;
+            goto cleanup;
+        }
     }
 
     RpcStatus = UuidToStringW(&Uuid, &UuidRpcString);

@@ -206,6 +206,12 @@ START_TEST(DriverPackage)
     Length = ARRAYSIZE(StoreInf);
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
     ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+    if (hr != S_OK)
+    {
+        skip("The package could not be uploaded\n");
+        DeleteTestPackage(Dir);
+        return;
+    }
     ok(Length == wcslen(StoreInf) + 1, "Length is %lu for %S\n", Length, StoreInf);
     ok(wcsstr(StoreInf, L"\\DriverStore\\FileRepository\\") != NULL, "Store path is %S\n", StoreInf);
     ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S does not exist\n", StoreInf);
@@ -238,11 +244,19 @@ START_TEST(DriverPackage)
     {
         WCHAR Key[MAX_PATH], Value[MAX_PATH * 2];
         DWORD Size;
-        HKEY hKey;
+        HKEY hKey = NULL;
 
         StringCchPrintfW(Key, ARRAYSIZE(Key), L"%s\\%s", TEST_DRIVERS_KEY, TEST_DRIVER_NAME);
         ok(RegOpenKeyExW(HKEY_LOCAL_MACHINE, Key, 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS,
            "Driver %S is not registered\n", TEST_DRIVER_NAME);
+        if (!hKey)
+        {
+            skip("The driver is not registered\n");
+            DeleteTestDriver();
+            DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            DeleteTestPackage(Dir);
+            return;
+        }
         Size = sizeof(Value);
         ok(RegQueryValueExW(hKey, L"Driver", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
            !_wcsicmp(Value, L"TESTDRV.DLL"), "Driver is %S\n", Value);

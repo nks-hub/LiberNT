@@ -456,13 +456,14 @@ IopCompleteRequest(IN PKAPC Apc,
     ASSERT(Irp->IoStatus.Status != (NTSTATUS)0xFFFFFFFF);
 
     /*
-     * A synchronous request that CancelSynchronousIo could not cancel got its
-     * thread alerted. The request has ended, so the alert must not end a later
-     * wait of the thread; this APC runs in that thread.
+     * CancelSynchronousIo alerted the thread for this request, which it could
+     * not cancel. The request has ended, so the alert must not end a later
+     * wait of the thread; this APC runs in that thread. The completion of any
+     * other request leaves the alert alone.
      */
-    if (PsGetCurrentThread()->IoCancelAlertPending)
+    if (Irp->AllocationFlags & IOP_IRP_CANCEL_ALERTED)
     {
-        PsGetCurrentThread()->IoCancelAlertPending = FALSE;
+        Irp->AllocationFlags &= ~IOP_IRP_CANCEL_ALERTED;
         KeTestAlertThread(UserMode);
     }
 

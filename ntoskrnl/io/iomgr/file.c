@@ -4665,7 +4665,7 @@ IopCancelMatchingIrpsInCurrentThread(
     _In_opt_ PIO_STATUS_BLOCK IoRequestToCancel,
     _In_ BOOLEAN SynchronousOnly,
     _In_ BOOLEAN PortOnly,
-    _Out_opt_ PBOOLEAN NotCancelled)
+    _Out_opt_ PIRP *NotCancelled)
 {
     PETHREAD Thread;
     PLIST_ENTRY ListHead, NextEntry;
@@ -4674,7 +4674,7 @@ IopCancelMatchingIrpsInCurrentThread(
     BOOLEAN Found = FALSE;
 
     if (NotCancelled)
-        *NotCancelled = FALSE;
+        *NotCancelled = NULL;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4693,7 +4693,7 @@ IopCancelMatchingIrpsInCurrentThread(
         {
             /* Without a cancel routine the request stays pending */
             if (!IoCancelIrp(Irp) && NotCancelled)
-                *NotCancelled = TRUE;
+                *NotCancelled = Irp;
             Found = TRUE;
         }
     }
@@ -4747,7 +4747,7 @@ IopCancelIoFileExKernelApc(
 {
     PIOP_CANCEL_IO_APC_CONTEXT Context = *SystemArgument1;
     PKTHREAD Thread = KeGetCurrentThread();
-    BOOLEAN NotCancelled;
+    PIRP NotCancelled;
 
     UNREFERENCED_PARAMETER(Apc);
     UNREFERENCED_PARAMETER(NormalRoutine);
@@ -4764,8 +4764,12 @@ IopCancelIoFileExKernelApc(
      */
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
     {
-        /* IopCompleteRequest drops the alert if the request ends before the wait takes it */
-        PsGetCurrentThread()->IoCancelAlertPending = TRUE;
+        /*
+         * IopCompleteRequest of this request drops the alert if the request
+         * ends before the wait takes it. The request is still pending and
+         * this APC runs in its thread, which completes it.
+         */
+        NotCancelled->AllocationFlags |= IOP_IRP_CANCEL_ALERTED;
         KeAlertThread(Thread, UserMode);
     }
     Context->Status = STATUS_SUCCESS;

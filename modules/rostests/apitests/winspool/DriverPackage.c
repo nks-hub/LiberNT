@@ -180,7 +180,7 @@ START_TEST(DriverPackage)
     hr = UploadPrinterDriverPackageW(NULL, L"C:\\x.inf", L"Invalid Env", 0, NULL, StoreInf, &Length);
     ok(hr == HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
     hr = InstallPrinterDriverFromPackageW(NULL, NULL, TEST_DRIVER_NAME, NULL, 0);
-    ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     hr = InstallPrinterDriverFromPackageW(NULL, L"C:\\x.inf", TEST_DRIVER_NAME, NULL, 0x80);
     ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
@@ -265,8 +265,15 @@ START_TEST(DriverPackage)
                 DatFound = TRUE;
         }
         ok(DatFound, "TESTPKG.DAT is not a dependent file\n");
+        Size = sizeof(Value);
+        ok(RegQueryValueExW(hKey, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+           !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
         RegCloseKey(hKey);
     }
+
+    /* The installed driver uses the package */
+    hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE), "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
     DeleteTestDriver();
 

@@ -1705,7 +1705,14 @@ NtCreateToken(
                 ProbeForRead(ObjectAttributes,
                              sizeof(OBJECT_ATTRIBUTES),
                              sizeof(ULONG));
-                LocalSecurityQos = *(SECURITY_QUALITY_OF_SERVICE*)ObjectAttributes->SecurityQualityOfService;
+                /* The quality of service is optional; a primary token does not need it */
+                if (ObjectAttributes->SecurityQualityOfService != NULL)
+                {
+                    ProbeForRead(ObjectAttributes->SecurityQualityOfService,
+                                 sizeof(SECURITY_QUALITY_OF_SERVICE),
+                                 sizeof(ULONG));
+                    LocalSecurityQos = *(SECURITY_QUALITY_OF_SERVICE*)ObjectAttributes->SecurityQualityOfService;
+                }
             }
 
             ProbeForRead(AuthenticationId,
@@ -1772,7 +1779,7 @@ NtCreateToken(
     }
     else
     {
-        if (ObjectAttributes != NULL)
+        if (ObjectAttributes != NULL && ObjectAttributes->SecurityQualityOfService != NULL)
             LocalSecurityQos = *(SECURITY_QUALITY_OF_SERVICE*)ObjectAttributes->SecurityQualityOfService;
         LocalAuthenticationId = *AuthenticationId;
         LocalExpirationTime = *ExpirationTime;

@@ -37,6 +37,9 @@ static DWORD ServiceTag = 0;
 
 /* The critical section synchronizes service control requests */
 static CRITICAL_SECTION ControlServiceCriticalSection;
+/* The delayed start thread; ScmShutdownServiceDatabase stops it and waits for it */
+static HANDLE ScmDelayedAutoStartStop;
+static HANDLE ScmDelayedAutoStartWorker;
 static DWORD PipeTimeout = 30000; /* 30 Seconds */
 
 
@@ -1834,6 +1837,17 @@ ScmShutdownServiceDatabase(VOID)
 {
     DPRINT("ScmShutdownServiceDatabase() called\n");
 
+    /* The delayed start thread uses the database and holds references to services */
+    if (ScmDelayedAutoStartWorker != NULL)
+    {
+        SetEvent(ScmDelayedAutoStartStop);
+        WaitForSingleObject(ScmDelayedAutoStartWorker, INFINITE);
+        CloseHandle(ScmDelayedAutoStartWorker);
+        CloseHandle(ScmDelayedAutoStartStop);
+        ScmDelayedAutoStartWorker = NULL;
+        ScmDelayedAutoStartStop = NULL;
+    }
+
     ScmDeleteMarkedServices();
     RtlDeleteResource(&DatabaseLock);
 
@@ -2778,23 +2792,27 @@ ScmDelayedAutoStartThread(
     _In_ PVOID Context)
 {
     PSERVICE *Services = Context;
+    DWORD dwError;
     BOOL bStart;
     ULONG Count, i;
 
     for (Count = 0; Services[Count] != NULL; Count++)
         ;
 
-    Sleep(SCM_DELAYED_AUTO_START_DELAY);
-
-    /* As on Windows, a change of the configuration after boot waits for the next boot */
-    for (i = 0; i < Count && !ScmShutdown; i++)
+    /* The list is chosen at boot; a later DelayedAutostart change waits for the next boot */
+    if (WaitForSingleObject(ScmDelayedAutoStartStop, SCM_DELAYED_AUTO_START_DELAY) == WAIT_TIMEOUT)
     {
-        ScmLockDatabaseShared();
-        bStart = !Services[i]->bDeleted && Services[i]->Status.dwCurrentState == SERVICE_STOPPED;
-        ScmUnlockDatabase();
-        if (bStart)
+        for (i = 0; i < Count && !ScmShutdown; i++)
         {
-            DWORD dwError = ScmStartService(Services[i], 0, NULL);
+            /* Same order of locks as ScmStartService; a service disabled meanwhile stays stopped */
+            EnterCriticalSection(&ControlServiceCriticalSection);
+            ScmLockDatabaseShared();
+            bStart = !ScmShutdown && !Services[i]->bDeleted &&
+                     Services[i]->dwStartType == SERVICE_AUTO_START &&
+                     Services[i]->Status.dwCurrentState == SERVICE_STOPPED;
+            ScmUnlockDatabase();
+            dwError = bStart ? ScmLoadService(Services[i], 0, NULL) : ERROR_SUCCESS;
+            LeaveCriticalSection(&ControlServiceCriticalSection);
             if (dwError != ERROR_SUCCESS && dwError != ERROR_SERVICE_ALREADY_RUNNING)
                 DPRINT1("Delayed start of %S failed (Error %lu)\n", Services[i]->lpServiceName, dwError);
         }
@@ -2978,11 +2996,22 @@ ScmAutoStartServices(VOID)
         return;
     }
     Delayed[DelayedCount] = NULL;
-    hThread = DelayedCount ? CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, 0, NULL) : NULL;
+    hThread = NULL;
+    if (DelayedCount)
+    {
+        ScmDelayedAutoStartStop = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (ScmDelayedAutoStartStop != NULL)
+            hThread = CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, 0, NULL);
+    }
     if (hThread != NULL)
     {
-        CloseHandle(hThread);
+        ScmDelayedAutoStartWorker = hThread;
         return;
+    }
+    if (ScmDelayedAutoStartStop != NULL)
+    {
+        CloseHandle(ScmDelayedAutoStartStop);
+        ScmDelayedAutoStartStop = NULL;
     }
     if (DelayedCount)
         DPRINT1("Cannot start the delayed automatic services (Error %lu)\n", GetLastError());
@@ -3043,19 +3072,26 @@ ScmPreshutdownServices(VOID)
         CurrentService = Waits[i].Service;
         Waits[i].Deadline = GetTickCount64() + ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
 
-        /* The reference keeps the service, not its image, which a stop releases meanwhile */
+        /*
+         * The reference keeps the service, not its image: a stop that ends
+         * meanwhile closes the pipe of the image. The copy of the handle keeps
+         * the pipe open until the control is sent.
+         */
         ScmLockDatabaseShared();
-        if (CurrentService->lpImage != NULL && CurrentService->Status.dwCurrentState != SERVICE_STOPPED)
+        if (CurrentService->lpImage != NULL && CurrentService->Status.dwCurrentState != SERVICE_STOPPED &&
+            !DuplicateHandle(GetCurrentProcess(), CurrentService->lpImage->hControlPipe, GetCurrentProcess(),
+                             &hControlPipe, 0, FALSE, DUPLICATE_SAME_ACCESS))
         {
-            hControlPipe = CurrentService->lpImage->hControlPipe;
-            dwResumeCount = CurrentService->dwResumeCount;
+            hControlPipe = NULL;
         }
+        dwResumeCount = CurrentService->dwResumeCount;
         ScmUnlockDatabase();
         if (hControlPipe == NULL)
             continue;
 
         DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
         ScmControlService(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN, dwResumeCount);
+        CloseHandle(hControlPipe);
     }
 
     do

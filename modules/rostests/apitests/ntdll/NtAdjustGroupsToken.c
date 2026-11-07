@@ -46,27 +46,57 @@ QueryGroups(
     return Groups;
 }
 
+static
+HANDLE
+DuplicateProcessToken(VOID)
+{
+    NTSTATUS Status;
+    HANDLE ProcessToken, Token = NULL;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+
+    ProcessToken = GetProcessToken(TOKEN_DUPLICATE);
+    if (!ProcessToken)
+        return NULL;
+    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
+    Status = NtDuplicateToken(ProcessToken, TOKEN_ADJUST_GROUPS | TOKEN_QUERY, &ObjectAttributes,
+                              FALSE, TokenPrimary, &Token);
+    CloseHandle(ProcessToken);
+    ok_hex(Status, STATUS_SUCCESS);
+    return NT_SUCCESS(Status) ? Token : NULL;
+}
+
+static
+VOID
+CheckGroupsUnchanged(
+    _In_ HANDLE Token,
+    _In_ PTOKEN_GROUPS Before)
+{
+    PTOKEN_GROUPS After = QueryGroups(Token);
+    ULONG Index;
+
+    ok(After != NULL && After->GroupCount == Before->GroupCount, "The group count changed\n");
+    for (Index = 0; After && Index < After->GroupCount && Index < Before->GroupCount; Index++)
+    {
+        ok(After->Groups[Index].Attributes == Before->Groups[Index].Attributes,
+           "Group %lu has attributes 0x%lx, expected 0x%lx\n", Index,
+           After->Groups[Index].Attributes, Before->Groups[Index].Attributes);
+    }
+    if (After) RtlFreeHeap(RtlGetProcessHeap(), 0, After);
+}
+
 /* Disabling one group leaves the others alone, and a reset enables it again */
 static
 VOID
 AdjustOneGroup(VOID)
 {
     NTSTATUS Status;
-    HANDLE ProcessToken, Token;
-    OBJECT_ATTRIBUTES ObjectAttributes;
+    HANDLE Token;
     PTOKEN_GROUPS Before = NULL, After = NULL, Reset = NULL;
     TOKEN_GROUPS Disable;
     ULONG Index, Target = MAXULONG;
 
-    ProcessToken = GetProcessToken(TOKEN_DUPLICATE);
-    if (!ProcessToken)
-        return;
-    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
-    Status = NtDuplicateToken(ProcessToken, TOKEN_ADJUST_GROUPS | TOKEN_QUERY, &ObjectAttributes,
-                              FALSE, TokenPrimary, &Token);
-    CloseHandle(ProcessToken);
-    ok_hex(Status, STATUS_SUCCESS);
-    if (!NT_SUCCESS(Status))
+    Token = DuplicateProcessToken();
+    if (!Token)
         return;
 
     Before = QueryGroups(Token);
@@ -123,6 +153,61 @@ Cleanup:
     CloseHandle(Token);
 }
 
+/* A mandatory group in the list fails the call before any group changes */
+static
+VOID
+AdjustMandatoryGroup(VOID)
+{
+    NTSTATUS Status;
+    HANDLE Token;
+    PTOKEN_GROUPS Before;
+    struct
+    {
+        ULONG GroupCount;
+        SID_AND_ATTRIBUTES Groups[2];
+    } Disable;
+    ULONG Index, Optional = MAXULONG, Mandatory = MAXULONG;
+
+    Token = DuplicateProcessToken();
+    if (!Token)
+        return;
+    Before = QueryGroups(Token);
+    for (Index = 0; Before && Index < Before->GroupCount; Index++)
+    {
+        ULONG Attributes = Before->Groups[Index].Attributes;
+
+        if (Optional == MAXULONG &&
+            (Attributes & (SE_GROUP_ENABLED | SE_GROUP_MANDATORY)) == SE_GROUP_ENABLED)
+        {
+            Optional = Index;
+        }
+        else if (Optional != MAXULONG && (Attributes & SE_GROUP_MANDATORY))
+        {
+            Mandatory = Index;
+            break;
+        }
+    }
+    if (Mandatory == MAXULONG)
+    {
+        skip("The token has no mandatory group after an optional enabled one\n");
+        goto Cleanup;
+    }
+
+    /* The optional group comes first in the token, so it would change first */
+    Disable.GroupCount = 2;
+    Disable.Groups[0].Sid = Before->Groups[Optional].Sid;
+    Disable.Groups[0].Attributes = 0;
+    Disable.Groups[1].Sid = Before->Groups[Mandatory].Sid;
+    Disable.Groups[1].Attributes = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, (PTOKEN_GROUPS)&Disable, 0, NULL, NULL);
+    ok_hex(Status, STATUS_CANT_DISABLE_MANDATORY);
+    CheckGroupsUnchanged(Token, Before);
+
+Cleanup:
+    if (Before) RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+    CloseHandle(Token);
+}
+
 START_TEST(NtAdjustGroupsToken)
 {
     HANDLE TokenHandle;
@@ -174,4 +259,5 @@ START_TEST(NtAdjustGroupsToken)
     CloseHandle(TokenHandle);
 
     AdjustOneGroup();
+    AdjustMandatoryGroup();
 }

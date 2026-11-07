@@ -70,16 +70,23 @@ DupBuffer(_In_opt_ const VOID *Buffer, _In_ SIZE_T Size)
     return Copy;
 }
 
-/* SW_DEVICE_CREATE_INFO takes a self-relative security descriptor */
+/*
+ * SW_DEVICE_CREATE_INFO takes a self-relative security descriptor; Windows 11
+ * refuses one without an owner or a group
+ */
 static BOOL
 IsSelfRelativeSecurityDescriptor(_In_ PSECURITY_DESCRIPTOR SecurityDescriptor)
 {
     SECURITY_DESCRIPTOR_CONTROL Control;
+    PSID Owner = NULL, Group = NULL;
+    BOOL Defaulted;
     DWORD Revision;
 
     return IsValidSecurityDescriptor(SecurityDescriptor) &&
            GetSecurityDescriptorControl(SecurityDescriptor, &Control, &Revision) &&
-           (Control & SE_SELF_RELATIVE);
+           (Control & SE_SELF_RELATIVE) &&
+           GetSecurityDescriptorOwner(SecurityDescriptor, &Owner, &Defaulted) && Owner &&
+           GetSecurityDescriptorGroup(SecurityDescriptor, &Group, &Defaulted) && Group;
 }
 
 static VOID

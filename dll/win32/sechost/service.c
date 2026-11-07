@@ -53,6 +53,7 @@ struct notify_data
     HANDLE calling_thread, ready_evt;
 #ifdef __REACTOS__
     void (*done)( void *context );  /* called when the request ends and no longer uses notify_buffer */
+    BOOL (*wanted)( void *context );  /* whether a request that timed out is still waited for */
     void *done_context;
 #endif
     struct list entry;
@@ -1300,6 +1301,11 @@ static DWORD WINAPI notify_thread(void *user)
 
     SetThreadDescription(GetCurrentThread(), L"wine_sechost_notify_service_status");
 
+#ifdef __REACTOS__
+    /* A subscription request times out now and then, so that it can end with its subscription */
+    do
+    {
+#endif
     __TRY
     {
         /* GetNotifyResults blocks until there is an event */
@@ -1310,6 +1316,9 @@ static DWORD WINAPI notify_thread(void *user)
         err = map_exception_code(GetExceptionCode());
     }
     __ENDTRY
+#ifdef __REACTOS__
+    } while (err == ERROR_TIMEOUT && data->wanted && data->wanted( data->done_context ));
+#endif
 
     EnterCriticalSection( &service_cs );
 
@@ -1384,7 +1393,7 @@ static DWORD WINAPI notify_thread(void *user)
 
 #ifdef __REACTOS__
 static DWORD notify_status_change( SC_HANDLE service, DWORD mask, SERVICE_NOTIFYW *notify_buffer,
-                                   void (*done)( void * ), void *done_context );
+                                   void (*done)( void * ), BOOL (*wanted)( void * ), void *done_context );
 
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
@@ -1394,11 +1403,11 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
 {
     TRACE( "%p 0x%lx %p\n", service, mask, notify_buffer );
 
-    return notify_status_change( service, mask, notify_buffer, NULL, NULL );
+    return notify_status_change( service, mask, notify_buffer, NULL, NULL, NULL );
 }
 
 static DWORD notify_status_change( SC_HANDLE service, DWORD mask, SERVICE_NOTIFYW *notify_buffer,
-                                   void (*done)( void * ), void *done_context )
+                                   void (*done)( void * ), BOOL (*wanted)( void * ), void *done_context )
 #else
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
@@ -1423,6 +1432,7 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
     data->notify_buffer = notify_buffer;
 #ifdef __REACTOS__
     data->done = done;
+    data->wanted = wanted;
     data->done_context = done_context;
 #endif
     if (!DuplicateHandle( GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
@@ -1495,6 +1505,7 @@ struct subscription_request
     HANDLE done_event;  /* set when the worker of the request no longer uses it */
     LONG refs;
     BOOL fired;
+    volatile LONG abandoned;  /* the subscription ended while the request was pending */
 };
 
 struct _SC_NOTIFICATION_REGISTRATION
@@ -1517,6 +1528,13 @@ static void release_request( struct subscription_request *req )
     if (req->notify.pszServiceNames) LocalFree( req->notify.pszServiceNames );
     CloseHandle( req->done_event );
     free( req );
+}
+
+static BOOL request_wanted( void *param )
+{
+    struct subscription_request *req = param;
+
+    return !req->abandoned;
 }
 
 /* Called by the worker of the request as its last use of the buffer */
@@ -1566,7 +1584,7 @@ static DWORD WINAPI subscription_thread( void *param )
             req->notify.pfnNotifyCallback = subscription_notified;
             req->notify.pContext = sub->context;
             err = notify_status_change( sub->handle, sub->mask | SERVICE_NOTIFY_SUBSCRIPTION, &req->notify,
-                                        request_finished, req );
+                                        request_finished, request_wanted, req );
         }
         if (first)
         {
@@ -1592,6 +1610,8 @@ static DWORD WINAPI subscription_thread( void *param )
             if (req->notify.dwNotificationStatus == ERROR_SUCCESS)
                 sub->callback( req->notify.dwNotificationTriggered, sub->context );
         }
+        /* A request still pending ends at its next timeout and closes its notify handle */
+        InterlockedExchange( &req->abandoned, TRUE );
         release_request( req );
     }
 

@@ -6,6 +6,7 @@
  */
 
 #include "precomp.h"
+#include <tlhelp32.h>
 
 #define TEST_SERVICE L"LntChangeNotifyTest"
 
@@ -108,7 +109,90 @@ test_Subscribe(SC_HANDLE Manager)
     }
 }
 
+static ULONG
+CountThreads(void)
+{
+    THREADENTRY32 Entry = { sizeof(Entry) };
+    HANDLE Snapshot;
+    ULONG Count = 0;
+
+    Snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (Snapshot == INVALID_HANDLE_VALUE)
+        return 0;
+    if (Thread32First(Snapshot, &Entry))
+    {
+        do
+        {
+            if (Entry.th32OwnerProcessID == GetCurrentProcessId())
+                Count++;
+        } while (Thread32Next(Snapshot, &Entry));
+    }
+    CloseHandle(Snapshot);
+    return Count;
+}
+
+/* Subscriptions that end on a quiet handle leave no thread behind once their requests end */
+static void
+test_SubscribeCleanup(SC_HANDLE Manager)
+{
+    PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
+    ULONG Before, After, i;
+    DWORD Error;
+
+    Before = CountThreads();
+    for (i = 0; i < 8; i++)
+    {
+        Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscription);
+        ok(Error == ERROR_SUCCESS, "Subscription %lu returned %lu\n", i, Error);
+        if (Error == ERROR_SUCCESS)
+            pUnsubscribe(Subscription);
+    }
+    Sleep(8000);
+    After = CountThreads();
+    trace("Threads before %lu, after 8 subscriptions %lu\n", Before, After);
+    ok(After < Before + 4, "8 ended subscriptions left %lu threads\n", After - Before);
+}
+
 static volatile BOOL ApcFired;
+
+static VOID CALLBACK
+IgnoreNotify(PVOID Parameter)
+{
+    UNREFERENCED_PARAMETER(Parameter);
+}
+
+/* A manager handle takes database changes only, a service handle state changes only */
+static void
+test_Masks(SC_HANDLE Manager)
+{
+    SERVICE_NOTIFYW Notify = { SERVICE_NOTIFY_STATUS_CHANGE };
+    SC_HANDLE Own, Service;
+    DWORD Error;
+
+    Notify.pfnNotifyCallback = IgnoreNotify;
+    Own = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (Own)
+    {
+        Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_RUNNING, &Notify);
+        ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a manager handle returned %lu\n", Error);
+        Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_RUNNING, &Notify);
+        ok(Error == ERROR_INVALID_PARAMETER, "State mask on a manager handle returned %lu\n", Error);
+        CloseServiceHandle(Own);
+    }
+
+    Service = CreateTestService(Manager);
+    ok(Service != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
+    if (Service)
+    {
+        Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_CREATED, &Notify);
+        ok(Error == ERROR_INVALID_PARAMETER, "Database mask on a service handle returned %lu\n", Error);
+        Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_RUNNING, &Notify);
+        ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a service handle returned %lu\n", Error);
+        DeleteService(Service);
+        CloseServiceHandle(Service);
+    }
+    SleepEx(0, TRUE);
+}
 
 static VOID CALLBACK
 ManagerNotified(PVOID Parameter)
@@ -300,11 +384,15 @@ START_TEST(ServiceChangeNotify)
 
     NotifyEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
     if (pSubscribe && pUnsubscribe)
+    {
         test_Subscribe(Manager);
+        test_SubscribeCleanup(Manager);
+    }
     else
         skip("SubscribeServiceChangeNotifications is missing\n");
     test_ServiceNames();
     test_ServiceStatus(Manager);
+    test_Masks(Manager);
 
     CloseHandle(NotifyEvent);
     CloseServiceHandle(Manager);

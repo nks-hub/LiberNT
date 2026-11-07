@@ -314,6 +314,9 @@ VOID ScmNotifyServiceDatabase(DWORD dwTrigger, LPCWSTR lpServiceName);
 /* Set by sechost on the requests of SubscribeServiceChangeNotifications, which do not use up the
    immediate report of the current state that NotifyServiceStatusChange gives on a handle */
 #define SERVICE_NOTIFY_SUBSCRIPTION 0x80000000
+
+/* How long RGetNotifyResults waits for a subscription request before it returns ERROR_TIMEOUT */
+#define SCM_SUBSCRIPTION_WAIT 5000
 DWORD ScmReadFailureActions(HKEY hServiceKey,
                             PSERVICE_FAILURE_ACTIONS_VALUE *lpValue,
                             LPDWORD lpActionCount);

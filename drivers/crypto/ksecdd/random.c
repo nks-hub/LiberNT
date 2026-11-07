@@ -18,7 +18,7 @@
 
 /* GLOBALS ********************************************************************/
 
-/* A spin lock: SystemPrng callers such as wireguard.sys run at DISPATCH_LEVEL */
+/* A spin lock: SystemPrng may be called at DISPATCH_LEVEL */
 static KSPIN_LOCK KsecRandomLock;
 static ULONG KsecRandomKey[8];
 static ULONG64 KsecRandomBlockCounter;

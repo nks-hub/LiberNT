@@ -925,7 +925,7 @@ BCryptGenRandom(
 }
 
 /*
- * Exported by cng.sys; drivers such as wireguard.sys draw their keys from it.
+ * Exported by cng.sys for drivers that need random bytes.
  * The SDK declares it returning BOOL, a 32-bit value; a caller that reads
  * only the low byte, as a BOOLEAN, still gets the same answer.
  */

@@ -62,6 +62,7 @@ NTSTATUS
 Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext);
 
 VOID
+NTAPI
 Ext2DeferWrite(IN PEXT2_IRP_CONTEXT, PIRP Irp);
 
 
@@ -224,6 +225,7 @@ Ext2ZeroData (
 }
 
 VOID
+NTAPI
 Ext2DeferWrite(IN PEXT2_IRP_CONTEXT IrpContext, PIRP Irp)
 {
     ASSERT(IrpContext->Irp == Irp);

@@ -2058,9 +2058,10 @@ SerCx2DdiPioTransmitPurgeFifoComplete(
     UNREFERENCED_PARAMETER(BytesPurged);
 }
 
+/* shortcut: variadic, so cdecl; an x86 caller of a stdcall slot expects the callee to pop its
+ * arguments, so these slots need typed no-op functions before sercx2 runs on x86 */
 static
 VOID
-NTAPI
 SerCx2DdiNoOperation(
     _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
     ...)

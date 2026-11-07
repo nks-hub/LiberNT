@@ -53,7 +53,9 @@ _I386TransferStart:
     call I386TransferBase
 I386TransferBase:
     pop eax
-    add eax, I386TransferSegments - I386TransferBase
+    /* The assembler takes one symbol per operand; the relocations of both cancel out */
+    add eax, offset I386TransferSegments
+    sub eax, offset I386TransferBase
     push KGDT_R0_CODE
     push eax
     .byte HEX(CB)

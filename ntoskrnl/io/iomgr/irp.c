@@ -455,6 +455,17 @@ IopCompleteRequest(IN PKAPC Apc,
     /* Sanity check */
     ASSERT(Irp->IoStatus.Status != (NTSTATUS)0xFFFFFFFF);
 
+    /*
+     * A synchronous request that CancelSynchronousIo could not cancel got its
+     * thread alerted. The request has ended, so the alert must not end a later
+     * wait of the thread; this APC runs in that thread.
+     */
+    if (PsGetCurrentThread()->IoCancelAlertPending)
+    {
+        PsGetCurrentThread()->IoCancelAlertPending = FALSE;
+        KeTestAlertThread(UserMode);
+    }
+
     IopCheckUnwoundCompletionTarget(Irp);
 
     /* Check if we have a file object */

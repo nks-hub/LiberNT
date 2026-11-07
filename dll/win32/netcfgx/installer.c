@@ -1055,8 +1055,9 @@ NetClassInstaller(
     LPWSTR UuidRpcString = NULL;
     LPWSTR UuidString = NULL;
     HKEY hDriverKey;
+    HANDLE hInstanceIdLock = NULL;
     LONG rc;
-    DWORD dwLength;
+    DWORD dwLength, dwWait;
 
     if (InstallFunction != DIF_INSTALLDEVICE)
         return ERROR_DI_DO_DEFAULT;
@@ -1176,8 +1177,28 @@ NetClassInstaller(
         }
     }
 
+    /*
+     * InstallNetDevice publishes the GUID as NetCfgInstanceId, so another
+     * install must not check the same suggested GUID before that.
+     */
+    if (IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET))
+    {
+        hInstanceIdLock = CreateMutexW(NULL, FALSE, L"Global\\NetCfgxInstanceId");
+        if (hInstanceIdLock)
+        {
+            dwWait = WaitForSingleObject(hInstanceIdLock, INFINITE);
+            if (dwWait != WAIT_OBJECT_0 && dwWait != WAIT_ABANDONED)
+            {
+                CloseHandle(hInstanceIdLock);
+                hInstanceIdLock = NULL;
+            }
+        }
+        if (!hInstanceIdLock)
+            WARN("Cannot lock the instance IDs (error %lu)\n", GetLastError());
+    }
+
     /* Use the suggested UUID of the adapter or create a new one */
-    if (!IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET) ||
+    if (!hInstanceIdLock ||
         !GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, &Uuid))
     {
         RpcStatus = UuidCreate(&Uuid);
@@ -1226,6 +1247,11 @@ NetClassInstaller(
     }
 
 cleanup:
+    if (hInstanceIdLock)
+    {
+        ReleaseMutex(hInstanceIdLock);
+        CloseHandle(hInstanceIdLock);
+    }
     if (hInf != INVALID_HANDLE_VALUE)
         SetupCloseInfFile(hInf);
     if (UuidRpcString != NULL)

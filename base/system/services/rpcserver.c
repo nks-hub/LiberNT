@@ -5288,10 +5288,11 @@ ScmSetDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, const DWORD *lpValue)
     dwValue = *lpValue;
     if (dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO &&
         dwValue != SERVICE_SID_TYPE_NONE &&
-        dwValue != SERVICE_SID_TYPE_UNRESTRICTED &&
-        dwValue != SERVICE_SID_TYPE_RESTRICTED)
+        dwValue != SERVICE_SID_TYPE_UNRESTRICTED)
     {
-        return ERROR_INVALID_PARAMETER;
+        /* A restricted service token needs restricting SIDs that the access check
+         * does not evaluate yet; storing the type would promise a sandbox */
+        return (dwValue == SERVICE_SID_TYPE_RESTRICTED) ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER;
     }
     if (dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO &&
         dwValue != FALSE && dwValue != TRUE)
@@ -5307,16 +5308,17 @@ static DWORD
 ScmQueryDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, LPBYTE lpBuffer, DWORD cbBufSize,
                     LPBOUNDED_DWORD_8K pcbBytesNeeded)
 {
-    /* Windows documents a default pre-shutdown timeout of three minutes */
-    DWORD dwValue = (dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO) ? 180000 : 0;
-    DWORD dwData, dwSize = sizeof(dwData), dwType = REG_NONE;
+    /* Since Windows 10 1703 the default pre-shutdown timeout is 10 seconds */
+    DWORD dwValue = (dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO) ? 10000 : 0;
+    DWORD dwData = 0, dwSize = sizeof(dwData), dwType = REG_NONE;
 
     *pcbBytesNeeded = sizeof(DWORD);
     if (cbBufSize < sizeof(DWORD))
         return ERROR_INSUFFICIENT_BUFFER;
 
     if (RegQueryValueExW(hServiceKey, ScmDwordConfigValueName(dwInfoLevel), NULL, &dwType,
-                         (LPBYTE)&dwData, &dwSize) == ERROR_SUCCESS && dwType == REG_DWORD)
+                         (LPBYTE)&dwData, &dwSize) == ERROR_SUCCESS && dwType == REG_DWORD &&
+        dwSize == sizeof(DWORD))
     {
         dwValue = dwData;
     }

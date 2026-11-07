@@ -1336,15 +1336,70 @@ WskReleaseTcp(_In_ PWSK_SOCKET SocketParam, _In_ PWSK_DATA_INDICATION DataIndica
 static NTSTATUS WSKAPI
 WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _Inout_ PIRP Irp)
 {
-    FUNCTION_TRACE;
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+    ULONG Size = FIELD_OFFSET(TDI_ADDRESS_INFO, Address) + sizeof(TA_IP_ADDRESS);
+    PTDI_ADDRESS_INFO Info = NULL;
+    PTA_IP_ADDRESS Address;
+    NTSTATUS Status;
+    PMDL Mdl = NULL;
 
-    UNIMPLEMENTED;
-    if (Irp != NULL)
+    IoSetNextIrpStackLocation(Irp);
+
+    if (Socket->LocalAddressFile == NULL)
     {
-        Irp->IoStatus.Status = STATUS_NOT_IMPLEMENTED;
-        IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+        Status = STATUS_INVALID_DEVICE_STATE;
+        goto Done;
     }
-    return STATUS_NOT_IMPLEMENTED;
+
+    Info = ExAllocatePoolZero(NonPagedPool, Size, TAG_NETIO);
+    Mdl = Info ? IoAllocateMdl(Info, Size, FALSE, FALSE, NULL) : NULL;
+    if (Mdl == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+    _SEH2_TRY
+    {
+        MmProbeAndLockPages(Mdl, KernelMode, IoModifyAccess);
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        IoFreeMdl(Mdl);
+        Mdl = NULL;
+    }
+    _SEH2_END;
+    if (Mdl == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+
+    /* The IRP owns the MDL and frees it on completion */
+    Status = TdiQueryInformation(Socket->LocalAddressFile, TDI_QUERY_ADDRESS_INFO, Mdl);
+    if (NT_SUCCESS(Status))
+    {
+        Address = (PTA_IP_ADDRESS)&Info->Address;
+        if (Address->TAAddressCount < 1 || Address->Address[0].AddressType != TDI_ADDRESS_TYPE_IP)
+        {
+            Status = STATUS_INVALID_ADDRESS;
+        }
+        else
+        {
+            PSOCKADDR_IN Result = (PSOCKADDR_IN)LocalAddress;
+
+            RtlZeroMemory(Result, sizeof(*Result));
+            Result->sin_family = AF_INET;
+            Result->sin_port = Address->Address[0].Address[0].sin_port;
+            Result->sin_addr.s_addr = Address->Address[0].Address[0].in_addr;
+        }
+    }
+
+Done:
+    if (Info)
+        ExFreePoolWithTag(Info, TAG_NETIO);
+    Irp->IoStatus.Status = Status;
+    IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+    return STATUS_PENDING;
 }
 
 static NTSTATUS WSKAPI

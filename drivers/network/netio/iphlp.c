@@ -9,6 +9,7 @@
 #include <netiodef.h>
 #include <ws2def.h>
 #include <ws2ipdef.h>
+#include <ndis.h>
 #define IPHLPAPI_DLL_LINKAGE
 #include <netioapi.h>
 #include <tdiinfo.h>
@@ -19,6 +20,37 @@
 #define NETIO_MAX_ENTITIES 256
 #define NETIO_MAX_ROUTES 128
 #define NETIO_MAX_ADDRESSES 64
+
+static
+NET_LUID
+NetioInterfaceLuid(
+    _In_ ULONG Index,
+    _In_ ULONG Type)
+{
+    NET_LUID Luid;
+
+    /* An interface bound to an NDIS adapter has the adapter's LUID, which can
+     * come from the driver key. Otherwise use the LUID the user-mode NSI
+     * provider builds from the TDI interface entry. */
+    if (NdisIfGetNetLuidFromInterfaceIndex(Index, &Luid) == NDIS_STATUS_SUCCESS && Luid.Value)
+        return Luid;
+    Luid.Value = 0;
+    Luid.Info.NetLuidIndex = Index;
+    Luid.Info.IfType = Type;
+    return Luid;
+}
+
+static
+ULONG
+NetioLuidIndex(
+    _In_ const NET_LUID *Luid)
+{
+    NET_IFINDEX Index;
+
+    if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
+        return Index;
+    return (ULONG)Luid->Info.NetLuidIndex;
+}
 
 typedef struct _NETIO_TDI_ROUTE
 {
@@ -248,7 +280,7 @@ NetioGetBestRoute6(
 
     InitializeIpForwardEntry(BestRoute);
     BestRoute->InterfaceIndex = Query.InterfaceIndex;
-    BestRoute->InterfaceLuid.Info.NetLuidIndex = Query.InterfaceIndex;
+    BestRoute->InterfaceLuid = NetioInterfaceLuid(Query.InterfaceIndex, 0);
     BestRoute->DestinationPrefix.Prefix.si_family = AF_INET6;
     RtlCopyMemory(&BestRoute->DestinationPrefix.Prefix.Ipv6.sin6_addr, Query.Prefix, sizeof(Query.Prefix));
     BestRoute->DestinationPrefix.PrefixLength = (UINT8)Query.PrefixLength;
@@ -307,7 +339,7 @@ GetBestRoute2(
         return STATUS_NOT_SUPPORTED;
     }
     if (InterfaceLuid != NULL && InterfaceIndex == 0)
-        InterfaceIndex = (NET_IFINDEX)InterfaceLuid->Info.NetLuidIndex;
+        InterfaceIndex = NetioLuidIndex(InterfaceLuid);
     if (DestinationAddress->si_family == AF_INET6)
         return NetioGetBestRoute6(InterfaceIndex, SourceAddress, DestinationAddress, BestRoute, BestSourceAddress);
 
@@ -410,7 +442,7 @@ GetBestRoute2(
 
     InitializeIpForwardEntry(BestRoute);
     BestRoute->InterfaceIndex = BestIndex;
-    BestRoute->InterfaceLuid.Info.NetLuidIndex = BestIndex;
+    BestRoute->InterfaceLuid = NetioInterfaceLuid(BestIndex, 0);
     BestRoute->DestinationPrefix.Prefix.si_family = AF_INET;
     BestRoute->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = Best.Dest & Best.Mask;
     BestRoute->DestinationPrefix.PrefixLength = (UINT8)BestPrefix;
@@ -494,21 +526,6 @@ NetioDeviceIoControl(
     Status = ZwDeviceIoControlFile(Device, NULL, NULL, NULL, &Io, Code, Input, InputLength, Output, OutputLength);
     ZwClose(Device);
     return Status;
-}
-
-static
-NET_LUID
-NetioInterfaceLuid(
-    _In_ ULONG Index,
-    _In_ ULONG Type)
-{
-    NET_LUID Luid;
-
-    /* The same LUID the user-mode NSI provider builds from the TDI interface entry */
-    Luid.Value = 0;
-    Luid.Info.NetLuidIndex = Index;
-    Luid.Info.IfType = Type;
-    return Luid;
 }
 
 static
@@ -854,7 +871,7 @@ GetIfEntry2(
 
     if (Row == NULL)
         return STATUS_INVALID_PARAMETER;
-    Index = Row->InterfaceLuid.Value ? (ULONG)Row->InterfaceLuid.Info.NetLuidIndex : Row->InterfaceIndex;
+    Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
         return STATUS_INVALID_PARAMETER;
 
@@ -925,7 +942,7 @@ GetIpInterfaceEntry(
 
     if (Row == NULL || (Row->Family != AF_INET && Row->Family != AF_INET6))
         return STATUS_INVALID_PARAMETER;
-    Index = Row->InterfaceLuid.Value ? (ULONG)Row->InterfaceLuid.Info.NetLuidIndex : Row->InterfaceIndex;
+    Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
         return STATUS_INVALID_PARAMETER;
 

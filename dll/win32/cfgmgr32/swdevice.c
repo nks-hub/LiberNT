@@ -635,6 +635,14 @@ SwDeviceCreate(
     if (pCreateInfo->pszDeviceLocation)
         Device->Location = DupBuffer(pCreateInfo->pszDeviceLocation,
                                      (wcslen(pCreateInfo->pszDeviceLocation) + 1) * sizeof(WCHAR));
+    if ((pCreateInfo->pszzHardwareIds && !Device->HardwareIds) ||
+        (pCreateInfo->pszzCompatibleIds && !Device->CompatibleIds) ||
+        (pCreateInfo->pszDeviceDescription && !Device->Description) ||
+        (pCreateInfo->pszDeviceLocation && !Device->Location))
+    {
+        FreeSwDevice(Device);
+        return E_OUTOFMEMORY;
+    }
     if (pCreateInfo->pContainerId)
     {
         Device->ContainerId = *pCreateInfo->pContainerId;

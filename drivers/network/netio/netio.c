@@ -93,10 +93,18 @@ typedef struct _NETIO_RECEIVE
     UCHAR Data[NETIO_RECEIVE_SIZE];
 } NETIO_RECEIVE, *PNETIO_RECEIVE;
 
-/* What WSK_SET_STATIC_EVENT_CALLBACKS enabled for the sockets of one WSK client */
+/*
+ * One WskRegister. It lives until WskDeregister, which waits for every
+ * captured provider NPI to be released and every socket of the client to be
+ * destroyed; an accepted socket keeps its listening socket alive.
+ */
 typedef struct _NETIO_WSK_CLIENT
 {
-    ULONG EventMask;
+    ULONG EventMask;                /* What WSK_SET_STATIC_EVENT_CALLBACKS enabled */
+    KSPIN_LOCK Lock;
+    BOOLEAN Deregistering;
+    LONG Users;                     /* Captured NPIs and sockets */
+    KEVENT Idle;                    /* Set while Users is 0 */
 } NETIO_WSK_CLIENT, *PNETIO_WSK_CLIENT;
 
 typedef struct _WSK_SOCKET_INTERNAL
@@ -150,6 +158,8 @@ typedef struct _WSK_SOCKET_INTERNAL
     struct _WSK_SOCKET_INTERNAL *NextSocketToDereference;
     ULONG NumSocketDereferences;
 
+    PNETIO_WSK_CLIENT Client;       /* NULL for an accepted socket */
+
     /* Datagram sockets */
     const WSK_CLIENT_DATAGRAM_DISPATCH *DatagramDispatch;
     BOOLEAN ReceiveEvents;          /* WSK_EVENT_RECEIVE_FROM is enabled */
@@ -192,6 +202,31 @@ static NTSTATUS
 NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
 NetioSetAddressOption(_In_ PFILE_OBJECT AddressFile, _In_ ULONG Option, _In_ ULONG Value);
+
+static BOOLEAN
+NetioAddClientUser(_In_ PNETIO_WSK_CLIENT Client)
+{
+    BOOLEAN Added;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    Added = !Client->Deregistering;
+    if (Added && Client->Users++ == 0)
+        KeClearEvent(&Client->Idle);
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
+    return Added;
+}
+
+static VOID
+NetioRemoveClientUser(_In_ PNETIO_WSK_CLIENT Client)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    if (--Client->Users == 0)
+        KeSetEvent(&Client->Idle, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
+}
 
 static
 void SocketShutdown(_In_ PWSK_SOCKET_INTERNAL Socket)
@@ -251,6 +286,8 @@ void SocketShutdown(_In_ PWSK_SOCKET_INTERNAL Socket)
 static void
 SocketDestroy(_In_ PWSK_SOCKET_INTERNAL Socket)
 {
+    PNETIO_WSK_CLIENT Client = Socket->Client;
+
     SocketShutdown(Socket);
 
     /* Especially listen sockets must keep the LocalAddressFile
@@ -272,6 +309,8 @@ SocketDestroy(_In_ PWSK_SOCKET_INTERNAL Socket)
         Socket->LocalAddressHandle = NULL;
     }
     ExFreePoolWithTag(Socket, TAG_NETIO);
+    if (Client)
+        NetioRemoveClientUser(Client);
 }
 
 static void
@@ -329,28 +368,57 @@ static VOID NTAPI DereferenceSocketsThread(_In_opt_ void *p)
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
+/*
+ * Every registered WSK client uses the one thread. A driver that imports
+ * NETIO.SYS loads it without DriverEntry, so the first user sets up the lock.
+ */
+static FAST_MUTEX DereferenceSocketsThreadLock;
+static ULONG DereferenceSocketsThreadUsers;
+static volatile LONG DereferenceSocketsThreadLockState;  /* 0 none, 1 initializing, 2 ready */
+
 static NTSTATUS StartSocketDereferenceThread(void)
 {
-    NTSTATUS status;
+    NTSTATUS status = STATUS_SUCCESS;
 
-    KeInitializeSpinLock(&SocketsToDereferenceListLock);
-    KeInitializeEvent(&DereferenceSocketsEvent, SynchronizationEvent, FALSE);
-    DereferenceSocketsThreadShouldRun = TRUE;
-
-    status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, NULL, NULL, NULL, DereferenceSocketsThread, NULL);
-    if (!NT_SUCCESS(status))
+    if (InterlockedCompareExchange(&DereferenceSocketsThreadLockState, 1, 0) == 0)
     {
-        DPRINT1("Could not start put sockets thread, status is %x\n", status);
+        ExInitializeFastMutex(&DereferenceSocketsThreadLock);
+        KeInitializeSpinLock(&SocketsToDereferenceListLock);
+        KeInitializeEvent(&DereferenceSocketsEvent, SynchronizationEvent, FALSE);
+        InterlockedExchange(&DereferenceSocketsThreadLockState, 2);
     }
+    while (DereferenceSocketsThreadLockState != 2)
+        YieldProcessor();
+
+    ExAcquireFastMutex(&DereferenceSocketsThreadLock);
+    if (DereferenceSocketsThreadUsers == 0)
+    {
+        DereferenceSocketsThreadShouldRun = TRUE;
+        status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, NULL, NULL, NULL, DereferenceSocketsThread, NULL);
+        if (!NT_SUCCESS(status))
+        {
+            DPRINT1("Could not start put sockets thread, status is %x\n", status);
+        }
+    }
+    if (NT_SUCCESS(status))
+        DereferenceSocketsThreadUsers++;
+    ExReleaseFastMutex(&DereferenceSocketsThreadLock);
     return status;
 }
 
 static void StopSocketDereferenceThread(void)
 {
-    DereferenceSocketsThreadShouldRun = FALSE;
-    KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
+    ExAcquireFastMutex(&DereferenceSocketsThreadLock);
+    if (--DereferenceSocketsThreadUsers == 0)
+    {
+        DereferenceSocketsThreadShouldRun = FALSE;
+        KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
 
-    /* eventually it will terminate, no need to wait for that. */
+        /* eventually it will terminate, no need to wait for that. */
+        ZwClose(DereferenceSocketsThreadHandle);
+        DereferenceSocketsThreadHandle = NULL;
+    }
+    ExReleaseFastMutex(&DereferenceSocketsThreadLock);
 }
 
 static void
@@ -2157,6 +2225,18 @@ WskSocket(
             goto err_out;
     }
 
+    /* WskDeregister waits for the sockets of the client; accepted sockets have none */
+    if (Client != NULL)
+    {
+        if (!NetioAddClientUser((PNETIO_WSK_CLIENT)Client))
+        {
+            DereferenceSocket(Socket);
+            status = STATUS_DEVICE_NOT_READY;
+            goto err_out;
+        }
+        Socket->Client = (PNETIO_WSK_CLIENT)Client;
+    }
+
     Irp->IoStatus.Information = (ULONG_PTR)Socket;
     status = STATUS_SUCCESS;
 
@@ -2180,33 +2260,45 @@ WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
 {
     FUNCTION_TRACE;
 
+    PNETIO_WSK_CLIENT Client;
+    NTSTATUS Status;
+
+    FUNCTION_TRACE;
+
     reg->ReservedRegistrationState = 0;
     reg->ReservedRegistrationContext = NULL;
     KeInitializeSpinLock(&reg->ReservedRegistrationLock);
 
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS WSKAPI
-WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PROVIDER_NPI npi)
-{
-    FUNCTION_TRACE;
-
-    PNETIO_WSK_CLIENT ClientContext;
-    NTSTATUS Status;
-
-    ClientContext = ExAllocatePoolZero(NonPagedPool, sizeof(*ClientContext), TAG_NETIO);
-    if (ClientContext == NULL)
+    Client = ExAllocatePoolZero(NonPagedPool, sizeof(*Client), TAG_NETIO);
+    if (Client == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
+    KeInitializeSpinLock(&Client->Lock);
+    KeInitializeEvent(&Client->Idle, NotificationEvent, TRUE);
 
     Status = StartSocketDereferenceThread();
     if (!NT_SUCCESS(Status))
     {
-        ExFreePoolWithTag(ClientContext, TAG_NETIO);
+        ExFreePoolWithTag(Client, TAG_NETIO);
         return Status;
     }
-    reg->ReservedRegistrationContext = ClientContext;
-    npi->Client = (PWSK_CLIENT)ClientContext;
+    reg->ReservedRegistrationContext = Client;
+    return STATUS_SUCCESS;
+}
+
+/* Every capture is released by its own WskReleaseProviderNPI */
+NTSTATUS WSKAPI
+WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PROVIDER_NPI npi)
+{
+    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+
+    FUNCTION_TRACE;
+
+    UNREFERENCED_PARAMETER(wait);
+
+    /* The provider is always ready, so there is nothing to wait for */
+    if (Client == NULL || !NetioAddClientUser(Client))
+        return STATUS_DEVICE_NOT_READY;
+    npi->Client = (PWSK_CLIENT)Client;
     npi->Dispatch = &provider_dispatch;
     return STATUS_SUCCESS;
 }
@@ -2216,21 +2308,34 @@ WskReleaseProviderNPI(_In_ PWSK_REGISTRATION reg)
 {
     FUNCTION_TRACE;
 
-    StopSocketDereferenceThread();
-    if (reg->ReservedRegistrationContext)
-    {
-        ExFreePoolWithTag(reg->ReservedRegistrationContext, TAG_NETIO);
-        reg->ReservedRegistrationContext = NULL;
-    }
+    NetioRemoveClientUser(reg->ReservedRegistrationContext);
 }
 
 VOID WSKAPI
 WskDeregister(_In_ PWSK_REGISTRATION reg)
 {
+    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+    KIRQL OldIrql;
+
     FUNCTION_TRACE;
+
+    if (Client == NULL)
+        return;
+
+    /* New captures fail from now on; the ones made before still finish */
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    Client->Deregistering = TRUE;
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
+    KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
+
+    /* The last user sets Idle under the lock; it has released the lock once we hold it */
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
 
     reg->ReservedRegistrationState = 0;
     reg->ReservedRegistrationContext = NULL;
+    ExFreePoolWithTag(Client, TAG_NETIO);
+    StopSocketDereferenceThread();
 }
 
 NTSTATUS

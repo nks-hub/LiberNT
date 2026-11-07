@@ -87,6 +87,8 @@ typedef struct _NETIO_RECEIVE
     PIRP Irp;
     PMDL Mdl;
     volatile BOOLEAN InFlight;
+    BOOLEAN Held;                   /* Received while the receive event was off */
+    SIZE_T Length;
     SOCKADDR_IN Remote;
     ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
     DECLSPEC_ALIGN(8) UCHAR Control[64];
@@ -163,6 +165,9 @@ typedef struct _WSK_SOCKET_INTERNAL
     /* Datagram sockets */
     const WSK_CLIENT_DATAGRAM_DISPATCH *DatagramDispatch;
     BOOLEAN ReceiveEvents;          /* WSK_EVENT_RECEIVE_FROM is enabled */
+    BOOLEAN ReceiveEventsStatic;    /* by WSK_SET_STATIC_EVENT_CALLBACKS */
+    LONG ReceiveCallbacks;          /* WskReceiveFromEvent calls in progress */
+    PIRP DisableIrp;                /* Completes when those calls return */
     BOOLEAN PktInfo;                /* IP_PKTINFO was requested */
     BOOLEAN ReceiveStarted;
     volatile BOOLEAN ReceiveClosing;
@@ -200,6 +205,14 @@ static VOID
 NetioStopReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
 NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static VOID
+NetioReceivesReleased(_In_ PWSK_SOCKET_INTERNAL Socket);
+static VOID
+NetioResumeReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioEnableReceiveEvent(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioDisableReceiveEvent(_In_ PWSK_SOCKET_INTERNAL Socket, _In_opt_ PIRP Irp);
 static NTSTATUS WSKAPI
 WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _Inout_ PIRP Irp);
 static NTSTATUS WSKAPI
@@ -211,12 +224,14 @@ WskControlSocket(_In_ PWSK_SOCKET SocketParam, _In_ WSK_CONTROL_SOCKET_TYPE Requ
 /*
  * Querying the address file and setting its options build IRPs that need
  * PASSIVE_LEVEL, while WSK clients may call up to DISPATCH_LEVEL. Such a
- * request runs again in a system worker thread.
+ * request runs again in a system worker thread; giving held datagrams to a
+ * client that enabled its receive event again runs there too.
  */
 typedef enum _NETIO_PASSIVE_KIND
 {
     NetioPassiveLocalAddress,
     NetioPassivePktInfo,
+    NetioPassiveResumeReceives,
 } NETIO_PASSIVE_KIND;
 
 typedef struct _NETIO_PASSIVE_REQUEST
@@ -499,6 +514,11 @@ NetioPassiveWorker(
         case NetioPassivePktInfo:
             WskControlSocket(&Socket->Socket, WskSetOption, IP_PKTINFO, IPPROTO_IP, sizeof(Request->PktInfo),
                              &Request->PktInfo, 0, NULL, NULL, Request->Irp);
+            break;
+
+        case NetioPassiveResumeReceives:
+            NetioResumeReceives(Socket);
+            NetioReceivesReleased(Socket);
             break;
     }
 
@@ -962,11 +982,18 @@ WskControlSocket(
                             }
 
                             status = STATUS_SUCCESS;
-                            if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM) &&
-                                !(Control->EventMask & WSK_EVENT_DISABLE))
+                            if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM))
                             {
-                                Socket->ReceiveEvents = TRUE;
-                                status = NetioStartReceives(Socket);
+                                if (Control->EventMask & WSK_EVENT_DISABLE)
+                                {
+                                    status = NetioDisableReceiveEvent(Socket, Irp);
+                                    if (status == STATUS_PENDING)
+                                        return STATUS_PENDING;
+                                }
+                                else
+                                {
+                                    status = NetioEnableReceiveEvent(Socket);
+                                }
                             }
                             break;
 
@@ -1334,6 +1361,72 @@ NetioPostReceive(
     IoCallDriver(DeviceObject, Receive->Irp);
 }
 
+/* Completes a disable that waited for the receive event calls in progress */
+static VOID
+NetioCompleteDisable(
+    _In_opt_ PIRP Irp)
+{
+    if (Irp == NULL)
+        return;
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+}
+
+/*
+ * Gives one received datagram to WskReceiveFromEvent. A client that enabled
+ * the event through SO_WSK_EVENT_CALLBACK and does not accept the datagram
+ * has the event turned off; the datagram is held until it turns it on again.
+ */
+static VOID
+NetioIndicateReceive(
+    _In_ PNETIO_RECEIVE Receive)
+{
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+    PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
+    PTA_IP_ADDRESS Source = (PTA_IP_ADDRESS)ConnInfo->RemoteAddress;
+    PIRP DisableIrp = NULL;
+    BOOLEAN Held = FALSE;
+    NTSTATUS Status;
+    KIRQL OldIrql;
+
+    RtlZeroMemory(&Receive->Remote, sizeof(Receive->Remote));
+    Receive->Remote.sin_family = AF_INET;
+    Receive->Remote.sin_port = Source->Address[0].Address[0].sin_port;
+    Receive->Remote.sin_addr.s_addr = Source->Address[0].Address[0].in_addr;
+
+    Receive->Indication.Next = NULL;
+    Receive->Indication.Buffer.Mdl = Receive->Mdl;
+    Receive->Indication.Buffer.Offset = 0;
+    Receive->Indication.Buffer.Length = Receive->Length;
+    Receive->Indication.ControlInfoLength = Socket->PktInfo ? (ULONG)ConnInfo->OptionsLength : 0;
+    Receive->Indication.ControlInfo = Receive->Indication.ControlInfoLength ? (PCMSGHDR)Receive->Control : NULL;
+    Receive->Indication.RemoteAddress = (PSOCKADDR)&Receive->Remote;
+
+    Status = Socket->DatagramDispatch->WskReceiveFromEvent(
+        Socket->user_context,
+        KeGetCurrentIrql() == DISPATCH_LEVEL ? WSK_FLAG_AT_DISPATCH_LEVEL : 0,
+        &Receive->Indication);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    if (Status == STATUS_DATA_NOT_ACCEPTED && !Socket->ReceiveEventsStatic && !Socket->ReceiveClosing)
+    {
+        Socket->ReceiveEvents = FALSE;
+        Receive->Held = Held = TRUE;
+    }
+    if (--Socket->ReceiveCallbacks == 0)
+    {
+        DisableIrp = Socket->DisableIrp;
+        Socket->DisableIrp = NULL;
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+    NetioCompleteDisable(DisableIrp);
+
+    /* The client keeps the data until it calls WskRelease */
+    if (Held || Status == STATUS_PENDING)
+        return;
+    NetioPostReceive(Receive);
+}
+
 static NTSTATUS NTAPI
 NetioReceiveComplete(
     _In_ PDEVICE_OBJECT DeviceObject,
@@ -1342,40 +1435,37 @@ NetioReceiveComplete(
 {
     PNETIO_RECEIVE Receive = Context;
     PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
-    PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
-    PTA_IP_ADDRESS Source = (PTA_IP_ADDRESS)ConnInfo->RemoteAddress;
     NTSTATUS Status = Irp->IoStatus.Status;
+    BOOLEAN Indicate = FALSE, Hold = FALSE;
     KIRQL OldIrql;
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Receive->InFlight = FALSE;
-    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
-
     if (NT_SUCCESS(Status) && !Socket->ReceiveClosing)
     {
-        RtlZeroMemory(&Receive->Remote, sizeof(Receive->Remote));
-        Receive->Remote.sin_family = AF_INET;
-        Receive->Remote.sin_port = Source->Address[0].Address[0].sin_port;
-        Receive->Remote.sin_addr.s_addr = Source->Address[0].Address[0].in_addr;
+        Receive->Length = (SIZE_T)Irp->IoStatus.Information;
+        if (Socket->ReceiveEvents)
+        {
+            Socket->ReceiveCallbacks++;
+            Indicate = TRUE;
+        }
+        else
+        {
+            /* The event is off; the transport buffer is this receive */
+            Receive->Held = Hold = TRUE;
+        }
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
-        Receive->Indication.Next = NULL;
-        Receive->Indication.Buffer.Mdl = Receive->Mdl;
-        Receive->Indication.Buffer.Offset = 0;
-        Receive->Indication.Buffer.Length = (SIZE_T)Irp->IoStatus.Information;
-        Receive->Indication.ControlInfoLength = Socket->PktInfo ? (ULONG)ConnInfo->OptionsLength : 0;
-        Receive->Indication.ControlInfo = Receive->Indication.ControlInfoLength ? (PCMSGHDR)Receive->Control : NULL;
-        Receive->Indication.RemoteAddress = (PSOCKADDR)&Receive->Remote;
-
-        Status = Socket->DatagramDispatch->WskReceiveFromEvent(
-            Socket->user_context,
-            KeGetCurrentIrql() == DISPATCH_LEVEL ? WSK_FLAG_AT_DISPATCH_LEVEL : 0,
-            &Receive->Indication);
-        /* The client keeps the data until it calls WskRelease */
-        if (Status == STATUS_PENDING)
-            return STATUS_MORE_PROCESSING_REQUIRED;
-        NetioPostReceive(Receive);
+    if (Indicate)
+    {
+        NetioIndicateReceive(Receive);
+    }
+    else if (Hold)
+    {
+        /* Given to the client when it enables the event again, or released on close */
     }
     else if (Status == STATUS_BUFFER_OVERFLOW && !Socket->ReceiveClosing)
     {
@@ -1390,6 +1480,106 @@ NetioReceiveComplete(
         NetioReceiveDone(Receive);
     }
     return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+/* Ends a hold that kept the receives allocated for NetioResumeReceives */
+static VOID
+NetioReceivesReleased(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    if (InterlockedDecrement(&Socket->ReceivesBusy) == 0)
+        KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
+}
+
+/* Gives the datagrams held while the event was off to the client */
+static VOID
+NetioResumeReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    KIRQL OldIrql;
+    ULONG i;
+
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        PNETIO_RECEIVE Receive = Socket->Receives[i];
+        BOOLEAN Indicate = FALSE;
+
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        if (Receive->Held && Socket->ReceiveEvents && !Socket->ReceiveClosing)
+        {
+            Receive->Held = FALSE;
+            Socket->ReceiveCallbacks++;
+            Indicate = TRUE;
+        }
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+        if (Indicate)
+            NetioIndicateReceive(Receive);
+    }
+}
+
+static NTSTATUS
+NetioEnableReceiveEvent(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    NTSTATUS Status;
+    KIRQL OldIrql;
+    ULONG i;
+    BOOLEAN Resume = FALSE;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Socket->ReceiveEvents = TRUE;
+    if (Socket->ReceiveStarted && !Socket->ReceiveClosing)
+    {
+        for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+            Resume |= Socket->Receives[i]->Held;
+        /* Keeps the receives allocated until the worker is done with them */
+        if (Resume)
+            InterlockedIncrement(&Socket->ReceivesBusy);
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (!Resume)
+        return NetioStartReceives(Socket);
+
+    /* The client gets the held datagrams outside of its own WskControlSocket call */
+    Status = NetioQueuePassive(Socket, NetioPassiveResumeReceives, NULL, NULL, 0);
+    if (Status != STATUS_PENDING)
+    {
+        NetioReceivesReleased(Socket);
+        return Status;
+    }
+    return STATUS_SUCCESS;
+}
+
+/*
+ * Turns the receive event off. When calls to it are in progress, the IRP
+ * completes after they return; without an IRP that is STATUS_EVENT_PENDING.
+ */
+static NTSTATUS
+NetioDisableReceiveEvent(
+    _In_ PWSK_SOCKET_INTERNAL Socket,
+    _In_opt_ PIRP Irp)
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Socket->ReceiveEvents = FALSE;
+    if (Socket->ReceiveCallbacks != 0)
+    {
+        if (Irp != NULL && Socket->DisableIrp == NULL)
+        {
+            Socket->DisableIrp = Irp;
+            Status = STATUS_PENDING;
+        }
+        else
+        {
+            Status = STATUS_EVENT_PENDING;
+        }
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+    return Status;
 }
 
 static VOID
@@ -1472,6 +1662,14 @@ NetioStopReceives(
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveClosing = TRUE;
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        if (Socket->Receives[i]->Held)
+        {
+            Socket->Receives[i]->Held = FALSE;
+            NetioReceiveDone(Socket->Receives[i]);
+        }
+    }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
     Timeout.QuadPart = -1000000LL; /* 100 ms */
@@ -2278,6 +2476,7 @@ WskSocket(
             /* WSK_SET_STATIC_EVENT_CALLBACKS turns receive events on for every new datagram socket */
             Socket->ReceiveEvents = Client != NULL &&
                                     (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
+            Socket->ReceiveEventsStatic = Socket->ReceiveEvents;
             break;
         case SOCK_STREAM:
             Socket->Socket.Dispatch = &TcpDispatch;

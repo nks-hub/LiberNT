@@ -132,6 +132,110 @@ test_ServiceNames(void)
     CloseServiceHandle(Manager);
 }
 
+static volatile LONG StatusApcs;
+
+static VOID CALLBACK
+ServiceNotified(PVOID Parameter)
+{
+    UNREFERENCED_PARAMETER(Parameter);
+    InterlockedIncrement(&StatusApcs);
+}
+
+/* A status request on a service handle, repeated after each result as a service monitor does */
+static void
+test_ServiceStatus(SC_HANDLE Manager)
+{
+    const DWORD Mask = SERVICE_NOTIFY_RUNNING | SERVICE_NOTIFY_START_PENDING | SERVICE_NOTIFY_STOP_PENDING |
+                       SERVICE_NOTIFY_STOPPED | SERVICE_NOTIFY_DELETE_PENDING;
+    SERVICE_NOTIFYW Notify;
+    SC_HANDLE Service;
+    DWORD Error, Start, i;
+
+    Service = CreateTestService(Manager);
+    ok(Service != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
+    if (!Service)
+        return;
+
+    /* A subscription to the status of a service, as a service monitor uses */
+    if (pSubscribe && pUnsubscribe)
+    {
+        PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
+
+        Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, DatabaseChanged, NULL, &Subscription);
+        ok(Error == ERROR_SUCCESS, "Status subscription returned %lu\n", Error);
+        if (Error == ERROR_SUCCESS)
+            pUnsubscribe(Subscription);
+    }
+
+    for (i = 0; i < 1; i++)
+    {
+        ZeroMemory(&Notify, sizeof(Notify));
+        Notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+        Notify.pfnNotifyCallback = ServiceNotified;
+        StatusApcs = 0;
+        Error = NotifyServiceStatusChangeW(Service, Mask, &Notify);
+        ok(Error == ERROR_SUCCESS, "Request %lu: NotifyServiceStatusChangeW returned %lu\n", i, Error);
+        if (Error != ERROR_SUCCESS)
+            break;
+        for (Start = GetTickCount(); !StatusApcs && GetTickCount() - Start < 5000; )
+            SleepEx(200, TRUE);
+        ok(StatusApcs == 1, "Request %lu: %ld results\n", i, StatusApcs);
+        ok(Notify.dwNotificationStatus == ERROR_SUCCESS, "Request %lu: status %lu\n", i, Notify.dwNotificationStatus);
+        ok(Notify.dwNotificationTriggered == SERVICE_NOTIFY_STOPPED, "Request %lu: triggered 0x%lx\n", i,
+           Notify.dwNotificationTriggered);
+        ok(Notify.ServiceStatus.dwCurrentState == SERVICE_STOPPED, "Request %lu: state %lu\n", i,
+           Notify.ServiceStatus.dwCurrentState);
+        ok(Notify.pszServiceNames == NULL, "Request %lu: service names %p\n", i, Notify.pszServiceNames);
+    }
+
+    /* Creating another service does not end a request on a service handle */
+    {
+        SC_HANDLE Other;
+
+        ZeroMemory(&Notify, sizeof(Notify));
+        Notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+        Notify.pfnNotifyCallback = ServiceNotified;
+        StatusApcs = 0;
+        Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_RUNNING, &Notify);
+        ok(Error == ERROR_SUCCESS, "Running request: NotifyServiceStatusChangeW returned %lu\n", Error);
+        Other = CreateServiceW(Manager, TEST_SERVICE L"2", TEST_SERVICE L"2", SERVICE_ALL_ACCESS,
+                               SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_IGNORE,
+                               L"C:\\Windows\\system32\\svchost.exe", NULL, NULL, NULL, NULL, NULL);
+        ok(Other != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
+        SleepEx(1000, TRUE);
+        ok(StatusApcs == 0, "Creating another service ended the request: status %lu, triggered 0x%lx\n",
+           Notify.dwNotificationStatus, Notify.dwNotificationTriggered);
+        if (Other)
+        {
+            DeleteService(Other);
+            CloseServiceHandle(Other);
+        }
+        SleepEx(500, TRUE);
+        ok(StatusApcs == 0, "Deleting another service ended the request: status %lu, triggered 0x%lx\n",
+           Notify.dwNotificationStatus, Notify.dwNotificationTriggered);
+    }
+
+    /* Deleting the service ends the request with DELETE_PENDING */
+    ZeroMemory(&Notify, sizeof(Notify));
+    Notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+    Notify.pfnNotifyCallback = ServiceNotified;
+    StatusApcs = 0;
+    Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_DELETE_PENDING, &Notify);
+    ok(Error == ERROR_SUCCESS, "Delete request: NotifyServiceStatusChangeW returned %lu\n", Error);
+    ok(DeleteService(Service), "DeleteService failed (%lu)\n", GetLastError());
+    if (Error == ERROR_SUCCESS)
+    {
+        for (Start = GetTickCount(); !StatusApcs && GetTickCount() - Start < 5000; )
+            SleepEx(200, TRUE);
+        ok(StatusApcs == 1, "Delete request: %ld results\n", StatusApcs);
+        ok(Notify.dwNotificationTriggered == SERVICE_NOTIFY_DELETE_PENDING, "Delete request: triggered 0x%lx\n",
+           Notify.dwNotificationTriggered);
+    }
+    Error = NotifyServiceStatusChangeW(Service, Mask, &Notify);
+    ok(Error == ERROR_SERVICE_MARKED_FOR_DELETE, "Request after delete returned %lu\n", Error);
+    CloseServiceHandle(Service);
+}
+
 START_TEST(ServiceChangeNotify)
 {
     HMODULE hSechost = LoadLibraryW(L"sechost.dll");
@@ -161,6 +265,7 @@ START_TEST(ServiceChangeNotify)
     else
         skip("SubscribeServiceChangeNotifications is missing\n");
     test_ServiceNames();
+    test_ServiceStatus(Manager);
 
     CloseHandle(NotifyEvent);
     CloseServiceHandle(Manager);

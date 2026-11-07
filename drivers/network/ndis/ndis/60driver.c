@@ -491,8 +491,8 @@ Ndis6RegisterMiniportDriverInternal(
             if (i == IRP_MJ_PNP || i == IRP_MJ_POWER || i == IRP_MJ_SYSTEM_CONTROL)
                 continue;
             /* The slots are never NULL here (IopInvalidDeviceRequest fills them),
-             * and like Windows NDIS we own them all; miniports such as
-             * wireguard.sys hook them after NdisMRegisterMiniportDriver. */
+             * and like Windows NDIS we own them all; a miniport may hook
+             * them after NdisMRegisterMiniportDriver. */
             DriverObject->MajorFunction[i] = Block->IsWdfHybrid ? Ndis6DispatchHybridGeneric : Ndis6DispatchUnknown;
         }
     }

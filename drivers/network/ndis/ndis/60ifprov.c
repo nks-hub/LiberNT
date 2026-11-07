@@ -125,6 +125,12 @@ Ndis6LuidIndexAllocatedLocked(
     return FALSE;
 }
 
+static
+BOOLEAN
+Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
+    _In_ NET_IFTYPE IfType,
+    _In_ UINT32 NetLuidIndex);
+
 BOOLEAN
 Ndis6IsNetLuidIndexAllocated(
     _In_ NET_IFTYPE IfType,
@@ -134,7 +140,8 @@ Ndis6IsNetLuidIndexAllocated(
     BOOLEAN Allocated;
 
     KeAcquireSpinLock(&Ndis6IfLock, &OldIrql);
-    Allocated = Ndis6LuidIndexAllocatedLocked(IfType, NetLuidIndex);
+    Allocated = Ndis6LuidIndexAllocatedLocked(IfType, NetLuidIndex) ||
+                Ndis6AdapterUsesNetLuidIndexAtDpcLevel(IfType, NetLuidIndex);
     KeReleaseSpinLock(&Ndis6IfLock, OldIrql);
 
     return Allocated;

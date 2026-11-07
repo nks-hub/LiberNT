@@ -164,6 +164,14 @@ SetReceiveEvent(
 
     Control.NpiId = (PNPIID)&NPI_WSK_INTERFACE_ID;
     Control.EventMask = WSK_EVENT_RECEIVE_FROM | (Enable ? 0 : WSK_EVENT_DISABLE);
+
+    /* SO_WSK_EVENT_CALLBACK enables events without an IRP; only a disable takes one */
+    if (Enable)
+    {
+        return ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskControlSocket(
+            Socket, WskSetOption, SO_WSK_EVENT_CALLBACK, SOL_SOCKET, sizeof(Control), &Control, 0, NULL, NULL, NULL);
+    }
+
     Irp = NewIrp(&Event);
     if (Irp == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -178,7 +186,8 @@ static
 NTSTATUS
 SendTo(
     _In_ PWSK_SOCKET Socket,
-    _In_ PCSTR Payload)
+    _In_ PCSTR Payload,
+    _In_ USHORT Port)
 {
     SOCKADDR_IN Address;
     WSK_BUF Buffer;
@@ -203,7 +212,7 @@ SendTo(
 
     RtlZeroMemory(&Address, sizeof(Address));
     Address.sin_family = AF_INET;
-    Address.sin_port = RtlUshortByteSwap(WSKEVENTS_PORT);
+    Address.sin_port = RtlUshortByteSwap(Port);
     Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
 
     Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -292,6 +301,68 @@ TestDispatchLevel(
     }
 }
 
+/* Static callbacks of WSK_SET_STATIC_EVENT_CALLBACKS stay on for the life of the socket */
+static
+VOID
+TestStaticCallbacks(VOID)
+{
+    WSK_EVENT_CALLBACK_CONTROL Control;
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver = NULL, Sender = NULL;
+    NTSTATUS Status;
+    LONG Count;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Control.NpiId = (PNPIID)&NPI_WSK_INTERFACE_ID;
+    Control.EventMask = WSK_EVENT_RECEIVE_FROM;
+    Status = ProviderNpi.Dispatch->WskControlClient(ProviderNpi.Client, WSK_SET_STATIC_EVENT_CALLBACKS,
+                                                   sizeof(Control), &Control, 0, NULL, NULL, NULL);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 1);
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Receiver == NULL || Sender == NULL)
+        goto close;
+
+    Status = SendTo(Sender, "STAT0001", WSKEVENTS_PORT + 1);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(1, 2000);
+    ok_eq_long(Count, 1L);
+
+    Status = SetReceiveEvent(Receiver, FALSE);
+    ok(!NT_SUCCESS(Status), "Disabling a static receive callback returned 0x%lx\n", Status);
+    Status = SendTo(Sender, "STAT0002", WSKEVENTS_PORT + 1);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(2, 2000);
+    ok_eq_long(Count, 2L);
+    ok(WasSeen("STAT0002"), "STAT0002 was not indicated after the refused disable\n");
+
+close:
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 static
 VOID
 TestRun(VOID)
@@ -326,7 +397,7 @@ TestRun(VOID)
     /* ok_eq_* evaluate their argument twice, so each call goes to a variable first */
     Status = SetReceiveEvent(Receiver, TRUE);
     ok_eq_hex(Status, STATUS_SUCCESS);
-    Status = SendTo(Sender, "DATA0001");
+    Status = SendTo(Sender, "DATA0001", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Count = WaitReceives(1, 2000);
     ok_eq_long(Count, 1L);
@@ -335,7 +406,7 @@ TestRun(VOID)
     /* Turned off, a datagram waits until the event is on again */
     Status = SetReceiveEvent(Receiver, FALSE);
     ok_eq_hex(Status, STATUS_SUCCESS);
-    Status = SendTo(Sender, "DATA0002");
+    Status = SendTo(Sender, "DATA0002", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Count = WaitReceives(2, 500);
     ok_eq_long(Count, 1L);
@@ -347,11 +418,11 @@ TestRun(VOID)
 
     /* A refused datagram turns the event off; it and the next one come when the event is on again */
     Refuse = TRUE;
-    Status = SendTo(Sender, "DATA0003");
+    Status = SendTo(Sender, "DATA0003", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Count = WaitReceives(3, 2000);
     ok_eq_long(Count, 3L);
-    Status = SendTo(Sender, "DATA0004");
+    Status = SendTo(Sender, "DATA0004", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Count = WaitReceives(4, 500);
     ok_eq_long(Count, 3L);
@@ -367,7 +438,7 @@ TestRun(VOID)
 
     /* Requests that build IRPs for tcpip run later when issued at DISPATCH_LEVEL */
     TestDispatchLevel(Receiver, WSKEVENTS_PORT);
-    Status = SendTo(Sender, "DATA0006");
+    Status = SendTo(Sender, "DATA0006", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Count = WaitReceives(6, 2000);
     ok_eq_long(Count, 6L);
@@ -428,5 +499,6 @@ TestMessageHandler(
         return STATUS_NOT_SUPPORTED;
 
     TestRun();
+    TestStaticCallbacks();
     return STATUS_SUCCESS;
 }

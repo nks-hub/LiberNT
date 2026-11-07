@@ -131,20 +131,38 @@ Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex);
 
+/*
+ * Takes NetLuidIndex for an adapter, in the same list as
+ * NdisIfAllocateNetLuidIndex, when no other adapter or allocation has it.
+ * NdisIfFreeNetLuidIndex gives it back.
+ */
 BOOLEAN
-Ndis6IsNetLuidIndexAllocated(
+Ndis6ReserveNetLuidIndex(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex)
 {
+    PNDIS6_LUID_INDEX Index;
     KIRQL OldIrql;
-    BOOLEAN Allocated;
+    BOOLEAN Reserved = FALSE;
+
+    Index = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Index), NDIS6_IF_PROVIDER_TAG);
+    if (Index == NULL)
+        return FALSE;
+    Index->IfType = IfType;
+    Index->NetLuidIndex = NetLuidIndex;
 
     KeAcquireSpinLock(&Ndis6IfLock, &OldIrql);
-    Allocated = Ndis6LuidIndexAllocatedLocked(IfType, NetLuidIndex) ||
-                Ndis6AdapterUsesNetLuidIndexAtDpcLevel(IfType, NetLuidIndex);
+    if (!Ndis6LuidIndexAllocatedLocked(IfType, NetLuidIndex) &&
+        !Ndis6AdapterUsesNetLuidIndexAtDpcLevel(IfType, NetLuidIndex))
+    {
+        InsertTailList(&Ndis6LuidIndices, &Index->Link);
+        Reserved = TRUE;
+    }
     KeReleaseSpinLock(&Ndis6IfLock, OldIrql);
 
-    return Allocated;
+    if (!Reserved)
+        ExFreePoolWithTag(Index, NDIS6_IF_PROVIDER_TAG);
+    return Reserved;
 }
 
 static

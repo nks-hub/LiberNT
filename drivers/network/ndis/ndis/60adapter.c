@@ -243,24 +243,41 @@ Ndis6AllocateInterfaceIdentity(
     LONG Next;
     NET_IFTYPE IfType;
     UINT32 LuidIndex;
+    ULONG Tries;
 
     /* The network class installer stores the NetLuidIndex of the adapter in
      * its driver key, and user mode builds the adapter LUID from it. Without
      * one, keep IfIndex and NetLuidIndex identical. NET_LUID reserves 24 bits
-     * for NetLuidIndex and zero is invalid. */
+     * for NetLuidIndex and zero is invalid. The index stays reserved until
+     * the adapter goes away, so no other adapter takes it meanwhile. */
     IfType = Ndis6ReadInterfaceType(Pdo);
     LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
-    if (LuidIndex != 0 && Ndis6IsNetLuidIndexAllocated(IfType, LuidIndex))
-        LuidIndex = 0;
-    do
+    Ext->NetLuidIndexReserved = LuidIndex != 0 && Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    Next = (LONG)Ndis6AllocateInterfaceIndex();
+    if (!Ext->NetLuidIndexReserved)
     {
-        Next = (LONG)Ndis6AllocateInterfaceIndex();
-    } while (LuidIndex == 0 && Ndis6IsNetLuidIndexAllocated(IfType, (UINT32)Next));
+        /* A failed allocation of the reservation must not keep us here */
+        for (Tries = 0; Tries < 0x10000 && !Ndis6ReserveNetLuidIndex(IfType, (UINT32)Next); Tries++)
+            Next = (LONG)Ndis6AllocateInterfaceIndex();
+        Ext->NetLuidIndexReserved = Tries < 0x10000;
+        LuidIndex = (UINT32)Next;
+    }
 
     Ext->IfIndex = (NET_IFINDEX)Next;
     Ext->NetLuid.Value = 0;
     Ext->NetLuid.Info.IfType = IfType;
-    Ext->NetLuid.Info.NetLuidIndex = LuidIndex != 0 ? LuidIndex : (ULONG)Next;
+    Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
+}
+
+static VOID
+Ndis6FreeInterfaceIdentity(
+    _Inout_ PNDIS6_ADAPTER_EXT Ext)
+{
+    if (Ext->NetLuidIndexReserved)
+    {
+        NdisIfFreeNetLuidIndex((NET_IFTYPE)Ext->NetLuid.Info.IfType, (UINT32)Ext->NetLuid.Info.NetLuidIndex);
+        Ext->NetLuidIndexReserved = FALSE;
+    }
 }
 
 typedef struct _NDIS6_IF_STACK_ENTRY
@@ -840,6 +857,7 @@ Ndis6InitializeLogicalAdapter(
                 NdisFreePacketPool(Ext->RxLegacyPacketPool);
             if (Ext->RxLegacyBufferPool)
                 NdisFreeBufferPool(Ext->RxLegacyBufferPool);
+            Ndis6FreeInterfaceIdentity(Ext);
             ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
             Adapter->Ndis6Context = NULL;
             Adapter->IsNdis6 = FALSE;
@@ -1707,7 +1725,10 @@ Ndis6DestroyLogicalAdapter(
     Adapter->IsNdis6 = FALSE;
 
     if (Ext)
+    {
+        Ndis6FreeInterfaceIdentity(Ext);
         ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+    }
 
     /* Finally delete the FDO. After this Adapter (which lives inside
      * Fdo->DeviceExtension) is gone — do NOT touch it again. */

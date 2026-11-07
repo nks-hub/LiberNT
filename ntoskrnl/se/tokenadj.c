@@ -263,6 +263,7 @@ SepAdjustGroups(
 
     /* Initialize the counters and begin the work */
     *ChangesMade = FALSE;
+    *ChangedGroups = 0;
     GroupsCount = 0;
     ChangeCount = 0;
 
@@ -796,6 +797,10 @@ NtAdjustGroupsToken(
                              &ChangesMade,
                              NULL,
                              &ChangeCount);
+
+    /* A group that cannot change fails the call before the token is touched */
+    if (!NT_SUCCESS(Status))
+        goto Quit;
 
     /* Does the caller want the previous state of groups? */
     if (PreviousState != NULL)

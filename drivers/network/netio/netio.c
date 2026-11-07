@@ -415,8 +415,10 @@ static VOID NTAPI DereferenceSocketsThread(_In_opt_ void *p)
 /*
  * Every registered WSK client uses the one thread. A driver that imports
  * NETIO.SYS loads it without DriverEntry, so the first user sets up the lock.
+ * PsCreateSystemThread and ZwClose need PASSIVE_LEVEL, which a fast mutex
+ * would raise to APC_LEVEL; a kernel mutex keeps it.
  */
-static FAST_MUTEX DereferenceSocketsThreadLock;
+static KMUTEX DereferenceSocketsThreadLock;
 static ULONG DereferenceSocketsThreadUsers;
 static volatile LONG DereferenceSocketsThreadLockState;  /* 0 none, 1 initializing, 2 ready */
 
@@ -427,7 +429,7 @@ static NTSTATUS StartSocketDereferenceThread(void)
 
     if (InterlockedCompareExchange(&DereferenceSocketsThreadLockState, 1, 0) == 0)
     {
-        ExInitializeFastMutex(&DereferenceSocketsThreadLock);
+        KeInitializeMutex(&DereferenceSocketsThreadLock, 0);
         KeInitializeSpinLock(&SocketsToDereferenceListLock);
         KeInitializeEvent(&DereferenceSocketsEvent, SynchronizationEvent, FALSE);
         InterlockedExchange(&DereferenceSocketsThreadLockState, 2);
@@ -435,7 +437,7 @@ static NTSTATUS StartSocketDereferenceThread(void)
     while (DereferenceSocketsThreadLockState != 2)
         YieldProcessor();
 
-    ExAcquireFastMutex(&DereferenceSocketsThreadLock);
+    KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
     if (DereferenceSocketsThreadUsers == 0)
     {
         DereferenceSocketsThreadShouldRun = TRUE;
@@ -450,13 +452,13 @@ static NTSTATUS StartSocketDereferenceThread(void)
     }
     if (NT_SUCCESS(status))
         DereferenceSocketsThreadUsers++;
-    ExReleaseFastMutex(&DereferenceSocketsThreadLock);
+    KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
     return status;
 }
 
 static void StopSocketDereferenceThread(void)
 {
-    ExAcquireFastMutex(&DereferenceSocketsThreadLock);
+    KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
     if (--DereferenceSocketsThreadUsers == 0)
     {
         DereferenceSocketsThreadShouldRun = FALSE;
@@ -466,7 +468,7 @@ static void StopSocketDereferenceThread(void)
         ZwClose(DereferenceSocketsThreadHandle);
         DereferenceSocketsThreadHandle = NULL;
     }
-    ExReleaseFastMutex(&DereferenceSocketsThreadLock);
+    KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
 }
 
 static void
@@ -1050,7 +1052,10 @@ WskControlSocket(
                             status = STATUS_SUCCESS;
                             if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM))
                             {
-                                if (Control->EventMask & WSK_EVENT_DISABLE)
+                                /* WSK_SET_STATIC_EVENT_CALLBACKS callbacks stay on for the life of the socket */
+                                if (Socket->ReceiveEventsStatic)
+                                    status = STATUS_INVALID_PARAMETER;
+                                else if (Control->EventMask & WSK_EVENT_DISABLE)
                                 {
                                     status = NetioDisableReceiveEvent(Socket, Irp);
                                     if (status == STATUS_PENDING)

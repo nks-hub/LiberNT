@@ -16,6 +16,7 @@ HRESULT WINAPI DriverStoreAddDriverPackageW(PCWSTR InfPath, PVOID Reserved1, PVO
 HRESULT WINAPI DriverStoreDeleteDriverPackageW(PCWSTR InfPath, PVOID Reserved1, PVOID Reserved2);
 
 #define MAX_PACKAGE_FILES 128
+#define DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\%s\\Drivers\\Version-3"
 
 typedef struct _PACKAGE_FILES
 {
@@ -101,6 +102,35 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     return ReturnString(StoreInf, pszDestInfPath, pcchDestInfPath);
 }
 
+/* TRUE when the InfPath value of an installed version 3 driver names this package */
+static BOOL
+IsDriverPackageInUse(PCWSTR InfPath)
+{
+    WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH];
+    BOOL InUse = FALSE;
+    HKEY hDrivers;
+    DWORD i, Size;
+
+    if (FAILED(StringCchPrintfW(Key, ARRAYSIZE(Key), DRIVERS_KEY, wszCurrentEnvironment)) ||
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, Key, 0, KEY_READ, &hDrivers) != ERROR_SUCCESS)
+    {
+        return FALSE;
+    }
+
+    for (i = 0; !InUse; i++)
+    {
+        Size = ARRAYSIZE(Name);
+        if (RegEnumKeyExW(hDrivers, i, Name, &Size, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
+            break;
+        Size = sizeof(Value);
+        InUse = RegGetValueW(hDrivers, Name, L"InfPath", RRF_RT_REG_SZ, NULL, Value, &Size) == ERROR_SUCCESS &&
+                _wcsicmp(Value, InfPath) == 0;
+    }
+
+    RegCloseKey(hDrivers);
+    return InUse;
+}
+
 HRESULT WINAPI
 DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEnvironment)
 {
@@ -115,7 +145,9 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (FAILED(hr))
         return hr;
 
-    /* Installed drivers keep working: AddPrinterDriverEx copied their files into the spooler directory */
+    if (IsDriverPackageInUse(pszInfPath))
+        return HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
+
     return DriverStoreDeleteDriverPackageW(pszInfPath, NULL, NULL);
 }
 
@@ -286,8 +318,12 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     TRACE("InstallPrinterDriverFromPackageW(%S, %S, %S, %S, 0x%lx)\n",
           pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
 
-    if (!pszInfPath || !pszDriverName || !*pszDriverName || (dwFlags & ~IPDFP_COPY_ALL_FILES))
+    if (!pszDriverName || !*pszDriverName || (dwFlags & ~IPDFP_COPY_ALL_FILES))
         return E_INVALIDARG;
+
+    /* Without a package Windows installs a driver from its inbox drivers; LiberNT has none to offer */
+    if (!pszInfPath)
+        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 
     hr = CheckLocalRequest(pszServer, pszEnvironment);
     if (FAILED(hr))
@@ -323,17 +359,33 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         FieldCount = SetupGetFieldCount(&Context);
         for (Field = 1; Field <= FieldCount; Field++)
         {
-            if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL))
-                SetupOpenAppendInfFileW(Include, hInf, NULL);
+            if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL) &&
+                !SetupOpenAppendInfFileW(Include, hInf, NULL))
+            {
+                hr = HRESULT_FROM_WIN32(GetLastError());
+                goto Cleanup;
+            }
         }
     }
     if (SetupFindFirstLineW(hInf, ActualSection, L"Needs", &Context))
     {
         FieldCount = SetupGetFieldCount(&Context);
-        for (Field = 1; Field <= FieldCount && SectionCount < ARRAYSIZE(Sections); Field++)
+        for (Field = 1; Field <= FieldCount; Field++)
         {
-            if (SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL))
-                Sections[SectionCount++] = AllocSplStr(NeedsSection);
+            if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL))
+                continue;
+            if (SectionCount == ARRAYSIZE(Sections))
+            {
+                hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW);
+                goto Cleanup;
+            }
+            Sections[SectionCount] = AllocSplStr(NeedsSection);
+            if (!Sections[SectionCount])
+            {
+                hr = E_OUTOFMEMORY;
+                goto Cleanup;
+            }
+            SectionCount++;
         }
     }
 
@@ -419,6 +471,15 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
         goto Cleanup;
+    }
+
+    /* As on Windows, the driver key names its package; DeletePrinterDriverPackage checks it */
+    if (SUCCEEDED(StringCchPrintfW(FilePath, ARRAYSIZE(FilePath), DRIVERS_KEY L"\\%s",
+                                   wszCurrentEnvironment, pszDriverName)) &&
+        RegSetKeyValueW(HKEY_LOCAL_MACHINE, FilePath, L"InfPath", REG_SZ, pszInfPath,
+                        (DWORD)((wcslen(pszInfPath) + 1) * sizeof(WCHAR))) != ERROR_SUCCESS)
+    {
+        ERR("Could not record the package of driver %S\n", pszDriverName);
     }
 
     hr = S_OK;

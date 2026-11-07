@@ -73,6 +73,24 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 // #define FUNCTION_TRACE DPRINT1("%s() ...\n", __FUNCTION__)
 #define FUNCTION_TRACE do { } while (0)
 
+#define NETIO_RECEIVE_COUNT 4
+#define NETIO_RECEIVE_SIZE 65536
+
+struct _WSK_SOCKET_INTERNAL;
+
+/* One posted datagram receive; while the client retains the indication it stays lent out */
+typedef struct _NETIO_RECEIVE
+{
+    WSK_DATAGRAM_INDICATION Indication;
+    struct _WSK_SOCKET_INTERNAL *Socket;
+    PIRP Irp;
+    PMDL Mdl;
+    volatile BOOLEAN InFlight;
+    SOCKADDR_IN Remote;
+    ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
+    UCHAR Data[NETIO_RECEIVE_SIZE];
+} NETIO_RECEIVE, *PNETIO_RECEIVE;
+
 /* What WSK_SET_STATIC_EVENT_CALLBACKS enabled for the sockets of one WSK client */
 typedef struct _NETIO_WSK_CLIENT
 {
@@ -129,6 +147,16 @@ typedef struct _WSK_SOCKET_INTERNAL
      */
     struct _WSK_SOCKET_INTERNAL *NextSocketToDereference;
     ULONG NumSocketDereferences;
+
+    /* Datagram sockets */
+    const WSK_CLIENT_DATAGRAM_DISPATCH *DatagramDispatch;
+    BOOLEAN ReceiveEvents;          /* WSK_EVENT_RECEIVE_FROM is enabled */
+    BOOLEAN ReceiveStarted;
+    volatile BOOLEAN ReceiveClosing;
+    LONG ReceivesBusy;              /* receives in flight or retained by the client */
+    KEVENT ReceivesIdle;
+    KSPIN_LOCK ReceiveLock;
+    PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
 
 typedef struct _NETIO_CONTEXT
@@ -155,12 +183,19 @@ DereferenceSocket(_In_ PWSK_SOCKET_INTERNAL Socket);
    DereferenceSocket() of the socket.
  */
 
+static VOID
+NetioStopReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+
 static
 void SocketShutdown(_In_ PWSK_SOCKET_INTERNAL Socket)
 {
     NTSTATUS status;
 
     FUNCTION_TRACE;
+
+    NetioStopReceives(Socket);
 
     if (Socket->ListenSocket != NULL)
     {
@@ -760,6 +795,12 @@ WskControlSocket(
                             }
 
                             status = STATUS_SUCCESS;
+                            if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM) &&
+                                !(Control->EventMask & WSK_EVENT_DISABLE))
+                            {
+                                Socket->ReceiveEvents = TRUE;
+                                status = NetioStartReceives(Socket);
+                            }
                             break;
 
                         default:
@@ -884,6 +925,9 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
 
     ExFreePoolWithTag(ta, TAG_NETIO);
 
+    if (NT_SUCCESS(status) && Socket->type == SOCK_DGRAM && Socket->ReceiveEvents)
+        status = NetioStartReceives(Socket);
+
 err_out:
     Irp->IoStatus.Status = status;
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
@@ -994,14 +1038,215 @@ WskReceiveFrom(
     return STATUS_NOT_IMPLEMENTED;
 }
 
+/* Datagram sockets */
+
+static VOID
+NetioReceiveDone(
+    _In_ PNETIO_RECEIVE Receive)
+{
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+
+    if (InterlockedDecrement(&Socket->ReceivesBusy) == 0)
+        KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
+}
+
+static IO_COMPLETION_ROUTINE NetioReceiveComplete;
+
+/* Posts the context's receive again; it stays with us when the socket is closing */
+static VOID
+NetioPostReceive(
+    _In_ PNETIO_RECEIVE Receive)
+{
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+    PDEVICE_OBJECT DeviceObject = IoGetRelatedDeviceObject(Socket->LocalAddressFile);
+    PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    if (Socket->ReceiveClosing)
+    {
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+        NetioReceiveDone(Receive);
+        return;
+    }
+    Receive->InFlight = TRUE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
+    TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
+    TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
+                            Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
+    IoCallDriver(DeviceObject, Receive->Irp);
+}
+
+static NTSTATUS NTAPI
+NetioReceiveComplete(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp,
+    _In_opt_ PVOID Context)
+{
+    PNETIO_RECEIVE Receive = Context;
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+    PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
+    PTA_IP_ADDRESS Source = (PTA_IP_ADDRESS)ConnInfo->RemoteAddress;
+    NTSTATUS Status = Irp->IoStatus.Status;
+    KIRQL OldIrql;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Receive->InFlight = FALSE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (NT_SUCCESS(Status) && !Socket->ReceiveClosing)
+    {
+        RtlZeroMemory(&Receive->Remote, sizeof(Receive->Remote));
+        Receive->Remote.sin_family = AF_INET;
+        Receive->Remote.sin_port = Source->Address[0].Address[0].sin_port;
+        Receive->Remote.sin_addr.s_addr = Source->Address[0].Address[0].in_addr;
+
+        Receive->Indication.Next = NULL;
+        Receive->Indication.Buffer.Mdl = Receive->Mdl;
+        Receive->Indication.Buffer.Offset = 0;
+        Receive->Indication.Buffer.Length = (SIZE_T)Irp->IoStatus.Information;
+        Receive->Indication.ControlInfoLength = 0;
+        Receive->Indication.ControlInfo = NULL;
+        Receive->Indication.RemoteAddress = (PSOCKADDR)&Receive->Remote;
+
+        Status = Socket->DatagramDispatch->WskReceiveFromEvent(
+            Socket->user_context,
+            KeGetCurrentIrql() == DISPATCH_LEVEL ? WSK_FLAG_AT_DISPATCH_LEVEL : 0,
+            &Receive->Indication);
+        /* The client keeps the data until it calls WskRelease */
+        if (Status == STATUS_PENDING)
+            return STATUS_MORE_PROCESSING_REQUIRED;
+        NetioPostReceive(Receive);
+    }
+    else if (Status == STATUS_BUFFER_OVERFLOW && !Socket->ReceiveClosing)
+    {
+        /* Larger than NETIO_RECEIVE_SIZE: the datagram is dropped */
+        NetioPostReceive(Receive);
+    }
+    else
+    {
+        /* Cancelled on close, or the address file failed; reposting would only fail again */
+        if (!Socket->ReceiveClosing)
+            DPRINT1("Datagram receive failed with status 0x%08lx, receiving stops\n", Status);
+        NetioReceiveDone(Receive);
+    }
+    return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+static VOID
+NetioFreeReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    ULONG i;
+
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        PNETIO_RECEIVE Receive = Socket->Receives[i];
+
+        if (Receive == NULL)
+            continue;
+        if (Receive->Irp)
+        {
+            Receive->Irp->MdlAddress = NULL;
+            IoFreeIrp(Receive->Irp);
+        }
+        if (Receive->Mdl)
+            IoFreeMdl(Receive->Mdl);
+        ExFreePoolWithTag(Receive, TAG_NETIO);
+        Socket->Receives[i] = NULL;
+    }
+}
+
+/* Starts the receive event loop of a bound datagram socket */
+static NTSTATUS
+NetioStartReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    PDEVICE_OBJECT DeviceObject;
+    ULONG i;
+
+    if (Socket->ReceiveStarted || Socket->LocalAddressFile == NULL ||
+        Socket->DatagramDispatch == NULL || Socket->DatagramDispatch->WskReceiveFromEvent == NULL)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    DeviceObject = IoGetRelatedDeviceObject(Socket->LocalAddressFile);
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        PNETIO_RECEIVE Receive = ExAllocatePoolZero(NonPagedPool, sizeof(*Receive), TAG_NETIO);
+
+        if (Receive == NULL)
+            goto Fail;
+        Socket->Receives[i] = Receive;
+        Receive->Socket = Socket;
+        Receive->Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
+        Receive->Mdl = IoAllocateMdl(Receive->Data, NETIO_RECEIVE_SIZE, FALSE, FALSE, NULL);
+        if (Receive->Irp == NULL || Receive->Mdl == NULL)
+            goto Fail;
+        MmBuildMdlForNonPagedPool(Receive->Mdl);
+    }
+
+    KeClearEvent(&Socket->ReceivesIdle);
+    Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
+    Socket->ReceiveStarted = TRUE;
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+        NetioPostReceive(Socket->Receives[i]);
+    return STATUS_SUCCESS;
+
+Fail:
+    NetioFreeReceives(Socket);
+    return STATUS_INSUFFICIENT_RESOURCES;
+}
+
+/* Cancels the outstanding receives and waits for the client to release retained data */
+static VOID
+NetioStopReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    LARGE_INTEGER Timeout;
+    KIRQL OldIrql;
+    ULONG i;
+
+    if (!Socket->ReceiveStarted)
+        return;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Socket->ReceiveClosing = TRUE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    Timeout.QuadPart = -1000000LL; /* 100 ms */
+    do
+    {
+        /* A receive can be posted again just after a cancel; cancel until all are back */
+        for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+        {
+            if (Socket->Receives[i]->InFlight)
+                IoCancelIrp(Socket->Receives[i]->Irp);
+        }
+    } while (KeWaitForSingleObject(&Socket->ReceivesIdle, Executive, KernelMode, FALSE, &Timeout) == STATUS_TIMEOUT);
+
+    NetioFreeReceives(Socket);
+    Socket->ReceiveStarted = FALSE;
+}
+
 static NTSTATUS WSKAPI
 WskReleaseUdp(_In_ PWSK_SOCKET SocketParam, _In_ PWSK_DATAGRAM_INDICATION DatagramIndication)
 {
-    FUNCTION_TRACE;
+    PWSK_DATAGRAM_INDICATION Next;
 
-    UNIMPLEMENTED;
+    UNREFERENCED_PARAMETER(SocketParam);
 
-    return STATUS_NOT_IMPLEMENTED;
+    for (; DatagramIndication != NULL; DatagramIndication = Next)
+    {
+        Next = DatagramIndication->Next;
+        NetioPostReceive(CONTAINING_RECORD(DatagramIndication, NETIO_RECEIVE, Indication));
+    }
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS WSKAPI
@@ -1454,6 +1699,12 @@ WskSocket(
         case SOCK_DGRAM:
             Socket->Socket.Dispatch = &UdpDispatch;
             RtlInitUnicodeString(&Socket->TdiName, L"\\Device\\Udp");
+            Socket->DatagramDispatch = Dispatch;
+            KeInitializeSpinLock(&Socket->ReceiveLock);
+            KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
+            /* WSK_SET_STATIC_EVENT_CALLBACKS turns receive events on for every new datagram socket */
+            Socket->ReceiveEvents = Client != NULL &&
+                                    (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
             break;
         case SOCK_STREAM:
             Socket->Socket.Dispatch = &TcpDispatch;

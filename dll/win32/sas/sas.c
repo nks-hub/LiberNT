@@ -49,6 +49,27 @@ IsSasGenerationAllowed(
     return (Policy & SAS_GENERATION_SERVICES) != 0;
 }
 
+/* The session of the effective token: the impersonated user's, else the process's */
+static
+BOOL
+GetCallerSessionId(
+    _Out_ PDWORD SessionId)
+{
+    HANDLE hToken;
+    DWORD Size;
+    BOOL Result;
+
+    if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &hToken))
+    {
+        if (GetLastError() != ERROR_NO_TOKEN)
+            return FALSE;
+        return ProcessIdToSessionId(GetCurrentProcessId(), SessionId);
+    }
+    Result = GetTokenInformation(hToken, TokenSessionId, SessionId, sizeof(*SessionId), &Size);
+    CloseHandle(hToken);
+    return Result;
+}
+
 /*
  * Simulates Ctrl+Alt+Del in the session of the caller, or in the console
  * session when the caller is a service in session 0. Winlogon handles the
@@ -70,7 +91,7 @@ SendSAS(
         return;
     }
 
-    if (!ProcessIdToSessionId(GetCurrentProcessId(), &SessionId))
+    if (!GetCallerSessionId(&SessionId))
         return;
     if (SessionId == 0)
     {

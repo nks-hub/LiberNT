@@ -1554,19 +1554,19 @@ CLanStatus::EnumerateTrayConnections()
 
     TRACE("InitializeNetTaskbarNotifications\n");
 
-    if (m_pHead)
+    /* Connections that appear later, such as the adapter of a VPN tunnel,
+     * are added behind the known ones */
+    Index = 1;
+    for (pItem = m_pHead; pItem; pItem = pItem->pNext)
     {
-       pItem = m_pHead;
-       while (pItem)
-       {
-           pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(
-               GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
-           if (pContext)
-               UpdateLanStatus(NULL, pContext);
-           pItem = pItem->pNext;
-       }
-       return S_OK;
+        pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
+        if (pContext)
+            UpdateLanStatus(NULL, pContext);
+        pLast = pItem;
+        if (pItem->uID >= Index)
+            Index = pItem->uID + 1;
     }
+
     /* get an instance to of IConnectionManager */
     hr = CNetConnectionManager_CreateInstance(IID_PPV_ARG(INetConnectionManager, &pNetConMan));
     if (FAILED_UNEXPECTEDLY(hr))
@@ -1576,13 +1576,20 @@ CLanStatus::EnumerateTrayConnections()
     if (FAILED_UNEXPECTEDLY(hr))
         return hr;
 
-    Index = 1;
     while (TRUE)
     {
         pNetCon.Release();
         hr = pEnumCon->Next(1, &pNetCon, &Count);
         if (hr != S_OK)
             break;
+
+        if (FAILED(pNetCon->GetProperties(&pProps)))
+            continue;
+        for (pItem = m_pHead; pItem && !IsEqualGUID(pItem->guidItem, pProps->guidId); pItem = pItem->pNext)
+            ;
+        NcFreeNetconProperties(pProps);
+        if (pItem)
+            continue;
 
         TRACE("new connection\n");
         pItem = static_cast<NOTIFICATION_ITEM*>(CoTaskMemAlloc(sizeof(NOTIFICATION_ITEM)));
@@ -1704,16 +1711,32 @@ HRESULT
 CLanStatus::ShowStatusDialogByCLSID(const GUID *pguidCmdGroup)
 {
     NOTIFICATION_ITEM *pItem;
+    LANSTATUSUI_CONTEXT *pContext;
+    NET_LUID Luid;
+    NET_IFINDEX IfIndex;
+    BOOL Enumerated = FALSE;
 
-    pItem = m_pHead;
-    while (pItem)
+    for (;;)
     {
-        if (IsEqualGUID(pItem->guidItem, *pguidCmdGroup))
+        for (pItem = m_pHead; pItem && !IsEqualGUID(pItem->guidItem, *pguidCmdGroup); pItem = pItem->pNext)
+            ;
+        if (pItem || Enumerated)
+            break;
+        EnumerateTrayConnections();
+        Enumerated = TRUE;
+    }
+
+    if (pItem)
+    {
+        /* A connection that went away and came back can have a new interface index */
+        pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
+        if (pContext && !ConvertInterfaceGuidToLuid(pguidCmdGroup, &Luid) &&
+            !ConvertInterfaceLuidToIndex(&Luid, &IfIndex))
         {
-            SendMessageW(pItem->hwndDlg, WM_SHOWSTATUSDLG, 0, WM_LBUTTONDBLCLK);
-            return S_OK;
+            pContext->dwAdapterIndex = IfIndex;
         }
-        pItem = pItem->pNext;
+        SendMessageW(pItem->hwndDlg, WM_SHOWSTATUSDLG, 0, WM_LBUTTONDBLCLK);
+        return S_OK;
     }
 
     ERR("not found\n");

@@ -192,8 +192,8 @@ QueryToken(
 }
 
 /*
- * The integrity label is not an enabled group, yet an effective only copy
- * keeps it, also when a disabled group before it is removed.
+ * Neither the integrity label nor a group for deny only is enabled, yet an
+ * effective only copy keeps both, as on Windows 11.
  */
 static
 VOID
@@ -207,7 +207,7 @@ DuplicateTokenAsEffectiveKeepsLabel(VOID)
     SID_AND_ATTRIBUTES Disable;
     PSID Disabled = NULL;
     ULONG Index, LabelIndex = MAXULONG;
-    BOOLEAN LabelFound = FALSE, DisabledFound = FALSE;
+    BOOLEAN LabelFound = FALSE, DenyOnlyFound = FALSE;
 
     InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
     ProcessToken = OpenTokenFromProcess();
@@ -265,13 +265,14 @@ DuplicateTokenAsEffectiveKeepsLabel(VOID)
     {
         for (Index = 0; Index < EffectiveGroups->GroupCount; Index++)
         {
-            if (EqualSid(EffectiveGroups->Groups[Index].Sid, Disabled))
-                DisabledFound = TRUE;
+            if (EqualSid(EffectiveGroups->Groups[Index].Sid, Disabled) &&
+                (EffectiveGroups->Groups[Index].Attributes & SE_GROUP_USE_FOR_DENY_ONLY))
+                DenyOnlyFound = TRUE;
             if ((EffectiveGroups->Groups[Index].Attributes & SE_GROUP_INTEGRITY) &&
                 EqualSid(EffectiveGroups->Groups[Index].Sid, Label->Label.Sid))
                 LabelFound = TRUE;
         }
-        ok(!DisabledFound, "The disabled group was kept\n");
+        ok(DenyOnlyFound, "The group for deny only was removed\n");
         ok(LabelFound, "The integrity label was removed\n");
         ok(EqualSid(EffectiveLabel->Label.Sid, Label->Label.Sid), "The integrity level differs\n");
     }

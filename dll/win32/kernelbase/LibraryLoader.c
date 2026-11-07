@@ -14,6 +14,18 @@
  * a DLL resolve to their executable. Reference counting, pinning and the
  * lookup by name stay in kernel32.
  */
+
+/* Invalid flags go to kernel32 unchanged, which rejects them before any lookup */
+static BOOL
+KbValidModuleHandleFlags(_In_ DWORD dwFlags)
+{
+    const DWORD Valid = GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT |
+                        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS;
+    const DWORD Exclusive = GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+
+    return !(dwFlags & ~Valid) && (dwFlags & Exclusive) != Exclusive;
+}
+
 BOOL
 WINAPI
 KbGetModuleHandleExW(
@@ -23,7 +35,8 @@ KbGetModuleHandleExW(
 {
     PVOID ImageBase = NULL;
 
-    if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) && lpModuleName && phModule)
+    if (KbValidModuleHandleFlags(dwFlags) && (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) &&
+        lpModuleName && phModule)
     {
         if (!RtlPcToFileHeader((PVOID)lpModuleName, &ImageBase))
         {

@@ -980,21 +980,31 @@ GetSuggestedInstanceId(
         rc = RegEnumKeyExW(hClassKey, Index, SubKey, &cchSubKey, NULL, NULL, NULL, NULL);
         if (rc == ERROR_NO_MORE_ITEMS)
             break;
-        if (rc != ERROR_SUCCESS || RegOpenKeyExW(hClassKey, SubKey, 0, KEY_QUERY_VALUE, &hAdapterKey) != ERROR_SUCCESS)
-            continue;
+        /* An adapter that cannot be read might own the GUID */
+        if (rc == ERROR_SUCCESS)
+            rc = RegOpenKeyExW(hClassKey, SubKey, 0, KEY_QUERY_VALUE, &hAdapterKey);
+        if (rc != ERROR_SUCCESS)
+        {
+            WARN("Cannot check adapter %lu (error %ld)\n", Index, rc);
+            Used = TRUE;
+            break;
+        }
         dwSize = sizeof(Existing) - sizeof(WCHAR);
         ZeroMemory(Existing, sizeof(Existing));
-        if (RegQueryValueExW(hAdapterKey, L"NetCfgInstanceId", NULL, &dwType, (LPBYTE)Existing, &dwSize) == ERROR_SUCCESS &&
-            dwType == REG_SZ && _wcsicmp(Existing, Suggested) == 0)
+        rc = RegQueryValueExW(hAdapterKey, L"NetCfgInstanceId", NULL, &dwType, (LPBYTE)Existing, &dwSize);
+        RegCloseKey(hAdapterKey);
+        if (rc == ERROR_FILE_NOT_FOUND)
+            continue;
+        if (rc != ERROR_SUCCESS || dwType != REG_SZ || _wcsicmp(Existing, Suggested) == 0)
         {
+            WARN("Adapter %S has the instance ID %S or cannot be read (error %ld)\n", SubKey, Existing, rc);
             Used = TRUE;
         }
-        RegCloseKey(hAdapterKey);
     }
     RegCloseKey(hClassKey);
 
     if (Used)
-        WARN("Suggested instance ID %S is in use\n", Suggested);
+        WARN("Suggested instance ID %S is in use or cannot be checked\n", Suggested);
     return !Used;
 }
 

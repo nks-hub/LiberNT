@@ -26,7 +26,6 @@ SYSDM = "dll/cpl/sysdm/resources/"
 PIFMGR = "subsystems/mvdm/pifmgr/res_alt/"
 TOOLBAR = "dll/win32/browseui/res/toolbar/"
 CMICONTROL = "drivers/wdm/audio/drivers/CMIDriver/cmicontrol/"
-IMAGERES = "dll/win32/imageres/res/"
 TARGETS = (
     ("mimetypes/application-x-generic", SHELL32, (1,)),
     ("mimetypes/x-office-document", SHELL32, (2,)),
@@ -400,12 +399,6 @@ TARGETS = (
     ("legacy:legacy/dialog-information", "win32ss/user/user32/resources/", ("oic_note",)),
     ("legacy:legacy/dialog-question", "win32ss/user/user32/resources/", ("oic_ques",)),
     ("mimetypes/application-x-executable", "win32ss/user/user32/resources/", ("oic_sample",)),
-    ("mimetypes/text-x-generic", IMAGERES, (2,)),
-    ("places/folder", IMAGERES, (3,)),
-    ("legacy:legacy/network-offline", IMAGERES, (31,)),
-    ("legacy:legacy/security-high", IMAGERES, (106, 1028)),
-    ("legacy:legacy/preferences-system", IMAGERES, (114,)),
-    ("mimetypes/package-x-generic", IMAGERES, (174,)),
 )
 
 

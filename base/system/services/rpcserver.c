@@ -7143,7 +7143,7 @@ RNotifyServiceStatusChange(
         if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
             return ERROR_INVALID_HANDLE;
 
-        pNotify = ScmCreateNotify(dwMask);
+        pNotify = ScmCreateNotify(NotifyParams.pStatusChangeParam2->dwNotifyMask);
         if (pNotify == NULL)
             return ERROR_NOT_ENOUGH_MEMORY;
 

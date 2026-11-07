@@ -422,6 +422,7 @@ static volatile LONG DereferenceSocketsThreadLockState;  /* 0 none, 1 initializi
 
 static NTSTATUS StartSocketDereferenceThread(void)
 {
+    OBJECT_ATTRIBUTES Attributes;
     NTSTATUS status = STATUS_SUCCESS;
 
     if (InterlockedCompareExchange(&DereferenceSocketsThreadLockState, 1, 0) == 0)
@@ -438,7 +439,10 @@ static NTSTATUS StartSocketDereferenceThread(void)
     if (DereferenceSocketsThreadUsers == 0)
     {
         DereferenceSocketsThreadShouldRun = TRUE;
-        status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, NULL, NULL, NULL, DereferenceSocketsThread, NULL);
+        /* The last WskDeregister closes the handle, in whatever process it runs */
+        InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+        status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, &Attributes, NULL, NULL,
+                                      DereferenceSocketsThread, NULL);
         if (!NT_SUCCESS(status))
         {
             DPRINT1("Could not start put sockets thread, status is %x\n", status);

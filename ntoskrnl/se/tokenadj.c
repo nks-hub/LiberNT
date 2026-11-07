@@ -254,7 +254,7 @@ SepAdjustGroups(
     _Out_ PULONG ChangedGroups)
 {
     ULONG GroupsInToken, GroupsInList;
-    ULONG ChangeCount, GroupsCount, NewAttributes = 0;
+    ULONG ChangeCount, GroupsCount, Attributes, NewAttributes;
 
     PAGED_CODE();
 
@@ -269,114 +269,79 @@ SepAdjustGroups(
     /* Begin looping all the groups in the token */
     for (GroupsInToken = 0; GroupsInToken < Token->UserAndGroupCount; GroupsInToken++)
     {
+        Attributes = Token->UserAndGroups[GroupsInToken].Attributes;
+
         /* Does the caller want to reset groups to default states? */
         if (ResetToDefaultStates)
         {
-            /*
-             * SE_GROUP_ENABLED_BY_DEFAULT is a special indicator that informs us
-             * if a certain group has been enabled by default or not. In case
-             * a group is enabled by default but it is not currently enabled then
-             * at that point we must enable it back by default. For now just
-             * assign the respective SE_GROUP_ENABLED attribute as we'll do the
-             * eventual work later.
-             */
-            if ((Token->UserAndGroups[GroupsInToken].Attributes & SE_GROUP_ENABLED_BY_DEFAULT) &&
-                (Token->UserAndGroups[GroupsInToken].Attributes & SE_GROUP_ENABLED) == 0)
-            {
-                NewAttributes = Token->UserAndGroups[GroupsInToken].Attributes |= SE_GROUP_ENABLED;
-            }
-
-            /*
-             * Unlike the case above, a group that hasn't been enabled by
-             * default but it's currently enabled then we must disable
-             * it back.
-             */
-            if ((Token->UserAndGroups[GroupsInToken].Attributes & SE_GROUP_ENABLED_BY_DEFAULT) == 0 &&
-                (Token->UserAndGroups[GroupsInToken].Attributes & SE_GROUP_ENABLED))
-            {
-                NewAttributes = Token->UserAndGroups[GroupsInToken].Attributes & ~SE_GROUP_ENABLED;
-            }
+            /* A group is enabled exactly when it is enabled by default */
+            NewAttributes = Attributes & ~SE_GROUP_ENABLED;
+            if (Attributes & SE_GROUP_ENABLED_BY_DEFAULT)
+                NewAttributes |= SE_GROUP_ENABLED;
         }
         else
         {
-            /* Loop the provided groups in the list then */
+            /* Look for this group in the provided list */
             for (GroupsInList = 0; GroupsInList < NewStateCount; GroupsInList++)
             {
-                /* Does this group exist in the token? */
-                if (RtlEqualSid(&Token->UserAndGroups[GroupsInToken].Sid,
-                                &NewState[GroupsInList].Sid))
+                if (RtlEqualSid(Token->UserAndGroups[GroupsInToken].Sid,
+                                NewState[GroupsInList].Sid))
                 {
-                    /*
-                     * This is the group that we're looking for.
-                     * However, it could be that the group is a
-                     * mandatory group which we are not allowed
-                     * and cannot disable it.
-                     */
-                    if ((Token->UserAndGroups[GroupsInToken].Attributes & SE_GROUP_MANDATORY) &&
-                        (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED) == 0)
-                    {
-                        /* It is mandatory, forget about this group */
-                        DPRINT1("SepAdjustGroups(): The SID group is mandatory!\n");
-                        return STATUS_CANT_DISABLE_MANDATORY;
-                    }
-
-                    /*
-                     * We've to ensure that apart the group mustn't be
-                     * mandatory, it mustn't be a restricted group as
-                     * well. That is, the group is marked with
-                     * SE_GROUP_USE_FOR_DENY_ONLY flag and no one
-                     * can enable it because it's for "deny" use only.
-                     */
-                    if ((Token->UserAndGroups[GroupsInToken].Attributes & SE_GROUP_USE_FOR_DENY_ONLY) &&
-                        (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED))
-                    {
-                        /* This group is restricted, forget about it */
-                        DPRINT1("SepAdjustGroups(): The SID group is for use deny only!\n");
-                        return STATUS_CANT_ENABLE_DENY_ONLY;
-                    }
-
-                    /* Copy the attributes and stop searching */
-                    NewAttributes = NewState[GroupsInList].Attributes;
-                    NewAttributes &= SE_GROUP_ENABLED;
-                    NewAttributes |= Token->UserAndGroups[GroupsInToken].Attributes & ~SE_GROUP_ENABLED;
                     break;
                 }
-
-                /* Did we find the specific group we wanted? */
-                if (GroupsInList == NewStateCount)
-                {
-                    /* We didn't, continue with the next token's group */
-                    continue;
-                }
             }
 
-            /* Count the group that we found it */
-            GroupsCount++;
+            /* The caller does not change this group */
+            if (GroupsInList == NewStateCount)
+                continue;
 
-            /* Does the token have the same attributes as the caller requested them? */
-            if (Token->UserAndGroups[GroupsInToken].Attributes != NewAttributes)
+            /* A mandatory group cannot be disabled */
+            if ((Attributes & SE_GROUP_MANDATORY) &&
+                (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED) == 0)
             {
-                /*
-                 * No, then it's time to make some adjustment to the
-                 * token's groups. Does the caller want the previous states
-                 * of groups?
-                 */
-                if (PreviousGroupsState != NULL)
-                {
-                    PreviousGroupsState->Groups[ChangeCount] = Token->UserAndGroups[GroupsInToken];
-                }
-
-                /* Time to apply the changes now? */
-                if (ApplyChanges)
-                {
-                    /* The caller gave us consent, apply and report that we made changes! */
-                    Token->UserAndGroups[GroupsInToken].Attributes = NewAttributes;
-                    *ChangesMade = TRUE;
-                }
-
-                /* Increment the count change */
-                ChangeCount++;
+                DPRINT1("SepAdjustGroups(): The SID group is mandatory!\n");
+                return STATUS_CANT_DISABLE_MANDATORY;
             }
+
+            /* A group for deny only cannot be enabled */
+            if ((Attributes & SE_GROUP_USE_FOR_DENY_ONLY) &&
+                (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED))
+            {
+                DPRINT1("SepAdjustGroups(): The SID group is for use deny only!\n");
+                return STATUS_CANT_ENABLE_DENY_ONLY;
+            }
+
+            /* Only the enabled state comes from the caller */
+            NewAttributes = (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED) |
+                            (Attributes & ~SE_GROUP_ENABLED);
+
+            /* Count the group that we found */
+            GroupsCount++;
+        }
+
+        /* Does the token have the same attributes as the caller requested them? */
+        if (Attributes != NewAttributes)
+        {
+            /*
+             * No, then it's time to make some adjustment to the
+             * token's groups. Does the caller want the previous states
+             * of groups?
+             */
+            if (PreviousGroupsState != NULL)
+            {
+                PreviousGroupsState->Groups[ChangeCount] = Token->UserAndGroups[GroupsInToken];
+            }
+
+            /* Time to apply the changes now? */
+            if (ApplyChanges)
+            {
+                /* The caller gave us consent, apply and report that we made changes! */
+                Token->UserAndGroups[GroupsInToken].Attributes = NewAttributes;
+                *ChangesMade = TRUE;
+            }
+
+            /* Increment the count change */
+            ChangeCount++;
         }
     }
 

@@ -133,10 +133,11 @@ Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
 
 /*
  * Takes NetLuidIndex for an adapter, in the same list as
- * NdisIfAllocateNetLuidIndex, when no other adapter or allocation has it.
- * NdisIfFreeNetLuidIndex gives it back.
+ * NdisIfAllocateNetLuidIndex, when no other adapter or allocation has it
+ * (STATUS_OBJECT_NAME_COLLISION otherwise). NdisIfFreeNetLuidIndex gives it
+ * back.
  */
-BOOLEAN
+NTSTATUS
 Ndis6ReserveNetLuidIndex(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex)
@@ -147,7 +148,7 @@ Ndis6ReserveNetLuidIndex(
 
     Index = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Index), NDIS6_IF_PROVIDER_TAG);
     if (Index == NULL)
-        return FALSE;
+        return STATUS_INSUFFICIENT_RESOURCES;
     Index->IfType = IfType;
     Index->NetLuidIndex = NetLuidIndex;
 
@@ -162,7 +163,7 @@ Ndis6ReserveNetLuidIndex(
 
     if (!Reserved)
         ExFreePoolWithTag(Index, NDIS6_IF_PROVIDER_TAG);
-    return Reserved;
+    return Reserved ? STATUS_SUCCESS : STATUS_OBJECT_NAME_COLLISION;
 }
 
 static

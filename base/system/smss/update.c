@@ -1,4 +1,10 @@
-/* SPDX-License-Identifier: BSD-2-Clause */
+/*
+ * PROJECT:     LiberNT Session Manager
+ * LICENSE:     BSD-2-Clause (https://spdx.org/licenses/BSD-2-Clause)
+ * PURPOSE:     UpdateExecute commands that run after the registry is initialized
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ */
+
 #include "smss.h"
 
 #define NDEBUG

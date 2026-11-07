@@ -84,6 +84,26 @@ CheckGroupsUnchanged(
     if (After) RtlFreeHeap(RtlGetProcessHeap(), 0, After);
 }
 
+/* Returns an optional group that is enabled by default, or MAXULONG */
+static
+ULONG
+FindDefaultOptionalGroup(
+    _In_opt_ PTOKEN_GROUPS Groups)
+{
+    ULONG Index;
+
+    for (Index = 0; Groups && Index < Groups->GroupCount; Index++)
+    {
+        if ((Groups->Groups[Index].Attributes & (SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_MANDATORY)) ==
+            (SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT))
+        {
+            return Index;
+        }
+    }
+    skip("The token has no optional group that is enabled by default\n");
+    return MAXULONG;
+}
+
 /* Disabling one group leaves the others alone, and a reset enables it again */
 static
 VOID
@@ -100,20 +120,9 @@ AdjustOneGroup(VOID)
         return;
 
     Before = QueryGroups(Token);
-    for (Index = 0; Before && Index < Before->GroupCount; Index++)
-    {
-        if ((Before->Groups[Index].Attributes & (SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_MANDATORY)) ==
-            (SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT))
-        {
-            Target = Index;
-            break;
-        }
-    }
+    Target = FindDefaultOptionalGroup(Before);
     if (Target == MAXULONG)
-    {
-        skip("The token has no optional group that is enabled by default\n");
         goto Cleanup;
-    }
 
     Disable.GroupCount = 1;
     Disable.Groups[0].Sid = Before->Groups[Target].Sid;
@@ -208,6 +217,67 @@ Cleanup:
     CloseHandle(Token);
 }
 
+/* The previous state holds copies of the SIDs and restores the token */
+static
+VOID
+AdjustWithPreviousState(VOID)
+{
+    NTSTATUS Status;
+    HANDLE Token;
+    PTOKEN_GROUPS Before, Previous = NULL;
+    TOKEN_GROUPS Disable, Small;
+    ULONG Target, Length, Expected;
+
+    Token = DuplicateProcessToken();
+    if (!Token)
+        return;
+    Before = QueryGroups(Token);
+    Target = FindDefaultOptionalGroup(Before);
+    if (Target == MAXULONG)
+        goto Cleanup;
+
+    Disable.GroupCount = 1;
+    Disable.Groups[0].Sid = Before->Groups[Target].Sid;
+    Disable.Groups[0].Attributes = 0;
+    Expected = FIELD_OFFSET(TOKEN_GROUPS, Groups[1]) + RtlLengthSid(Before->Groups[Target].Sid);
+
+    /* A buffer that is too small changes nothing */
+    Length = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, &Small, &Length);
+    ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
+    ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
+    CheckGroupsUnchanged(Token, Before);
+
+    Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Expected);
+    if (!Previous)
+    {
+        skip("Out of memory\n");
+        goto Cleanup;
+    }
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Expected, Previous, &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
+    ok(Previous->GroupCount == 1, "GroupCount is %lu\n", Previous->GroupCount);
+    if (Previous->GroupCount != 1)
+        goto Cleanup;
+    ok((PUCHAR)Previous->Groups[0].Sid == (PUCHAR)&Previous->Groups[1],
+       "The SID is at %p, expected after the array at %p\n", Previous->Groups[0].Sid, &Previous->Groups[1]);
+    ok(RtlEqualSid(Previous->Groups[0].Sid, Before->Groups[Target].Sid), "The previous SID differs\n");
+    ok(Previous->Groups[0].Attributes == Before->Groups[Target].Attributes,
+       "The previous attributes are 0x%lx, expected 0x%lx\n",
+       Previous->Groups[0].Attributes, Before->Groups[Target].Attributes);
+
+    /* Giving the previous state back restores the token */
+    Status = NtAdjustGroupsToken(Token, FALSE, Previous, 0, NULL, NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    CheckGroupsUnchanged(Token, Before);
+
+Cleanup:
+    if (Previous) RtlFreeHeap(RtlGetProcessHeap(), 0, Previous);
+    if (Before) RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+    CloseHandle(Token);
+}
+
 START_TEST(NtAdjustGroupsToken)
 {
     HANDLE TokenHandle;
@@ -260,4 +330,5 @@ START_TEST(NtAdjustGroupsToken)
 
     AdjustOneGroup();
     AdjustMandatoryGroup();
+    AdjustWithPreviousState();
 }

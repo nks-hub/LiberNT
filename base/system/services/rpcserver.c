@@ -2410,6 +2410,14 @@ RChangeServiceConfigW(
         goto done;
     }
 
+    /* A service SID needs a process of its own, as SERVICE_CONFIG_SERVICE_SID_INFO says */
+    if (dwServiceType != SERVICE_NO_CHANGE && (dwServiceType & SERVICE_WIN32_SHARE_PROCESS) &&
+        ScmGetServiceDword(lpService, L"ServiceSidType", SERVICE_SID_TYPE_NONE) != SERVICE_SID_TYPE_NONE)
+    {
+        dwError = ERROR_NOT_SUPPORTED;
+        goto done;
+    }
+
     /* Open the service key */
     dwError = ScmOpenServiceKey(lpService->szServiceName,
                                 KEY_SET_VALUE,

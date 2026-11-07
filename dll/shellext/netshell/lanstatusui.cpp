@@ -501,6 +501,29 @@ NetShellUpdateTimer(LANSTATUSUI_CONTEXT *pContext)
     }
 }
 
+/* An adapter that is removed and added again, such as a tunnel, gets a new interface index */
+static BOOL
+NetShellRefreshAdapterIndex(LANSTATUSUI_CONTEXT *pContext)
+{
+    NETCON_PROPERTIES *pProps = NULL;
+    NET_LUID Luid;
+    NET_IFINDEX IfIndex;
+    BOOL bChanged = FALSE;
+
+    if (pContext->pNet->GetProperties(&pProps) != S_OK || !pProps)
+        return FALSE;
+    if (!ConvertInterfaceGuidToLuid(&pProps->guidId, &Luid) &&
+        !ConvertInterfaceLuidToIndex(&Luid, &IfIndex) &&
+        IfIndex != pContext->dwAdapterIndex)
+    {
+        pContext->dwAdapterIndex = IfIndex;
+        pContext->Status = (UINT)-1;
+        bChanged = TRUE;
+    }
+    NcFreeNetconProperties(pProps);
+    return bChanged;
+}
+
 VOID
 UpdateLanStatus(HWND hwndDlg, LANSTATUSUI_CONTEXT * pContext)
 {
@@ -510,10 +533,17 @@ UpdateLanStatus(HWND hwndDlg, LANSTATUSUI_CONTEXT * pContext)
     NETCON_PROPERTIES * pProperties = NULL;
     NLM_CONNECTIVITY Conn;
     int nQuality;
+    DWORD dwError;
 
     ZeroMemory(&IfEntry, sizeof(IfEntry));
     IfEntry.dwIndex = pContext->dwAdapterIndex;
-    if (GetIfEntry(&IfEntry) != NO_ERROR)
+    dwError = GetIfEntry(&IfEntry);
+    if (dwError != NO_ERROR && NetShellRefreshAdapterIndex(pContext))
+    {
+        IfEntry.dwIndex = pContext->dwAdapterIndex;
+        dwError = GetIfEntry(&IfEntry);
+    }
+    if (dwError != NO_ERROR)
     {
         NetShellClearTrayRank(pContext->uID, pContext->hwndStatusDlg);
         return;

@@ -1486,6 +1486,9 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeA( SC_HANDLE service, DW
  * manager can complete a request only through its handle, so a request that
  * is still pending when the subscription ends keeps its buffer until it ends.
  */
+/* Tells services.exe that a request does not use up the report of the current state (services.h) */
+#define SERVICE_NOTIFY_SUBSCRIPTION 0x80000000
+
 struct subscription_request
 {
     SERVICE_NOTIFYW notify;
@@ -1562,7 +1565,8 @@ static DWORD WINAPI subscription_thread( void *param )
             req->notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
             req->notify.pfnNotifyCallback = subscription_notified;
             req->notify.pContext = sub->context;
-            err = notify_status_change( sub->handle, sub->mask, &req->notify, request_finished, req );
+            err = notify_status_change( sub->handle, sub->mask | SERVICE_NOTIFY_SUBSCRIPTION, &req->notify,
+                                        request_finished, req );
         }
         if (first)
         {

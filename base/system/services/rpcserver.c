@@ -37,8 +37,6 @@ typedef struct _SCMGR_HANDLE
 typedef struct _MANAGER_HANDLE
 {
     SCMGR_HANDLE Handle;
-    LIST_ENTRY NotifyListEntry;     /* in ScmManagerNotifyList while pNotify is set */
-    struct _NOTIFY_HANDLE *pNotify; /* pending SERVICE_NOTIFY_CREATED/DELETED request */
     WCHAR DatabaseName[1];
 } MANAGER_HANDLE, *PMANAGER_HANDLE;
 
@@ -50,7 +48,9 @@ typedef struct _NOTIFY_HANDLE
     HANDLE hEvent;
     DWORD dwNotifyMask;
     PSC_RPC_NOTIFY_PARAMS_LIST pParamsList;
-    LIST_ENTRY ListEntry;           /* in the NotifyList of a service handle while pending */
+    LIST_ENTRY ListEntry;           /* in ScmManagerNotifyList or the NotifyList of a service handle while pending */
+    PVOID Owner;                    /* the manager handle of a pending database request */
+    BOOL bSubscription;             /* SERVICE_NOTIFY_SUBSCRIPTION: does not take part in bStatusNotified */
 } NOTIFY_HANDLE, *PNOTIFY_HANDLE;
 
 
@@ -119,7 +119,7 @@ ScmServiceMapping = {SERVICE_READ,
 DWORD g_dwServiceBits = 0;
 
 static CRITICAL_SECTION ScmNotifyLock;
-static LIST_ENTRY ScmManagerNotifyList;
+static LIST_ENTRY ScmManagerNotifyList;  /* pending database requests of every manager handle */
 
 /* FUNCTIONS ***************************************************************/
 
@@ -350,9 +350,10 @@ ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
             continue;
 
         RemoveEntryList(Entry);
+        if (!pNotify->bSubscription)
+            bCompleted = TRUE;
         ScmFillNotify(pNotify, lpService, dwTrigger, NULL);
         ScmReleaseNotify(pNotify);
-        bCompleted = TRUE;
     }
     return bCompleted;
 }
@@ -411,21 +412,20 @@ ScmNotifyServiceDatabase(DWORD dwTrigger,
                          LPCWSTR lpServiceName)
 {
     PLIST_ENTRY Entry, Next;
-    PMANAGER_HANDLE hManager;
+    PNOTIFY_HANDLE pNotify;
 
     EnterCriticalSection(&ScmNotifyLock);
 
     for (Entry = ScmManagerNotifyList.Flink; Entry != &ScmManagerNotifyList; Entry = Next)
     {
         Next = Entry->Flink;
-        hManager = CONTAINING_RECORD(Entry, MANAGER_HANDLE, NotifyListEntry);
-        if (!(hManager->pNotify->dwNotifyMask & dwTrigger))
+        pNotify = CONTAINING_RECORD(Entry, NOTIFY_HANDLE, ListEntry);
+        if (!(pNotify->dwNotifyMask & dwTrigger))
             continue;
 
         RemoveEntryList(Entry);
-        ScmFillNotify(hManager->pNotify, NULL, dwTrigger, lpServiceName);
-        ScmReleaseNotify(hManager->pNotify);
-        hManager->pNotify = NULL;
+        ScmFillNotify(pNotify, NULL, dwTrigger, lpServiceName);
+        ScmReleaseNotify(pNotify);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -450,7 +450,8 @@ ScmCreateNotify(DWORD dwNotifyMask)
 
     pNotify->Handle.Tag = NOTIFY_TAG;
     pNotify->RefCount = 1;
-    pNotify->dwNotifyMask = dwNotifyMask;
+    pNotify->dwNotifyMask = dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
+    pNotify->bSubscription = (dwNotifyMask & SERVICE_NOTIFY_SUBSCRIPTION) != 0;
     return pNotify;
 }
 
@@ -1210,13 +1211,21 @@ RCloseServiceHandle(
     {
         DPRINT("Found manager handle\n");
 
+        PLIST_ENTRY Entry, Next;
+        PNOTIFY_HANDLE pNotify;
+
         EnterCriticalSection(&ScmNotifyLock);
-        if (hManager->pNotify != NULL)
+        for (Entry = ScmManagerNotifyList.Flink; Entry != &ScmManagerNotifyList; Entry = Next)
         {
-            RemoveEntryList(&hManager->NotifyListEntry);
-            SetEvent(hManager->pNotify->hEvent);
-            ScmReleaseNotify(hManager->pNotify);
-            hManager->pNotify = NULL;
+            Next = Entry->Flink;
+            pNotify = CONTAINING_RECORD(Entry, NOTIFY_HANDLE, ListEntry);
+            if (pNotify->Owner != hManager)
+                continue;
+
+            /* Ends the request without a result */
+            RemoveEntryList(Entry);
+            SetEvent(pNotify->hEvent);
+            ScmReleaseNotify(pNotify);
         }
         LeaveCriticalSection(&ScmNotifyLock);
 
@@ -7011,16 +7020,11 @@ RNotifyServiceStatusChange(
         if (pNotify == NULL)
             return ERROR_NOT_ENOUGH_MEMORY;
 
+        /* A handle can have several pending requests */
+        pNotify->Owner = hManager;
         EnterCriticalSection(&ScmNotifyLock);
-        if (hManager->pNotify != NULL)
-        {
-            LeaveCriticalSection(&ScmNotifyLock);
-            ScmReleaseNotify(pNotify);
-            return ERROR_ALREADY_REGISTERED;
-        }
         InterlockedIncrement(&pNotify->RefCount);
-        hManager->pNotify = pNotify;
-        InsertTailList(&ScmManagerNotifyList, &hManager->NotifyListEntry);
+        InsertTailList(&ScmManagerNotifyList, &pNotify->ListEntry);
         LeaveCriticalSection(&ScmNotifyLock);
 
         *pfCreateRemoteQueue = FALSE;
@@ -7059,7 +7063,7 @@ RNotifyServiceStatusChange(
     }
 
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
-    if (!hSvc->bStatusNotified && (pNotify->dwNotifyMask & dwMask))
+    if (!pNotify->bSubscription && !hSvc->bStatusNotified && (pNotify->dwNotifyMask & dwMask))
     {
         ScmFillNotify(pNotify, lpService, dwMask, NULL);
         hSvc->bStatusNotified = TRUE;

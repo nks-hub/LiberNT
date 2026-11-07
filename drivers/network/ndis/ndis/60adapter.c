@@ -234,7 +234,7 @@ Ndis6ReadNetLuidIndex(
     return Value;
 }
 
-static VOID
+static NTSTATUS
 Ndis6AllocateInterfaceIdentity(
     _In_opt_ PDEVICE_OBJECT Pdo,
     _Out_ PNDIS6_ADAPTER_EXT Ext)
@@ -243,6 +243,7 @@ Ndis6AllocateInterfaceIdentity(
     NET_IFTYPE IfType;
     UINT32 LuidIndex;
     ULONG Tries;
+    NTSTATUS Status = STATUS_OBJECT_NAME_COLLISION;
 
     /* The network class installer stores the NetLuidIndex of the adapter in
      * its driver key, and user mode builds the adapter LUID from it. Without
@@ -251,21 +252,34 @@ Ndis6AllocateInterfaceIdentity(
      * the adapter goes away, so no other adapter takes it meanwhile. */
     IfType = Ndis6ReadInterfaceType(Pdo);
     LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
-    Ext->NetLuidIndexReserved = LuidIndex != 0 && Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    if (LuidIndex != 0)
+        Status = Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    if (Status == STATUS_INSUFFICIENT_RESOURCES)
+        return Status;
     Next = (LONG)Ndis6AllocateInterfaceIndex();
-    if (!Ext->NetLuidIndexReserved)
+    if (Status == STATUS_OBJECT_NAME_COLLISION)
     {
-        /* A failed allocation of the reservation must not keep us here */
-        for (Tries = 0; Tries < 0x10000 && !Ndis6ReserveNetLuidIndex(IfType, (UINT32)Next); Tries++)
+        /* Only a collision moves on to the next index; no free one in 0x10000 tries fails */
+        for (Tries = 0; Tries < 0x10000; Tries++)
+        {
+            Status = Ndis6ReserveNetLuidIndex(IfType, (UINT32)Next);
+            if (Status != STATUS_OBJECT_NAME_COLLISION)
+                break;
             Next = (LONG)Ndis6AllocateInterfaceIndex();
-        Ext->NetLuidIndexReserved = Tries < 0x10000;
+        }
+        if (Status == STATUS_OBJECT_NAME_COLLISION)
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        if (!NT_SUCCESS(Status))
+            return Status;
         LuidIndex = (UINT32)Next;
     }
 
+    Ext->NetLuidIndexReserved = TRUE;
     Ext->IfIndex = (NET_IFINDEX)Next;
     Ext->NetLuid.Value = 0;
     Ext->NetLuid.Info.IfType = IfType;
     Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
+    return STATUS_SUCCESS;
 }
 
 static VOID
@@ -697,7 +711,11 @@ Ndis6InitializeLogicalAdapter(
 
     RtlZeroMemory(Ext, sizeof(*Ext));
     Ext->Adapter                = Adapter;
-    Ndis6AllocateInterfaceIdentity(Pdo, Ext);
+    if (!NT_SUCCESS(Ndis6AllocateInterfaceIdentity(Pdo, Ext)))
+    {
+        ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+        return NDIS_STATUS_RESOURCES;
+    }
     ExInitializeRundownProtection(&Ext->LifecycleRundown);
     ExInitializeRundownProtection(&Ext->LegacyRequestRundown);
     Ext->DriverBlock            = DriverBlock;
@@ -1794,7 +1812,13 @@ Ndis6CreateImInstance(
 
     RtlZeroMemory(Ext, sizeof(*Ext));
     Ext->Adapter                = Adapter;
-    Ndis6AllocateInterfaceIdentity(Fdo, Ext);
+    if (!NT_SUCCESS(Ndis6AllocateInterfaceIdentity(Fdo, Ext)))
+    {
+        ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+        IoDeleteDevice(Fdo);
+        Ndis6FreeAdapterName(&AdapterName);
+        return NDIS_STATUS_RESOURCES;
+    }
     ExInitializeRundownProtection(&Ext->LifecycleRundown);
     ExInitializeRundownProtection(&Ext->LegacyRequestRundown);
     Ext->DriverBlock            = DriverBlock;

@@ -1287,7 +1287,7 @@ Ndis6LookupAdapterNetLuid(
     _In_ NET_LUID NetLuid,
     _Out_opt_ PNET_IFINDEX IfIndex);
 
-BOOLEAN
+NTSTATUS
 Ndis6ReserveNetLuidIndex(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex);

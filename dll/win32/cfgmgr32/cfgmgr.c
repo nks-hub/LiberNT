@@ -2414,6 +2414,38 @@ CM_Enable_DevNode_Ex(
 }
 
 
+/* Takes a software device out of the device tree and keeps its registry keys (SwDeviceClose) */
+CONFIGRET
+CfgmgrRemoveSoftwareDevice(
+    _In_ PCWSTR pszInstanceId)
+{
+    RPC_BINDING_HANDLE BindingHandle = NULL;
+    CONFIGRET ret;
+
+    if (!CmpIsUserAdmin())
+        return CR_ACCESS_DENIED;
+
+    if (!PnpGetLocalHandles(&BindingHandle))
+        return CR_FAILURE;
+
+    RpcTryExcept
+    {
+        ret = PNP_DeviceInstanceAction(BindingHandle,
+                                       PNP_DEVINST_REMOVE_SOFTWARE,
+                                       0,
+                                       (LPWSTR)pszInstanceId,
+                                       NULL);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        ret = RpcStatusToCmStatus(RpcExceptionCode());
+    }
+    RpcEndExcept;
+
+    return ret;
+}
+
+
 
 
 

@@ -162,7 +162,132 @@ DuplicateTokenAsEffective(VOID)
     CloseHandle(DuplicatedTokenHandle);
 }
 
+static
+PVOID
+QueryToken(
+    _In_ HANDLE Token,
+    _In_ TOKEN_INFORMATION_CLASS Class)
+{
+    NTSTATUS Status;
+    ULONG Size = 0;
+    PVOID Buffer;
+
+    Status = NtQueryInformationToken(Token, Class, NULL, 0, &Size);
+    if (Status != STATUS_BUFFER_TOO_SMALL)
+    {
+        trace("Querying the size of class %d failed (Status 0x%lx)\n", Class, Status);
+        return NULL;
+    }
+    Buffer = RtlAllocateHeap(RtlGetProcessHeap(), 0, Size);
+    if (!Buffer)
+        return NULL;
+    Status = NtQueryInformationToken(Token, Class, Buffer, Size, &Size);
+    if (!NT_SUCCESS(Status))
+    {
+        trace("Querying class %d failed (Status 0x%lx)\n", Class, Status);
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Buffer);
+        Buffer = NULL;
+    }
+    return Buffer;
+}
+
+/*
+ * The integrity label is not an enabled group, yet an effective only copy
+ * keeps it, also when a disabled group before it is removed.
+ */
+static
+VOID
+DuplicateTokenAsEffectiveKeepsLabel(VOID)
+{
+    NTSTATUS Status;
+    HANDLE ProcessToken, Token = NULL, EffectiveToken;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    PTOKEN_GROUPS Groups, EffectiveGroups;
+    PTOKEN_MANDATORY_LABEL Label, EffectiveLabel;
+    SID_AND_ATTRIBUTES Disable;
+    PSID Disabled = NULL;
+    ULONG Index, LabelIndex = MAXULONG;
+    BOOLEAN LabelFound = FALSE, DisabledFound = FALSE;
+
+    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
+    ProcessToken = OpenTokenFromProcess();
+    if (!ProcessToken)
+        return;
+
+    Groups = QueryToken(ProcessToken, TokenGroups);
+    Label = QueryToken(ProcessToken, TokenIntegrityLevel);
+    if (!Groups || !Label)
+    {
+        skip("The token has no groups or no integrity label\n");
+        goto Cleanup;
+    }
+    for (Index = 0; Index < Groups->GroupCount; Index++)
+    {
+        if (Groups->Groups[Index].Attributes & SE_GROUP_INTEGRITY)
+        {
+            LabelIndex = Index;
+            break;
+        }
+    }
+    for (Index = 0; Index < LabelIndex && Index < Groups->GroupCount; Index++)
+    {
+        if (Groups->Groups[Index].Attributes & SE_GROUP_ENABLED)
+        {
+            Disabled = Groups->Groups[Index].Sid;
+            break;
+        }
+    }
+    if (!Disabled)
+    {
+        skip("No enabled group precedes the integrity label\n");
+        goto Cleanup;
+    }
+
+    /* A group made deny only is no longer enabled */
+    Disable.Sid = Disabled;
+    Disable.Attributes = 0;
+    if (!CreateRestrictedToken(ProcessToken, 0, 1, &Disable, 0, NULL, 0, NULL, &Token))
+    {
+        skip("CreateRestrictedToken failed (%lu)\n", GetLastError());
+        Token = NULL;
+        goto Cleanup;
+    }
+
+    Status = NtDuplicateToken(Token, TOKEN_QUERY, &ObjectAttributes, TRUE, TokenPrimary, &EffectiveToken);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+
+    EffectiveGroups = QueryToken(EffectiveToken, TokenGroups);
+    EffectiveLabel = QueryToken(EffectiveToken, TokenIntegrityLevel);
+    ok(EffectiveGroups != NULL && EffectiveLabel != NULL, "Querying the effective token failed\n");
+    if (EffectiveGroups && EffectiveLabel)
+    {
+        for (Index = 0; Index < EffectiveGroups->GroupCount; Index++)
+        {
+            if (EqualSid(EffectiveGroups->Groups[Index].Sid, Disabled))
+                DisabledFound = TRUE;
+            if ((EffectiveGroups->Groups[Index].Attributes & SE_GROUP_INTEGRITY) &&
+                EqualSid(EffectiveGroups->Groups[Index].Sid, Label->Label.Sid))
+                LabelFound = TRUE;
+        }
+        ok(!DisabledFound, "The disabled group was kept\n");
+        ok(LabelFound, "The integrity label was removed\n");
+        ok(EqualSid(EffectiveLabel->Label.Sid, Label->Label.Sid), "The integrity level differs\n");
+    }
+    if (EffectiveGroups) RtlFreeHeap(RtlGetProcessHeap(), 0, EffectiveGroups);
+    if (EffectiveLabel) RtlFreeHeap(RtlGetProcessHeap(), 0, EffectiveLabel);
+    CloseHandle(EffectiveToken);
+
+Cleanup:
+    if (Groups) RtlFreeHeap(RtlGetProcessHeap(), 0, Groups);
+    if (Label) RtlFreeHeap(RtlGetProcessHeap(), 0, Label);
+    if (Token) CloseHandle(Token);
+    CloseHandle(ProcessToken);
+}
+
 START_TEST(NtDuplicateToken)
 {
     DuplicateTokenAsEffective();
+    DuplicateTokenAsEffectiveKeepsLabel();
 }

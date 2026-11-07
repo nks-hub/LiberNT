@@ -495,10 +495,10 @@ NdisWdfGetAdapterContextFromAdapterHandle(
     if (Adapter == NULL || !Adapter->IsNdis6)
         return NULL;
 
+    /* Windows answers for every NDIS 6 miniport: wireguard.sys, which is not
+     * WDF-managed, finds its adapter from the FDO device extension this way */
     Ext = NDIS6_EXT(Adapter);
-    return (Ext && Ext->IsWdfManaged)
-        ? Ext->MiniportAdapterContext
-        : NULL;
+    return Ext ? Ext->MiniportAdapterContext : NULL;
 }
 
 NTSTATUS

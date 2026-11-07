@@ -4951,6 +4951,10 @@ NtCancelSynchronousIoFile(
     Status = IopCancelIoFileExInThread(Thread, NULL, IoRequestToCancel, TRUE, FALSE, &Found);
     if (NT_SUCCESS(Status) && !Found)
         Status = STATUS_NOT_FOUND;
+    /* A driver without a cancel routine may wait alertably for the request,
+     * as the log reader of wireguard.sys does; the alert ends that wait */
+    else if (NT_SUCCESS(Status))
+        KeAlertThread(&Thread->Tcb, UserMode);
 
     _SEH2_TRY
     {

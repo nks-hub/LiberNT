@@ -41,6 +41,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #include <ntifs.h>
 #include <netiodef.h>
 #include <ws2def.h>
+#include <ws2ipdef.h>
 #include <wsk.h>
 #include <ndis.h>
 
@@ -88,6 +89,7 @@ typedef struct _NETIO_RECEIVE
     volatile BOOLEAN InFlight;
     SOCKADDR_IN Remote;
     ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
+    DECLSPEC_ALIGN(8) UCHAR Control[64];
     UCHAR Data[NETIO_RECEIVE_SIZE];
 } NETIO_RECEIVE, *PNETIO_RECEIVE;
 
@@ -151,6 +153,7 @@ typedef struct _WSK_SOCKET_INTERNAL
     /* Datagram sockets */
     const WSK_CLIENT_DATAGRAM_DISPATCH *DatagramDispatch;
     BOOLEAN ReceiveEvents;          /* WSK_EVENT_RECEIVE_FROM is enabled */
+    BOOLEAN PktInfo;                /* IP_PKTINFO was requested */
     BOOLEAN ReceiveStarted;
     volatile BOOLEAN ReceiveClosing;
     LONG ReceivesBusy;              /* receives in flight or retained by the client */
@@ -187,6 +190,8 @@ static VOID
 NetioStopReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
 NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioSetAddressOption(_In_ PFILE_OBJECT AddressFile, _In_ ULONG Option, _In_ ULONG Value);
 
 static
 void SocketShutdown(_In_ PWSK_SOCKET_INTERNAL Socket)
@@ -807,6 +812,23 @@ WskControlSocket(
                             DPRINT1("WskControlSocket: ControlCode %d Not implemented\n", ControlCode);
                     }
                     break;
+                case IPPROTO_IP:
+                    if (ControlCode != IP_PKTINFO || Socket->type != SOCK_DGRAM)
+                    {
+                        DPRINT1("WskControlSocket: IPPROTO_IP option %d Not implemented\n", ControlCode);
+                        break;
+                    }
+                    if (InputBuffer == NULL || InputSize < sizeof(ULONG))
+                    {
+                        status = STATUS_INVALID_PARAMETER;
+                        break;
+                    }
+                    /* Before the bind the option is applied when the address file opens */
+                    Socket->PktInfo = *(PULONG)InputBuffer != 0;
+                    status = Socket->LocalAddressFile ?
+                             NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, Socket->PktInfo) :
+                             STATUS_SUCCESS;
+                    break;
                 default:
                     DPRINT1("WskControlSocket: Level %d Not implemented\n", Level);
             }
@@ -925,8 +947,13 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
 
     ExFreePoolWithTag(ta, TAG_NETIO);
 
-    if (NT_SUCCESS(status) && Socket->type == SOCK_DGRAM && Socket->ReceiveEvents)
-        status = NetioStartReceives(Socket);
+    if (NT_SUCCESS(status) && Socket->type == SOCK_DGRAM)
+    {
+        if (Socket->PktInfo)
+            status = NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, TRUE);
+        if (NT_SUCCESS(status) && Socket->ReceiveEvents)
+            status = NetioStartReceives(Socket);
+    }
 
 err_out:
     Irp->IoStatus.Status = status;
@@ -1040,6 +1067,50 @@ WskReceiveFrom(
 
 /* Datagram sockets */
 
+static NTSTATUS
+NetioSetAddressOption(
+    _In_ PFILE_OBJECT AddressFile,
+    _In_ ULONG Option,
+    _In_ ULONG Value)
+{
+    PTCP_REQUEST_SET_INFORMATION_EX Request;
+    ULONG Size = FIELD_OFFSET(TCP_REQUEST_SET_INFORMATION_EX, Buffer) + sizeof(ULONG);
+    PDEVICE_OBJECT DeviceObject = IoGetRelatedDeviceObject(AddressFile);
+    IO_STATUS_BLOCK Io;
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    Request = ExAllocatePoolZero(NonPagedPool, Size, TAG_NETIO);
+    if (Request == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    Request->ID.toi_entity.tei_entity = CL_TL_ENTITY;
+    Request->ID.toi_entity.tei_instance = 0;
+    Request->ID.toi_class = INFO_CLASS_PROTOCOL;
+    Request->ID.toi_type = INFO_TYPE_ADDRESS_OBJECT;
+    Request->ID.toi_id = Option;
+    Request->BufferSize = sizeof(ULONG);
+    RtlCopyMemory(Request->Buffer, &Value, sizeof(Value));
+
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+    Irp = IoBuildDeviceIoControlRequest(IOCTL_TCP_SET_INFORMATION_EX, DeviceObject, Request, Size,
+                                        NULL, 0, FALSE, &Event, &Io);
+    if (Irp == NULL)
+    {
+        ExFreePoolWithTag(Request, TAG_NETIO);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    IoGetNextIrpStackLocation(Irp)->FileObject = AddressFile;
+    Status = IoCallDriver(DeviceObject, Irp);
+    if (Status == STATUS_PENDING)
+    {
+        KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+        Status = Io.Status;
+    }
+    ExFreePoolWithTag(Request, TAG_NETIO);
+    return Status;
+}
+
 static VOID
 NetioReceiveDone(
     _In_ PNETIO_RECEIVE Receive)
@@ -1074,6 +1145,9 @@ NetioPostReceive(
 
     IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
     TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
+    /* tcpip writes IP_PKTINFO into the options when AO_OPTION_IP_PKTINFO is on */
+    ConnInfo->Options = Socket->PktInfo ? Receive->Control : NULL;
+    ConnInfo->OptionsLength = Socket->PktInfo ? sizeof(Receive->Control) : 0;
     TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
                             Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
     IoCallDriver(DeviceObject, Receive->Irp);
@@ -1109,8 +1183,8 @@ NetioReceiveComplete(
         Receive->Indication.Buffer.Mdl = Receive->Mdl;
         Receive->Indication.Buffer.Offset = 0;
         Receive->Indication.Buffer.Length = (SIZE_T)Irp->IoStatus.Information;
-        Receive->Indication.ControlInfoLength = 0;
-        Receive->Indication.ControlInfo = NULL;
+        Receive->Indication.ControlInfoLength = Socket->PktInfo ? (ULONG)ConnInfo->OptionsLength : 0;
+        Receive->Indication.ControlInfo = Receive->Indication.ControlInfoLength ? (PCMSGHDR)Receive->Control : NULL;
         Receive->Indication.RemoteAddress = (PSOCKADDR)&Receive->Remote;
 
         Status = Socket->DatagramDispatch->WskReceiveFromEvent(

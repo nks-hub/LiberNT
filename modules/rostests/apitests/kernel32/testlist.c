@@ -10,6 +10,7 @@ extern void func_CallbackCallingConventions(void);
 extern void func_Arm64ThreadContext(void);
 extern void func_ConsoleAlias(void);
 extern void func_ConsoleCP(void);
+extern void func_ConsoleInputSignal(void);
 extern void func_ConsoleDbcsCells(void);
 extern void func_ConsoleProcessInheritance(void);
 extern void func_ConsoleVirtualTerminal(void);
@@ -59,6 +60,7 @@ extern void func_LoadLibraryExW(void);
 extern void func_LockFileEx(void);
 extern void func_QuantumRoundRobin(void);
 extern void func_RegisterWaitPeriodic(void);
+extern void func_RemoteThreadInit(void);
 extern void func_SandboxLaunch(void);
 extern void func_SystemImageCatalog(void);
 extern void func_SystemTimeChangeTimers(void);
@@ -79,6 +81,7 @@ extern void func_PackageNames(void);
 extern void func_PixeloramaCompat(void);
 extern void func_ProcessPreferredUILanguages(void);
 extern void func_PseudoConsoleCtrlC(void);
+extern void func_PseudoConsoleVtInput(void);
 extern void func_PssSnapshot(void);
 extern void func_OpenFileByIdRename(void);
 extern void func_LoaderLock(void);
@@ -95,6 +98,8 @@ extern void func_SetFileAllocationInfo(void);
 extern void func_SetThreadStackGuarantee(void);
 extern void func_SetUnhandledExceptionFilter(void);
 extern void func_SetWaitableTimerEx(void);
+extern void func_WaitableTimerHighResolution(void);
+extern void func_SwitchToThreadCost(void);
 extern void func_SuspendThread(void);
 extern void func_SystemFirmware(void);
 extern void func_TerminateProcess(void);
@@ -107,6 +112,7 @@ extern void func_WaitForMultipleObjects(void);
 extern void func_WerRegisterFile(void);
 extern void func_WideCharToMultiByte(void);
 extern void func_Wow64GetThreadContext(void);
+extern void func_WriteFileBadBuffer(void);
 extern void func_WriteFileSeekBack(void);
 extern void func_XState(void);
 
@@ -121,6 +127,7 @@ const struct test winetest_testlist[] =
     { "Arm64ThreadContext",          func_Arm64ThreadContext },
     { "ConsoleAlias", func_ConsoleAlias },
     { "ConsoleCP",                   func_ConsoleCP },
+    { "ConsoleInputSignal",          func_ConsoleInputSignal },
     { "ConsoleDbcsCells",            func_ConsoleDbcsCells },
     { "ConsoleProcessInheritance",   func_ConsoleProcessInheritance },
     { "ConsoleVirtualTerminal",      func_ConsoleVirtualTerminal },
@@ -173,6 +180,7 @@ const struct test winetest_testlist[] =
     { "TebSegmentAfterWait",           func_TebSegmentAfterWait },
     { "QuantumRoundRobin",           func_QuantumRoundRobin },
     { "RegisterWaitPeriodic",        func_RegisterWaitPeriodic },
+    { "RemoteThreadInit",            func_RemoteThreadInit },
     { "SandboxLaunch",               func_SandboxLaunch },
     { "SharedMemorySecurity",        func_SharedMemorySecurity },
     { "SharedMemoryTransfer",        func_SharedMemoryTransfer },
@@ -190,6 +198,7 @@ const struct test winetest_testlist[] =
     { "PixeloramaCompat",            func_PixeloramaCompat },
     { "ProcessPreferredUILanguages", func_ProcessPreferredUILanguages },
     { "PseudoConsoleCtrlC",          func_PseudoConsoleCtrlC },
+    { "PseudoConsoleVtInput",        func_PseudoConsoleVtInput },
     { "PssSnapshot",                 func_PssSnapshot },
     { "OpenFileByIdRename",          func_OpenFileByIdRename },
     { "LoaderLock",                  func_LoaderLock },
@@ -205,6 +214,8 @@ const struct test winetest_testlist[] =
     { "SetThreadStackGuarantee",     func_SetThreadStackGuarantee },
     { "SetUnhandledExceptionFilter", func_SetUnhandledExceptionFilter },
     { "SetWaitableTimerEx",          func_SetWaitableTimerEx },
+    { "WaitableTimerHighResolution", func_WaitableTimerHighResolution },
+    { "SwitchToThreadCost", func_SwitchToThreadCost },
     { "SuspendThread",               func_SuspendThread },
     { "SystemFirmware",              func_SystemFirmware },
     { "TerminateProcess",            func_TerminateProcess },
@@ -217,6 +228,7 @@ const struct test winetest_testlist[] =
     { "WerRegisterFile",             func_WerRegisterFile },
     { "WideCharToMultiByte",         func_WideCharToMultiByte },
     { "Wow64GetThreadContext",       func_Wow64GetThreadContext },
+    { "WriteFileBadBuffer",          func_WriteFileBadBuffer },
     { "WriteFileSeekBack",           func_WriteFileSeekBack },
     { "XState",                      func_XState },
     { 0, 0 }

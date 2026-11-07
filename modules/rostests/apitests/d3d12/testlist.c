@@ -14,11 +14,16 @@ extern void func_budget(void);
 extern void func_bgwork(void);
 extern void func_blend(void);
 extern void func_bundle(void);
+extern void func_capsuse(void);
+extern void func_ddibuild(void);
 extern void func_device(void);
 extern void func_dred(void);
 extern void func_factory(void);
+extern void func_fencekill(void);
+extern void func_mesh(void);
 extern void func_feedback(void);
 extern void func_features(void);
+extern void func_formatsupport(void);
 extern void func_heaps(void);
 extern void func_interfaces(void);
 extern void func_pipeline(void);
@@ -50,11 +55,16 @@ const struct test winetest_testlist[] =
     { "bgwork", func_bgwork },
     { "blend", func_blend },
     { "bundle", func_bundle },
+    { "capsuse", func_capsuse },
+    { "ddibuild", func_ddibuild },
     { "device", func_device },
     { "dred", func_dred },
     { "factory", func_factory },
+    { "fencekill", func_fencekill },
+    { "mesh", func_mesh },
     { "feedback", func_feedback },
     { "features", func_features },
+    { "formatsupport", func_formatsupport },
     { "heaps", func_heaps },
     { "interfaces", func_interfaces },
     { "pipeline", func_pipeline },

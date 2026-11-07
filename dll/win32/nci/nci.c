@@ -22,28 +22,38 @@ FormatGuid(_In_ const GUID *Guid, _Out_writes_(39) PWSTR Text)
                                       Guid->Data4[4], Guid->Data4[5], Guid->Data4[6], Guid->Data4[7]));
 }
 
-/* TRUE when a connection other than Self already uses Name */
-static BOOL
-NameIsTaken(_In_ HKEY Network, _In_ PCWSTR Self, _In_ PCWSTR Name)
+/*
+ * ERROR_DUP_NAME when a connection other than Self already uses Name. A
+ * connection whose name cannot be read fails the check, as it may use Name.
+ */
+static LSTATUS
+CheckNameIsFree(_In_ HKEY Network, _In_ PCWSTR Self, _In_ PCWSTR Name)
 {
     WCHAR Connection[64], Existing[MAX_CONNECTION_NAME];
     DWORD Index, Length, Size;
+    LSTATUS Error;
 
     for (Index = 0; ; Index++)
     {
         Length = ARRAYSIZE(Connection);
-        if (RegEnumKeyExW(Network, Index, Connection, &Length, NULL, NULL, NULL, NULL) != ERROR_SUCCESS)
-            return FALSE;
+        Error = RegEnumKeyExW(Network, Index, Connection, &Length, NULL, NULL, NULL, NULL);
+        if (Error == ERROR_NO_MORE_ITEMS)
+            return ERROR_SUCCESS;
+        if (Error != ERROR_SUCCESS)
+            return Error;
         if (!_wcsicmp(Connection, Self))
             continue;
         if (FAILED(StringCchCatW(Connection, ARRAYSIZE(Connection), L"\\Connection")))
-            continue;
+            return ERROR_INVALID_DATA;
         Size = sizeof(Existing);
-        if (RegGetValueW(Network, Connection, L"Name", RRF_RT_REG_SZ, NULL, Existing, &Size) == ERROR_SUCCESS &&
-            !_wcsicmp(Existing, Name))
-        {
-            return TRUE;
-        }
+        Error = RegGetValueW(Network, Connection, L"Name", RRF_RT_REG_SZ, NULL, Existing, &Size);
+        /* Network also holds keys of components that are no connections */
+        if (Error == ERROR_FILE_NOT_FOUND)
+            continue;
+        if (Error != ERROR_SUCCESS)
+            return Error;
+        if (!_wcsicmp(Existing, Name))
+            return ERROR_DUP_NAME;
     }
 }
 
@@ -55,8 +65,10 @@ NciSetConnectionName(
 {
     WCHAR Id[39], Path[64];
     HKEY Network, Connection;
+    HANDLE Lock;
     size_t Length;
     LSTATUS Error;
+    DWORD Wait;
 
     if (Guid == NULL || NewName == NULL ||
         FAILED(StringCchLengthW(NewName, MAX_CONNECTION_NAME, &Length)) || Length == 0)
@@ -71,19 +83,34 @@ NciSetConnectionName(
     if (Error != ERROR_SUCCESS)
         return Error;
 
-    if (NameIsTaken(Network, Id, NewName))
+    /* Two renames must not both find the same name free */
+    Lock = CreateMutexW(NULL, FALSE, L"Global\\NetworkConnectionNames");
+    if (!Lock)
     {
+        Error = GetLastError();
         RegCloseKey(Network);
-        return ERROR_DUP_NAME;
+        return Error;
+    }
+    Wait = WaitForSingleObject(Lock, INFINITE);
+    if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
+    {
+        CloseHandle(Lock);
+        RegCloseKey(Network);
+        return ERROR_GEN_FAILURE;
     }
 
-    Error = RegCreateKeyExW(Network, Path, 0, NULL, 0, KEY_SET_VALUE, NULL, &Connection, NULL);
+    Error = CheckNameIsFree(Network, Id, NewName);
+    if (Error == ERROR_SUCCESS)
+        Error = RegCreateKeyExW(Network, Path, 0, NULL, 0, KEY_SET_VALUE, NULL, &Connection, NULL);
     if (Error == ERROR_SUCCESS)
     {
         Error = RegSetValueExW(Connection, L"Name", 0, REG_SZ, (const BYTE *)NewName,
                                (DWORD)((Length + 1) * sizeof(WCHAR)));
         RegCloseKey(Connection);
     }
+
+    ReleaseMutex(Lock);
+    CloseHandle(Lock);
     RegCloseKey(Network);
     return Error;
 }

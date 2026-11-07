@@ -2568,7 +2568,7 @@ Return Value:
                 Vcb->OpenFileCount -= 1;
                 if (IsFileObjectReadOnly(FileObject)) { Vcb->ReadOnlyCount -= 1; }
             }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Vcb->ShareAccess ); }
             if (UnwindVolumeLock) { Vcb->VcbState &= ~VCB_STATE_FLAG_LOCKED; }
         }
@@ -2740,7 +2740,7 @@ Arguments:
                 Vcb->OpenFileCount -= 1;
                 if (IsFileObjectReadOnly(FileObject)) { Vcb->ReadOnlyCount -= 1; }
             }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &RootDcb->ShareAccess ); }
         }
 
@@ -3160,7 +3160,7 @@ Return Value:
 
         if (_SEH2_AbnormalTermination()) {
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Dcb->ShareAccess ); }
         }
 
@@ -3890,7 +3890,7 @@ Return Value:
 
         if (_SEH2_AbnormalTermination()) {
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Fcb->ShareAccess ); }
         }
 
@@ -4110,7 +4110,7 @@ Return Value:
 
         if (_SEH2_AbnormalTermination()) {
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Dcb->ShareAccess ); }
         }
 
@@ -4394,10 +4394,10 @@ Return Value:
                 if (ARGUMENT_PRESENT( FileObject )) {
                     FileObject->SectionObjectPointer = NULL;
                 }
-                FatDeleteFcb( IrpContext, &UnwindDcb );
+                FatDeleteFcb( IrpContext, (PDCB *)&UnwindDcb );
                 *Dcb = NULL;
             }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
         }
 
         DebugTrace(-1, Dbg, "FatOpenExistingDirectory -> Iosb.Status = %08lx\n", Iosb.Status);
@@ -4873,11 +4873,11 @@ Return Value:
                 if (ARGUMENT_PRESENT( FileObject )) {
                     FileObject->SectionObjectPointer = NULL;
                 }
-                FatDeleteFcb( IrpContext, &UnwindFcb );
+                FatDeleteFcb( IrpContext, (PFCB *)&UnwindFcb );
                 *Fcb = NULL;
             }
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
         }
 
         DebugTrace(-1, Dbg, "FatOpenExistingFile -> Iosb.Status = %08lx\n", Iosb.Status);
@@ -5887,7 +5887,7 @@ Return Value:
 #endif
                                       FALSE,
                                       TRUE,
-                                      &Iosb.Status );
+                                      (PNTSTATUS)&Iosb.Status );
 
         NT_ASSERT( NT_SUCCESS( Iosb.Status ) );
 
@@ -5923,7 +5923,7 @@ Return Value:
 #endif
                                           FALSE,
                                           TRUE,
-                                          &Iosb.Status );
+                                          (PNTSTATUS)&Iosb.Status );
 
             NT_ASSERT( NT_SUCCESS( Iosb.Status ) );
 
@@ -6330,9 +6330,9 @@ Return Value:
                         if (ARGUMENT_PRESENT( FileObject )) {
                             FileObject->SectionObjectPointer = NULL;
                         }
-                        FatDeleteFcb( IrpContext, &UnwindFcb );
+                        FatDeleteFcb( IrpContext, (PFCB *)&UnwindFcb );
                     }
-                    if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+                    if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
                 }
 
                 //
@@ -6712,7 +6712,7 @@ Return Value:
         if (_SEH2_AbnormalTermination()) {
 
             if (UnwindEa != 0) { FatDeleteEa( IrpContext, Fcb->Vcb, UnwindEa, &Fcb->ShortName.Name.Oem ); }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
         }
 
         FatUnpinBcb( IrpContext, DirentBcb );

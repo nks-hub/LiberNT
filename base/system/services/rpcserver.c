@@ -350,6 +350,7 @@ ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
             continue;
 
         RemoveEntryList(Entry);
+        InitializeListHead(Entry);
         if (!pNotify->bSubscription)
             bCompleted = TRUE;
         ScmFillNotify(pNotify, lpService, dwTrigger, NULL);
@@ -424,6 +425,7 @@ ScmNotifyServiceDatabase(DWORD dwTrigger,
             continue;
 
         RemoveEntryList(Entry);
+        InitializeListHead(Entry);
         ScmFillNotify(pNotify, NULL, dwTrigger, lpServiceName);
         ScmReleaseNotify(pNotify);
     }
@@ -450,6 +452,7 @@ ScmCreateNotify(DWORD dwNotifyMask)
 
     pNotify->Handle.Tag = NOTIFY_TAG;
     pNotify->RefCount = 1;
+    InitializeListHead(&pNotify->ListEntry);
     pNotify->dwNotifyMask = dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
     pNotify->bSubscription = (dwNotifyMask & SERVICE_NOTIFY_SUBSCRIPTION) != 0;
     return pNotify;
@@ -1224,6 +1227,7 @@ RCloseServiceHandle(
 
             /* Ends the request without a result */
             RemoveEntryList(Entry);
+            InitializeListHead(Entry);
             SetEvent(pNotify->hEvent);
             ScmReleaseNotify(pNotify);
         }
@@ -1257,6 +1261,7 @@ RCloseServiceHandle(
             PNOTIFY_HANDLE pNotify = CONTAINING_RECORD(RemoveHeadList(&hService->NotifyList),
                                                        NOTIFY_HANDLE, ListEntry);
 
+            InitializeListHead(&pNotify->ListEntry);
             /* Ends the request without a result */
             SetEvent(pNotify->hEvent);
             ScmReleaseNotify(pNotify);
@@ -7013,7 +7018,8 @@ RNotifyServiceStatusChange(
             return ERROR_INVALID_LEVEL;
 
         dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask;
-        if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
+        if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) ||
+            (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_SUBSCRIPTION)))
             return ERROR_INVALID_PARAMETER;
 
         pNotify = ScmCreateNotify(dwMask);
@@ -7046,6 +7052,10 @@ RNotifyServiceStatusChange(
 
     if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
         return ERROR_INVALID_LEVEL;
+
+    dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
+    if (!dwMask || (dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
+        return ERROR_INVALID_PARAMETER;
 
     pNotify = ScmCreateNotify(NotifyParams.pStatusChangeParam2->dwNotifyMask);
     if (pNotify == NULL)
@@ -7104,10 +7114,22 @@ RGetNotifyResults(
 
     InterlockedIncrement(&pNotify->RefCount);
 
-    if (WaitForSingleObject(pNotify->hEvent, INFINITE) != WAIT_OBJECT_0)
+    /*
+     * The RPC runtime serializes the calls on a notify handle, so a client
+     * cannot close one while it waits here. A subscription request returns
+     * ERROR_TIMEOUT from time to time instead, and stays pending, so that its
+     * client can close it once the subscription has ended.
+     */
+    switch (WaitForSingleObject(pNotify->hEvent, pNotify->bSubscription ? SCM_SUBSCRIPTION_WAIT : INFINITE))
     {
-        ScmReleaseNotify(pNotify);
-        return ERROR_GEN_FAILURE;
+        case WAIT_OBJECT_0:
+            break;
+        case WAIT_TIMEOUT:
+            ScmReleaseNotify(pNotify);
+            return ERROR_TIMEOUT;
+        default:
+            ScmReleaseNotify(pNotify);
+            return ERROR_GEN_FAILURE;
     }
 
     EnterCriticalSection(&ScmNotifyLock);
@@ -7142,6 +7164,16 @@ RCloseNotifyHandle(
 
     *pfApcFired = FALSE;
     *phNotify = NULL;
+
+    /* A request that is still pending leaves its list with the reference of the list */
+    EnterCriticalSection(&ScmNotifyLock);
+    if (!IsListEmpty(&pNotify->ListEntry))
+    {
+        RemoveEntryList(&pNotify->ListEntry);
+        InitializeListHead(&pNotify->ListEntry);
+        ScmReleaseNotify(pNotify);
+    }
+    LeaveCriticalSection(&ScmNotifyLock);
 
     ScmReleaseNotify(pNotify);
 

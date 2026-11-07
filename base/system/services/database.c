@@ -1280,7 +1280,7 @@ DWORD ScmDeleteService(PSERVICE lpService)
     }
 
     /* SERVICE_NOTIFY_DELETED reports this point, not the mark for delete */
-    ScmNotifyServiceDatabase(SERVICE_NOTIFY_DELETED);
+    ScmNotifyServiceDatabase(SERVICE_NOTIFY_DELETED, lpService->lpServiceName);
 
     /* Delete the Service */
     ScmDeleteServiceRecord(lpService);

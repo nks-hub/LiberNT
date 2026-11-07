@@ -1322,6 +1322,22 @@ static DWORD WINAPI notify_thread(void *user)
                 sizeof(SERVICE_STATUS_PROCESS));
         data->notify_buffer->dwNotificationTriggered = cparams->dwNotificationTriggered;
         data->notify_buffer->pszServiceNames = NULL;
+#ifdef __REACTOS__
+        if (cparams->pszServiceNames)
+        {
+            /* A MULTI_SZ that the caller frees with LocalFree, as SERVICE_NOTIFY_2W says */
+            SIZE_T len = wcslen(cparams->pszServiceNames);
+            WCHAR *names = LocalAlloc(LMEM_FIXED, (len + 2) * sizeof(WCHAR));
+
+            if (names)
+            {
+                memcpy(names, cparams->pszServiceNames, len * sizeof(WCHAR));
+                names[len] = names[len + 1] = 0;
+            }
+            data->notify_buffer->pszServiceNames = names;
+            MIDL_user_free(cparams->pszServiceNames);
+        }
+#endif
 
         QueueUserAPC((PAPCFUNC)data->notify_buffer->pfnNotifyCallback,
                 data->calling_thread, (ULONG_PTR)data->notify_buffer);

@@ -308,7 +308,7 @@ DWORD ScmQueryServiceLockStatusA(OUT LPQUERY_SERVICE_LOCK_STATUSA lpLockStatus,
 VOID ScmStartRpcServer(VOID);
 VOID ScmInitServiceNotify(VOID);
 VOID ScmNotifyServiceStatus(PSERVICE lpService);
-VOID ScmNotifyServiceDatabase(DWORD dwTrigger);
+VOID ScmNotifyServiceDatabase(DWORD dwTrigger, LPCWSTR lpServiceName);
 DWORD ScmReadFailureActions(HKEY hServiceKey,
                             PSERVICE_FAILURE_ACTIONS_VALUE *lpValue,
                             LPDWORD lpActionCount);

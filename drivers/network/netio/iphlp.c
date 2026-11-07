@@ -1443,7 +1443,10 @@ typedef struct _NETIO_CHANGE_NOTIFY
 
 static LIST_ENTRY NetioChangeList = { &NetioChangeList, &NetioChangeList };
 static KSPIN_LOCK NetioChangeLock;
-static BOOLEAN NetioChangeStarted;
+#define NETIO_CHANGE_STOPPED 0
+#define NETIO_CHANGE_STARTING 1
+#define NETIO_CHANGE_RUNNING 2
+static volatile LONG NetioChangeState;
 static KEVENT NetioChangeKick;
 static PETHREAD NetioChangeThread;
 
@@ -1758,10 +1761,13 @@ NetioRegisterChange(
     _Inout_ HANDLE *NotificationHandle)
 {
     PNETIO_CHANGE_NOTIFY Notify;
-    BOOLEAN Start = FALSE;
+    LARGE_INTEGER StartWait;
     HANDLE Thread;
     KIRQL OldIrql;
     NTSTATUS Status;
+    LONG State;
+
+    StartWait.QuadPart = -10000LL; /* 1 ms */
 
     if (Callback == NULL || NotificationHandle == NULL ||
         (Family != AF_UNSPEC && Family != AF_INET && Family != AF_INET6))
@@ -1782,30 +1788,36 @@ NetioRegisterChange(
     Notify->InitialPending = InitialNotification;
     KeInitializeEvent(&Notify->Released, NotificationEvent, FALSE);
 
-    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-    if (!NetioChangeStarted)
+    /*
+     * One registration starts the worker; the others wait until it runs, so
+     * none of them is listed without a worker. A failed start fails only the
+     * registration that tried it, and the next one tries again.
+     */
+    for (;;)
     {
-        KeInitializeEvent(&NetioChangeKick, SynchronizationEvent, FALSE);
-        NetioChangeStarted = TRUE;
-        Start = TRUE;
+        State = InterlockedCompareExchange(&NetioChangeState, NETIO_CHANGE_STARTING, NETIO_CHANGE_STOPPED);
+        if (State == NETIO_CHANGE_RUNNING)
+            break;
+        if (State == NETIO_CHANGE_STOPPED)
+        {
+            KeInitializeEvent(&NetioChangeKick, SynchronizationEvent, FALSE);
+            Status = PsCreateSystemThread(&Thread, THREAD_ALL_ACCESS, NULL, NULL, NULL, NetioChangeWorker, NULL);
+            if (!NT_SUCCESS(Status))
+            {
+                InterlockedExchange(&NetioChangeState, NETIO_CHANGE_STOPPED);
+                ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
+                return Status;
+            }
+            ZwClose(Thread);
+            InterlockedExchange(&NetioChangeState, NETIO_CHANGE_RUNNING);
+            break;
+        }
+        KeDelayExecutionThread(KernelMode, FALSE, &StartWait);
     }
+
+    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
     InsertTailList(&NetioChangeList, &Notify->Link);
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-
-    if (Start)
-    {
-        Status = PsCreateSystemThread(&Thread, THREAD_ALL_ACCESS, NULL, NULL, NULL, NetioChangeWorker, NULL);
-        if (!NT_SUCCESS(Status))
-        {
-            KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-            RemoveEntryList(&Notify->Link);
-            NetioChangeStarted = FALSE;
-            KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-            ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
-            return Status;
-        }
-        ZwClose(Thread);
-    }
 
     if (InitialNotification)
         KeSetEvent(&NetioChangeKick, IO_NO_INCREMENT, FALSE);

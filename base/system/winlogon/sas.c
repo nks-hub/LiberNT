@@ -21,6 +21,8 @@
 #include <ndk/setypes.h>
 #include <ndk/sefuncs.h>
 #include <reactos/desktopready.h>
+#include <sddl.h>
+#include <winlogon_sas.h>
 
 /* GLOBALS ******************************************************************/
 
@@ -1422,9 +1424,97 @@ ShutdownComputerWindowProc(
 
 static
 VOID
+CALLBACK
+SoftwareSasCallback(
+    IN PVOID Context,
+    IN BOOLEAN TimedOut)
+{
+    PWLSESSION Session = (PWLSESSION)Context;
+
+    UNREFERENCED_PARAMETER(TimedOut);
+
+    /* Same path as the keyboard; during setup the hotkey is not registered either */
+    if (!GetSetupType())
+    {
+        PostMessageW(Session->SASWindow,
+                     WM_HOTKEY,
+                     IDHK_CTRL_ALT_DEL,
+                     MAKELPARAM(MOD_CONTROL | MOD_ALT, VK_DELETE));
+    }
+}
+
+/* Lets SendSAS (sas.dll), mostly called from services in session 0, reach this session */
+static
+VOID
+InitializeSoftwareSas(
+    IN OUT PWLSESSION Session)
+{
+    SECURITY_ATTRIBUTES EventSecurity;
+    PSECURITY_DESCRIPTOR SecurityDescriptor;
+    WCHAR EventName[64];
+    DWORD dwError;
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)",
+                                                              SDDL_REVISION_1,
+                                                              &SecurityDescriptor,
+                                                              NULL))
+    {
+        ERR("WL: Failed to build the software SAS security descriptor (%lu)\n", GetLastError());
+        return;
+    }
+
+    StringCchPrintfW(EventName, ARRAYSIZE(EventName), WINLOGON_SOFTWARE_SAS_EVENT,
+                     NtCurrentPeb()->SessionId);
+    EventSecurity.nLength = sizeof(EventSecurity);
+    EventSecurity.lpSecurityDescriptor = SecurityDescriptor;
+    EventSecurity.bInheritHandle = FALSE;
+    Session->SoftwareSasEvent = CreateEventW(&EventSecurity, FALSE, FALSE, EventName);
+    dwError = GetLastError();
+    LocalFree(SecurityDescriptor);
+    if (!Session->SoftwareSasEvent)
+    {
+        ERR("WL: Failed to create the software SAS event (%lu)\n", dwError);
+        return;
+    }
+
+    /* An event someone created first has their security and reset mode, so
+     * anyone they allow could raise the SAS; software SAS stays off then */
+    if (dwError == ERROR_ALREADY_EXISTS)
+    {
+        ERR("WL: The software SAS event already exists, software SAS is disabled\n");
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
+        return;
+    }
+
+    if (!RegisterWaitForSingleObject(&Session->SoftwareSasWait,
+                                     Session->SoftwareSasEvent,
+                                     SoftwareSasCallback,
+                                     Session,
+                                     INFINITE,
+                                     WT_EXECUTEDEFAULT))
+    {
+        ERR("WL: Failed to wait for the software SAS event (%lu)\n", GetLastError());
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
+    }
+}
+
+static
+VOID
 UninitializeSAS(
     IN OUT PWLSESSION Session)
 {
+    if (Session->SoftwareSasWait)
+    {
+        UnregisterWaitEx(Session->SoftwareSasWait, INVALID_HANDLE_VALUE);
+        Session->SoftwareSasWait = NULL;
+    }
+    if (Session->SoftwareSasEvent)
+    {
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
+    }
     if (Session->SASWindow)
     {
         DestroyWindow(Session->SASWindow);
@@ -2170,6 +2260,8 @@ InitializeSAS(
         ERR("WL: Failed to register SAS window\n");
         goto cleanup;
     }
+
+    InitializeSoftwareSas(Session);
 
     if (!SetDefaultLanguage(NULL))
         return FALSE;

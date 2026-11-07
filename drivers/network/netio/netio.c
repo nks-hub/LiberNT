@@ -800,12 +800,15 @@ WskControlSocket(
 
     FUNCTION_TRACE;
 
+    /* Enabling an event callback takes no IRP; the result is then returned directly */
+    if (Irp != NULL)
+        IoSetNextIrpStackLocation(Irp);
+
     if (Socket == NULL)
     {
         status = STATUS_INVALID_PARAMETER;
         goto err_out;
     }
-    IoSetNextIrpStackLocation(Irp);
 
     switch (RequestType)
     {
@@ -909,6 +912,8 @@ WskControlSocket(
     }
 
 err_out:
+    if (Irp == NULL)
+        return status;
     Irp->IoStatus.Status = status;
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
 

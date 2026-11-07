@@ -49,32 +49,16 @@ IsSasGenerationAllowed(
     return (Policy & SAS_GENERATION_SERVICES) != 0;
 }
 
-/* The session of the effective token: the impersonated user's, else the process's */
-static
-BOOL
-GetCallerSessionId(
-    _Out_ PDWORD SessionId)
-{
-    HANDLE hToken;
-    DWORD Size;
-    BOOL Result;
-
-    if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &hToken))
-    {
-        if (GetLastError() != ERROR_NO_TOKEN)
-            return FALSE;
-        return ProcessIdToSessionId(GetCurrentProcessId(), SessionId);
-    }
-    Result = GetTokenInformation(hToken, TokenSessionId, SessionId, sizeof(*SessionId), &Size);
-    CloseHandle(hToken);
-    return Result;
-}
-
 /*
  * Simulates Ctrl+Alt+Del in the session of the caller, or in the console
  * session when the caller is a service in session 0. Winlogon handles the
  * request like the keyboard sequence. The SoftwareSASGeneration policy must
  * allow it, and only SYSTEM may signal Winlogon.
+ *
+ * The session comes from the effective token, the impersonated user's when
+ * there is one. The policy and the event are then read and opened as the
+ * process, which a service that acts for a user is; the impersonation is
+ * restored afterwards.
  */
 VOID
 WINAPI
@@ -82,32 +66,51 @@ SendSAS(
     _In_ BOOL AsUser)
 {
     WCHAR EventName[64];
-    DWORD SessionId;
-    HANDLE hEvent;
+    DWORD SessionId, Size;
+    HANDLE hEvent = NULL, hThreadToken;
+
+    if (!OpenThreadToken(GetCurrentThread(), TOKEN_QUERY | TOKEN_IMPERSONATE, TRUE, &hThreadToken))
+    {
+        if (GetLastError() != ERROR_NO_TOKEN)
+            return;
+        hThreadToken = NULL;
+        if (!ProcessIdToSessionId(GetCurrentProcessId(), &SessionId))
+            return;
+    }
+    else if (!GetTokenInformation(hThreadToken, TokenSessionId, &SessionId, sizeof(SessionId), &Size) ||
+             !RevertToSelf())
+    {
+        CloseHandle(hThreadToken);
+        return;
+    }
 
     if (!IsSasGenerationAllowed(AsUser))
     {
         DPRINT1("SAS generation is disabled by policy\n");
-        return;
     }
-
-    if (!GetCallerSessionId(&SessionId))
-        return;
-    if (SessionId == 0)
+    else
     {
-        SessionId = WTSGetActiveConsoleSessionId();
-        if (SessionId == 0xFFFFFFFF)
-            return;
+        if (SessionId == 0)
+            SessionId = WTSGetActiveConsoleSessionId();
+        if (SessionId != 0xFFFFFFFF)
+        {
+            StringCchPrintfW(EventName, ARRAYSIZE(EventName), WINLOGON_SOFTWARE_SAS_EVENT, SessionId);
+            hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, EventName);
+            if (!hEvent)
+                DPRINT1("OpenEventW(%S) failed (%lu)\n", EventName, GetLastError());
+        }
     }
 
-    StringCchPrintfW(EventName, ARRAYSIZE(EventName), WINLOGON_SOFTWARE_SAS_EVENT, SessionId);
-    hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, EventName);
-    if (!hEvent)
+    if (hThreadToken)
     {
-        DPRINT1("OpenEventW(%S) failed (%lu)\n", EventName, GetLastError());
-        return;
+        if (!SetThreadToken(NULL, hThreadToken))
+            DPRINT1("Restoring the impersonation failed (%lu)\n", GetLastError());
+        CloseHandle(hThreadToken);
     }
 
-    SetEvent(hEvent);
-    CloseHandle(hEvent);
+    if (hEvent)
+    {
+        SetEvent(hEvent);
+        CloseHandle(hEvent);
+    }
 }

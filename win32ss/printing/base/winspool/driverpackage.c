@@ -205,6 +205,13 @@ CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
                 continue;
             }
 
+            /* A file list section that the INF does not have makes the package incomplete */
+            if (SetupGetLineCountW(hInf, Entry) < 0)
+            {
+                ERR("CopyFiles section %S not found\n", Entry);
+                SetLastError(ERROR_SECTION_NOT_FOUND);
+                return FALSE;
+            }
             if (!SetupFindFirstLineW(hInf, Entry, NULL, &FileContext))
                 continue;
             do
@@ -424,9 +431,10 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 
     for (i = 0; i < SectionCount; i++)
     {
+        SetLastError(ERROR_BUFFER_OVERFLOW);
         if (!CollectCopyFiles(hInf, Sections[i], &Files))
         {
-            hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW);
+            hr = HRESULT_FROM_WIN32(GetLastError());
             goto Cleanup;
         }
     }

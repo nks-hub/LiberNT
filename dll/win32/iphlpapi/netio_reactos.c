@@ -533,10 +533,7 @@ DWORD WINAPI SetIpInterfaceEntry(PMIB_IPINTERFACE_ROW Row)
     if (Error)
         return Error == ERROR_NOT_FOUND ? ERROR_FILE_NOT_FOUND : Error;
 
-    /* An IPv4 row reads back a site prefix length of 64, as on Windows, and
-     * callers pass the row they read to the setter */
-    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != IPHLP_UNCHANGED_ULONG &&
-        Row->SitePrefixLength != Current.SitePrefixLength)
+    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != IPHLP_UNCHANGED_ULONG)
         return ERROR_INVALID_PARAMETER;
     if (Row->RouterDiscoveryBehavior != RouterDiscoveryUnchanged &&
         (ULONG)Row->RouterDiscoveryBehavior > RouterDiscoveryDhcp)
@@ -581,7 +578,7 @@ DWORD WINAPI SetIpInterfaceEntry(PMIB_IPINTERFACE_ROW Row)
         Set.RouterDiscoveryBehavior = interface_value(Row->RouterDiscoveryBehavior, Current.RouterDiscoveryBehavior, FALSE);
         Set.PathMtuDiscoveryTimeout = interface_value(Row->PathMtuDiscoveryTimeout, Current.PathMtuDiscoveryTimeout, TRUE);
         Set.LinkLocalAddressTimeout = interface_value(Row->LinkLocalAddressTimeout, Current.LinkLocalAddressTimeout, FALSE);
-        Set.SitePrefixLength = interface_value(Row->SitePrefixLength, Current.SitePrefixLength, FALSE);
+        Set.SitePrefixLength = Row->SitePrefixLength == IPHLP_UNCHANGED_ULONG ? Current.SitePrefixLength : 0;
         interface_zones(Row, &Current, Set.ZoneIndices);
         Set.Forwarding = interface_flag(Row->ForwardingEnabled, Current.ForwardingEnabled);
         Set.WeakHostSend = interface_flag(Row->WeakHostSend, Current.WeakHostSend);

@@ -142,6 +142,45 @@ static LSTATUS open_device_classes_key( HKEY root, const WCHAR *key, REGSAM acce
     return open_key( root, path, access, open, hkey );
 }
 
+#ifdef __REACTOS__
+/* Creates Class\{ClassGUID}\NNNN for a device without a software key and records it as its Driver value */
+static LSTATUS create_driver_key( HKEY dev_key, WCHAR *driver, DWORD driver_len )
+{
+    WCHAR class_guid[39];
+    DWORD len = sizeof(class_guid), type;
+    HKEY class_key, drv_key;
+    LSTATUS err;
+    UINT index;
+
+    if (RegQueryValueExW( dev_key, L"ClassGUID", NULL, &type, (BYTE *)class_guid, &len ) || type != REG_SZ)
+        return ERROR_NOT_FOUND;
+
+    if ((err = open_class_key( HKEY_LOCAL_MACHINE, class_guid, KEY_CREATE_SUB_KEY | KEY_ENUMERATE_SUB_KEYS, FALSE, &class_key )))
+        return err;
+
+    for (index = 0, err = ERROR_NO_MORE_ITEMS; index < 10000; index++)
+    {
+        WCHAR name[5];
+        DWORD disposition;
+
+        swprintf( name, ARRAY_SIZE(name), L"%04u", index );
+        err = RegCreateKeyExW( class_key, name, 0, NULL, 0, KEY_SET_VALUE, NULL, &drv_key, &disposition );
+        if (err) break;
+        RegCloseKey( drv_key );
+        if (disposition == REG_CREATED_NEW_KEY)
+        {
+            swprintf( driver, driver_len, L"%s\\%s", class_guid, name );
+            err = RegSetValueExW( dev_key, L"Driver", 0, REG_SZ, (BYTE *)driver, (wcslen( driver ) + 1) * sizeof(WCHAR) );
+            if (err) RegDeleteKeyW( class_key, name );
+            break;
+        }
+    }
+
+    RegCloseKey( class_key );
+    return err;
+}
+#endif
+
 LSTATUS init_property( struct property *prop, const DEVPROPKEY *key, DEVPROPTYPE *type, void *buffer, DWORD *size, BOOL binary )
 {
     if (!key) return ERROR_INVALID_PARAMETER;
@@ -2753,8 +2792,16 @@ CONFIGRET WINAPI CM_Open_DevNode_Key_Ex( DEVINST node, REGSAM access, ULONG prof
         WCHAR driver[MAX_PATH];
         DWORD len = sizeof(driver);
 
+#ifdef __REACTOS__
+        /* Writing the Driver value of a new software key needs write access */
+        if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, open ? access : access | KEY_QUERY_VALUE | KEY_SET_VALUE,
+                                    open, &dev_key ))) return map_error( err );
+        if (RegQueryValueExW( dev_key, L"Driver", NULL, NULL, (BYTE *)driver, &len ))
+            err = open ? ERROR_NOT_FOUND : create_driver_key( dev_key, driver, ARRAY_SIZE(driver) );
+#else
         if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, access, open, &dev_key ))) return map_error( err );
         if (RegQueryValueExW( dev_key, L"Driver", NULL, NULL, (BYTE *)driver, &len )) err = ERROR_NOT_FOUND;
+#endif
         RegCloseKey( dev_key );
 
         if (!err) err = open_class_key( root, driver, access, open, hkey );

@@ -1572,10 +1572,13 @@ static DWORD WINAPI subscription_thread( void *param )
 /* A handle to the service or service manager of handle that the subscription owns */
 static SC_HANDLE open_subscription_handle( SC_HANDLE handle, SC_EVENT_TYPE type, DWORD *err )
 {
+    BOOL (WINAPI *query_config)( SC_HANDLE, QUERY_SERVICE_CONFIGW *, DWORD, DWORD * );
+    BOOL (WINAPI *get_key_name)( SC_HANDLE, const WCHAR *, WCHAR *, DWORD * );
     QUERY_SERVICE_CONFIGW *config = NULL;
     WCHAR name[257];
     DWORD size = 0, len = ARRAY_SIZE(name);
     SC_HANDLE manager, own = NULL;
+    HMODULE advapi32;
 
     *err = ERROR_SUCCESS;
     if (type == SC_EVENT_DATABASE_CHANGE)
@@ -1585,30 +1588,37 @@ static SC_HANDLE open_subscription_handle( SC_HANDLE handle, SC_EVENT_TYPE type,
         return own;
     }
 
-    /* The key name of the service comes from its display name, which is unique */
-    if (QueryServiceConfigW( handle, NULL, 0, &size ) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    /*
+     * The svcctl client of this module marshals QUERY_SERVICE_CONFIGW as Wine
+     * does, which services.exe rejects with RPC_X_BAD_STUB_DATA, so the
+     * service name comes through advapi32. The key name comes from the
+     * display name, which is unique.
+     */
+    if (!(advapi32 = LoadLibraryW( L"advapi32.dll" )))
     {
         *err = GetLastError();
         return NULL;
     }
-    if (!(config = malloc( size )))
-    {
+    query_config = (void *)GetProcAddress( advapi32, "QueryServiceConfigW" );
+    get_key_name = (void *)GetProcAddress( advapi32, "GetServiceKeyNameW" );
+    if (!query_config || !get_key_name)
+        *err = ERROR_PROC_NOT_FOUND;
+    else if (query_config( handle, NULL, 0, &size ) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        *err = GetLastError();
+    else if (!(config = malloc( size )))
         *err = ERROR_NOT_ENOUGH_MEMORY;
-        return NULL;
-    }
-    if (QueryServiceConfigW( handle, config, size, &size ) &&
-        (manager = OpenSCManagerW( NULL, NULL, SC_MANAGER_CONNECT )))
+    else if (query_config( handle, config, size, &size ) &&
+             (manager = OpenSCManagerW( NULL, NULL, SC_MANAGER_CONNECT )))
     {
-        if (GetServiceKeyNameW( manager, config->lpDisplayName, name, &len ))
+        if (get_key_name( manager, config->lpDisplayName, name, &len ))
             own = OpenServiceW( manager, name, SERVICE_QUERY_STATUS );
         if (!own) *err = GetLastError();
         CloseServiceHandle( manager );
     }
     else
-    {
         *err = GetLastError();
-    }
     free( config );
+    FreeLibrary( advapi32 );
     return own;
 }
 

@@ -1419,9 +1419,13 @@ NetioPostReceive(
 
     IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
     TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
-    /* tcpip writes IP_PKTINFO into the options when AO_OPTION_IP_PKTINFO is on */
-    ConnInfo->Options = Socket->PktInfo ? Receive->Control : NULL;
-    ConnInfo->OptionsLength = Socket->PktInfo ? sizeof(Receive->Control) : 0;
+    /*
+     * tcpip writes IP_PKTINFO into the options when AO_OPTION_IP_PKTINFO is on.
+     * The buffer is there even while it is off, so that a receive posted
+     * before the client turns IP_PKTINFO on carries it too.
+     */
+    ConnInfo->Options = Receive->Control;
+    ConnInfo->OptionsLength = sizeof(Receive->Control);
     TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
                             Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
     IoCallDriver(DeviceObject, Receive->Irp);

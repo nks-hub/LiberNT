@@ -1062,14 +1062,14 @@ LANStatusUiDlg(
             {
                 if (pContext)
                 {
-                    ShowNetConnectionProperties(pContext->pNet, GetParent(pContext->hwndDlg));
+                    ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), GetParent(pContext->hwndDlg));
                     BringWindowToTop(GetParent(pContext->hwndDlg));
                 }
                 break;
             }
             else if (LOWORD(wParam) == IDC_ENDISABLE)
             {
-                DisableNetworkAdapter(pContext->pNet, pContext, hwndDlg);
+                DisableNetworkAdapter(CComPtr<INetConnection>(pContext->pNet), pContext, hwndDlg);
                 break;
             }
         case WM_NOTIFY:
@@ -1211,7 +1211,7 @@ ShowStatusPropertyDialog(
         else if (pProperties->Status == NCS_MEDIA_DISCONNECTED || pProperties->Status == NCS_DISCONNECTED ||
                  pProperties->Status == NCS_HARDWARE_DISABLED)
         {
-            ShowNetConnectionProperties(pContext->pNet, pContext->hwndDlg);
+            ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), pContext->hwndDlg);
         }
 
         NcFreeNetconProperties(pProperties);
@@ -1520,11 +1520,11 @@ LANStatusDlg(
                     break;
 
                 case IDM_NETICON_REPAIR:
-                    RepairConnection(pContext->pNet, hwndDlg);
+                    RepairConnection(CComPtr<INetConnection>(pContext->pNet), hwndDlg);
                     break;
 
                 case IDM_NETICON_PROPERTIES:
-                    ShowNetConnectionProperties(pContext->pNet, hwndDlg);
+                    ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), hwndDlg);
                     break;
 
                 case IDM_NETICON_OPEN_CONNECTIONS:
@@ -1589,7 +1589,30 @@ CLanStatus::EnumerateTrayConnections()
             ;
         NcFreeNetconProperties(pProps);
         if (pItem)
+        {
+            /*
+             * A connection that went away and came back keeps its GUID but can
+             * have another interface. The object enumerated now describes it,
+             * so the item and its status dialogs take that one.
+             */
+            pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
+            pNetCon.p->AddRef();
+            pItem->pNet->Release();
+            pItem->pNet = pNetCon;
+            if (pContext)
+            {
+                NET_LUID Luid;
+                NET_IFINDEX IfIndex;
+
+                pContext->pNet = pNetCon;
+                if (!ConvertInterfaceGuidToLuid(&pItem->guidItem, &Luid) &&
+                    !ConvertInterfaceLuidToIndex(&Luid, &IfIndex))
+                {
+                    pContext->dwAdapterIndex = IfIndex;
+                }
+            }
             continue;
+        }
 
         TRACE("new connection\n");
         pItem = static_cast<NOTIFICATION_ITEM*>(CoTaskMemAlloc(sizeof(NOTIFICATION_ITEM)));
@@ -1711,30 +1734,14 @@ HRESULT
 CLanStatus::ShowStatusDialogByCLSID(const GUID *pguidCmdGroup)
 {
     NOTIFICATION_ITEM *pItem;
-    LANSTATUSUI_CONTEXT *pContext;
-    NET_LUID Luid;
-    NET_IFINDEX IfIndex;
-    BOOL Enumerated = FALSE;
 
-    for (;;)
-    {
-        for (pItem = m_pHead; pItem && !IsEqualGUID(pItem->guidItem, *pguidCmdGroup); pItem = pItem->pNext)
-            ;
-        if (pItem || Enumerated)
-            break;
-        EnumerateTrayConnections();
-        Enumerated = TRUE;
-    }
+    /* Takes connections that appeared or came back since the last enumeration */
+    EnumerateTrayConnections();
 
+    for (pItem = m_pHead; pItem && !IsEqualGUID(pItem->guidItem, *pguidCmdGroup); pItem = pItem->pNext)
+        ;
     if (pItem)
     {
-        /* A connection that went away and came back can have a new interface index */
-        pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
-        if (pContext && !ConvertInterfaceGuidToLuid(pguidCmdGroup, &Luid) &&
-            !ConvertInterfaceLuidToIndex(&Luid, &IfIndex))
-        {
-            pContext->dwAdapterIndex = IfIndex;
-        }
         SendMessageW(pItem->hwndDlg, WM_SHOWSTATUSDLG, 0, WM_LBUTTONDBLCLK);
         return S_OK;
     }

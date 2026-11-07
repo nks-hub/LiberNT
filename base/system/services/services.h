@@ -309,6 +309,10 @@ VOID ScmStartRpcServer(VOID);
 VOID ScmInitServiceNotify(VOID);
 VOID ScmNotifyServiceStatus(PSERVICE lpService);
 VOID ScmNotifyServiceDatabase(DWORD dwTrigger, LPCWSTR lpServiceName);
+
+/* Set by sechost on the requests of SubscribeServiceChangeNotifications, which do not use up the
+   immediate report of the current state that NotifyServiceStatusChange gives on a handle */
+#define SERVICE_NOTIFY_SUBSCRIPTION 0x80000000
 DWORD ScmReadFailureActions(HKEY hServiceKey,
                             PSERVICE_FAILURE_ACTIONS_VALUE *lpValue,
                             LPDWORD lpActionCount);

@@ -53,8 +53,8 @@ static void
 test_Subscribe(SC_HANDLE Manager)
 {
     PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
-    SC_HANDLE Service;
-    DWORD Error;
+    SC_HANDLE Service, Minimal;
+    DWORD Error, i;
 
     Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscription);
     ok(Error == ERROR_SUCCESS, "SubscribeServiceChangeNotifications returned %lu\n", Error);
@@ -76,11 +76,36 @@ test_Subscribe(SC_HANDLE Manager)
     }
     pUnsubscribe(Subscription);
 
-    /* Unsubscribing ends the request, so a new subscription is accepted */
-    Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscription);
-    ok(Error == ERROR_SUCCESS, "Subscribing again returned %lu\n", Error);
-    if (Error == ERROR_SUCCESS)
-        pUnsubscribe(Subscription);
+    /* Subscriptions can follow each other on the same handle */
+    for (i = 0; i < 5; i++)
+    {
+        Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscription);
+        ok(Error == ERROR_SUCCESS, "Subscription %lu returned %lu\n", i, Error);
+        if (Error == ERROR_SUCCESS)
+            pUnsubscribe(Subscription);
+    }
+
+    /* SC_MANAGER_ENUMERATE_SERVICE is the access a database subscription needs */
+    Minimal = OpenSCManagerW(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
+    ok(Minimal != NULL, "OpenSCManagerW failed (%lu)\n", GetLastError());
+    if (Minimal)
+    {
+        Error = pSubscribe(Minimal, SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscription);
+        ok(Error == ERROR_SUCCESS, "Subscription with SC_MANAGER_ENUMERATE_SERVICE returned %lu\n", Error);
+        if (Error == ERROR_SUCCESS)
+        {
+            Callbacks = 0;
+            Service = CreateTestService(Manager);
+            if (Service)
+            {
+                ok(WaitCallback(), "No callback through the minimal handle\n");
+                DeleteService(Service);
+                CloseServiceHandle(Service);
+            }
+            pUnsubscribe(Subscription);
+        }
+        CloseServiceHandle(Minimal);
+    }
 }
 
 static volatile BOOL ApcFired;
@@ -161,10 +186,24 @@ test_ServiceStatus(SC_HANDLE Manager)
     {
         PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
 
+        SC_HANDLE StatusOnly;
+
         Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, DatabaseChanged, NULL, &Subscription);
         ok(Error == ERROR_SUCCESS, "Status subscription returned %lu\n", Error);
         if (Error == ERROR_SUCCESS)
             pUnsubscribe(Subscription);
+
+        /* SERVICE_QUERY_STATUS is the access a status subscription needs */
+        StatusOnly = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        ok(StatusOnly != NULL, "OpenServiceW failed (%lu)\n", GetLastError());
+        if (StatusOnly)
+        {
+            Error = pSubscribe(StatusOnly, SC_EVENT_STATUS_CHANGE, DatabaseChanged, NULL, &Subscription);
+            ok(Error == ERROR_SUCCESS, "Status subscription with SERVICE_QUERY_STATUS returned %lu\n", Error);
+            if (Error == ERROR_SUCCESS)
+                pUnsubscribe(Subscription);
+            CloseServiceHandle(StatusOnly);
+        }
     }
 
     for (i = 0; i < 1; i++)

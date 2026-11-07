@@ -17,6 +17,7 @@ extern void func_NotifyIpInterfaceChange(void);
 extern void func_SendARP(void);
 extern void func_SetIpInterfaceEntry(void);
 extern void func_UnicastIpAddressChange(void);
+extern void func_UnicastIpAddressTimeChange(void);
 
 const struct test winetest_testlist[] =
 {
@@ -35,6 +36,7 @@ const struct test winetest_testlist[] =
     { "SendARP",                    func_SendARP },
     { "SetIpInterfaceEntry",        func_SetIpInterfaceEntry },
     { "UnicastIpAddressChange",     func_UnicastIpAddressChange },
+    { "UnicastIpAddressTimeChange", func_UnicastIpAddressTimeChange },
 
     { 0, 0 }
 };

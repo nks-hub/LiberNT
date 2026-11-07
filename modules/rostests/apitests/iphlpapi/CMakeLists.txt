@@ -15,6 +15,7 @@ list(APPEND SOURCE
     SendARP.c
     SetIpInterfaceEntry.c
     UnicastIpAddressChange.c
+    UnicastIpAddressTimeChange.c
     testlist.c)
 
 add_executable(iphlpapi_apitest ${SOURCE})

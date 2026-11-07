@@ -618,8 +618,8 @@ done:
 /*
  * A service whose SID type is SERVICE_SID_TYPE_UNRESTRICTED runs with its
  * service SID in the token, so objects can grant access to that service only.
- * The SID goes into processes that run one service; a shared process keeps the
- * plain account token.
+ * The SID goes into processes that run one service; the configuration refuses
+ * it for a shared process, which keeps the plain account token.
  */
 static DWORD
 ScmApplyServiceSid(

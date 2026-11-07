@@ -5853,8 +5853,17 @@ RChangeServiceConfig2W(
     }
     else if (Info.dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
     {
-        dwError = ScmSetDwordConfig(hServiceKey, Info.dwInfoLevel,
-                                    Info.pssid ? &Info.pssid->dwServiceSidType : NULL);
+        /* Only a process that runs one service gets its service SID */
+        if (Info.pssid && Info.pssid->dwServiceSidType != SERVICE_SID_TYPE_NONE &&
+            !(lpService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
+        {
+            dwError = ERROR_NOT_SUPPORTED;
+        }
+        else
+        {
+            dwError = ScmSetDwordConfig(hServiceKey, Info.dwInfoLevel,
+                                        Info.pssid ? &Info.pssid->dwServiceSidType : NULL);
+        }
     }
     else if (Info.dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO)
     {

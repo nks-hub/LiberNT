@@ -2990,6 +2990,76 @@ ScmAutoStartServices(VOID)
 }
 
 
+/*
+ * Sends SERVICE_CONTROL_PRESHUTDOWN to the services that accept it and waits
+ * for each one to stop, at most its PreshutdownTimeout (10 s by default).
+ */
+static VOID
+ScmPreshutdownServices(VOID)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService;
+    struct
+    {
+        PSERVICE Service;
+        ULONGLONG Deadline;
+    } *Waits;
+    ULONG Count = 0, i, Running;
+    ULONGLONG Now;
+
+    ScmLockDatabaseShared();
+    for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
+        Count++;
+    Waits = HeapAlloc(GetProcessHeap(), 0, max(Count, 1) * sizeof(*Waits));
+    Count = 0;
+    for (ServiceEntry = ServiceListHead.Flink;
+         Waits != NULL && ServiceEntry != &ServiceListHead;
+         ServiceEntry = ServiceEntry->Flink)
+    {
+        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+        if ((CurrentService->Status.dwControlsAccepted & SERVICE_ACCEPT_PRESHUTDOWN) &&
+            CurrentService->lpImage != NULL &&
+            (CurrentService->Status.dwCurrentState == SERVICE_RUNNING ||
+             CurrentService->Status.dwCurrentState == SERVICE_START_PENDING))
+        {
+            ScmReferenceService(CurrentService);
+            Waits[Count++].Service = CurrentService;
+        }
+    }
+    ScmUnlockDatabase();
+    if (Waits == NULL)
+        return;
+
+    for (i = 0; i < Count; i++)
+    {
+        CurrentService = Waits[i].Service;
+        Waits[i].Deadline = GetTickCount64() + ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
+        DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
+        ScmControlService(CurrentService->lpImage->hControlPipe, CurrentService->lpServiceName,
+                          SERVICE_CONTROL_PRESHUTDOWN, CurrentService->dwResumeCount);
+    }
+
+    do
+    {
+        Running = 0;
+        Now = GetTickCount64();
+        for (i = 0; i < Count; i++)
+        {
+            if (Waits[i].Service->Status.dwCurrentState != SERVICE_STOPPED && Now < Waits[i].Deadline)
+                Running++;
+        }
+        if (Running)
+            Sleep(100);
+    } while (Running);
+
+    ScmLockDatabaseExclusive();
+    for (i = 0; i < Count; i++)
+        ScmDereferenceService(Waits[i].Service);
+    ScmUnlockDatabase();
+    HeapFree(GetProcessHeap(), 0, Waits);
+}
+
+
 VOID
 ScmAutoShutdownServices(VOID)
 {
@@ -2999,6 +3069,8 @@ ScmAutoShutdownServices(VOID)
     DWORD dwResumeCount;
 
     DPRINT("ScmAutoShutdownServices() called\n");
+
+    ScmPreshutdownServices();
 
     /* Lock the service database exclusively */
     ScmLockDatabaseExclusive();

@@ -231,6 +231,103 @@ done:
     return hr;
 }
 
+/*
+ * Windows removes a software device when the process holding its handle ends.
+ * Every device made here records its owner in a volatile key; a later
+ * SwDeviceCreate of the same instance removes the device when that process
+ * is gone, so a crashed client does not block its own restart.
+ */
+#define SW_DEVICE_OWNERS L"SYSTEM\\CurrentControlSet\\Control\\SoftwareDevices"
+
+static VOID
+OwnerKeyName(_In_ PCWSTR InstanceId, _Out_writes_(MAX_DEVICE_ID_LEN) PWSTR Name)
+{
+    ULONG i;
+
+    for (i = 0; i < MAX_DEVICE_ID_LEN - 1 && InstanceId[i]; i++)
+        Name[i] = (InstanceId[i] == L'\\') ? L'#' : InstanceId[i];
+    Name[i] = UNICODE_NULL;
+}
+
+static BOOL
+GetProcessStart(_In_ HANDLE Process, _Out_ PULONGLONG Start)
+{
+    FILETIME Creation, Exit, Kernel, User;
+
+    if (!GetProcessTimes(Process, &Creation, &Exit, &Kernel, &User))
+        return FALSE;
+    *Start = ((ULONGLONG)Creation.dwHighDateTime << 32) | Creation.dwLowDateTime;
+    return TRUE;
+}
+
+static VOID
+RecordOwner(_In_ PCWSTR InstanceId)
+{
+    WCHAR Name[MAX_DEVICE_ID_LEN];
+    ULONGLONG Start;
+    DWORD ProcessId = GetCurrentProcessId();
+    HKEY Owners, Key;
+
+    if (!GetProcessStart(GetCurrentProcess(), &Start) ||
+        RegCreateKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, NULL, REG_OPTION_VOLATILE,
+                        KEY_CREATE_SUB_KEY, NULL, &Owners, NULL))
+    {
+        return;
+    }
+    OwnerKeyName(InstanceId, Name);
+    if (!RegCreateKeyExW(Owners, Name, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &Key, NULL))
+    {
+        RegSetValueExW(Key, L"ProcessId", 0, REG_DWORD, (const BYTE *)&ProcessId, sizeof(ProcessId));
+        RegSetValueExW(Key, L"ProcessStart", 0, REG_QWORD, (const BYTE *)&Start, sizeof(Start));
+        RegCloseKey(Key);
+    }
+    RegCloseKey(Owners);
+}
+
+static VOID
+ForgetOwner(_In_ PCWSTR InstanceId)
+{
+    WCHAR Name[MAX_DEVICE_ID_LEN];
+    HKEY Owners;
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, DELETE | KEY_ENUMERATE_SUB_KEYS, &Owners))
+        return;
+    OwnerKeyName(InstanceId, Name);
+    RegDeleteKeyW(Owners, Name);
+    RegCloseKey(Owners);
+}
+
+/* TRUE when the device was made by a SwDeviceCreate whose process has ended */
+static BOOL
+OwnerIsGone(_In_ PCWSTR InstanceId)
+{
+    WCHAR Path[ARRAYSIZE(SW_DEVICE_OWNERS) + 1 + MAX_DEVICE_ID_LEN];
+    DWORD ProcessId, Size = sizeof(ProcessId);
+    ULONGLONG Recorded, Start;
+    HANDLE Process;
+    BOOL Gone;
+    HKEY Key;
+
+    wcscpy(Path, SW_DEVICE_OWNERS L"\\");
+    OwnerKeyName(InstanceId, Path + wcslen(Path));
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &Key))
+        return FALSE;
+    Gone = !RegQueryValueExW(Key, L"ProcessId", NULL, NULL, (BYTE *)&ProcessId, &Size) &&
+           (Size = sizeof(Recorded), !RegQueryValueExW(Key, L"ProcessStart", NULL, NULL, (BYTE *)&Recorded, &Size));
+    RegCloseKey(Key);
+    if (!Gone)
+        return FALSE;
+
+    /* A reused process ID has another start time */
+    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, ProcessId);
+    if (Process == NULL)
+        return GetLastError() == ERROR_INVALID_PARAMETER;
+    Gone = !GetProcessStart(Process, &Start) || Start != Recorded ||
+           WaitForSingleObject(Process, 0) == WAIT_OBJECT_0;
+    CloseHandle(Process);
+    return Gone;
+}
+
 static HRESULT
 CreateSwDeviceNode(_In_ PSW_DEVICE Device)
 {
@@ -245,6 +342,13 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     /* PnP installs the driver below, after the IDs and properties are in place */
     Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    if (Cr == CR_ALREADY_SUCH_DEVINST && OwnerIsGone(Device->InstanceId) &&
+        CfgmgrRemoveSoftwareDevice(Device->InstanceId) == CR_SUCCESS)
+    {
+        TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
+        Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
+                                CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    }
     if (Cr != CR_SUCCESS)
     {
         /* The node may belong to another handle; it is not ours to remove */
@@ -315,6 +419,10 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
             CfgmgrRemoveSoftwareDevice(Device->InstanceId);
             Device->DevInst = 0;
         }
+    }
+    else
+    {
+        RecordOwner(Device->InstanceId);
     }
 
     /* The callback may close the handle; nothing touches Device afterwards */
@@ -448,6 +556,8 @@ SwDeviceClose(
         if (Cr != CR_SUCCESS)
             WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
     }
+    if (Device->DevInst)
+        ForgetOwner(Device->InstanceId);
 
     FreeSwDevice(Device);
 }

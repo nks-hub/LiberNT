@@ -86,6 +86,7 @@ static const char TestInf[] =
     "TESTUI.DLL\r\n"
     "TESTPKG.HLP\r\n"
     "TESTPKG.DAT\r\n"
+    "TESTREN.DAT,TESTPKG.DAT\r\n"
     "\r\n"
     "[DestinationDirs]\r\n"
     "DefaultDestDir=66000\r\n"
@@ -210,7 +211,8 @@ FilesMatch(PCWSTR First, PCWSTR Second)
 static VOID
 DeleteTestDriver(VOID)
 {
-    static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT" };
+    static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT",
+                                    L"TESTREN.DAT" };
     static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
@@ -362,6 +364,22 @@ START_TEST(DriverPackage)
     ok(DriverFileExists(L"TESTPKG.GPD"), "TESTPKG.GPD was not copied\n");
     ok(DriverFileExists(L"TESTPKG.DAT"), "TESTPKG.DAT was not copied\n");
 
+    /* CopyFiles installs TESTPKG.DAT a second time as TESTREN.DAT, and keeps no copy outside 3 */
+    ok(DriverFileExists(L"TESTREN.DAT"), "TESTREN.DAT was not copied\n");
+    {
+        WCHAR DriverDir[MAX_PATH], Installed[MAX_PATH], Packaged[MAX_PATH];
+        DWORD Size = sizeof(DriverDir);
+
+        if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+        {
+            StringCchPrintfW(Installed, ARRAYSIZE(Installed), L"%s\\3\\TESTREN.DAT", DriverDir);
+            StringCchPrintfW(Packaged, ARRAYSIZE(Packaged), L"%s\\TESTPKG.DAT", Dir);
+            ok(FilesMatch(Installed, Packaged), "TESTREN.DAT is not TESTPKG.DAT\n");
+            StringCchPrintfW(Installed, ARRAYSIZE(Installed), L"%s\\TESTREN.DAT", DriverDir);
+            ok(GetFileAttributesW(Installed) == INVALID_FILE_ATTRIBUTES, "%S was left behind\n", Installed);
+        }
+    }
+
     /*
      * The driver is registered with the files from the INF. Checked in the
      * registry because LocalEnumPrinterDrivers only lists drivers of printers.
@@ -404,6 +422,8 @@ START_TEST(DriverPackage)
                 DatFound = TRUE;
         }
         ok(DatFound, "TESTPKG.DAT is not a dependent file\n");
+        for (Dependent = Value; *Dependent && _wcsicmp(Dependent, L"TESTREN.DAT"); Dependent += wcslen(Dependent) + 1);
+        ok(*Dependent != UNICODE_NULL, "TESTREN.DAT is not a dependent file\n");
         Size = sizeof(Value);
         ok(RegQueryValueExW(hKey, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
            !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);

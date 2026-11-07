@@ -18,10 +18,12 @@ HRESULT WINAPI DriverStoreDeleteDriverPackageW(PCWSTR InfPath, PVOID Reserved1, 
 #define MAX_PACKAGE_FILES 128
 #define DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\%s\\Drivers\\Version-3"
 
+/* Names are the installed file names; Sources the package file of a renamed one, NULL otherwise */
 typedef struct _PACKAGE_FILES
 {
     DWORD Count;
     PWSTR Names[MAX_PACKAGE_FILES];
+    PWSTR Sources[MAX_PACKAGE_FILES];
 } PACKAGE_FILES, *PPACKAGE_FILES;
 
 /* Only the local spooler is supported, like LocalAddPrinterDriverEx. */
@@ -181,7 +183,7 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 }
 
 static BOOL
-AddPackageFile(PPACKAGE_FILES Files, PCWSTR Name)
+AddPackageFile(PPACKAGE_FILES Files, PCWSTR Name, PCWSTR Source)
 {
     DWORD i;
 
@@ -198,21 +200,39 @@ AddPackageFile(PPACKAGE_FILES Files, PCWSTR Name)
         return FALSE;
 
     Files->Names[Files->Count] = AllocSplStr(Name);
-    return Files->Names[Files->Count++] != NULL;
+    Files->Sources[Files->Count] = NULL;
+    if (!Files->Names[Files->Count])
+        return FALSE;
+    if (Source && *Source && _wcsicmp(Source, Name) != 0)
+    {
+        Files->Sources[Files->Count] = AllocSplStr(Source);
+        if (!Files->Sources[Files->Count])
+        {
+            DllFreeSplStr(Files->Names[Files->Count]);
+            return FALSE;
+        }
+    }
+    Files->Count++;
+    return TRUE;
 }
 
 static VOID
 FreePackageFiles(PPACKAGE_FILES Files)
 {
     while (Files->Count)
-        DllFreeSplStr(Files->Names[--Files->Count]);
+    {
+        Files->Count--;
+        DllFreeSplStr(Files->Names[Files->Count]);
+        if (Files->Sources[Files->Count])
+            DllFreeSplStr(Files->Sources[Files->Count]);
+    }
 }
 
 /* Collects the file names of every CopyFiles directive of a section */
 static BOOL
 CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
 {
-    WCHAR Entry[MAX_PATH], Name[MAX_PATH];
+    WCHAR Entry[MAX_PATH], Name[MAX_PATH], Source[MAX_PATH];
     INFCONTEXT Context, FileContext;
     DWORD Field, FieldCount;
 
@@ -229,7 +249,7 @@ CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
 
             if (Entry[0] == L'@')
             {
-                if (!AddPackageFile(Files, Entry + 1))
+                if (!AddPackageFile(Files, Entry + 1, NULL))
                     return FALSE;
                 continue;
             }
@@ -243,10 +263,13 @@ CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
             }
             if (!SetupFindFirstLineW(hInf, Entry, NULL, &FileContext))
                 continue;
+            /* An entry is "target[,source]": the package file can have another name */
             do
             {
+                if (!SetupGetStringFieldW(&FileContext, 2, Source, ARRAYSIZE(Source), NULL))
+                    *Source = UNICODE_NULL;
                 if (SetupGetStringFieldW(&FileContext, 1, Name, ARRAYSIZE(Name), NULL) &&
-                    !AddPackageFile(Files, Name))
+                    !AddPackageFile(Files, Name, Source))
                 {
                     return FALSE;
                 }
@@ -346,6 +369,41 @@ LocatePackageFile(HINF hInf, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, P
     return FALSE;
 }
 
+/*
+ * Full path of the file that gets installed as Name. A file that CopyFiles
+ * renames is copied under its new name into the driver directory, where
+ * AddPrinterDriverEx takes it from; Staged lists those copies.
+ */
+static BOOL
+ResolvePackageFile(HINF hInf, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name,
+                   PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
+{
+    WCHAR Copy[MAX_PATH];
+    PCWSTR Source = Name;
+    DWORD i;
+
+    for (i = 0; i < Files->Count; i++)
+    {
+        if (Files->Sources[i] && _wcsicmp(Files->Names[i], Name) == 0)
+            Source = Files->Sources[i];
+    }
+
+    if (!LocatePackageFile(hInf, PackageDir, DriverDir, Source, Path, PathSize))
+        return FALSE;
+    if (Source == Name)
+        return TRUE;
+
+    if (FAILED(StringCchPrintfW(Copy, ARRAYSIZE(Copy), L"%s\\%s", DriverDir, Name)) ||
+        !AddPackageFile(Staged, Copy, NULL) ||
+        !CopyFileW(Path, Copy, FALSE) ||
+        FAILED(StringCchCopyW(Path, PathSize, Copy)))
+    {
+        ERR("Cannot copy %S as %S (%lu)\n", Source, Name, GetLastError());
+        return FALSE;
+    }
+    return TRUE;
+}
+
 HRESULT WINAPI
 InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszDriverName,
                                  LPCWSTR pszEnvironment, DWORD dwFlags)
@@ -356,7 +414,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     PCWSTR Sections[16];
     DWORD SectionCount = 0, Field, FieldCount, Size, i, j, DependentLength = 1;
-    PACKAGE_FILES Files = { 0 };
+    PACKAGE_FILES Files = { 0 }, Staged = { 0 };
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
@@ -488,10 +546,11 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         }
     }
 
-    if (!LocatePackageFile(hInf, PackageDir, DriverDir, DriverFile, DriverPath, ARRAYSIZE(DriverPath)) ||
-        !LocatePackageFile(hInf, PackageDir, DriverDir, ConfigFile, ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !LocatePackageFile(hInf, PackageDir, DriverDir, DataFile, DataPath, ARRAYSIZE(DataPath)) ||
-        (*HelpFile && !LocatePackageFile(hInf, PackageDir, DriverDir, HelpFile, HelpPath, ARRAYSIZE(HelpPath))))
+    if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DriverFile, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
+        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, ConfigFile, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DataFile, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
+        (*HelpFile &&
+         !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, HelpFile, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         goto Cleanup;
@@ -500,7 +559,8 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     /* Every other copied file is a dependent file */
     for (i = 0; i < Files.Count; i++)
     {
-        if (!LocatePackageFile(hInf, PackageDir, DriverDir, Files.Names[i], FilePath, ARRAYSIZE(FilePath)))
+        if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], &Staged,
+                                FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
             goto Cleanup;
@@ -524,7 +584,8 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             continue;
         }
 
-        LocatePackageFile(hInf, PackageDir, DriverDir, Files.Names[i], Next, DependentLength - (DWORD)(Next - DependentFiles));
+        ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], &Staged,
+                           Next, DependentLength - (DWORD)(Next - DependentFiles));
         Next += wcslen(Next) + 1;
     }
     *Next = UNICODE_NULL;
@@ -554,6 +615,9 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 Cleanup:
     if (DependentFiles)
         DllFreeSplMem(DependentFiles);
+    for (i = 0; i < Staged.Count; i++)
+        DeleteFileW(Staged.Names[i]);
+    FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
     for (i = 1; i < SectionCount; i++)
         DllFreeSplStr((PWSTR)Sections[i]);

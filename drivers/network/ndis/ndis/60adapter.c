@@ -213,6 +213,27 @@ Ndis6AllocateInterfaceIndex(VOID)
     return (NET_IFINDEX)Next;
 }
 
+static
+UINT32
+Ndis6ReadNetLuidIndex(
+    _In_opt_ PDEVICE_OBJECT Pdo)
+{
+    HANDLE DriverKey;
+    ULONG Value;
+
+    if (Pdo == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return 0;
+
+    if (!NT_SUCCESS(IoOpenDeviceRegistryKey(Pdo, PLUGPLAY_REGKEY_DRIVER, KEY_QUERY_VALUE, &DriverKey)))
+        return 0;
+
+    if (!Ndis6ReadAdapterKeyword(DriverKey, L"NetLuidIndex", &Value) || Value > 0x00ffffff)
+        Value = 0;
+    ZwClose(DriverKey);
+
+    return Value;
+}
+
 static VOID
 Ndis6AllocateInterfaceIdentity(
     _In_opt_ PDEVICE_OBJECT Pdo,
@@ -220,20 +241,42 @@ Ndis6AllocateInterfaceIdentity(
 {
     LONG Next;
     NET_IFTYPE IfType;
+    UINT32 LuidIndex;
+    ULONG Tries;
 
-    /* NET_LUID reserves 24 bits for NetLuidIndex and zero is invalid. Keep
-     * IfIndex and NetLuidIndex identical so NdisIfGetInterfaceIndexFromNetLuid
-     * preserves the adapter identity. */
+    /* The network class installer stores the NetLuidIndex of the adapter in
+     * its driver key, and user mode builds the adapter LUID from it. Without
+     * one, keep IfIndex and NetLuidIndex identical. NET_LUID reserves 24 bits
+     * for NetLuidIndex and zero is invalid. The index stays reserved until
+     * the adapter goes away, so no other adapter takes it meanwhile. */
     IfType = Ndis6ReadInterfaceType(Pdo);
-    do
+    LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
+    Ext->NetLuidIndexReserved = LuidIndex != 0 && Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    Next = (LONG)Ndis6AllocateInterfaceIndex();
+    if (!Ext->NetLuidIndexReserved)
     {
-        Next = (LONG)Ndis6AllocateInterfaceIndex();
-    } while (Ndis6IsNetLuidIndexAllocated(IfType, (UINT32)Next));
+        /* A failed allocation of the reservation must not keep us here */
+        for (Tries = 0; Tries < 0x10000 && !Ndis6ReserveNetLuidIndex(IfType, (UINT32)Next); Tries++)
+            Next = (LONG)Ndis6AllocateInterfaceIndex();
+        Ext->NetLuidIndexReserved = Tries < 0x10000;
+        LuidIndex = (UINT32)Next;
+    }
 
     Ext->IfIndex = (NET_IFINDEX)Next;
     Ext->NetLuid.Value = 0;
     Ext->NetLuid.Info.IfType = IfType;
-    Ext->NetLuid.Info.NetLuidIndex = (ULONG64)(ULONG)Next;
+    Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
+}
+
+static VOID
+Ndis6FreeInterfaceIdentity(
+    _Inout_ PNDIS6_ADAPTER_EXT Ext)
+{
+    if (Ext->NetLuidIndexReserved)
+    {
+        NdisIfFreeNetLuidIndex((NET_IFTYPE)Ext->NetLuid.Info.IfType, (UINT32)Ext->NetLuid.Info.NetLuidIndex);
+        Ext->NetLuidIndexReserved = FALSE;
+    }
 }
 
 typedef struct _NDIS6_IF_STACK_ENTRY
@@ -813,6 +856,7 @@ Ndis6InitializeLogicalAdapter(
                 NdisFreePacketPool(Ext->RxLegacyPacketPool);
             if (Ext->RxLegacyBufferPool)
                 NdisFreeBufferPool(Ext->RxLegacyBufferPool);
+            Ndis6FreeInterfaceIdentity(Ext);
             ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
             Adapter->Ndis6Context = NULL;
             Adapter->IsNdis6 = FALSE;
@@ -1680,7 +1724,10 @@ Ndis6DestroyLogicalAdapter(
     Adapter->IsNdis6 = FALSE;
 
     if (Ext)
+    {
+        Ndis6FreeInterfaceIdentity(Ext);
         ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+    }
 
     /* Finally delete the FDO. After this Adapter (which lives inside
      * Fdo->DeviceExtension) is gone — do NOT touch it again. */

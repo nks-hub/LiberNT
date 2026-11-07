@@ -924,6 +924,19 @@ BCryptGenRandom(
     return KsecGenRandom(Buffer, BufferSize);
 }
 
+/* Exported by cng.sys; drivers such as wireguard.sys draw their keys from it */
+BOOLEAN
+NTAPI
+SystemPrng(
+    PVOID Buffer,
+    SIZE_T Length)
+{
+    if (Buffer == NULL && Length != 0)
+        return FALSE;
+
+    return NT_SUCCESS(KsecGenRandom(Buffer, Length));
+}
+
 static VOID
 KsecDestroyKeyObject(
     _In_ KSEC_BCRYPT_KEY *Key)

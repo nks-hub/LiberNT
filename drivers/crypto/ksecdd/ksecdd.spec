@@ -19,6 +19,7 @@
 @ stdcall BCryptOpenAlgorithmProvider(ptr wstr wstr long)
 @ stdcall BCryptSetProperty(ptr wstr ptr long long)
 @ stdcall BCryptVerifySignature(ptr ptr ptr long ptr long long)
+@ stdcall SystemPrng(ptr long)
 @ stdcall CredMarshalTargetInfo()
 @ stdcall DeleteSecurityContext(ptr)
 @ stdcall EfsDecryptFek()

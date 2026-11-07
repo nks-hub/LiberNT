@@ -350,7 +350,7 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
 /* Completes the pending database notifications that wait for dwTrigger
  * (SERVICE_NOTIFY_CREATED or SERVICE_NOTIFY_DELETED) */
-static VOID
+VOID
 ScmNotifyServiceDatabase(DWORD dwTrigger)
 {
     PLIST_ENTRY Entry, Next;
@@ -1518,9 +1518,6 @@ RDeleteService(
 Done:
     /* Unlock the service database */
     ScmUnlockDatabase();
-
-    if (dwError == ERROR_SUCCESS)
-        ScmNotifyServiceDatabase(SERVICE_NOTIFY_DELETED);
 
     DPRINT("RDeleteService() done\n");
 

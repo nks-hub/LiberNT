@@ -7136,10 +7136,12 @@ RNotifyServiceStatusChange(
         if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
             return ERROR_INVALID_LEVEL;
 
-        dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask;
-        if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) ||
-            (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_SUBSCRIPTION)))
+        /* As on Windows 11: a mixed mask is invalid, a mask of the other kind of handle is the wrong handle */
+        dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
+        if ((dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) && (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
             return ERROR_INVALID_PARAMETER;
+        if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
+            return ERROR_INVALID_HANDLE;
 
         pNotify = ScmCreateNotify(dwMask);
         if (pNotify == NULL)
@@ -7173,8 +7175,10 @@ RNotifyServiceStatusChange(
         return ERROR_INVALID_LEVEL;
 
     dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
-    if (!dwMask || (dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
+    if (!dwMask || ((dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) && (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED))))
         return ERROR_INVALID_PARAMETER;
+    if (dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED))
+        return ERROR_INVALID_HANDLE;
 
     pNotify = ScmCreateNotify(NotifyParams.pStatusChangeParam2->dwNotifyMask);
     if (pNotify == NULL)

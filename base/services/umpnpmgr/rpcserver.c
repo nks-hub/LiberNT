@@ -3700,22 +3700,37 @@ StopSoftwareDeviceWatch(
     HeapFree(GetProcessHeap(), 0, Watch);
 }
 
+/*
+ * The watch stays listed while the device is removed, so that a
+ * StopSoftwareDeviceWatch for the same instance, which the next owner calls
+ * before it creates the device again, waits for this callback to return.
+ */
 static VOID
 CALLBACK
 SoftwareDeviceOwnerEnded(
     _In_ PVOID Context,
     _In_ BOOLEAN TimedOut)
 {
-    PSOFTWARE_DEVICE_WATCH Watch = TakeSoftwareDeviceWatch(NULL, Context);
+    PSOFTWARE_DEVICE_WATCH Watch = Context;
+    PLIST_ENTRY Entry;
+    BOOL Listed = FALSE;
     CONFIGRET ret;
 
     UNREFERENCED_PARAMETER(TimedOut);
 
-    if (!Watch)
+    AcquireSRWLockShared(&SoftwareDeviceWatchLock);
+    for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches && !Listed; Entry = Entry->Flink)
+        Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
+    ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
+
+    /* A StopSoftwareDeviceWatch that took the watch frees it after this returns */
+    if (!Listed)
         return;
 
     ret = RemoveSoftwareDeviceInstance(Watch->szDeviceInstance);
     DPRINT("Owner of %S ended, removing it returned %lu\n", Watch->szDeviceInstance, ret);
+    if (!TakeSoftwareDeviceWatch(NULL, Watch))
+        return;
     UnregisterWait(Watch->Wait);
     CloseHandle(Watch->Process);
     HeapFree(GetProcessHeap(), 0, Watch);

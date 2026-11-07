@@ -223,7 +223,8 @@ START_TEST(DriverPackage)
         Length = ARRAYSIZE(Again);
         hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, Again, &Length);
         ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
-        ok(_wcsicmp(Again, StoreInf) == 0, "Second upload returned %S\n", Again);
+        if (hr == S_OK)
+            ok(_wcsicmp(Again, StoreInf) == 0, "Second upload returned %S\n", Again);
     }
 
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, L"No Such Printer", NULL, 0);

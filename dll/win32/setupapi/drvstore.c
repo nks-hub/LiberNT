@@ -927,7 +927,8 @@ CheckStoreRequest(
     if (*ReturnLength < MAX_PATH)
         return E_INVALIDARG;
 
-    GetSystemInfo(&SystemInfo);
+    /* The store holds packages for the machine, also for a 32-bit caller on a 64-bit system */
+    GetNativeSystemInfo(&SystemInfo);
     if (Architecture != SystemInfo.wProcessorArchitecture)
         return E_INVALIDARG;
 

@@ -50,6 +50,7 @@ typedef struct _NOTIFY_HANDLE
     HANDLE hEvent;
     DWORD dwNotifyMask;
     PSC_RPC_NOTIFY_PARAMS_LIST pParamsList;
+    LIST_ENTRY ListEntry;           /* in the NotifyList of a service handle while pending */
 } NOTIFY_HANDLE, *PNOTIFY_HANDLE;
 
 
@@ -59,7 +60,7 @@ typedef struct _SERVICE_HANDLE
     PSERVICE ServiceEntry;
     LIST_ENTRY HandleListEntry;
     BOOL bStatusNotified;
-    PNOTIFY_HANDLE pNotify;
+    LIST_ENTRY NotifyList;          /* pending status requests; a handle may have several */
 } SERVICE_HANDLE, *PSERVICE_HANDLE;
 
 
@@ -223,6 +224,7 @@ ScmLinkServiceHandle(SC_HANDLE Handle)
     PSERVICE_HANDLE hSvc = (PSERVICE_HANDLE)Handle;
 
     EnterCriticalSection(&ScmNotifyLock);
+    InitializeListHead(&hSvc->NotifyList);
     InsertTailList(&hSvc->ServiceEntry->HandleListHead, &hSvc->HandleListEntry);
     LeaveCriticalSection(&ScmNotifyLock);
 }
@@ -330,6 +332,32 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
 }
 
 
+/* Completes the pending requests of hSvc that wait for dwTrigger; returns whether there was one */
+static BOOL
+ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
+                         PSERVICE lpService,
+                         DWORD dwTrigger)
+{
+    PLIST_ENTRY Entry, Next;
+    PNOTIFY_HANDLE pNotify;
+    BOOL bCompleted = FALSE;
+
+    for (Entry = hSvc->NotifyList.Flink; Entry != &hSvc->NotifyList; Entry = Next)
+    {
+        Next = Entry->Flink;
+        pNotify = CONTAINING_RECORD(Entry, NOTIFY_HANDLE, ListEntry);
+        if (!(pNotify->dwNotifyMask & dwTrigger))
+            continue;
+
+        RemoveEntryList(Entry);
+        ScmFillNotify(pNotify, lpService, dwTrigger, NULL);
+        ScmReleaseNotify(pNotify);
+        bCompleted = TRUE;
+    }
+    return bCompleted;
+}
+
+
 VOID
 ScmNotifyServiceStatus(PSERVICE lpService)
 {
@@ -347,17 +375,29 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
 
-        if (hSvc->pNotify != NULL && (hSvc->pNotify->dwNotifyMask & dwMask))
-        {
-            ScmFillNotify(hSvc->pNotify, lpService, dwMask, NULL);
-            ScmReleaseNotify(hSvc->pNotify);
-            hSvc->pNotify = NULL;
-            hSvc->bStatusNotified = TRUE;
-        }
-        else
-        {
-            hSvc->bStatusNotified = FALSE;
-        }
+        /* A handle that missed this state gets it with its next request */
+        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask);
+    }
+
+    LeaveCriticalSection(&ScmNotifyLock);
+}
+
+
+/* Completes the requests that wait for SERVICE_NOTIFY_DELETE_PENDING of lpService */
+static VOID
+ScmNotifyServiceDeletePending(PSERVICE lpService)
+{
+    PLIST_ENTRY Entry;
+    PSERVICE_HANDLE hSvc;
+
+    EnterCriticalSection(&ScmNotifyLock);
+
+    for (Entry = lpService->HandleListHead.Flink;
+         Entry != &lpService->HandleListHead;
+         Entry = Entry->Flink)
+    {
+        hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
+        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -1203,11 +1243,14 @@ RCloseServiceHandle(
 
         EnterCriticalSection(&ScmNotifyLock);
         RemoveEntryList(&hService->HandleListEntry);
-        if (hService->pNotify != NULL)
+        while (!IsListEmpty(&hService->NotifyList))
         {
-            SetEvent(hService->pNotify->hEvent);
-            ScmReleaseNotify(hService->pNotify);
-            hService->pNotify = NULL;
+            PNOTIFY_HANDLE pNotify = CONTAINING_RECORD(RemoveHeadList(&hService->NotifyList),
+                                                       NOTIFY_HANDLE, ListEntry);
+
+            /* Ends the request without a result */
+            SetEvent(pNotify->hEvent);
+            ScmReleaseNotify(pNotify);
         }
         LeaveCriticalSection(&ScmNotifyLock);
 
@@ -1531,6 +1574,8 @@ RDeleteService(
     lpService->bDeleted = TRUE;
 
     dwError = ScmMarkServiceForDelete(lpService);
+    if (dwError == ERROR_SUCCESS)
+        ScmNotifyServiceDeletePending(lpService);
 
 Done:
     /* Unlock the service database */
@@ -7116,12 +7161,12 @@ RNotifyServiceStatusChange(
     ScmLockDatabaseShared();
     EnterCriticalSection(&ScmNotifyLock);
 
-    if (hSvc->pNotify != NULL)
+    if (lpService->bDeleted)
     {
         LeaveCriticalSection(&ScmNotifyLock);
         ScmUnlockDatabase();
         ScmReleaseNotify(pNotify);
-        return ERROR_ALREADY_REGISTERED;
+        return ERROR_SERVICE_MARKED_FOR_DELETE;
     }
 
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
@@ -7133,7 +7178,7 @@ RNotifyServiceStatusChange(
     else
     {
         InterlockedIncrement(&pNotify->RefCount);
-        hSvc->pNotify = pNotify;
+        InsertTailList(&hSvc->NotifyList, &pNotify->ListEntry);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);

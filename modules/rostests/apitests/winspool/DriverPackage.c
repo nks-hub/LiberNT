@@ -13,8 +13,10 @@
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
-#include <setupapi.h>
 #include <strsafe.h>
+
+/* From setupapi.h, which needs winuser.h */
+#define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
 
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"
 #define NEEDS_DRIVER_NAME L"LiberNT Package Needs Printer"

@@ -1040,7 +1040,9 @@ SetIpInterfaceEntry(
     if (!NT_SUCCESS(Status))
         return Status;
 
-    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != NETIO_UNCHANGED_ULONG)
+    /* An IPv4 row reads back a site prefix length of 64 */
+    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != NETIO_UNCHANGED_ULONG &&
+        Row->SitePrefixLength != Current.SitePrefixLength)
         return STATUS_INVALID_PARAMETER;
     if (Row->RouterDiscoveryBehavior != RouterDiscoveryUnchanged &&
         (ULONG)Row->RouterDiscoveryBehavior > RouterDiscoveryDhcp)
@@ -1087,7 +1089,7 @@ SetIpInterfaceEntry(
         Set.RouterDiscoveryBehavior = NetioValue(Row->RouterDiscoveryBehavior, Current.RouterDiscoveryBehavior, FALSE);
         Set.PathMtuDiscoveryTimeout = NetioValue(Row->PathMtuDiscoveryTimeout, Current.PathMtuDiscoveryTimeout, TRUE);
         Set.LinkLocalAddressTimeout = NetioValue(Row->LinkLocalAddressTimeout, Current.LinkLocalAddressTimeout, FALSE);
-        Set.SitePrefixLength = (Row->SitePrefixLength == NETIO_UNCHANGED_ULONG) ? Current.SitePrefixLength : 0;
+        Set.SitePrefixLength = NetioValue(Row->SitePrefixLength, Current.SitePrefixLength, FALSE);
         NetioZones(Row, &Current, Set.ZoneIndices);
         Set.Forwarding = NetioFlag(Row->ForwardingEnabled, Current.ForwardingEnabled);
         Set.WeakHostSend = NetioFlag(Row->WeakHostSend, Current.WeakHostSend);

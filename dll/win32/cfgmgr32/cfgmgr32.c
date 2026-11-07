@@ -175,6 +175,7 @@ static LSTATUS create_driver_key( HKEY dev_key, WCHAR *driver, DWORD driver_len 
             break;
         }
     }
+    if (index == 10000) err = ERROR_NO_MORE_ITEMS;
 
     RegCloseKey( class_key );
     return err;

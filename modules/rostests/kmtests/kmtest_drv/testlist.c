@@ -12,6 +12,7 @@ KMT_TESTFUNC Test_DxgkDeviceWork;
 KMT_TESTFUNC Test_DxgkHotPlugWork;
 KMT_TESTFUNC Test_DxgkChildDescriptor;
 KMT_TESTFUNC Test_DxgkPostDisplayHandoff;
+KMT_TESTFUNC Test_DxgkPresentUserSource;
 KMT_TESTFUNC Test_DxgkGpuVaAddress;
 KMT_TESTFUNC Test_DxgkGpuVaPageTable;
 KMT_TESTFUNC Test_DxgkGpuVaPte;
@@ -157,6 +158,7 @@ KMT_TESTFUNC Test_IoContainerId;
 KMT_TESTFUNC Test_IoCreateFile;
 KMT_TESTFUNC Test_IoDeviceInterface;
 KMT_TESTFUNC Test_IoEvent;
+KMT_TESTFUNC Test_IoStorageDumpPath;
 KMT_TESTFUNC Test_IoWmiAcpi;
 KMT_TESTFUNC Test_IoFilesystem;
 KMT_TESTFUNC Test_IoInterrupt;
@@ -192,10 +194,20 @@ KMT_TESTFUNC Test_IoTimerKM;
 #endif
 KMT_TESTFUNC Test_IoVolume;
 KMT_TESTFUNC Test_KdSystemDebugControl;
+KMT_TESTFUNC Test_KdUsbNetRules;
 KMT_TESTFUNC Test_KsecBcrypt;
 KMT_TESTFUNC Test_KeWddmExports;
 KMT_TESTFUNC Test_KeApc;
 KMT_TESTFUNC Test_KeApcInject;
+KMT_TESTFUNC Test_KeApcScheduling;
+KMT_TESTFUNC Test_KeApcQueueTransitions;
+KMT_TESTFUNC Test_KeDpcQueueTransitions;
+#ifdef _M_AMD64
+KMT_TESTFUNC Test_KeSwitchReaper;
+KMT_TESTFUNC Test_KeSwitchSelfWake;
+KMT_TESTFUNC Test_KeStandbySteal;
+#endif
+KMT_TESTFUNC Test_KeDeferredReady;
 KMT_TESTFUNC Test_KeCacheInvalidation;
 KMT_TESTFUNC Test_KeModern;
 #ifdef _M_ARM64
@@ -324,6 +336,7 @@ KMT_TESTFUNC Test_IoErrorLogEntry;
 KMT_TESTFUNC Test_IoPciPdoPnp;
 KMT_TESTFUNC Test_IoPciD3Cold;
 KMT_TESTFUNC Test_IoPciExpressInterfaces;
+KMT_TESTFUNC Test_IoPciEnumeration;
 KMT_TESTFUNC Test_IoPciRom;
 KMT_TESTFUNC Test_IoStackLimits;
 KMT_TESTFUNC Test_SmcLib;
@@ -361,6 +374,7 @@ const KMT_TEST TestList[] =
     { "DxgkHotPlugWork",                   Test_DxgkHotPlugWork },
     { "DxgkChildDescriptor",               Test_DxgkChildDescriptor },
     { "DxgkPostDisplayHandoff",            Test_DxgkPostDisplayHandoff },
+    { "DxgkPresentUserSource",             Test_DxgkPresentUserSource },
     { "DxgkGpuVaAddress",                   Test_DxgkGpuVaAddress },
     { "DxgkGpuVaPageTable",                 Test_DxgkGpuVaPageTable },
     { "DxgkGpuVaPte",                       Test_DxgkGpuVaPte },
@@ -460,6 +474,7 @@ const KMT_TEST TestList[] =
     { "IoWmiAcpi",                          Test_IoWmiAcpi },
     { "IoDeviceInterface",                  Test_IoDeviceInterface },
     { "IoEvent",                            Test_IoEvent },
+    { "IoStorageDumpPath",            Test_IoStorageDumpPath },
     { "IoFilesystem",                       Test_IoFilesystem },
     { "IoInterrupt",                        Test_IoInterrupt },
     { "IoIommu",                            Test_IoIommu },
@@ -504,6 +519,7 @@ const KMT_TEST TestList[] =
     { "IoPciPdoPnp",                        Test_IoPciPdoPnp },
     { "IoPciD3Cold",                        Test_IoPciD3Cold },
     { "IoPciExpressInterfaces",             Test_IoPciExpressInterfaces },
+    { "IoPciEnumeration",                   Test_IoPciEnumeration },
     { "IoPciRom",                           Test_IoPciRom },
     { "IoStackLimits",                      Test_IoStackLimits },
     { "SmcLib",                             Test_SmcLib },
@@ -512,10 +528,20 @@ const KMT_TEST TestList[] =
     { "IoReportRootDevice",                 Test_IoReportRootDevice },
     { "IoVolume",                           Test_IoVolume },
     { "KdSystemDebugControl",               Test_KdSystemDebugControl },
+    { "KdUsbNetRules",                      Test_KdUsbNetRules },
     { "KsecBcrypt",                         Test_KsecBcrypt },
     { "KeWddmExports",                      Test_KeWddmExports },
     { "KeApc",                              Test_KeApc },
     { "KeApcInject",                        Test_KeApcInject },
+    { "KeApcScheduling",                    Test_KeApcScheduling },
+    { "KeApcQueueTransitions",              Test_KeApcQueueTransitions },
+    { "KeDpcQueueTransitions",              Test_KeDpcQueueTransitions },
+#ifdef _M_AMD64
+    { "KeSwitchReaper",                     Test_KeSwitchReaper },
+    { "KeSwitchSelfWake",                   Test_KeSwitchSelfWake },
+    { "KeStandbySteal",                     Test_KeStandbySteal },
+#endif
+    { "KeDeferredReady",                    Test_KeDeferredReady },
     { "KeCacheInvalidation",                Test_KeCacheInvalidation },
     { "KeModern",                           Test_KeModern },
 #ifdef _M_ARM64

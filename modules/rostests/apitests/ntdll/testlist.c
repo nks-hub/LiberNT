@@ -58,6 +58,7 @@ extern void func_NtContinue(void);
 extern void func_NullGsSelector(void);
 extern void func_RtlRestoreContextConsolidate(void);
 extern void func_RtlVirtualUnwindFragment(void);
+extern void func_RtlVirtualUnwindTailJump(void);
 extern void func_SyscallStub(void);
 extern void func_x87Exception(void);
 #endif
@@ -81,6 +82,8 @@ extern void func_NtImpersonateAnonymousToken(void);
 extern void func_NtLoadUnloadKey(void);
 extern void func_NtMapViewOfSection(void);
 extern void func_NtMapViewOfSection_ImageZeroBits(void);
+extern void func_NtKeDispatcherTransitions(void);
+extern void func_NtKeHandoff(void);
 extern void func_NtMutant(void);
 extern void func_NtNotifyChangeMultipleKeys(void);
 extern void func_NtOpenKey(void);
@@ -133,6 +136,7 @@ extern void func_RtlDoesFileExists(void);
 extern void func_RtlDosPathNameToNtPathName_U(void);
 extern void func_RtlDosSearchPath_U(void);
 extern void func_RtlDosSearchPath_Ustr(void);
+extern void func_RtlExitUserProcess(void);
 extern void func_RtlFirstFreeAce(void);
 extern void func_RtlGenerate8dot3Name(void);
 extern void func_RtlGetFullPathName_U(void);
@@ -251,6 +255,7 @@ const struct test winetest_testlist[] =
     { "NullGsSelector",                 func_NullGsSelector },
     { "RtlRestoreContextConsolidate",   func_RtlRestoreContextConsolidate },
     { "RtlVirtualUnwindFragment",       func_RtlVirtualUnwindFragment },
+    { "RtlVirtualUnwindTailJump",       func_RtlVirtualUnwindTailJump },
     { "SyscallStub",                    func_SyscallStub },
     { "x87Exception",                   func_x87Exception },
 #endif
@@ -274,6 +279,8 @@ const struct test winetest_testlist[] =
     { "NtLoadUnloadKey",                func_NtLoadUnloadKey },
     { "NtMapViewOfSection",             func_NtMapViewOfSection },
     { "NtMapViewOfSection_ImageZeroBits", func_NtMapViewOfSection_ImageZeroBits },
+    { "NtKeDispatcherTransitions",       func_NtKeDispatcherTransitions },
+    { "NtKeHandoff",                     func_NtKeHandoff },
     { "NtMutant",                       func_NtMutant },
     { "NtNotifyChangeMultipleKeys",     func_NtNotifyChangeMultipleKeys },
     { "NtOpenKeyEx",                    func_NtOpenKeyEx },
@@ -327,6 +334,7 @@ const struct test winetest_testlist[] =
     { "RtlDosPathNameToNtPathName_U",   func_RtlDosPathNameToNtPathName_U },
     { "RtlDosSearchPath_U",             func_RtlDosSearchPath_U },
     { "RtlDosSearchPath_Ustr",          func_RtlDosSearchPath_Ustr },
+    { "RtlExitUserProcess",             func_RtlExitUserProcess },
     { "RtlFirstFreeAce",                func_RtlFirstFreeAce },
     { "RtlGenerate8dot3Name",           func_RtlGenerate8dot3Name },
     { "RtlGetFullPathName_U",           func_RtlGetFullPathName_U },

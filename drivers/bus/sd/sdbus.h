@@ -199,6 +199,7 @@ typedef struct _PDO_EXTENSION {
     BOOLEAN EjectPending;
 
     ULONG InsertionGeneration;
+    PVOID DumpContext;
 
     /* Interface callback */
     PSDBUS_CALLBACK_ROUTINE CallbackRoutine;
@@ -268,6 +269,7 @@ SdBusAddDevice(
 DRIVER_DISPATCH SdBusDispatchPnp;
 DRIVER_DISPATCH SdBusDispatchPower;
 DRIVER_DISPATCH SdBusDispatchInternalDeviceControl;
+DRIVER_DISPATCH SdBusDispatchDeviceControl;
 DRIVER_DISPATCH SdBusDispatchCreateClose;
 
 /**
@@ -479,6 +481,7 @@ SdBusParseCid(
 VOID
 SdBusParseCsd(
     _In_ PULONG RawResponse,
+    _In_ BOOLEAN IsMmc,
     _Out_ PSD_CSD Csd);
 
 /**

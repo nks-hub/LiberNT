@@ -235,6 +235,8 @@ public:
     HRESULT OpenForeignSurface(D3DKMT_HANDLE share);
     void CloseForeignSurface();
     HRESULT RecordReadBack(UINT slot, UINT buffer);
+    HRESULT OpenRecordList(UINT slot);
+    HRESULT PresentToDriver(UINT slot, UINT buffer);
     HRESULT WriteForeign(RECT *rect, ID3D12Resource *readback, UINT width_limit, UINT height_limit);
     HRESULT PrepareExchange(UINT slot, UINT buffer);
     HRESULT StartWorker();
@@ -607,15 +609,10 @@ public:
     }
 };
 
-static bool Native12PublishableFormat(DXGI_FORMAT format)
-{
-    return format == DXGI_FORMAT_B8G8R8A8_UNORM || format == DXGI_FORMAT_R8G8B8A8_UNORM;
-}
-
 static bool Native12FlipFormat(DXGI_FORMAT format)
 {
-    return Native12PublishableFormat(format) || format == DXGI_FORMAT_R10G10B10A2_UNORM
-            || format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    return format == DXGI_FORMAT_B8G8R8A8_UNORM || format == DXGI_FORMAT_R8G8B8A8_UNORM
+            || format == DXGI_FORMAT_R10G10B10A2_UNORM || format == DXGI_FORMAT_R16G16B16A16_FLOAT;
 }
 
 static UINT32 Native12Unorm8(UINT32 value, UINT32 max)
@@ -983,6 +980,57 @@ void Native12SwapChain::CloseForeignSurface()
     foreign_allocation = 0;
 }
 
+HRESULT Native12SwapChain::OpenRecordList(UINT slot)
+{
+    ID3D12CommandAllocator *&allocator = record_allocator[slot];
+    ID3D12GraphicsCommandList *&list = record_list[slot];
+    HRESULT hr;
+
+    if (!allocator && FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
+            __uuidof(ID3D12CommandAllocator), reinterpret_cast<void **>(&allocator)))) return hr;
+    if (!list)
+        return device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, NULL,
+                __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&list));
+    if (FAILED(hr = allocator->Reset())) return hr;
+    return list->Reset(allocator, NULL);
+}
+
+/* A driver may render into memory the shared allocation does not name; its Present brings that allocation up to date. */
+HRESULT Native12SwapChain::PresentToDriver(UINT slot, UINT buffer)
+{
+    D3D12DDI_ARG_PRESENTSURFACE surface = {};
+    D3D12DDIARG_PRESENT_0001 args = {};
+    D3D12DDI_PRESENT_0051 output = {};
+    D3D12DDI_PRESENT_CONTEXTS_0051 contexts = {};
+    D3D12DDI_PRESENT_HWQUEUES_0051 hw_queues = {};
+    HRESULT hr;
+
+    if (!device->list_functions.pfnPresent) return S_OK;
+    if (FAILED(hr = OpenRecordList(slot))) return hr;
+    surface.hSurface = static_cast<Native12Resource *>(buffers[buffer])->driver;
+    args.phSurfacesToPresent = &surface;
+    args.SurfacesToPresent = 1;
+    args.Flags.Blt = 1;
+    if (device->functions.pfnGetPresentPrivateDriverDataSize)
+        args.PrivateDriverDataSize = device->functions.pfnGetPresentPrivateDriverDataSize(device->driver_device, &args);
+    if (args.PrivateDriverDataSize
+            && !(args.pPrivateDriverData = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, args.PrivateDriverDataSize)))
+    {
+        record_list[slot]->Close();
+        return E_OUTOFMEMORY;
+    }
+    device->list_functions.pfnPresent(static_cast<Native12CommandList *>(record_list[slot])->driver,
+            queue->driver, &args, &output, &contexts, &hw_queues);
+    HeapFree(GetProcessHeap(), 0, args.pPrivateDriverData);
+    if (FAILED(hr = record_list[slot]->Close())) return hr;
+    if (output.AddedGpuWork)
+    {
+        ID3D12CommandList *lists[] = {record_list[slot]};
+        queue->ExecuteCommandLists(1, lists);
+    }
+    return S_OK;
+}
+
 HRESULT Native12SwapChain::RecordReadBack(UINT slot, UINT buffer)
 {
     ID3D12Resource *source = buffers[buffer];
@@ -1014,16 +1062,8 @@ HRESULT Native12SwapChain::RecordReadBack(UINT slot, UINT buffer)
                 D3D12_RESOURCE_STATE_COPY_DEST, NULL, __uuidof(ID3D12Resource), reinterpret_cast<void **>(&readback))))
             return hr;
     }
-    ID3D12CommandAllocator *&allocator = record_allocator[slot];
-    ID3D12GraphicsCommandList *&list = record_list[slot];
-    if (!allocator && FAILED(hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT,
-            __uuidof(ID3D12CommandAllocator), reinterpret_cast<void **>(&allocator)))) return hr;
-    if (!list)
-    {
-        if (FAILED(hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator, NULL,
-                __uuidof(ID3D12GraphicsCommandList), reinterpret_cast<void **>(&list)))) return hr;
-    }
-    else if (FAILED(hr = allocator->Reset()) || FAILED(hr = list->Reset(allocator, NULL))) return hr;
+    if (FAILED(hr = OpenRecordList(slot))) return hr;
+    ID3D12GraphicsCommandList *list = record_list[slot];
     if (!copy_fence && FAILED(hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, __uuidof(ID3D12Fence),
             reinterpret_cast<void **>(&copy_fence)))) return hr;
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -1479,8 +1519,9 @@ HRESULT STDMETHODCALLTYPE Native12SwapChain::Present1(UINT interval, UINT flags,
         record.buffer = current;
         record.source_width = source_width;
         record.source_height = source_height;
-        record.foreign = ForeignAdapter() || !Native12PublishableFormat(desc.Format);
-        hr = record.foreign ? RecordReadBack(slot, current) : PrepareExchange(slot, current);
+        record.foreign = ForeignAdapter();
+        hr = record.foreign ? RecordReadBack(slot, current) : PresentToDriver(slot, current);
+        if (SUCCEEDED(hr) && !record.foreign) hr = PrepareExchange(slot, current);
         if (SUCCEEDED(hr)) QueueRecord(slot);
         else FreeRecord(slot);
     }
@@ -1549,6 +1590,12 @@ HRESULT STDMETHODCALLTYPE Native12CommandQueue::create_swapchain(IDXGIFactory *f
     DXGI_SWAP_CHAIN_DESC1 requested = *desc;
     RECT client = {};
     GetClientRect(window, &client);
+    if (fullscreen_desc && !fullscreen_desc->Windowed)
+    {
+        MONITORINFO monitor = {};
+        monitor.cbSize = sizeof(monitor);
+        if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor)) client = monitor.rcMonitor;
+    }
     if (!requested.Width) requested.Width = client.right - client.left > 0 ? client.right - client.left : 8;
     if (!requested.Height) requested.Height = client.bottom - client.top > 0 ? client.bottom - client.top : 8;
     HRESULT hr = swapchain->AllocateBuffers(requested);

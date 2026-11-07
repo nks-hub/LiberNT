@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "native_wddm20.h"
+#include "nativeerror.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3d11);
 
@@ -375,7 +376,7 @@ public:
     D3D10DDI_HSAMPLER DefaultSamplerHandle();
     HRESULT OpenSharedResourceData(D3DKMT_OPENRESOURCE &open, const NativeSharedResourceData &data, REFIID iid, void **out);
     void Unimplemented(const char *method) { FIXME("Native D3D11 %s is not implemented.\n", method); operation_error = E_NOTIMPL; }
-    void BeginCall() { operation_error = S_OK; }
+    void BeginCall() { operation_error = removed_reason; }
     D3D11_CONSERVATIVE_RASTERIZATION_TIER ConservativeRasterizationTier() const
     {
         if (feature_level < D3D_FEATURE_LEVEL_11_1) return D3D11_CONSERVATIVE_RASTERIZATION_NOT_SUPPORTED;
@@ -1067,8 +1068,8 @@ static HRESULT NativeLegacySharedHandle(NativeDevice *device, D3D10DDI_HRTRESOUR
     NativeLock guard(device);
     D3DKMT_HANDLE share = 0;
     HRESULT hr = device->get_resource_handles(device->runtime_device, runtime_handle.handle, NULL, &share);
-    if (FAILED(hr)) return hr;
-    if (!share) return DXGI_ERROR_INVALID_CALL;
+    /* Windows 11 reports success and no handle for a resource the driver could not share. */
+    if (FAILED(hr) || !share) return S_OK;
     *out = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(share));
     return S_OK;
 }
@@ -1238,8 +1239,7 @@ public:
         NativeLock guard(device);
         D3DKMT_HANDLE share = 0;
         HRESULT hr = device->get_resource_handles(device->runtime_device, runtime_handle.handle, NULL, &share);
-        if (FAILED(hr)) return hr;
-        if (!share) return DXGI_ERROR_INVALID_CALL;
+        if (FAILED(hr) || !share) return S_OK;
         *out = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(share));
         return S_OK;
     }
@@ -2146,8 +2146,7 @@ static HRESULT APIENTRY NativeQueryAdapter(HANDLE handle, const D3DDDICB_QUERYAD
 static void APIENTRY NativeSetError(D3D10DDI_HRTCORELAYER layer, HRESULT error)
 {
     NativeDevice *device = static_cast<NativeDevice *>(layer.handle);
-    if (error == DXGI_DDI_ERR_WASSTILLDRAWING) error = DXGI_ERROR_WAS_STILL_DRAWING;
-    if (error == DXGI_DDI_ERR_UNSUPPORTED) error = DXGI_ERROR_UNSUPPORTED;
+    error = NativeDriverErrorToApi(error);
     device->operation_error = error;
     if (FAILED(error) && error != DXGI_ERROR_WAS_STILL_DRAWING)
         WARN("Native UMD reported error %#lx.\n", error);
@@ -2329,6 +2328,10 @@ HRESULT NativeDevice::Initialize(IDXGIAdapter *selected_adapter, UINT creation_f
         UINT level;
         switch (levels[i])
         {
+            /* The D3D10 DDI has no level 9 pipeline, so level 9 runs on the 10.0 one. */
+            case D3D_FEATURE_LEVEL_9_1:
+            case D3D_FEATURE_LEVEL_9_2:
+            case D3D_FEATURE_LEVEL_9_3:
             case D3D_FEATURE_LEVEL_10_0: level = D3D11DDI_3DPIPELINELEVEL_10_0; break;
             case D3D_FEATURE_LEVEL_10_1: level = D3D11DDI_3DPIPELINELEVEL_10_1; break;
             case D3D_FEATURE_LEVEL_11_0: level = D3D11DDI_3DPIPELINELEVEL_11_0; break;
@@ -3783,6 +3786,8 @@ HRESULT NativeDevice::CreateTexture(const D3D11_TEXTURE2D_DESC *input,
             || (feature_level < D3D_FEATURE_LEVEL_10_1 && input->ArraySize != 6))) return E_INVALIDARG;
     if ((input->MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX))
             == (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)) return E_INVALIDARG;
+    if (feature_level < D3D_FEATURE_LEVEL_10_0 && (input->MiscFlags & (D3D11_RESOURCE_MISC_SHARED
+            | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE))) return E_INVALIDARG;
     if ((input->MiscFlags & D3D11_RESOURCE_MISC_GDI_COMPATIBLE) && ((input->Format != DXGI_FORMAT_B8G8R8A8_UNORM
             && input->Format != DXGI_FORMAT_B8G8R8A8_TYPELESS && input->Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
             || input->Usage != D3D11_USAGE_DEFAULT || !(input->BindFlags & D3D11_BIND_RENDER_TARGET)
@@ -4414,6 +4419,13 @@ struct NATIVE_FORMAT_REQUIREMENT
     UINT RequiredLevels;
 };
 
+struct NATIVE_LEVEL9_FORMAT
+{
+    DXGI_FORMAT Format;
+    UINT Required[3];
+    UINT Allowed[3];
+};
+
 #include "native_formats.inl"
 
 /* Drivers extend typed UAV support beyond the D3D11.3 lists; back-buffer cast and encoder have no list column. */
@@ -4422,8 +4434,16 @@ static const UINT NativeFormatListedSupport = ~(D3D11_FORMAT_SUPPORT_BACK_BUFFER
 
 static UINT NativeListedFormatSupport(DXGI_FORMAT format, D3D_FEATURE_LEVEL level, UINT support)
 {
-    /* TODO: feature level 9 requirements from the DirectX-Specs FL9_x format lists */
-    if (level < D3D_FEATURE_LEVEL_10_0) return support;
+    if (level < D3D_FEATURE_LEVEL_10_0)
+    {
+        UINT column = level >= D3D_FEATURE_LEVEL_9_3 ? 2 : level >= D3D_FEATURE_LEVEL_9_2 ? 1 : 0;
+
+        for (const NATIVE_LEVEL9_FORMAT &entry : NativeLevel9Formats)
+        {
+            if (entry.Format == format) return (support & entry.Allowed[column]) | entry.Required[column];
+        }
+        return 0;
+    }
     UINT index = level >= D3D_FEATURE_LEVEL_11_0 ? 2 : level >= D3D_FEATURE_LEVEL_10_1 ? 1 : 0;
     const NATIVE_FORMAT_REQUIREMENT *found = NULL;
     for (const NATIVE_FORMAT_REQUIREMENT &entry : NativeFormatRequirements)
@@ -5644,6 +5664,8 @@ public:
         }
         return S_OK;
     }
+    bool level9 = false;
+
     HRESULT Parse(const void *code, SIZE_T length, UINT shader_type)
     {
         if (!code || length < 32) return E_INVALIDARG;
@@ -5664,6 +5686,8 @@ public:
                         || ReadDword(chunk + 4) < 2 || ReadDword(chunk + 4) > chunk_size / 4) return E_INVALIDARG;
                 tokens = reinterpret_cast<const UINT *>(chunk);
             }
+            else if (tag == 0x396e6f41)
+                level9 = true;
             else if (tag == 0x45434649)
                 interfaces = true;
             else if (tag == 0x4e475349 || tag == 0x31475349 || tag == 0x4e47534f || tag == 0x3147534f
@@ -5727,6 +5751,7 @@ static HRESULT CreateNativeShader(NativeDevice *device, const void *code, SIZE_T
     NativeShaderBytecode bytecode;
     HRESULT hr = bytecode.Parse(code, length, type);
     if (FAILED(hr)) return hr;
+    if (device->feature_level < D3D_FEATURE_LEVEL_10_0 && !bytecode.level9) return E_INVALIDARG;
     UINT model = bytecode.tokens[0] & 0xff;
     UINT maximum = device->feature_level >= D3D_FEATURE_LEVEL_11_0 ? 0x50
             : device->feature_level >= D3D_FEATURE_LEVEL_10_1 ? 0x41 : 0x40;
@@ -8369,6 +8394,13 @@ HRESULT STDMETHODCALLTYPE NativeDevice::create_swapchain(IDXGIFactory *factory, 
     if (!factory || (window && !IsWindow(window)) || !requested || !fullscreen) return DXGI_ERROR_INVALID_CALL;
     if (output || (!fullscreen->Windowed && !window)) return DXGI_ERROR_UNSUPPORTED;
     if (!dxgi_functions.pfnPresent) return DXGI_ERROR_UNSUPPORTED;
+    if (feature_level < D3D_FEATURE_LEVEL_10_0)
+    {
+        UINT support = 0;
+
+        if (FAILED(CheckFormatSupport(requested->Format, &support)) || !(support & D3D11_FORMAT_SUPPORT_DISPLAY))
+            return E_INVALIDARG;
+    }
     if (requested->Flags & (DXGI_SWAP_CHAIN_FLAG_NONPREROTATED | DXGI_SWAP_CHAIN_FLAG_DISPLAY_ONLY
             | DXGI_SWAP_CHAIN_FLAG_FOREGROUND_LAYER | DXGI_SWAP_CHAIN_FLAG_FULLSCREEN_VIDEO
             | DXGI_SWAP_CHAIN_FLAG_YUV_VIDEO)) return DXGI_ERROR_INVALID_CALL;
@@ -8387,6 +8419,12 @@ HRESULT STDMETHODCALLTYPE NativeDevice::create_swapchain(IDXGIFactory *factory, 
         RECT client = {};
         hr = !window || GetClientRect(window, &client) ? S_OK : DXGI_ERROR_INVALID_CALL;
         if (!window && (!desc.Width || !desc.Height)) hr = DXGI_ERROR_INVALID_CALL;
+        if (window && !fullscreen->Windowed)
+        {
+            MONITORINFO monitor = {};
+            monitor.cbSize = sizeof(monitor);
+            if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTOPRIMARY), &monitor)) client = monitor.rcMonitor;
+        }
         if (!desc.Width) desc.Width = client.right - client.left > 0 ? client.right - client.left : 8;
         if (!desc.Height) desc.Height = client.bottom - client.top > 0 ? client.bottom - client.top : 8;
         if (SUCCEEDED(hr)) hr = swapchain->AllocateBuffers(desc);

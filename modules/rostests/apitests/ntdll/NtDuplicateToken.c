@@ -286,8 +286,117 @@ Cleanup:
     CloseHandle(ProcessToken);
 }
 
+static SID SystemSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LOCAL_SYSTEM_RID } };
+static SID WorldSid = { SID_REVISION, 1, SECURITY_WORLD_SID_AUTHORITY, { SECURITY_WORLD_RID } };
+static SID LocalSid = { SID_REVISION, 1, SECURITY_LOCAL_SID_AUTHORITY, { SECURITY_LOCAL_RID } };
+static SID InteractiveSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_INTERACTIVE_RID } };
+static SID MediumSid = { SID_REVISION, 1, SECURITY_MANDATORY_LABEL_AUTHORITY, { SECURITY_MANDATORY_MEDIUM_RID } };
+static SID AuthenticatedSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_AUTHENTICATED_USER_RID } };
+static SID NetworkSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_NETWORK_RID } };
+static SID ServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_SERVICE_RID } };
+
+/*
+ * The label sits between groups that an effective only copy removes, before
+ * and after it, so its index and the index of the owner both have to move.
+ */
+static
+VOID
+DuplicateCreatedTokenAsEffective(
+    _In_ PSID Owner,
+    _In_ PSID ExpectedOwner)
+{
+    static PSID const Kept[] = { &WorldSid, &MediumSid, &AuthenticatedSid, &ServiceSid };
+    NTSTATUS Status;
+    HANDLE Token, EffectiveToken;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    SECURITY_QUALITY_OF_SERVICE Qos = { sizeof(Qos), SecurityImpersonation, SECURITY_STATIC_TRACKING, FALSE };
+    LUID AuthenticationId = SYSTEM_LUID;
+    LARGE_INTEGER Expiration = { .QuadPart = MAXLONGLONG };
+    TOKEN_USER User = { { &SystemSid, 0 } };
+    struct
+    {
+        ULONG GroupCount;
+        SID_AND_ATTRIBUTES Groups[7];
+    } Groups;
+    TOKEN_PRIVILEGES Privileges = { 0 };
+    TOKEN_OWNER OwnerInfo = { Owner };
+    TOKEN_PRIMARY_GROUP PrimaryGroup = { &WorldSid };
+    TOKEN_SOURCE Source = { "apitest" };
+    PTOKEN_GROUPS EffectiveGroups;
+    PTOKEN_MANDATORY_LABEL EffectiveLabel;
+    PTOKEN_OWNER EffectiveOwner;
+    ULONG Index;
+
+    Groups.GroupCount = 7;
+    Groups.Groups[0].Sid = &WorldSid;
+    Groups.Groups[0].Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_ENABLED;
+    Groups.Groups[1].Sid = &LocalSid;
+    Groups.Groups[1].Attributes = 0;
+    Groups.Groups[2].Sid = &InteractiveSid;
+    Groups.Groups[2].Attributes = 0;
+    Groups.Groups[3].Sid = &MediumSid;
+    Groups.Groups[3].Attributes = SE_GROUP_INTEGRITY | SE_GROUP_INTEGRITY_ENABLED;
+    Groups.Groups[4].Sid = &AuthenticatedSid;
+    Groups.Groups[4].Attributes = SE_GROUP_OWNER | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_ENABLED;
+    Groups.Groups[5].Sid = &NetworkSid;
+    Groups.Groups[5].Attributes = SE_GROUP_OWNER;
+    Groups.Groups[6].Sid = &ServiceSid;
+    Groups.Groups[6].Attributes = SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_ENABLED;
+
+    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
+    ObjectAttributes.SecurityQualityOfService = &Qos;
+    Status = NtCreateToken(&Token, TOKEN_DUPLICATE | TOKEN_QUERY, &ObjectAttributes, TokenPrimary,
+                           &AuthenticationId, &Expiration, &User, (PTOKEN_GROUPS)&Groups, &Privileges, &OwnerInfo,
+                           &PrimaryGroup, NULL, &Source);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    Status = NtDuplicateToken(Token, TOKEN_QUERY, &ObjectAttributes, TRUE, TokenPrimary, &EffectiveToken);
+    ok_hex(Status, STATUS_SUCCESS);
+    CloseHandle(Token);
+    if (!NT_SUCCESS(Status))
+        return;
+
+    EffectiveGroups = QueryToken(EffectiveToken, TokenGroups);
+    EffectiveLabel = QueryToken(EffectiveToken, TokenIntegrityLevel);
+    EffectiveOwner = QueryToken(EffectiveToken, TokenOwner);
+    ok(EffectiveGroups && EffectiveLabel && EffectiveOwner, "Querying the effective token failed\n");
+    if (EffectiveGroups)
+    {
+        ok(EffectiveGroups->GroupCount == ARRAYSIZE(Kept), "The copy has %lu groups, expected %u\n",
+           EffectiveGroups->GroupCount, (UINT)ARRAYSIZE(Kept));
+        for (Index = 0; Index < EffectiveGroups->GroupCount && Index < ARRAYSIZE(Kept); Index++)
+            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is not the expected SID\n", Index);
+    }
+    if (EffectiveLabel)
+        ok(EqualSid(EffectiveLabel->Label.Sid, &MediumSid), "The integrity level is not the label of the token\n");
+    if (EffectiveOwner)
+        ok(EqualSid(EffectiveOwner->Owner, ExpectedOwner), "The owner is not the expected SID\n");
+
+    if (EffectiveGroups) RtlFreeHeap(RtlGetProcessHeap(), 0, EffectiveGroups);
+    if (EffectiveLabel) RtlFreeHeap(RtlGetProcessHeap(), 0, EffectiveLabel);
+    if (EffectiveOwner) RtlFreeHeap(RtlGetProcessHeap(), 0, EffectiveOwner);
+    CloseHandle(EffectiveToken);
+}
+
 START_TEST(NtDuplicateToken)
 {
+    NTSTATUS Status;
+    BOOLEAN WasEnabled;
+
     DuplicateTokenAsEffective();
     DuplicateTokenAsEffectiveKeepsLabel();
+
+    Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, FALSE, &WasEnabled);
+    if (!NT_SUCCESS(Status))
+    {
+        skip("Cannot create tokens (Status 0x%lx)\n", Status);
+        return;
+    }
+    /* An owner after removed groups moves down with them */
+    DuplicateCreatedTokenAsEffective(&AuthenticatedSid, &AuthenticatedSid);
+    /* An owner that the copy removes falls back to the user */
+    DuplicateCreatedTokenAsEffective(&NetworkSid, &SystemSid);
+    RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, WasEnabled, FALSE, &WasEnabled);
 }

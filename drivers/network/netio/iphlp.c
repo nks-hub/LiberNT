@@ -1718,17 +1718,26 @@ NetioChangeWorker(
     HaveOld = NT_SUCCESS(NetioTakeSnapshot(&Old));
     Retry.QuadPart = -50000000LL; /* 5 s */
 
-    InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-    if (NT_SUCCESS(ZwCreateEvent(&EventHandle, EVENT_ALL_ACCESS, &Attributes, NotificationEvent, FALSE)))
-    {
-        if (!NT_SUCCESS(ObReferenceObjectByHandle(EventHandle, EVENT_ALL_ACCESS, *ExEventObjectType,
-                                                  KernelMode, (PVOID *)&Completed, NULL)))
-            Completed = NULL;
-    }
-
     for (;;)
     {
         Changed = FALSE;
+
+        /* Made again after a failure; until then the snapshots are compared on every timeout */
+        if (Completed == NULL)
+        {
+            if (EventHandle == NULL)
+            {
+                InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+                if (!NT_SUCCESS(ZwCreateEvent(&EventHandle, EVENT_ALL_ACCESS, &Attributes, NotificationEvent, FALSE)))
+                    EventHandle = NULL;
+            }
+            if (EventHandle != NULL &&
+                !NT_SUCCESS(ObReferenceObjectByHandle(EventHandle, EVENT_ALL_ACCESS, *ExEventObjectType,
+                                                      KernelMode, (PVOID *)&Completed, NULL)))
+            {
+                Completed = NULL;
+            }
+        }
 
         if (!Pending && Completed != NULL)
         {
@@ -1761,9 +1770,9 @@ NetioChangeWorker(
                 Pending = FALSE;
                 Changed = NT_SUCCESS(Io.Status);
             }
-            else if (Status == STATUS_TIMEOUT && (Stale || !HaveOld))
+            else if (Status == STATUS_TIMEOUT && (Stale || !HaveOld || !Pending))
             {
-                /* A change came while the last snapshot failed */
+                /* A change came while the last snapshot failed, or tcpip cannot report changes */
                 Changed = TRUE;
             }
         }

@@ -37,6 +37,8 @@ typedef struct _SCMGR_HANDLE
 typedef struct _MANAGER_HANDLE
 {
     SCMGR_HANDLE Handle;
+    LIST_ENTRY NotifyListEntry;     /* in ScmManagerNotifyList while pNotify is set */
+    struct _NOTIFY_HANDLE *pNotify; /* pending SERVICE_NOTIFY_CREATED/DELETED request */
     WCHAR DatabaseName[1];
 } MANAGER_HANDLE, *PMANAGER_HANDLE;
 
@@ -116,6 +118,7 @@ ScmServiceMapping = {SERVICE_READ,
 DWORD g_dwServiceBits = 0;
 
 static CRITICAL_SECTION ScmNotifyLock;
+static LIST_ENTRY ScmManagerNotifyList;
 
 /* FUNCTIONS ***************************************************************/
 
@@ -229,6 +232,7 @@ VOID
 ScmInitServiceNotify(VOID)
 {
     InitializeCriticalSection(&ScmNotifyLock);
+    InitializeListHead(&ScmManagerNotifyList);
 }
 
 
@@ -270,9 +274,11 @@ ScmReleaseNotify(PNOTIFY_HANDLE pNotify)
 }
 
 
+/* lpService is NULL for a notification of the service database */
 static VOID
 ScmFillNotify(PNOTIFY_HANDLE pNotify,
-              PSERVICE lpService)
+              PSERVICE lpService,
+              DWORD dwTriggered)
 {
     PSC_RPC_NOTIFY_PARAMS_LIST pList;
     PSERVICE_NOTIFY_STATUS_CHANGE_PARAMS_2 pParams;
@@ -290,11 +296,14 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
     }
 
     pParams->dwNotifyMask = pNotify->dwNotifyMask;
-    RtlCopyMemory(&pParams->ServiceStatus, &lpService->Status, sizeof(SERVICE_STATUS));
-    if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
-        pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
+    if (lpService != NULL)
+    {
+        RtlCopyMemory(&pParams->ServiceStatus, &lpService->Status, sizeof(SERVICE_STATUS));
+        if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
+            pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
+    }
     pParams->dwNotificationStatus = ERROR_SUCCESS;
-    pParams->dwNotificationTriggered = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
+    pParams->dwNotificationTriggered = dwTriggered;
 
     pList->cElements = 1;
     pList->NotifyParamsArray[0].dwInfoLevel = 2;
@@ -324,7 +333,7 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
         if (hSvc->pNotify != NULL && (hSvc->pNotify->dwNotifyMask & dwMask))
         {
-            ScmFillNotify(hSvc->pNotify, lpService);
+            ScmFillNotify(hSvc->pNotify, lpService, dwMask);
             ScmReleaseNotify(hSvc->pNotify);
             hSvc->pNotify = NULL;
             hSvc->bStatusNotified = TRUE;
@@ -336,6 +345,56 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
+}
+
+
+/* Completes the pending database notifications that wait for dwTrigger
+ * (SERVICE_NOTIFY_CREATED or SERVICE_NOTIFY_DELETED) */
+static VOID
+ScmNotifyServiceDatabase(DWORD dwTrigger)
+{
+    PLIST_ENTRY Entry, Next;
+    PMANAGER_HANDLE hManager;
+
+    EnterCriticalSection(&ScmNotifyLock);
+
+    for (Entry = ScmManagerNotifyList.Flink; Entry != &ScmManagerNotifyList; Entry = Next)
+    {
+        Next = Entry->Flink;
+        hManager = CONTAINING_RECORD(Entry, MANAGER_HANDLE, NotifyListEntry);
+        if (!(hManager->pNotify->dwNotifyMask & dwTrigger))
+            continue;
+
+        RemoveEntryList(Entry);
+        ScmFillNotify(hManager->pNotify, NULL, dwTrigger);
+        ScmReleaseNotify(hManager->pNotify);
+        hManager->pNotify = NULL;
+    }
+
+    LeaveCriticalSection(&ScmNotifyLock);
+}
+
+
+static PNOTIFY_HANDLE
+ScmCreateNotify(DWORD dwNotifyMask)
+{
+    PNOTIFY_HANDLE pNotify;
+
+    pNotify = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(NOTIFY_HANDLE));
+    if (pNotify == NULL)
+        return NULL;
+
+    pNotify->hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (pNotify->hEvent == NULL)
+    {
+        HeapFree(GetProcessHeap(), 0, pNotify);
+        return NULL;
+    }
+
+    pNotify->Handle.Tag = NOTIFY_TAG;
+    pNotify->RefCount = 1;
+    pNotify->dwNotifyMask = dwNotifyMask;
+    return pNotify;
 }
 
 
@@ -1094,6 +1153,16 @@ RCloseServiceHandle(
     {
         DPRINT("Found manager handle\n");
 
+        EnterCriticalSection(&ScmNotifyLock);
+        if (hManager->pNotify != NULL)
+        {
+            RemoveEntryList(&hManager->NotifyListEntry);
+            SetEvent(hManager->pNotify->hEvent);
+            ScmReleaseNotify(hManager->pNotify);
+            hManager->pNotify = NULL;
+        }
+        LeaveCriticalSection(&ScmNotifyLock);
+
         /* Make sure we don't access stale memory if someone tries to use this handle again. */
         hManager->Handle.Tag = INVALID_TAG;
 
@@ -1449,6 +1518,9 @@ RDeleteService(
 Done:
     /* Unlock the service database */
     ScmUnlockDatabase();
+
+    if (dwError == ERROR_SUCCESS)
+        ScmNotifyServiceDatabase(SERVICE_NOTIFY_DELETED);
 
     DPRINT("RDeleteService() done\n");
 
@@ -2918,6 +2990,8 @@ done:
 
         if (lpdwTagId != NULL)
             *lpdwTagId = lpService->dwTag;
+
+        ScmNotifyServiceDatabase(SERVICE_NOTIFY_CREATED);
     }
     else
     {
@@ -6950,6 +7024,7 @@ RNotifyServiceStatusChange(
     PBOOL pfCreateRemoteQueue,
     LPSC_NOTIFY_RPC_HANDLE phNotify)
 {
+    PMANAGER_HANDLE hManager;
     PSERVICE_HANDLE hSvc;
     PSERVICE lpService;
     PNOTIFY_HANDLE pNotify;
@@ -6960,10 +7035,40 @@ RNotifyServiceStatusChange(
     if (ScmShutdown)
         return ERROR_SHUTDOWN_IN_PROGRESS;
 
-    if (ScmGetServiceManagerFromHandle(hService) != NULL)
+    hManager = ScmGetServiceManagerFromHandle(hService);
+    if (hManager != NULL)
     {
-        UNIMPLEMENTED;
-        return ERROR_CALL_NOT_IMPLEMENTED;
+        /* A manager handle reports services that are created or deleted */
+        if (!RtlAreAllAccessesGranted(hManager->Handle.DesiredAccess,
+                                      SC_MANAGER_ENUMERATE_SERVICE))
+            return ERROR_ACCESS_DENIED;
+
+        if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
+            return ERROR_INVALID_LEVEL;
+
+        dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask;
+        if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
+            return ERROR_INVALID_PARAMETER;
+
+        pNotify = ScmCreateNotify(dwMask);
+        if (pNotify == NULL)
+            return ERROR_NOT_ENOUGH_MEMORY;
+
+        EnterCriticalSection(&ScmNotifyLock);
+        if (hManager->pNotify != NULL)
+        {
+            LeaveCriticalSection(&ScmNotifyLock);
+            ScmReleaseNotify(pNotify);
+            return ERROR_ALREADY_REGISTERED;
+        }
+        InterlockedIncrement(&pNotify->RefCount);
+        hManager->pNotify = pNotify;
+        InsertTailList(&ScmManagerNotifyList, &hManager->NotifyListEntry);
+        LeaveCriticalSection(&ScmNotifyLock);
+
+        *pfCreateRemoteQueue = FALSE;
+        *phNotify = (SC_NOTIFY_RPC_HANDLE)pNotify;
+        return ERROR_SUCCESS;
     }
 
     hSvc = ScmGetServiceFromHandle(hService);
@@ -6981,20 +7086,9 @@ RNotifyServiceStatusChange(
     if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
         return ERROR_INVALID_LEVEL;
 
-    pNotify = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(NOTIFY_HANDLE));
+    pNotify = ScmCreateNotify(NotifyParams.pStatusChangeParam2->dwNotifyMask);
     if (pNotify == NULL)
         return ERROR_NOT_ENOUGH_MEMORY;
-
-    pNotify->hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (pNotify->hEvent == NULL)
-    {
-        HeapFree(GetProcessHeap(), 0, pNotify);
-        return ERROR_NOT_ENOUGH_MEMORY;
-    }
-
-    pNotify->Handle.Tag = NOTIFY_TAG;
-    pNotify->RefCount = 1;
-    pNotify->dwNotifyMask = NotifyParams.pStatusChangeParam2->dwNotifyMask;
 
     ScmLockDatabaseShared();
     EnterCriticalSection(&ScmNotifyLock);
@@ -7010,7 +7104,7 @@ RNotifyServiceStatusChange(
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
     if (!hSvc->bStatusNotified && (pNotify->dwNotifyMask & dwMask))
     {
-        ScmFillNotify(pNotify, lpService);
+        ScmFillNotify(pNotify, lpService, dwMask);
         hSvc->bStatusNotified = TRUE;
     }
     else

@@ -1431,6 +1431,175 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeA( SC_HANDLE service, DW
 
     return NotifyServiceStatusChangeW( service, mask, (SERVICE_NOTIFYW *)notify_buffer );
 }
+
+/* A subscription keeps one NotifyServiceStatusChangeW request pending from its
+ * own thread, which the result reaches as an APC, and calls the callback for
+ * each one. */
+struct _SC_NOTIFICATION_REGISTRATION
+{
+    SC_HANDLE handle;
+    DWORD mask;
+    PSC_NOTIFICATION_CALLBACK callback;
+    void *context;
+    HANDLE thread;
+    DWORD thread_id;
+    HANDLE ready_event;
+    HANDLE stop_event;
+    DWORD first_error;
+    LONG refs;
+    BOOL fired;
+    BOOL pending;
+    /* Allocated apart: a request still pending when the subscription ends writes to it */
+    SERVICE_NOTIFYW *notify;
+};
+
+static void release_subscription( struct _SC_NOTIFICATION_REGISTRATION *sub )
+{
+    if (InterlockedDecrement( &sub->refs )) return;
+    /* shortcut: the buffer of a request pending at the end is leaked (one SERVICE_NOTIFYW);
+     * cancelling it needs a way to abort GetNotifyResults without closing the caller's handle */
+    if (!sub->pending) free( sub->notify );
+    CloseHandle( sub->thread );
+    CloseHandle( sub->ready_event );
+    CloseHandle( sub->stop_event );
+    free( sub );
+}
+
+static void CALLBACK subscription_notified( void *param )
+{
+    SERVICE_NOTIFYW *notify = param;
+    struct _SC_NOTIFICATION_REGISTRATION *sub = notify->pContext;
+
+    sub->pending = FALSE;
+    sub->fired = TRUE;
+}
+
+static DWORD WINAPI subscription_thread( void *param )
+{
+    struct _SC_NOTIFICATION_REGISTRATION *sub = param;
+    BOOL first = TRUE;
+    DWORD err;
+
+    SetThreadDescription( GetCurrentThread(), L"sechost_service_subscription" );
+
+    /* A callback may have unsubscribed */
+    while (WaitForSingleObject( sub->stop_event, 0 ) != WAIT_OBJECT_0)
+    {
+        memset( sub->notify, 0, sizeof(*sub->notify) );
+        sub->notify->dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+        sub->notify->pfnNotifyCallback = subscription_notified;
+        sub->notify->pContext = sub;
+        sub->fired = FALSE;
+        err = NotifyServiceStatusChangeW( sub->handle, sub->mask, sub->notify );
+        if (first)
+        {
+            sub->first_error = err;
+            SetEvent( sub->ready_event );
+            first = FALSE;
+        }
+        if (err)
+        {
+            if (err != ERROR_SERVICE_MARKED_FOR_DELETE && err != ERROR_INVALID_HANDLE)
+                WARN( "NotifyServiceStatusChangeW failed: %lu\n", err );
+            break;
+        }
+        sub->pending = TRUE;
+
+        while (!sub->fired && WaitForSingleObjectEx( sub->stop_event, INFINITE, TRUE ) != WAIT_OBJECT_0)
+            ;
+        if (!sub->fired || WaitForSingleObject( sub->stop_event, 0 ) == WAIT_OBJECT_0)
+            break;
+        if (sub->notify->dwNotificationStatus == ERROR_SUCCESS)
+            sub->callback( sub->notify->dwNotificationTriggered, sub->context );
+    }
+
+    release_subscription( sub );
+    return 0;
+}
+
+/******************************************************************************
+ *     SubscribeServiceChangeNotifications   (sechost.@)
+ */
+DWORD WINAPI SubscribeServiceChangeNotifications( SC_HANDLE service, SC_EVENT_TYPE type,
+                                                  PSC_NOTIFICATION_CALLBACK callback, void *context,
+                                                  PSC_NOTIFICATION_REGISTRATION *subscription )
+{
+    struct _SC_NOTIFICATION_REGISTRATION *sub;
+    DWORD mask, err;
+
+    TRACE( "%p %u %p %p %p\n", service, type, callback, context, subscription );
+
+    if (!service) return ERROR_INVALID_HANDLE;
+    if (!callback || !subscription) return ERROR_INVALID_PARAMETER;
+    *subscription = NULL;
+
+    switch (type)
+    {
+    case SC_EVENT_STATUS_CHANGE:
+        mask = SERVICE_NOTIFY_STOPPED | SERVICE_NOTIFY_START_PENDING | SERVICE_NOTIFY_STOP_PENDING |
+               SERVICE_NOTIFY_RUNNING | SERVICE_NOTIFY_CONTINUE_PENDING | SERVICE_NOTIFY_PAUSE_PENDING |
+               SERVICE_NOTIFY_PAUSED;
+        break;
+    case SC_EVENT_DATABASE_CHANGE:
+        mask = SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED;
+        break;
+    case SC_EVENT_PROPERTY_CHANGE:
+        FIXME( "SC_EVENT_PROPERTY_CHANGE is not supported\n" );
+        return ERROR_NOT_SUPPORTED;
+    default:
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    if (!(sub = calloc( 1, sizeof(*sub) )) || !(sub->notify = calloc( 1, sizeof(*sub->notify) )))
+    {
+        free( sub );
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    sub->handle = service;
+    sub->mask = mask;
+    sub->callback = callback;
+    sub->context = context;
+    sub->refs = 2;
+    sub->ready_event = CreateEventW( NULL, TRUE, FALSE, NULL );
+    sub->stop_event = CreateEventW( NULL, TRUE, FALSE, NULL );
+    if (sub->ready_event && sub->stop_event)
+        sub->thread = CreateThread( NULL, 0, subscription_thread, sub, 0, &sub->thread_id );
+    if (!sub->thread)
+    {
+        err = GetLastError();
+        if (sub->ready_event) CloseHandle( sub->ready_event );
+        if (sub->stop_event) CloseHandle( sub->stop_event );
+        free( sub->notify );
+        free( sub );
+        return err;
+    }
+
+    WaitForSingleObject( sub->ready_event, INFINITE );
+    if ((err = sub->first_error))
+    {
+        WaitForSingleObject( sub->thread, INFINITE );
+        release_subscription( sub );
+        return err;
+    }
+
+    *subscription = sub;
+    return ERROR_SUCCESS;
+}
+
+/******************************************************************************
+ *     UnsubscribeServiceChangeNotifications   (sechost.@)
+ */
+VOID WINAPI UnsubscribeServiceChangeNotifications( PSC_NOTIFICATION_REGISTRATION subscription )
+{
+    TRACE( "%p\n", subscription );
+
+    if (!subscription) return;
+    SetEvent( subscription->stop_event );
+    /* From a callback the thread ends by itself after the callback returns */
+    if (subscription->thread_id != GetCurrentThreadId())
+        WaitForSingleObject( subscription->thread, INFINITE );
+    release_subscription( subscription );
+}
 #endif
 
 /* thunk for calling the RegisterServiceCtrlHandler handler function */

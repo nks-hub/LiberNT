@@ -768,6 +768,23 @@ done:
     if (dwError == ERROR_SUCCESS)
         dwError = ScmApplyServiceSid(pService, pImage);
 
+    /* The caller frees the image only; what the logon opened goes here */
+    if (dwError != ERROR_SUCCESS)
+    {
+        if (pImage->hProfile != NULL)
+        {
+            ScmEnableBackupRestorePrivileges(pImage->hToken, TRUE);
+            UnloadUserProfile(pImage->hToken, pImage->hProfile);
+            ScmEnableBackupRestorePrivileges(pImage->hToken, FALSE);
+            pImage->hProfile = NULL;
+        }
+        if (pImage->hToken != NULL)
+        {
+            CloseHandle(pImage->hToken);
+            pImage->hToken = NULL;
+        }
+    }
+
     return dwError;
 }
 

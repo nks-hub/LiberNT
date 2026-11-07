@@ -6,13 +6,18 @@
  */
 
 #include <windows.h>
+#include <winternl.h>
+
+NTSYSAPI NTSTATUS NTAPI LdrLockLoaderLock(_In_ ULONG Flags, _Out_opt_ PULONG Disposition, _Out_ PULONG_PTR Cookie);
+NTSYSAPI NTSTATUS NTAPI LdrUnlockLoaderLock(_In_ ULONG Flags, _In_opt_ ULONG_PTR Cookie);
 
 /*
  * As on Windows, KernelBase resolves GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
  * with ntdll!RtlPcToFileHeader. Loaders that map DLLs from memory hook that
  * import of KernelBase so that addresses inside such a DLL resolve to their
  * executable. Reference counting, pinning and the lookup by name stay in
- * kernel32.
+ * kernel32. The loader lock covers both lookups, so the module that holds
+ * the address cannot unload, and another one take its place, in between.
  */
 
 /* Invalid flags go to kernel32 unchanged, which rejects them before any lookup */
@@ -34,20 +39,35 @@ KbGetModuleHandleExW(
     _Out_ HMODULE *phModule)
 {
     PVOID ImageBase = NULL;
+    ULONG_PTR Cookie;
+    NTSTATUS Status;
+    BOOL Result;
 
-    if (KbValidModuleHandleFlags(dwFlags) && (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) &&
-        lpModuleName && phModule)
+    if (!KbValidModuleHandleFlags(dwFlags) || !(dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) ||
+        !lpModuleName || !phModule)
     {
-        if (!RtlPcToFileHeader((PVOID)lpModuleName, &ImageBase))
-        {
-            *phModule = NULL;
-            SetLastError(ERROR_MOD_NOT_FOUND);
-            return FALSE;
-        }
-        lpModuleName = (LPCWSTR)ImageBase;
+        return GetModuleHandleExW(dwFlags, lpModuleName, phModule);
     }
 
-    return GetModuleHandleExW(dwFlags, lpModuleName, phModule);
+    Status = LdrLockLoaderLock(0, NULL, &Cookie);
+    if (!NT_SUCCESS(Status))
+    {
+        *phModule = NULL;
+        SetLastError(RtlNtStatusToDosError(Status));
+        return FALSE;
+    }
+    if (RtlPcToFileHeader((PVOID)lpModuleName, &ImageBase))
+    {
+        Result = GetModuleHandleExW(dwFlags, (LPCWSTR)ImageBase, phModule);
+    }
+    else
+    {
+        *phModule = NULL;
+        SetLastError(ERROR_MOD_NOT_FOUND);
+        Result = FALSE;
+    }
+    LdrUnlockLoaderLock(0, Cookie);
+    return Result;
 }
 
 BOOL

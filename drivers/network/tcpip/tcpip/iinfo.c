@@ -85,6 +85,9 @@ TDI_STATUS InfoTdiQueryGetInterfaceMIB(TDIEntityID ID,
     /* viz: tcpip keeps those indices */
     OutData->if_type = Interface ==
         Loopback ? MIB_IF_TYPE_LOOPBACK : MIB_IF_TYPE_OTHER;
+    /* The type NDIS gives the interface keeps the LUID equal to the adapter's */
+    if (Interface != Loopback && Interface->IfType != 0)
+        OutData->if_type = Interface->IfType;
     OutData->if_mtu = Interface->MTU;
     TI_DbgPrint(DEBUG_INFO,
 		("Getting interface speed\n"));

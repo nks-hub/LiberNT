@@ -319,6 +319,17 @@ BOOLEAN IPRegisterInterface(
 
     TcpipAcquireSpinLock(&InterfaceListLock, &OldIrql);
 
+    /* Use the index of the NDIS interface when it is free, so that the LUID
+     * of the IP interface matches the adapter's, as on Windows */
+    if (IF->NdisIfIndex != 0)
+    {
+        ChosenIndex = IF->NdisIfIndex;
+        ForEachInterface(Interface) {
+            if (Interface->Index == ChosenIndex)
+                ChosenIndex = 1;
+        } EndFor(Interface);
+    }
+
     /* Choose an index */
     do {
         IndexHasBeenChosen = TRUE;

@@ -990,7 +990,10 @@ WskControlSocket(
                             status = STATUS_SUCCESS;
                             if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM))
                             {
-                                if (Control->EventMask & WSK_EVENT_DISABLE)
+                                /* WSK_SET_STATIC_EVENT_CALLBACKS callbacks stay on for the life of the socket */
+                                if (Socket->ReceiveEventsStatic)
+                                    status = STATUS_INVALID_PARAMETER;
+                                else if (Control->EventMask & WSK_EVENT_DISABLE)
                                 {
                                     status = NetioDisableReceiveEvent(Socket, Irp);
                                     if (status == STATUS_PENDING)

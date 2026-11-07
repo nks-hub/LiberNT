@@ -944,7 +944,7 @@ ReinstallNetDevice(
     return SetupDiInstallDevice(DeviceInfoSet, DeviceInfoData) ? ERROR_SUCCESS : GetLastError();
 }
 
-/* Software adapters (WireGuard, Wintun) ask for a stable GUID through the
+/* Software adapters ask for a stable GUID through the
  * SuggestedInstanceId value of their driver key; it is used unless another
  * adapter already has it */
 static

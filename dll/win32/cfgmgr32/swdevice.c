@@ -516,8 +516,13 @@ SwDeviceCreate(
     }
     Device->PropertyCount = cPropertyCount;
 
-    /* As on Windows the creation finishes asynchronously and reports through the callback */
-    Device->Thread = CreateThread(NULL, 0, SwDeviceCreateThread, Device, 0, &Device->ThreadId);
+    /*
+     * As on Windows the creation finishes asynchronously and reports through
+     * the callback, which may close the handle before SwDeviceCreate returns.
+     * The thread starts once Device is complete, and nothing here touches
+     * Device after that.
+     */
+    Device->Thread = CreateThread(NULL, 0, SwDeviceCreateThread, Device, CREATE_SUSPENDED, &Device->ThreadId);
     if (!Device->Thread)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
@@ -526,6 +531,15 @@ SwDeviceCreate(
     }
 
     *phSwDevice = (HSWDEVICE)Device;
+    if (ResumeThread(Device->Thread) == (DWORD)-1)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        TerminateThread(Device->Thread, 0);
+        CloseHandle(Device->Thread);
+        FreeSwDevice(Device);
+        *phSwDevice = NULL;
+        return hr;
+    }
     return S_OK;
 }
 

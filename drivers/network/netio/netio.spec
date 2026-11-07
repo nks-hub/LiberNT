@@ -105,6 +105,7 @@
 @ stdcall InitializeIpInterfaceEntry(ptr)
 @ stdcall InitializeUnicastIpAddressEntry(ptr)
 @ stdcall NotifyIpInterfaceChange(long ptr ptr long ptr)
+@ stdcall NotifyRouteChange2(long ptr ptr long ptr)
 @ stdcall NotifyUnicastIpAddressChange(long ptr ptr long ptr)
 @ stdcall SetInterfaceDnsSettings(long long long long ptr)
 @ stdcall SetIpInterfaceEntry(ptr)

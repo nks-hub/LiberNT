@@ -4763,7 +4763,11 @@ IopCancelIoFileExKernelApc(
      * wait that the thread goes back to, while the request is still pending.
      */
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
+    {
+        /* IopCompleteRequest drops the alert if the request ends before the wait takes it */
+        PsGetCurrentThread()->IoCancelAlertPending = TRUE;
         KeAlertThread(Thread, UserMode);
+    }
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);
 }

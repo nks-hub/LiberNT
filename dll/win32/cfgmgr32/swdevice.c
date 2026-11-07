@@ -38,6 +38,11 @@ typedef struct _SW_DEVICE
     HANDLE Thread;
     DWORD ThreadId;
     BOOL Reopened;
+    /* SwDeviceClose waits for the calls that use the handle */
+    volatile LONG ActiveCalls;
+    volatile LONG Closing;
+    HANDLE Idle;
+    CRITICAL_SECTION LifetimeLock;
 } SW_DEVICE, *PSW_DEVICE;
 
 typedef HDEVINFO (WINAPI *PFN_SETUPDICREATEDEVICEINFOLIST)(const GUID *, HWND);
@@ -141,9 +146,32 @@ CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source
     return S_OK;
 }
 
+static BOOL
+EnterSwDevice(_In_ PSW_DEVICE Device)
+{
+    InterlockedIncrement(&Device->ActiveCalls);
+    if (!Device->Closing)
+        return TRUE;
+    if (!InterlockedDecrement(&Device->ActiveCalls))
+        SetEvent(Device->Idle);
+    return FALSE;
+}
+
+static VOID
+LeaveSwDevice(_In_ PSW_DEVICE Device)
+{
+    if (!InterlockedDecrement(&Device->ActiveCalls) && Device->Closing)
+        SetEvent(Device->Idle);
+}
+
 static VOID
 FreeSwDevice(_In_ PSW_DEVICE Device)
 {
+    if (Device->Idle)
+    {
+        CloseHandle(Device->Idle);
+        DeleteCriticalSection(&Device->LifetimeLock);
+    }
     HeapFree(GetProcessHeap(), 0, Device->HardwareIds);
     HeapFree(GetProcessHeap(), 0, Device->CompatibleIds);
     HeapFree(GetProcessHeap(), 0, Device->Description);
@@ -285,29 +313,34 @@ GetProcessStart(_In_ HANDLE Process, _Out_ PULONGLONG Start)
 }
 
 /* ProcessId 0 records a device that outlives its closed handle */
-static VOID
+static HRESULT
 RecordOwner(_In_ PCWSTR InstanceId, _In_ DWORD ProcessId, _In_ SW_DEVICE_LIFETIME Lifetime)
 {
     WCHAR Name[MAX_DEVICE_ID_LEN];
     ULONGLONG Start = 0;
     DWORD Value = Lifetime;
     HKEY Owners, Key;
+    LONG Error;
 
-    if ((ProcessId && !GetProcessStart(GetCurrentProcess(), &Start)) ||
-        RegCreateKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, NULL, REG_OPTION_VOLATILE,
-                        KEY_CREATE_SUB_KEY, NULL, &Owners, NULL))
-    {
-        return;
-    }
+    if (ProcessId && !GetProcessStart(GetCurrentProcess(), &Start))
+        return HRESULT_FROM_WIN32(GetLastError());
+    Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, NULL, REG_OPTION_VOLATILE,
+                            KEY_CREATE_SUB_KEY, NULL, &Owners, NULL);
+    if (Error)
+        return HRESULT_FROM_WIN32(Error);
     OwnerKeyName(InstanceId, Name);
-    if (!RegCreateKeyExW(Owners, Name, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &Key, NULL))
+    Error = RegCreateKeyExW(Owners, Name, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &Key, NULL);
+    if (!Error)
     {
-        RegSetValueExW(Key, L"ProcessId", 0, REG_DWORD, (const BYTE *)&ProcessId, sizeof(ProcessId));
-        RegSetValueExW(Key, L"ProcessStart", 0, REG_QWORD, (const BYTE *)&Start, sizeof(Start));
-        RegSetValueExW(Key, L"Lifetime", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value));
+        Error = RegSetValueExW(Key, L"ProcessId", 0, REG_DWORD, (const BYTE *)&ProcessId, sizeof(ProcessId));
+        if (!Error)
+            Error = RegSetValueExW(Key, L"ProcessStart", 0, REG_QWORD, (const BYTE *)&Start, sizeof(Start));
+        if (!Error)
+            Error = RegSetValueExW(Key, L"Lifetime", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value));
         RegCloseKey(Key);
     }
     RegCloseKey(Owners);
+    return HRESULT_FROM_WIN32(Error);
 }
 
 static VOID
@@ -393,6 +426,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
     CONFIGRET Cr;
     HANDLE Lock;
     DWORD Wait;
+    HRESULT hr = S_OK;
 
     Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
     if (Cr != CR_SUCCESS)
@@ -434,8 +468,9 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 break;
         }
     }
+    /* The caller removes the node, or releases one it opened again, when the rest fails */
     if (Cr == CR_SUCCESS)
-        RecordOwner(Device->InstanceId, GetCurrentProcessId(), SWDeviceLifetimeHandle);
+        hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), SWDeviceLifetimeHandle);
 
     ReleaseMutex(Lock);
     CloseHandle(Lock);
@@ -446,11 +481,11 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
         Device->DevInst = 0;
         return Cr == CR_ALREADY_SUCH_DEVINST ? HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) : CrToHresult(Cr);
     }
+    if (FAILED(hr))
+        return hr;
 
     /* A new handle has the handle lifetime */
-    if (CfgmgrWatchSoftwareDevice(Device->InstanceId, GetCurrentProcessId()) != CR_SUCCESS)
-        WARN("%s stays after this process ends\n", debugstr_w(Device->InstanceId));
-    return S_OK;
+    return CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId, GetCurrentProcessId()));
 }
 
 static HRESULT
@@ -630,6 +665,15 @@ SwDeviceCreate(
         return E_INVALIDARG;
     }
 
+    Device->Idle = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!Device->Idle)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeSwDevice(Device);
+        return hr;
+    }
+    InitializeCriticalSection(&Device->LifetimeLock);
+
     Device->Lifetime = SWDeviceLifetimeHandle;
     Device->Capabilities = pCreateInfo->CapabilityFlags;
     Device->Callback = pCallback;
@@ -713,6 +757,11 @@ SwDeviceClose(
     if (!Device)
         return;
 
+    /* Calls that already use the handle finish first; later ones fail */
+    InterlockedExchange(&Device->Closing, TRUE);
+    if (Device->ActiveCalls)
+        WaitForSingleObject(Device->Idle, INFINITE);
+
     /* Let a pending creation finish, unless the callback itself closes the handle */
     if (Device->Thread)
     {
@@ -746,22 +795,39 @@ SwDeviceSetLifetime(
     _In_ SW_DEVICE_LIFETIME Lifetime)
 {
     PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    SW_DEVICE_LIFETIME Previous;
+    HRESULT hr = S_OK;
 
     if (!Device || (Lifetime != SWDeviceLifetimeHandle && Lifetime != SWDeviceLifetimeParentPresent))
         return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
 
-    Device->Lifetime = Lifetime;
+    EnterCriticalSection(&Device->LifetimeLock);
+    Previous = Device->Lifetime;
 
     /* Only a device with the handle lifetime leaves with this process */
-    if (Device->DevInst)
+    if (Device->DevInst && Lifetime != Previous)
     {
-        CONFIGRET Cr = CfgmgrWatchSoftwareDevice(Device->InstanceId,
-                                                 Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0);
-        if (Cr != CR_SUCCESS)
-            return CrToHresult(Cr);
-        RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
+        hr = CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                                   Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0));
+        if (SUCCEEDED(hr))
+        {
+            hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
+            if (FAILED(hr))
+            {
+                /* Keeps the device leaving as before */
+                CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                          Previous == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0);
+            }
+        }
     }
-    return S_OK;
+    if (SUCCEEDED(hr))
+        Device->Lifetime = Lifetime;
+    LeaveCriticalSection(&Device->LifetimeLock);
+
+    LeaveSwDevice(Device);
+    return hr;
 }
 
 HRESULT
@@ -774,8 +840,13 @@ SwDeviceGetLifetime(
 
     if (!Device || !pLifetime)
         return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
 
+    EnterCriticalSection(&Device->LifetimeLock);
     *pLifetime = Device->Lifetime;
+    LeaveCriticalSection(&Device->LifetimeLock);
+    LeaveSwDevice(Device);
     return S_OK;
 }
 
@@ -788,10 +859,16 @@ SwDevicePropertySet(
 {
     PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
 
-    if (!Device || !Device->DevInst || (cPropertyCount && !pProperties))
-        return E_INVALIDARG;
+    HRESULT hr;
 
-    return ApplyProperties(Device->DevInst, cPropertyCount, pProperties);
+    if (!Device || (cPropertyCount && !pProperties))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    hr = Device->DevInst ? ApplyProperties(Device->DevInst, cPropertyCount, pProperties) : E_INVALIDARG;
+    LeaveSwDevice(Device);
+    return hr;
 }
 
 /* Device interfaces of software devices need a bus driver that registers them; LiberNT has none yet */

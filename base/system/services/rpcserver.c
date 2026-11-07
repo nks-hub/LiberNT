@@ -5244,14 +5244,87 @@ Done:
 }
 
 
-/* TODO: SERVICE_CONFIG_DELAYED_AUTO_START_INFO, SERVICE_SID_INFO, REQUIRED_PRIVILEGES_INFO and PRESHUTDOWN_INFO */
+/* TODO: SERVICE_CONFIG_REQUIRED_PRIVILEGES_INFO */
 static BOOL
 ScmIsSupportedConfigLevel(DWORD dwInfoLevel)
 {
     return dwInfoLevel == SERVICE_CONFIG_DESCRIPTION ||
            dwInfoLevel == SERVICE_CONFIG_FAILURE_ACTIONS ||
+           dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO ||
            dwInfoLevel == SERVICE_CONFIG_FAILURE_ACTIONS_FLAG ||
+           dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO ||
+           dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO ||
            dwInfoLevel == SERVICE_CONFIG_TRIGGER_INFO;
+}
+
+/*
+ * SERVICE_DELAYED_AUTO_START_INFO, SERVICE_SID_INFO and
+ * SERVICE_PRESHUTDOWN_INFO each hold one DWORD, stored in the service key
+ * under the value names Windows uses.
+ */
+static LPCWSTR
+ScmDwordConfigValueName(DWORD dwInfoLevel)
+{
+    switch (dwInfoLevel)
+    {
+        case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
+            return L"DelayedAutostart";
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            return L"ServiceSidType";
+        case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+            return L"PreshutdownTimeout";
+    }
+    return NULL;
+}
+
+static DWORD
+ScmSetDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, const DWORD *lpValue)
+{
+    DWORD dwValue;
+
+    if (lpValue == NULL)
+        return ERROR_SUCCESS;
+
+    dwValue = *lpValue;
+    if (dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO &&
+        dwValue != SERVICE_SID_TYPE_NONE &&
+        dwValue != SERVICE_SID_TYPE_UNRESTRICTED)
+    {
+        /* A restricted service token needs restricting SIDs that the access check
+         * does not evaluate yet; storing the type would promise a sandbox */
+        return (dwValue == SERVICE_SID_TYPE_RESTRICTED) ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER;
+    }
+    if (dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO &&
+        dwValue != FALSE && dwValue != TRUE)
+    {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    return RegSetValueExW(hServiceKey, ScmDwordConfigValueName(dwInfoLevel), 0, REG_DWORD,
+                          (LPBYTE)&dwValue, sizeof(dwValue));
+}
+
+static DWORD
+ScmQueryDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, LPBYTE lpBuffer, DWORD cbBufSize,
+                    LPBOUNDED_DWORD_8K pcbBytesNeeded)
+{
+    /* Since Windows 10 1703 the default pre-shutdown timeout is 10 seconds */
+    DWORD dwValue = (dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO) ? 10000 : 0;
+    DWORD dwData = 0, dwSize = sizeof(dwData), dwType = REG_NONE;
+
+    *pcbBytesNeeded = sizeof(DWORD);
+    if (cbBufSize < sizeof(DWORD))
+        return ERROR_INSUFFICIENT_BUFFER;
+
+    if (RegQueryValueExW(hServiceKey, ScmDwordConfigValueName(dwInfoLevel), NULL, &dwType,
+                         (LPBYTE)&dwData, &dwSize) == ERROR_SUCCESS && dwType == REG_DWORD &&
+        dwSize == sizeof(DWORD))
+    {
+        dwValue = dwData;
+    }
+
+    *(LPDWORD)lpBuffer = dwValue;
+    return ERROR_SUCCESS;
 }
 
 static DWORD
@@ -5307,6 +5380,12 @@ RChangeServiceConfig2A(
         InfoW.psfaf = Info.psfaf;
     else if (Info.dwInfoLevel == SERVICE_CONFIG_TRIGGER_INFO)
         InfoW.psti = Info.psti;
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO)
+        InfoW.psda = Info.psda;
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
+        InfoW.pssid = Info.pssid;
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO)
+        InfoW.psps = Info.psps;
 
     if (InfoW.dwInfoLevel == SERVICE_CONFIG_DESCRIPTION)
     {
@@ -5767,6 +5846,30 @@ RChangeServiceConfig2W(
         if (dwError == ERROR_SUCCESS)
             ScmTriggersChanged();
     }
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO)
+    {
+        dwError = ScmSetDwordConfig(hServiceKey, Info.dwInfoLevel,
+                                    Info.psda ? (const DWORD *)&Info.psda->fDelayedAutostart : NULL);
+    }
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
+    {
+        /* Only a process that runs one service gets its service SID */
+        if (Info.pssid && Info.pssid->dwServiceSidType != SERVICE_SID_TYPE_NONE &&
+            !(lpService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
+        {
+            dwError = ERROR_NOT_SUPPORTED;
+        }
+        else
+        {
+            dwError = ScmSetDwordConfig(hServiceKey, Info.dwInfoLevel,
+                                        Info.pssid ? &Info.pssid->dwServiceSidType : NULL);
+        }
+    }
+    else if (Info.dwInfoLevel == SERVICE_CONFIG_PRESHUTDOWN_INFO)
+    {
+        dwError = ScmSetDwordConfig(hServiceKey, Info.dwInfoLevel,
+                                    Info.psps ? &Info.psps->dwPreshutdownTimeout : NULL);
+    }
 
 done:
     if (hServiceKey != NULL)
@@ -5988,6 +6091,10 @@ RQueryServiceConfig2A(
     {
         dwError = ScmQueryServiceTriggers(hServiceKey, lpBuffer, cbBufSize, pcbBytesNeeded);
     }
+    else if (ScmDwordConfigValueName(dwInfoLevel) != NULL)
+    {
+        dwError = ScmQueryDwordConfig(hServiceKey, dwInfoLevel, lpBuffer, cbBufSize, pcbBytesNeeded);
+    }
 
 done:
     /* Unlock the service database */
@@ -6194,6 +6301,10 @@ RQueryServiceConfig2W(
     else if (dwInfoLevel == SERVICE_CONFIG_TRIGGER_INFO)
     {
         dwError = ScmQueryServiceTriggers(hServiceKey, lpBuffer, cbBufSize, pcbBytesNeeded);
+    }
+    else if (ScmDwordConfigValueName(dwInfoLevel) != NULL)
+    {
+        dwError = ScmQueryDwordConfig(hServiceKey, dwInfoLevel, lpBuffer, cbBufSize, pcbBytesNeeded);
     }
 
 done:

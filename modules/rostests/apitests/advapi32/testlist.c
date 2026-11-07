@@ -39,6 +39,7 @@ extern void func_ServiceCrash(void);
 extern void func_ServiceEnv(void);
 extern void func_TriggerInfo(void);
 extern void func_ServiceNetwork(void);
+extern void func_ServiceSidInfo(void);
 extern void func_TokenBnoIsolation(void);
 extern void func_TraceGuids(void);
 
@@ -81,6 +82,7 @@ const struct test winetest_testlist[] =
     { "ServiceEnv", func_ServiceEnv },
     { "TriggerInfo", func_TriggerInfo },
     { "ServiceNetwork", func_ServiceNetwork },
+    { "ServiceSidInfo", func_ServiceSidInfo },
     { "TokenBnoIsolation", func_TokenBnoIsolation },
     { "TraceGuids", func_TraceGuids },
     { 0, 0 }

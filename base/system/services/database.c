@@ -618,8 +618,8 @@ done:
 /*
  * A service whose SID type is SERVICE_SID_TYPE_UNRESTRICTED runs with its
  * service SID in the token, so objects can grant access to that service only.
- * The SID goes into processes that run one service; a shared process keeps the
- * plain account token.
+ * The SID goes into processes that run one service; the configuration refuses
+ * it for a shared process, which keeps the plain account token.
  */
 static DWORD
 ScmApplyServiceSid(
@@ -767,6 +767,23 @@ done:
 
     if (dwError == ERROR_SUCCESS)
         dwError = ScmApplyServiceSid(pService, pImage);
+
+    /* The caller frees the image only; what the logon opened goes here */
+    if (dwError != ERROR_SUCCESS)
+    {
+        if (pImage->hProfile != NULL)
+        {
+            ScmEnableBackupRestorePrivileges(pImage->hToken, TRUE);
+            UnloadUserProfile(pImage->hToken, pImage->hProfile);
+            ScmEnableBackupRestorePrivileges(pImage->hToken, FALSE);
+            pImage->hProfile = NULL;
+        }
+        if (pImage->hToken != NULL)
+        {
+            CloseHandle(pImage->hToken);
+            pImage->hToken = NULL;
+        }
+    }
 
     return dwError;
 }
@@ -2735,6 +2752,83 @@ ScmIsDeferredDuringSetup(
 }
 
 
+/* A DWORD of the service key, or Default when it has none */
+static DWORD
+ScmGetServiceDword(
+    _In_ PSERVICE pService,
+    _In_ PCWSTR pszValueName,
+    _In_ DWORD dwDefault)
+{
+    DWORD dwValue = dwDefault, dwSize = sizeof(dwValue), dwType = REG_NONE;
+    HKEY hServiceKey;
+
+    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hServiceKey) != ERROR_SUCCESS)
+        return dwDefault;
+    if (RegQueryValueExW(hServiceKey, pszValueName, NULL, &dwType, (LPBYTE)&dwValue, &dwSize) != ERROR_SUCCESS ||
+        dwType != REG_DWORD || dwSize != sizeof(DWORD))
+    {
+        dwValue = dwDefault;
+    }
+    RegCloseKey(hServiceKey);
+    return dwValue;
+}
+
+/* Windows starts delayed automatic services about two minutes after the others */
+#define SCM_DELAYED_AUTO_START_DELAY (120 * 1000)
+
+static DWORD
+WINAPI
+ScmDelayedAutoStartThread(
+    _In_ PVOID Context)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService, *Services;
+    ULONG Count = 0, i;
+
+    UNREFERENCED_PARAMETER(Context);
+
+    Sleep(SCM_DELAYED_AUTO_START_DELAY);
+    if (ScmShutdown)
+        return 0;
+
+    /* Starting needs the database unlocked; the references keep the services */
+    ScmLockDatabaseShared();
+    for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
+        Count++;
+    Services = HeapAlloc(GetProcessHeap(), 0, max(Count, 1) * sizeof(*Services));
+    Count = 0;
+    for (ServiceEntry = ServiceListHead.Flink;
+         Services != NULL && ServiceEntry != &ServiceListHead;
+         ServiceEntry = ServiceEntry->Flink)
+    {
+        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+        if (CurrentService->dwStartType == SERVICE_AUTO_START && !CurrentService->bDeleted &&
+            CurrentService->Status.dwCurrentState == SERVICE_STOPPED &&
+            ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
+        {
+            ScmReferenceService(CurrentService);
+            Services[Count++] = CurrentService;
+        }
+    }
+    ScmUnlockDatabase();
+    if (Services == NULL)
+        return ERROR_NOT_ENOUGH_MEMORY;
+
+    for (i = 0; i < Count && !ScmShutdown; i++)
+    {
+        DWORD dwError = ScmStartService(Services[i], 0, NULL);
+        if (dwError != ERROR_SUCCESS && dwError != ERROR_SERVICE_ALREADY_RUNNING)
+            DPRINT1("Delayed start of %S failed (Error %lu)\n", Services[i]->lpServiceName, dwError);
+    }
+
+    ScmLockDatabaseExclusive();
+    for (i = 0; i < Count; i++)
+        ScmDereferenceService(Services[i]);
+    ScmUnlockDatabase();
+    HeapFree(GetProcessHeap(), 0, Services);
+    return 0;
+}
+
 VOID
 ScmAutoStartServices(VOID)
 {
@@ -2745,6 +2839,8 @@ ScmAutoStartServices(VOID)
     PSERVICE CurrentService;
     DWORD SafeBootEnabled;
     HKEY hSafeBootKey = NULL;
+    BOOL bDelayed = FALSE;
+    HANDLE hThread;
     ULONG i;
 
     /*
@@ -2775,6 +2871,14 @@ ScmAutoStartServices(VOID)
             ((SafeBootEnabled != 0) &&
              !ScmIsSafeBootServiceAllowed(CurrentService, hSafeBootKey)) ||
             ScmIsDeferredDuringSetup(CurrentService);
+
+        /* A delayed automatic service starts after all the others */
+        if (!CurrentService->ServiceVisited && CurrentService->dwStartType == SERVICE_AUTO_START &&
+            ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
+        {
+            CurrentService->ServiceVisited = TRUE;
+            bDelayed = TRUE;
+        }
 
         ServiceEntry = ServiceEntry->Flink;
     }
@@ -2877,6 +2981,85 @@ ScmAutoStartServices(VOID)
 
     /* Release the critical section */
     LeaveCriticalSection(&ControlServiceCriticalSection);
+
+    if (bDelayed)
+    {
+        hThread = CreateThread(NULL, 0, ScmDelayedAutoStartThread, NULL, 0, NULL);
+        if (hThread != NULL)
+            CloseHandle(hThread);
+        else
+            DPRINT1("Cannot start the delayed automatic services (Error %lu)\n", GetLastError());
+    }
+}
+
+
+/*
+ * Sends SERVICE_CONTROL_PRESHUTDOWN to the services that accept it and waits
+ * for each one to stop, at most its PreshutdownTimeout (10 s by default).
+ */
+static VOID
+ScmPreshutdownServices(VOID)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService;
+    struct
+    {
+        PSERVICE Service;
+        ULONGLONG Deadline;
+    } *Waits;
+    ULONG Count = 0, i, Running;
+    ULONGLONG Now;
+
+    ScmLockDatabaseShared();
+    for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
+        Count++;
+    Waits = HeapAlloc(GetProcessHeap(), 0, max(Count, 1) * sizeof(*Waits));
+    Count = 0;
+    for (ServiceEntry = ServiceListHead.Flink;
+         Waits != NULL && ServiceEntry != &ServiceListHead;
+         ServiceEntry = ServiceEntry->Flink)
+    {
+        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+        if ((CurrentService->Status.dwControlsAccepted & SERVICE_ACCEPT_PRESHUTDOWN) &&
+            CurrentService->lpImage != NULL &&
+            (CurrentService->Status.dwCurrentState == SERVICE_RUNNING ||
+             CurrentService->Status.dwCurrentState == SERVICE_START_PENDING))
+        {
+            ScmReferenceService(CurrentService);
+            Waits[Count++].Service = CurrentService;
+        }
+    }
+    ScmUnlockDatabase();
+    if (Waits == NULL)
+        return;
+
+    for (i = 0; i < Count; i++)
+    {
+        CurrentService = Waits[i].Service;
+        Waits[i].Deadline = GetTickCount64() + ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
+        DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
+        ScmControlService(CurrentService->lpImage->hControlPipe, CurrentService->lpServiceName,
+                          SERVICE_CONTROL_PRESHUTDOWN, CurrentService->dwResumeCount);
+    }
+
+    do
+    {
+        Running = 0;
+        Now = GetTickCount64();
+        for (i = 0; i < Count; i++)
+        {
+            if (Waits[i].Service->Status.dwCurrentState != SERVICE_STOPPED && Now < Waits[i].Deadline)
+                Running++;
+        }
+        if (Running)
+            Sleep(100);
+    } while (Running);
+
+    ScmLockDatabaseExclusive();
+    for (i = 0; i < Count; i++)
+        ScmDereferenceService(Waits[i].Service);
+    ScmUnlockDatabase();
+    HeapFree(GetProcessHeap(), 0, Waits);
 }
 
 
@@ -2889,6 +3072,8 @@ ScmAutoShutdownServices(VOID)
     DWORD dwResumeCount;
 
     DPRINT("ScmAutoShutdownServices() called\n");
+
+    ScmPreshutdownServices();
 
     /* Lock the service database exclusively */
     ScmLockDatabaseExclusive();

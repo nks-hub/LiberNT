@@ -56,7 +56,7 @@ START_TEST(ServiceSidInfo)
     ok(!res && GetLastError() == ERROR_INSUFFICIENT_BUFFER, "size query: %d error %lu\n", res, GetLastError());
     ok(needed == sizeof(SERVICE_SID_INFO), "needed = %lu\n", needed);
 
-    /* What Go's golang.org/x/sys/windows/svc/mgr does after CreateService, e.g. for WireGuard */
+    /* A service installer sets the SID type right after CreateService */
     info.dwServiceSidType = SERVICE_SID_TYPE_UNRESTRICTED;
     res = ChangeServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);
     ok(res, "ChangeServiceConfig2W(UNRESTRICTED) failed: %lu\n", GetLastError());

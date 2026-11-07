@@ -924,6 +924,23 @@ BCryptGenRandom(
     return KsecGenRandom(Buffer, BufferSize);
 }
 
+/*
+ * Exported by cng.sys for drivers that need random bytes.
+ * The SDK declares it returning BOOL, a 32-bit value; a caller that reads
+ * only the low byte, as a BOOLEAN, still gets the same answer.
+ */
+INT
+NTAPI
+SystemPrng(
+    PVOID Buffer,
+    SIZE_T Length)
+{
+    if (Buffer == NULL && Length != 0)
+        return FALSE;
+
+    return NT_SUCCESS(KsecGenRandom(Buffer, Length));
+}
+
 static VOID
 KsecDestroyKeyObject(
     _In_ KSEC_BCRYPT_KEY *Key)

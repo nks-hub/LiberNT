@@ -18,7 +18,8 @@
 
 /* GLOBALS ********************************************************************/
 
-static FAST_MUTEX KsecRandomLock;
+/* A spin lock: SystemPrng may be called at DISPATCH_LEVEL */
+static KSPIN_LOCK KsecRandomLock;
 static ULONG KsecRandomKey[8];
 static ULONG64 KsecRandomBlockCounter;
 
@@ -119,7 +120,7 @@ KsecInitializeRandomSupport(VOID)
     ULONG_PTR PoolAddress;
     ULONG Pool[16];
 
-    ExInitializeFastMutex(&KsecRandomLock);
+    KeInitializeSpinLock(&KsecRandomLock);
     RtlCopyMemory(Pool, KsecRandomSigma, sizeof(KsecRandomSigma));
     RtlZeroMemory(&Pool[4], sizeof(Pool) - sizeof(KsecRandomSigma));
 
@@ -148,17 +149,37 @@ KsecInitializeRandomSupport(VOID)
     RtlSecureZeroMemory(Pool, sizeof(Pool));
 }
 
+static
+VOID
+KsecRandomSetCounter(
+    _Inout_updates_(16) ULONG Input[16],
+    _In_ ULONG64 Counter)
+{
+    LARGE_INTEGER PerformanceCounter = KeQueryPerformanceCounter(NULL);
+
+    Input[12] = (ULONG)Counter;
+    Input[13] = (ULONG)(Counter >> 32);
+    Input[14] = PerformanceCounter.LowPart;
+    Input[15] = PerformanceCounter.HighPart;
+}
+
+/*
+ * Callable at IRQL <= DISPATCH_LEVEL with a buffer that is resident at that
+ * IRQL. The lock only covers taking the key, reserving the block counters and
+ * replacing the key; the output is generated afterwards from the old key.
+ */
 NTSTATUS
 NTAPI
 KsecGenRandom(
     PVOID Buffer,
     SIZE_T Length)
 {
-    LARGE_INTEGER PerformanceCounter;
     ULONG Input[16];
     ULONG Output[16];
     PUCHAR Destination = Buffer;
+    ULONG64 Counter, Blocks;
     SIZE_T Chunk;
+    KIRQL OldIrql;
 
     if (Length == 0)
     {
@@ -170,37 +191,29 @@ KsecGenRandom(
         return STATUS_INVALID_PARAMETER;
     }
 
-    ExAcquireFastMutex(&KsecRandomLock);
-
+    Blocks = (Length + sizeof(Output) - 1) / sizeof(Output);
     RtlCopyMemory(Input, KsecRandomSigma, sizeof(KsecRandomSigma));
+
+    KeAcquireSpinLock(&KsecRandomLock, &OldIrql);
     RtlCopyMemory(&Input[4], KsecRandomKey, sizeof(KsecRandomKey));
+    Counter = KsecRandomBlockCounter;
+    KsecRandomBlockCounter += Blocks + 1;
+
+    /* The next key is the block after this request's blocks */
+    KsecRandomSetCounter(Input, Counter + Blocks);
+    KsecRandomCore(Input, Output);
+    RtlCopyMemory(KsecRandomKey, Output, sizeof(KsecRandomKey));
+    KeReleaseSpinLock(&KsecRandomLock, OldIrql);
 
     while (Length > 0)
     {
-        PerformanceCounter = KeQueryPerformanceCounter(NULL);
-        Input[12] = (ULONG)KsecRandomBlockCounter;
-        Input[13] = (ULONG)(KsecRandomBlockCounter >> 32);
-        Input[14] = PerformanceCounter.LowPart;
-        Input[15] = PerformanceCounter.HighPart;
-        KsecRandomBlockCounter++;
-
+        KsecRandomSetCounter(Input, Counter++);
         KsecRandomCore(Input, Output);
         Chunk = min(Length, sizeof(Output));
         RtlCopyMemory(Destination, Output, Chunk);
         Destination += Chunk;
         Length -= Chunk;
     }
-
-    PerformanceCounter = KeQueryPerformanceCounter(NULL);
-    Input[12] = (ULONG)KsecRandomBlockCounter;
-    Input[13] = (ULONG)(KsecRandomBlockCounter >> 32);
-    Input[14] = PerformanceCounter.LowPart;
-    Input[15] = PerformanceCounter.HighPart;
-    KsecRandomBlockCounter++;
-    KsecRandomCore(Input, Output);
-    RtlCopyMemory(KsecRandomKey, Output, sizeof(KsecRandomKey));
-
-    ExReleaseFastMutex(&KsecRandomLock);
 
     RtlSecureZeroMemory(Input, sizeof(Input));
     RtlSecureZeroMemory(Output, sizeof(Output));

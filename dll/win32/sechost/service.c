@@ -51,6 +51,9 @@ struct notify_data
     SC_NOTIFY_RPC_HANDLE notify_handle;
     SERVICE_NOTIFYW *notify_buffer;
     HANDLE calling_thread, ready_evt;
+#ifdef __REACTOS__
+    HANDLE done_event;  /* set when the request ends and no longer uses notify_buffer */
+#endif
     struct list entry;
 };
 
@@ -1368,6 +1371,8 @@ static DWORD WINAPI notify_thread(void *user)
 
     CloseHandle(data->calling_thread);
 #ifdef __REACTOS__
+    if (data->done_event)
+        SetEvent(data->done_event);
     free(data);
 #else
     HeapFree(GetProcessHeap(), 0, data);
@@ -1376,24 +1381,48 @@ static DWORD WINAPI notify_thread(void *user)
     return 0;
 }
 
+#ifdef __REACTOS__
+static DWORD notify_status_change( SC_HANDLE service, DWORD mask, SERVICE_NOTIFYW *notify_buffer,
+                                   HANDLE done_event );
+
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
  */
 DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DWORD mask,
                                                            SERVICE_NOTIFYW *notify_buffer )
 {
+    TRACE( "%p 0x%lx %p\n", service, mask, notify_buffer );
+
+    return notify_status_change( service, mask, notify_buffer, NULL );
+}
+
+static DWORD notify_status_change( SC_HANDLE service, DWORD mask, SERVICE_NOTIFYW *notify_buffer,
+                                   HANDLE done_event )
+#else
+/******************************************************************************
+ *     NotifyServiceStatusChangeW   (sechost.@)
+ */
+DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DWORD mask,
+                                                           SERVICE_NOTIFYW *notify_buffer )
+#endif
+{
     DWORD err = 0;
     BOOL b_dummy = FALSE;
     GUID g_dummy = {0};
     struct notify_data *data;
 
+#ifndef __REACTOS__
     TRACE( "%p 0x%lx %p\n", service, mask, notify_buffer );
+#endif
 
     if (!(data = calloc( 1, sizeof(*data) )))
         return ERROR_NOT_ENOUGH_MEMORY;
 
     data->service = service;
     data->notify_buffer = notify_buffer;
+#ifdef __REACTOS__
+    data->done_event = done_event;
+#endif
     if (!DuplicateHandle( GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
                           &data->calling_thread, 0, FALSE, DUPLICATE_SAME_ACCESS ))
     {
@@ -1448,12 +1477,16 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeA( SC_HANDLE service, DW
     return NotifyServiceStatusChangeW( service, mask, (SERVICE_NOTIFYW *)notify_buffer );
 }
 
-/* A subscription keeps one NotifyServiceStatusChangeW request pending from its
- * own thread, which the result reaches as an APC, and calls the callback for
- * each one. */
+/*
+ * A subscription keeps one status change request pending from its own thread,
+ * which the result reaches as an APC, and calls the callback for each one. The
+ * request goes through a handle of the subscription, so that closing it ends a
+ * pending request without touching the handle of the caller.
+ */
 struct _SC_NOTIFICATION_REGISTRATION
 {
     SC_HANDLE handle;
+    HANDLE done_event;
     DWORD mask;
     PSC_NOTIFICATION_CALLBACK callback;
     void *context;
@@ -1472,9 +1505,11 @@ struct _SC_NOTIFICATION_REGISTRATION
 static void release_subscription( struct _SC_NOTIFICATION_REGISTRATION *sub )
 {
     if (InterlockedDecrement( &sub->refs )) return;
-    /* shortcut: the buffer of a request pending at the end is leaked (one SERVICE_NOTIFYW);
-     * cancelling it needs a way to abort GetNotifyResults without closing the caller's handle */
-    if (!sub->pending) free( sub->notify );
+    if (sub->handle) CloseServiceHandle( sub->handle );
+    /* A pending request ends when its handle closes; until then it may write to notify */
+    if (sub->pending) WaitForSingleObject( sub->done_event, INFINITE );
+    free( sub->notify );
+    CloseHandle( sub->done_event );
     CloseHandle( sub->thread );
     CloseHandle( sub->ready_event );
     CloseHandle( sub->stop_event );
@@ -1506,7 +1541,8 @@ static DWORD WINAPI subscription_thread( void *param )
         sub->notify->pfnNotifyCallback = subscription_notified;
         sub->notify->pContext = sub;
         sub->fired = FALSE;
-        err = NotifyServiceStatusChangeW( sub->handle, sub->mask, sub->notify );
+        ResetEvent( sub->done_event );
+        err = notify_status_change( sub->handle, sub->mask, sub->notify, sub->done_event );
         if (first)
         {
             sub->first_error = err;
@@ -1531,6 +1567,49 @@ static DWORD WINAPI subscription_thread( void *param )
 
     release_subscription( sub );
     return 0;
+}
+
+/* A handle to the service or service manager of handle that the subscription owns */
+static SC_HANDLE open_subscription_handle( SC_HANDLE handle, SC_EVENT_TYPE type, DWORD *err )
+{
+    QUERY_SERVICE_CONFIGW *config = NULL;
+    WCHAR name[257];
+    DWORD size = 0, len = ARRAY_SIZE(name);
+    SC_HANDLE manager, own = NULL;
+
+    *err = ERROR_SUCCESS;
+    if (type == SC_EVENT_DATABASE_CHANGE)
+    {
+        own = OpenSCManagerW( NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE );
+        if (!own) *err = GetLastError();
+        return own;
+    }
+
+    /* The key name of the service comes from its display name, which is unique */
+    if (QueryServiceConfigW( handle, NULL, 0, &size ) || GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    {
+        *err = GetLastError();
+        return NULL;
+    }
+    if (!(config = malloc( size )))
+    {
+        *err = ERROR_NOT_ENOUGH_MEMORY;
+        return NULL;
+    }
+    if (QueryServiceConfigW( handle, config, size, &size ) &&
+        (manager = OpenSCManagerW( NULL, NULL, SC_MANAGER_CONNECT )))
+    {
+        if (GetServiceKeyNameW( manager, config->lpDisplayName, name, &len ))
+            own = OpenServiceW( manager, name, SERVICE_QUERY_STATUS );
+        if (!own) *err = GetLastError();
+        CloseServiceHandle( manager );
+    }
+    else
+    {
+        *err = GetLastError();
+    }
+    free( config );
+    return own;
 }
 
 /******************************************************************************
@@ -1571,20 +1650,29 @@ DWORD WINAPI SubscribeServiceChangeNotifications( SC_HANDLE service, SC_EVENT_TY
         free( sub );
         return ERROR_NOT_ENOUGH_MEMORY;
     }
-    sub->handle = service;
+    sub->handle = open_subscription_handle( service, type, &err );
+    if (!sub->handle)
+    {
+        free( sub->notify );
+        free( sub );
+        return err;
+    }
     sub->mask = mask;
     sub->callback = callback;
     sub->context = context;
     sub->refs = 2;
     sub->ready_event = CreateEventW( NULL, TRUE, FALSE, NULL );
     sub->stop_event = CreateEventW( NULL, TRUE, FALSE, NULL );
-    if (sub->ready_event && sub->stop_event)
+    sub->done_event = CreateEventW( NULL, TRUE, FALSE, NULL );
+    if (sub->ready_event && sub->stop_event && sub->done_event)
         sub->thread = CreateThread( NULL, 0, subscription_thread, sub, 0, &sub->thread_id );
     if (!sub->thread)
     {
         err = GetLastError();
         if (sub->ready_event) CloseHandle( sub->ready_event );
         if (sub->stop_event) CloseHandle( sub->stop_event );
+        if (sub->done_event) CloseHandle( sub->done_event );
+        CloseServiceHandle( sub->handle );
         free( sub->notify );
         free( sub );
         return err;
@@ -1611,6 +1699,8 @@ VOID WINAPI UnsubscribeServiceChangeNotifications( PSC_NOTIFICATION_REGISTRATION
 
     if (!subscription) return;
     SetEvent( subscription->stop_event );
+    /* Ends the pending request, which the service manager then completes as aborted */
+    CloseServiceHandle( InterlockedExchangePointer( (void **)&subscription->handle, NULL ) );
     /* From a callback the thread ends by itself after the callback returns */
     if (subscription->thread_id != GetCurrentThreadId())
         WaitForSingleObject( subscription->thread, INFINITE );

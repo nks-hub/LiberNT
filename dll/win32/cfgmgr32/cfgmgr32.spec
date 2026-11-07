@@ -225,8 +225,8 @@
 @ stdcall CM_Set_Class_Registry_PropertyW(ptr long ptr long long ptr)
 @ stdcall CM_Set_DevNode_Problem(long long long)
 @ stdcall CM_Set_DevNode_Problem_Ex(long long long ptr)
-@ stub CM_Set_DevNode_PropertyW
-@ stub CM_Set_DevNode_Property_ExW
+@ stdcall CM_Set_DevNode_PropertyW(long ptr long ptr long long)
+@ stdcall CM_Set_DevNode_Property_ExW(long ptr long ptr long long ptr)
 @ stdcall CM_Set_DevNode_Registry_PropertyA(long long ptr long long)
 @ stdcall CM_Set_DevNode_Registry_PropertyW(long long ptr long long)
 @ stdcall CM_Set_DevNode_Registry_Property_ExA(long long ptr long long ptr)

@@ -2879,6 +2879,78 @@ CONFIGRET WINAPI CM_Get_DevNode_PropertyW( DEVINST node, const DEVPROPKEY *key, 
     return CM_Get_DevNode_Property_ExW( node, key, type, buffer, size, flags, NULL );
 }
 
+#ifdef __REACTOS__
+/***********************************************************************
+ *           CM_Set_DevNode_Property_ExW (cfgmgr32.@)
+ *
+ * The registry properties (DEVPKEY_Device_* with the DeviceDesc format id)
+ * keep their usual values; every other key is stored like
+ * SetupDiSetDevicePropertyW does, in Properties\{fmtid}\pid of the device key.
+ */
+CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags, HMACHINE machine )
+{
+    WCHAR path[MAX_PATH], guid[39];
+    HKEY dev_key, prop_key;
+    struct device dev;
+    LSTATUS err;
+
+    TRACE( "node %#lx, key %s, type %#lx, buffer %p, size %lu, flags %#lx, machine %p\n", node, debugstr_DEVPROPKEY(key), type, buffer, size, flags, machine );
+    if (!CfgmgrIsValidMachine( machine )) return CR_FAILURE;
+    if (!key) return CR_INVALID_POINTER;
+    if (flags) return CR_INVALID_FLAG;
+    if (size && !buffer) return CR_INVALID_POINTER;
+    if (devnode_get_device( node, &dev )) return CR_INVALID_DEVNODE;
+
+    if (!memcmp( &key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid, sizeof(key->fmtid) ) && key->pid >= 2)
+    {
+        if (type == DEVPROP_TYPE_GUID)
+        {
+            if (size != sizeof(GUID)) return CR_INVALID_DATA;
+            guid_string( (const GUID *)buffer, guid, ARRAY_SIZE(guid) );
+            wcsupr( guid );
+            return CM_Set_DevNode_Registry_Property_ExW( node, key->pid - 1, guid, sizeof(guid), 0, machine );
+        }
+        return CM_Set_DevNode_Registry_Property_ExW( node, key->pid - 1, buffer, size, 0, machine );
+    }
+
+    if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, KEY_ALL_ACCESS, TRUE, &dev_key ))) return map_error( err );
+    propkey_string( key, L"Properties\\", path, ARRAY_SIZE(path) );
+
+    switch (type)
+    {
+        case DEVPROP_TYPE_EMPTY:
+            err = RegDeleteKeyW( dev_key, path );
+            break;
+        case DEVPROP_TYPE_NULL:
+            if (!(err = RegOpenKeyExW( dev_key, path, 0, KEY_SET_VALUE, &prop_key )))
+            {
+                err = RegDeleteValueW( prop_key, NULL );
+                RegCloseKey( prop_key );
+            }
+            break;
+        default:
+            if (!(err = RegCreateKeyExW( dev_key, path, 0, NULL, 0, KEY_SET_VALUE, NULL, &prop_key, NULL )))
+            {
+                err = RegSetValueExW( prop_key, NULL, 0, 0xffff0000 | (type & 0xffff), buffer, size );
+                RegCloseKey( prop_key );
+            }
+            break;
+    }
+    RegCloseKey( dev_key );
+
+    if (err == ERROR_FILE_NOT_FOUND) return CR_NO_SUCH_VALUE;
+    return map_error( err );
+}
+
+/***********************************************************************
+ *           CM_Set_DevNode_PropertyW (cfgmgr32.@)
+ */
+CONFIGRET WINAPI CM_Set_DevNode_PropertyW( DEVINST node, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags )
+{
+    return CM_Set_DevNode_Property_ExW( node, key, type, buffer, size, flags, NULL );
+}
+#endif
+
 /***********************************************************************
  *           CM_Get_DevNode_Property_Keys_Ex (cfgmgr32.@)
  */

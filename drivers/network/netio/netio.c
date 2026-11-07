@@ -200,6 +200,34 @@ static VOID
 NetioStopReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
 NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS WSKAPI
+WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _Inout_ PIRP Irp);
+static NTSTATUS WSKAPI
+WskControlSocket(_In_ PWSK_SOCKET SocketParam, _In_ WSK_CONTROL_SOCKET_TYPE RequestType, _In_ ULONG ControlCode,
+                 _In_ ULONG Level, _In_ SIZE_T InputSize, _In_reads_bytes_opt_(InputSize) PVOID InputBuffer,
+                 _In_ SIZE_T OutputSize, _Out_writes_bytes_opt_(OutputSize) PVOID OutputBuffer,
+                 _Out_opt_ SIZE_T *OutputSizeReturned, _Inout_opt_ PIRP Irp);
+
+/*
+ * Querying the address file and setting its options build IRPs that need
+ * PASSIVE_LEVEL, while WSK clients may call up to DISPATCH_LEVEL. Such a
+ * request runs again in a system worker thread.
+ */
+typedef enum _NETIO_PASSIVE_KIND
+{
+    NetioPassiveLocalAddress,
+    NetioPassivePktInfo,
+} NETIO_PASSIVE_KIND;
+
+typedef struct _NETIO_PASSIVE_REQUEST
+{
+    WORK_QUEUE_ITEM WorkItem;
+    NETIO_PASSIVE_KIND Kind;
+    struct _WSK_SOCKET_INTERNAL *Socket;
+    PIRP Irp;
+    PSOCKADDR LocalAddress;
+    ULONG PktInfo;
+} NETIO_PASSIVE_REQUEST, *PNETIO_PASSIVE_REQUEST;
 static NTSTATUS
 NetioSetAddressOption(_In_ PFILE_OBJECT AddressFile, _In_ ULONG Option, _In_ ULONG Value);
 
@@ -453,6 +481,61 @@ DereferenceSocket(_In_ PWSK_SOCKET_INTERNAL Socket)
         return;
     }
     DereferenceSocketSynchronous(Socket);
+}
+
+static VOID NTAPI
+NetioPassiveWorker(
+    _In_ PVOID Context)
+{
+    PNETIO_PASSIVE_REQUEST Request = Context;
+    PWSK_SOCKET_INTERNAL Socket = Request->Socket;
+
+    switch (Request->Kind)
+    {
+        case NetioPassiveLocalAddress:
+            WskGetLocalAddress(&Socket->Socket, Request->LocalAddress, Request->Irp);
+            break;
+
+        case NetioPassivePktInfo:
+            WskControlSocket(&Socket->Socket, WskSetOption, IP_PKTINFO, IPPROTO_IP, sizeof(Request->PktInfo),
+                             &Request->PktInfo, 0, NULL, NULL, Request->Irp);
+            break;
+    }
+
+    DereferenceSocket(Socket);
+    ExFreePoolWithTag(Request, TAG_NETIO);
+}
+
+/* The IRP, if there is one, completes in the worker thread; the request's buffers stay valid until then */
+static NTSTATUS
+NetioQueuePassive(
+    _In_ PWSK_SOCKET_INTERNAL Socket,
+    _In_ NETIO_PASSIVE_KIND Kind,
+    _In_opt_ PIRP Irp,
+    _In_opt_ PSOCKADDR LocalAddress,
+    _In_ ULONG PktInfo)
+{
+    PNETIO_PASSIVE_REQUEST Request = ExAllocatePoolZero(NonPagedPool, sizeof(*Request), TAG_NETIO);
+
+    if (Request == NULL)
+    {
+        if (Irp == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        IoSetNextIrpStackLocation(Irp);
+        Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+        IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+        return STATUS_PENDING;
+    }
+
+    Request->Kind = Kind;
+    Request->Socket = Socket;
+    Request->Irp = Irp;
+    Request->LocalAddress = LocalAddress;
+    Request->PktInfo = PktInfo;
+    ReferenceSocket(Socket);
+    ExInitializeWorkItem(&Request->WorkItem, NetioPassiveWorker, Request);
+    ExQueueWorkItem(&Request->WorkItem, CriticalWorkQueue);
+    return STATUS_PENDING;
 }
 
 NTSTATUS
@@ -800,6 +883,14 @@ WskControlSocket(
 
     FUNCTION_TRACE;
 
+    /* Setting IP_PKTINFO on a bound socket sends an IRP to the address file at PASSIVE_LEVEL */
+    if (Socket != NULL && RequestType == WskSetOption && Level == IPPROTO_IP && ControlCode == IP_PKTINFO &&
+        Socket->type == SOCK_DGRAM && Socket->LocalAddressFile != NULL && Irp != NULL &&
+        InputBuffer != NULL && InputSize >= sizeof(ULONG) && KeGetCurrentIrql() > PASSIVE_LEVEL)
+    {
+        return NetioQueuePassive(Socket, NetioPassivePktInfo, Irp, NULL, *(PULONG)InputBuffer);
+    }
+
     /* Enabling an event callback takes no IRP; the result is then returned directly */
     if (Irp != NULL)
         IoSetNextIrpStackLocation(Irp);
@@ -889,7 +980,9 @@ WskControlSocket(
                         DPRINT1("WskControlSocket: IPPROTO_IP option %d Not implemented\n", ControlCode);
                         break;
                     }
-                    if (InputBuffer == NULL || InputSize < sizeof(ULONG))
+                    /* Above PASSIVE_LEVEL a bound socket needs an IRP to finish the change later */
+                    if (InputBuffer == NULL || InputSize < sizeof(ULONG) ||
+                        (Socket->LocalAddressFile && KeGetCurrentIrql() > PASSIVE_LEVEL))
                     {
                         status = STATUS_INVALID_PARAMETER;
                         break;
@@ -1430,6 +1523,10 @@ WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _
     PTA_IP_ADDRESS Address;
     NTSTATUS Status;
     PMDL Mdl = NULL;
+
+    /* WSK allows this call up to DISPATCH_LEVEL; the address file is queried at PASSIVE_LEVEL */
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL)
+        return NetioQueuePassive(Socket, NetioPassiveLocalAddress, Irp, LocalAddress, 0);
 
     IoSetNextIrpStackLocation(Irp);
 

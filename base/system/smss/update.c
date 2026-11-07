@@ -9,6 +9,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                  ULONG ValueLength, PVOID Context, PVOID EntryContext)
 {
     UNICODE_STRING Command, FileName, Directory, Arguments;
+    RTL_USER_PROCESS_INFORMATION ProcessInfo;
     ULONG Flags = 0;
     NTSTATUS Status;
 
@@ -28,7 +29,27 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                      SMP_SUBSYSTEM_FLAG | SMP_INVALID_PATH))
             Status = STATUS_INVALID_PARAMETER;
         else
-            Status = SmpExecuteImage(&FileName, &Directory, &Command, 0, Flags, NULL);
+        {
+            /* Started suspended, so that the wait below covers the whole process
+             * and not only its first thread */
+            Status = SmpExecuteImage(&FileName, &Directory, &Command, 0,
+                                     Flags | SMP_DEFERRED_FLAG, &ProcessInfo);
+            if (NT_SUCCESS(Status))
+            {
+                if (ProcessInfo.ImageInformation.SubSystemType == IMAGE_SUBSYSTEM_NATIVE)
+                {
+                    NtResumeThread(ProcessInfo.ThreadHandle, NULL);
+                    NtWaitForSingleObject(ProcessInfo.ProcessHandle, FALSE, NULL);
+                }
+                else
+                {
+                    Status = STATUS_INVALID_IMAGE_FORMAT;
+                    NtTerminateProcess(ProcessInfo.ProcessHandle, Status);
+                }
+                NtClose(ProcessInfo.ThreadHandle);
+                NtClose(ProcessInfo.ProcessHandle);
+            }
+        }
         if (FileName.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
         if (Directory.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
         if (Arguments.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);

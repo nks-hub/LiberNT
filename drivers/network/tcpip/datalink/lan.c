@@ -1705,7 +1705,7 @@ NDIS_STATUS LANRegisterAdapter(
         break;
 
     case NdisMediumIP:
-        /* Tunnels such as WireGuard: raw IP packets, no link addresses and no ARP */
+        /* Tunnel adapters: raw IP packets, no link addresses and no ARP */
         IF->HWAddressLength = 0;
         IF->BCastMask       = 0;
         IF->BCastCheck      = 0;

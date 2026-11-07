@@ -1108,7 +1108,22 @@ HRESULT CNotifyToolbar::GetIconRect(IN CONST NOTIFYICONIDENTIFIER *Identifier, O
         if (!Matches)
             continue;
 
-        if ((Data->dwState & NIS_HIDDEN) || !GetItemRect(Index, IconRect))
+        if (Data->dwState & NIS_HIDDEN)
+            return E_FAIL;
+
+        if (!IsItemVisible(Data))
+        {
+            /* An icon in the overflow area is reported at the chevron that shows it.
+             * Applications such as those built on the Rust tray-icon crate drop a
+             * click on the icon when its rectangle cannot be read. */
+            HWND hwndChevron = ::FindWindowExW(::GetParent(GetParent()), NULL, L"TrayChevronButton", NULL);
+
+            if (!hwndChevron || !::IsWindowVisible(hwndChevron) || !::GetWindowRect(hwndChevron, IconRect))
+                return E_FAIL;
+            return S_OK;
+        }
+
+        if (!GetItemRect(Index, IconRect))
             return E_FAIL;
 
         ClientToScreen(IconRect);

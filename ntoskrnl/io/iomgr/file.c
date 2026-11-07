@@ -4664,13 +4664,17 @@ IopCancelMatchingIrpsInCurrentThread(
     _In_opt_ PFILE_OBJECT FileObject,
     _In_opt_ PIO_STATUS_BLOCK IoRequestToCancel,
     _In_ BOOLEAN SynchronousOnly,
-    _In_ BOOLEAN PortOnly)
+    _In_ BOOLEAN PortOnly,
+    _Out_opt_ PBOOLEAN NotCancelled)
 {
     PETHREAD Thread;
     PLIST_ENTRY ListHead, NextEntry;
     PIRP Irp;
     KIRQL OldIrql;
     BOOLEAN Found = FALSE;
+
+    if (NotCancelled)
+        *NotCancelled = FALSE;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4687,7 +4691,9 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            IoCancelIrp(Irp);
+            /* Without a cancel routine the request stays pending */
+            if (!IoCancelIrp(Irp) && NotCancelled)
+                *NotCancelled = TRUE;
             Found = TRUE;
         }
     }
@@ -4740,13 +4746,24 @@ IopCancelIoFileExKernelApc(
     _Inout_ PVOID *SystemArgument2)
 {
     PIOP_CANCEL_IO_APC_CONTEXT Context = *SystemArgument1;
+    PKTHREAD Thread = KeGetCurrentThread();
+    BOOLEAN NotCancelled;
 
     UNREFERENCED_PARAMETER(Apc);
     UNREFERENCED_PARAMETER(NormalRoutine);
     UNREFERENCED_PARAMETER(NormalContext);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
-    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel, Context->SynchronousOnly, Context->PortOnly);
+    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel,
+                                                          Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
+
+    /*
+     * A driver without a cancel routine may wait alertably for a synchronous
+     * request. This APC interrupted the wait of the thread; the alert ends the
+     * wait that the thread goes back to, while the request is still pending.
+     */
+    if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
+        KeAlertThread(Thread, UserMode);
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);
 }
@@ -4782,7 +4799,7 @@ IopCancelIoFileExInThread(
 
     if (Thread == PsGetCurrentThread())
     {
-        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly);
+        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly, NULL);
         return STATUS_SUCCESS;
     }
 
@@ -4951,10 +4968,6 @@ NtCancelSynchronousIoFile(
     Status = IopCancelIoFileExInThread(Thread, NULL, IoRequestToCancel, TRUE, FALSE, &Found);
     if (NT_SUCCESS(Status) && !Found)
         Status = STATUS_NOT_FOUND;
-    /* A driver without a cancel routine may wait alertably for the request;
-     * the alert ends that wait */
-    else if (NT_SUCCESS(Status))
-        KeAlertThread(&Thread->Tcb, UserMode);
 
     _SEH2_TRY
     {

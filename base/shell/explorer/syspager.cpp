@@ -1108,7 +1108,25 @@ HRESULT CNotifyToolbar::GetIconRect(IN CONST NOTIFYICONIDENTIFIER *Identifier, O
         if (!Matches)
             continue;
 
-        if ((Data->dwState & NIS_HIDDEN) || !GetItemRect(Index, IconRect))
+        if (Data->dwState & NIS_HIDDEN)
+            return E_FAIL;
+
+        if (!IsItemVisible(Data))
+        {
+            /* An icon in the overflow area is reported where it is shown: in the
+             * open overflow flyout, or else at the chevron that opens it. Some
+             * applications drop a click on an icon whose rectangle they cannot read. */
+            HWND hwndChevron;
+
+            if (TrayOverflow_GetIconRect(Data->hWnd, Data->uID, IconRect))
+                return S_OK;
+            hwndChevron = ::FindWindowExW(::GetParent(GetParent()), NULL, L"TrayChevronButton", NULL);
+            if (!hwndChevron || !::IsWindowVisible(hwndChevron) || !::GetWindowRect(hwndChevron, IconRect))
+                return E_FAIL;
+            return S_OK;
+        }
+
+        if (!GetItemRect(Index, IconRect))
             return E_FAIL;
 
         ClientToScreen(IconRect);

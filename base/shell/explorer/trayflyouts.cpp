@@ -10436,6 +10436,24 @@ BOOL TrayOverflow_IsOpen(VOID)
            g_pTrayOverflow->IsWindowVisible() && g_pTrayOverflow->m_AnimPhase != TFY_CLOSE;
 }
 
+/* The screen rectangle of an icon in the open overflow flyout */
+BOOL TrayOverflow_GetIconRect(IN HWND hWnd, IN UINT uID, OUT RECT *prcIcon)
+{
+    if (!TrayOverflow_IsOpen())
+        return FALSE;
+
+    for (UINT i = 0; i < g_pTrayOverflow->m_List.cItems; i++)
+    {
+        if (g_pTrayOverflow->m_List.Items[i].hWnd == hWnd && g_pTrayOverflow->m_List.Items[i].uID == uID)
+        {
+            *prcIcon = g_pTrayOverflow->CellRect(i);
+            ::MapWindowPoints(g_pTrayOverflow->m_hWnd, NULL, (LPPOINT)prcIcon, 2);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 VOID TrayOverflow_Refresh(VOID)
 {
     if (TrayOverflow_IsOpen())

@@ -35,6 +35,7 @@ typedef struct _SW_DEVICE
     PVOID Context;
     HANDLE Thread;
     DWORD ThreadId;
+    BOOL Reopened;
 } SW_DEVICE, *PSW_DEVICE;
 
 typedef HDEVINFO (WINAPI *PFN_SETUPDICREATEDEVICEINFOLIST)(const GUID *, HWND);
@@ -261,15 +262,16 @@ GetProcessStart(_In_ HANDLE Process, _Out_ PULONGLONG Start)
     return TRUE;
 }
 
+/* ProcessId 0 records a device that outlives its closed handle */
 static VOID
-RecordOwner(_In_ PCWSTR InstanceId)
+RecordOwner(_In_ PCWSTR InstanceId, _In_ DWORD ProcessId, _In_ SW_DEVICE_LIFETIME Lifetime)
 {
     WCHAR Name[MAX_DEVICE_ID_LEN];
-    ULONGLONG Start;
-    DWORD ProcessId = GetCurrentProcessId();
+    ULONGLONG Start = 0;
+    DWORD Value = Lifetime;
     HKEY Owners, Key;
 
-    if (!GetProcessStart(GetCurrentProcess(), &Start) ||
+    if ((ProcessId && !GetProcessStart(GetCurrentProcess(), &Start)) ||
         RegCreateKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, NULL, REG_OPTION_VOLATILE,
                         KEY_CREATE_SUB_KEY, NULL, &Owners, NULL))
     {
@@ -280,6 +282,7 @@ RecordOwner(_In_ PCWSTR InstanceId)
     {
         RegSetValueExW(Key, L"ProcessId", 0, REG_DWORD, (const BYTE *)&ProcessId, sizeof(ProcessId));
         RegSetValueExW(Key, L"ProcessStart", 0, REG_QWORD, (const BYTE *)&Start, sizeof(Start));
+        RegSetValueExW(Key, L"Lifetime", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value));
         RegCloseKey(Key);
     }
     RegCloseKey(Owners);
@@ -298,64 +301,145 @@ ForgetOwner(_In_ PCWSTR InstanceId)
     RegCloseKey(Owners);
 }
 
-/* TRUE when the device was made by a SwDeviceCreate whose process has ended */
-static BOOL
-OwnerIsGone(_In_ PCWSTR InstanceId)
+typedef enum _SW_DEVICE_OWNER
+{
+    SwOwnerUnknown,     /* Not made by SwDeviceCreate during this boot */
+    SwOwnerInUse,       /* A handle is open */
+    SwOwnerEnded,       /* The process holding the handle ended */
+    SwOwnerReleased,    /* No handle is open and the device stays */
+} SW_DEVICE_OWNER;
+
+static SW_DEVICE_OWNER
+GetOwner(_In_ PCWSTR InstanceId)
 {
     WCHAR Path[ARRAYSIZE(SW_DEVICE_OWNERS) + 1 + MAX_DEVICE_ID_LEN];
-    DWORD ProcessId, Size = sizeof(ProcessId);
+    DWORD ProcessId, Lifetime, Size;
     ULONGLONG Recorded, Start;
     HANDLE Process;
-    BOOL Gone;
+    BOOL Ended;
     HKEY Key;
+    LONG Error;
 
     wcscpy(Path, SW_DEVICE_OWNERS L"\\");
     OwnerKeyName(InstanceId, Path + wcslen(Path));
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &Key))
-        return FALSE;
-    Gone = !RegQueryValueExW(Key, L"ProcessId", NULL, NULL, (BYTE *)&ProcessId, &Size) &&
-           (Size = sizeof(Recorded), !RegQueryValueExW(Key, L"ProcessStart", NULL, NULL, (BYTE *)&Recorded, &Size));
+        return SwOwnerUnknown;
+    Size = sizeof(ProcessId);
+    Error = RegQueryValueExW(Key, L"ProcessId", NULL, NULL, (BYTE *)&ProcessId, &Size);
+    if (!Error)
+    {
+        Size = sizeof(Recorded);
+        Error = RegQueryValueExW(Key, L"ProcessStart", NULL, NULL, (BYTE *)&Recorded, &Size);
+    }
+    if (!Error)
+    {
+        Size = sizeof(Lifetime);
+        Error = RegQueryValueExW(Key, L"Lifetime", NULL, NULL, (BYTE *)&Lifetime, &Size);
+    }
     RegCloseKey(Key);
-    if (!Gone)
-        return FALSE;
+    if (Error)
+        return SwOwnerUnknown;
+    if (!ProcessId)
+        return SwOwnerReleased;
 
     /* A reused process ID has another start time */
     Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, ProcessId);
     if (Process == NULL)
-        return GetLastError() == ERROR_INVALID_PARAMETER;
-    Gone = !GetProcessStart(Process, &Start) || Start != Recorded ||
-           WaitForSingleObject(Process, 0) == WAIT_OBJECT_0;
-    CloseHandle(Process);
-    return Gone;
+    {
+        Ended = GetLastError() == ERROR_INVALID_PARAMETER;
+    }
+    else
+    {
+        Ended = !GetProcessStart(Process, &Start) || Start != Recorded ||
+                WaitForSingleObject(Process, 0) == WAIT_OBJECT_0;
+        CloseHandle(Process);
+    }
+    if (!Ended)
+        return SwOwnerInUse;
+    return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
 }
 
+/*
+ * Creates the device node, or takes over one that no handle holds, and
+ * records this process as its owner. The lock keeps two SwDeviceCreate
+ * calls from taking over the same node.
+ */
 static HRESULT
-CreateSwDeviceNode(_In_ PSW_DEVICE Device)
+ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
 {
     DEVINST Root;
     CONFIGRET Cr;
-    HRESULT hr;
+    HANDLE Lock;
+    DWORD Wait;
 
     Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
     if (Cr != CR_SUCCESS)
         return CrToHresult(Cr);
 
-    /* PnP installs the driver below, after the IDs and properties are in place */
+    Lock = CreateMutexW(NULL, FALSE, L"Global\\SoftwareDeviceOwners");
+    if (!Lock)
+        return HRESULT_FROM_WIN32(GetLastError());
+    Wait = WaitForSingleObject(Lock, INFINITE);
+    if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
+    {
+        CloseHandle(Lock);
+        return HRESULT_FROM_WIN32(ERROR_GEN_FAILURE);
+    }
+
+    /* PnP installs the driver later, after the IDs and properties are in place */
     Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
-    if (Cr == CR_ALREADY_SUCH_DEVINST && OwnerIsGone(Device->InstanceId) &&
-        CfgmgrRemoveSoftwareDevice(Device->InstanceId) == CR_SUCCESS)
+    if (Cr == CR_ALREADY_SUCH_DEVINST)
     {
-        TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
-        Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
-                                CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+        switch (GetOwner(Device->InstanceId))
+        {
+            case SwOwnerReleased:
+                /* A device that outlived its handle is opened again as it is */
+                Cr = CM_Locate_DevNodeW(&Device->DevInst, Device->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
+                Device->Reopened = (Cr == CR_SUCCESS);
+                break;
+
+            case SwOwnerEnded:
+                if (CfgmgrRemoveSoftwareDevice(Device->InstanceId) == CR_SUCCESS)
+                {
+                    TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
+                    Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
+                                            CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+                }
+                break;
+
+            default:
+                break;
+        }
     }
+    if (Cr == CR_SUCCESS)
+        RecordOwner(Device->InstanceId, GetCurrentProcessId(), SWDeviceLifetimeHandle);
+
+    ReleaseMutex(Lock);
+    CloseHandle(Lock);
+
     if (Cr != CR_SUCCESS)
     {
         /* The node may belong to another handle; it is not ours to remove */
         Device->DevInst = 0;
         return Cr == CR_ALREADY_SUCH_DEVINST ? HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) : CrToHresult(Cr);
     }
+
+    /* A new handle has the handle lifetime */
+    if (CfgmgrWatchSoftwareDevice(Device->InstanceId, GetCurrentProcessId()) != CR_SUCCESS)
+        WARN("%s stays after this process ends\n", debugstr_w(Device->InstanceId));
+    return S_OK;
+}
+
+static HRESULT
+CreateSwDeviceNode(_In_ PSW_DEVICE Device)
+{
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = ClaimSwDeviceNode(Device);
+    if (FAILED(hr))
+        return hr;
 
     if (Device->HardwareIds && *Device->HardwareIds)
     {
@@ -397,6 +481,17 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     if (FAILED(hr))
         return hr;
 
+    /* A device opened again keeps the driver it runs with */
+    if (Device->Reopened)
+    {
+        ULONG Status, Problem;
+
+        if (CM_Get_DevNode_Status(&Status, &Problem, Device->DevInst, 0) == CR_SUCCESS &&
+            (Status & DN_DRIVER_LOADED))
+        {
+            return S_OK;
+        }
+    }
     return InstallSwDeviceDriver(Device);
 }
 
@@ -415,18 +510,17 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
         ERR("Creating software device %s failed (0x%08lx)\n", debugstr_w(Device->InstanceId), hr);
 
         /* A half-created device would block the next creation with the same instance ID */
-        if (Device->DevInst)
+        if (Device->DevInst && Device->Reopened)
+        {
+            CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
+            RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
+        }
+        else if (Device->DevInst)
         {
             CfgmgrRemoveSoftwareDevice(Device->InstanceId);
-            Device->DevInst = 0;
+            ForgetOwner(Device->InstanceId);
         }
-    }
-    else
-    {
-        RecordOwner(Device->InstanceId);
-        /* A new handle has the handle lifetime */
-        if (CfgmgrWatchSoftwareDevice(Device->InstanceId, GetCurrentProcessId()) != CR_SUCCESS)
-            WARN("%s stays after this process ends\n", debugstr_w(Device->InstanceId));
+        Device->DevInst = 0;
     }
 
     /* The callback may close the handle; nothing touches Device afterwards */
@@ -573,13 +667,14 @@ SwDeviceClose(
         CONFIGRET Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId);
         if (Cr != CR_SUCCESS)
             WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
+        ForgetOwner(Device->InstanceId);
     }
     else if (Device->DevInst)
     {
+        /* A device that stays can be opened again by the next SwDeviceCreate */
         CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
+        RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
     }
-    if (Device->DevInst)
-        ForgetOwner(Device->InstanceId);
 
     FreeSwDevice(Device);
 }
@@ -604,6 +699,7 @@ SwDeviceSetLifetime(
                                                  Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0);
         if (Cr != CR_SUCCESS)
             return CrToHresult(Cr);
+        RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
     }
     return S_OK;
 }

@@ -17,6 +17,7 @@
 #include <winbase_undoc.h>
 #include <userenv.h>
 #include <strsafe.h>
+#include <ndk/sefuncs.h>
 
 #define NDEBUG
 #include <debug.h>
@@ -495,6 +496,178 @@ done:
 }
 
 
+static PVOID
+ScmQueryTokenInfo(
+    _In_ HANDLE hToken,
+    _In_ TOKEN_INFORMATION_CLASS InfoClass)
+{
+    DWORD dwSize = 0;
+    PVOID pInfo;
+
+    GetTokenInformation(hToken, InfoClass, NULL, 0, &dwSize);
+    if (dwSize == 0)
+        return NULL;
+    pInfo = HeapAlloc(GetProcessHeap(), 0, dwSize);
+    if (pInfo != NULL && !GetTokenInformation(hToken, InfoClass, pInfo, dwSize, &dwSize))
+    {
+        HeapFree(GetProcessHeap(), 0, pInfo);
+        pInfo = NULL;
+    }
+    return pInfo;
+}
+
+/* Builds a primary token like hBaseToken with the service SID (S-1-5-80-...) as an owner group */
+static DWORD
+ScmCreateServiceSidToken(
+    _In_ HANDLE hBaseToken,
+    _In_ PCWSTR pszServiceName,
+    _Out_ PHANDLE phToken)
+{
+    SECURITY_QUALITY_OF_SERVICE Qos = { sizeof(Qos), SecurityImpersonation, SECURITY_STATIC_TRACKING, FALSE };
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    UNICODE_STRING ServiceName;
+    PTOKEN_USER pUser = NULL;
+    PTOKEN_GROUPS pGroups = NULL, pNewGroups = NULL;
+    PTOKEN_PRIVILEGES pPrivileges = NULL;
+    PTOKEN_OWNER pOwner = NULL;
+    PTOKEN_PRIMARY_GROUP pPrimaryGroup = NULL;
+    PTOKEN_DEFAULT_DACL pDefaultDacl = NULL;
+    PTOKEN_SOURCE pSource = NULL;
+    PTOKEN_STATISTICS pStatistics = NULL;
+    PSID pServiceSid = NULL;
+    ULONG ulSidLength = 0;
+    BOOLEAN bWasEnabled;
+    NTSTATUS Status;
+    DWORD i;
+
+    *phToken = NULL;
+
+    RtlInitUnicodeString(&ServiceName, pszServiceName);
+    Status = RtlCreateServiceSid(&ServiceName, NULL, &ulSidLength);
+    if (Status != STATUS_BUFFER_TOO_SMALL)
+        return RtlNtStatusToDosError(Status);
+    pServiceSid = HeapAlloc(GetProcessHeap(), 0, ulSidLength);
+    if (pServiceSid == NULL)
+        return ERROR_NOT_ENOUGH_MEMORY;
+    Status = RtlCreateServiceSid(&ServiceName, pServiceSid, &ulSidLength);
+    if (!NT_SUCCESS(Status))
+        goto done;
+
+    pUser = ScmQueryTokenInfo(hBaseToken, TokenUser);
+    pGroups = ScmQueryTokenInfo(hBaseToken, TokenGroups);
+    pPrivileges = ScmQueryTokenInfo(hBaseToken, TokenPrivileges);
+    pOwner = ScmQueryTokenInfo(hBaseToken, TokenOwner);
+    pPrimaryGroup = ScmQueryTokenInfo(hBaseToken, TokenPrimaryGroup);
+    pDefaultDacl = ScmQueryTokenInfo(hBaseToken, TokenDefaultDacl);
+    pSource = ScmQueryTokenInfo(hBaseToken, TokenSource);
+    pStatistics = ScmQueryTokenInfo(hBaseToken, TokenStatistics);
+    if (!pUser || !pGroups || !pPrivileges || !pOwner || !pPrimaryGroup || !pDefaultDacl || !pSource || !pStatistics)
+    {
+        Status = STATUS_NO_MEMORY;
+        goto done;
+    }
+
+    pNewGroups = HeapAlloc(GetProcessHeap(), 0,
+                           FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 1]));
+    if (pNewGroups == NULL)
+    {
+        Status = STATUS_NO_MEMORY;
+        goto done;
+    }
+    pNewGroups->GroupCount = pGroups->GroupCount + 1;
+    for (i = 0; i < pGroups->GroupCount; i++)
+        pNewGroups->Groups[i] = pGroups->Groups[i];
+    pNewGroups->Groups[i].Sid = pServiceSid;
+    pNewGroups->Groups[i].Attributes = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_OWNER;
+
+    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
+    /* NtCreateToken reads the quality of service even for a primary token */
+    ObjectAttributes.SecurityQualityOfService = &Qos;
+    Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, FALSE, &bWasEnabled);
+    if (!NT_SUCCESS(Status))
+        goto done;
+    Status = NtCreateToken(phToken,
+                           TOKEN_ALL_ACCESS,
+                           &ObjectAttributes,
+                           TokenPrimary,
+                           &pStatistics->AuthenticationId,
+                           &pStatistics->ExpirationTime,
+                           pUser,
+                           pNewGroups,
+                           pPrivileges,
+                           pOwner,
+                           pPrimaryGroup,
+                           pDefaultDacl,
+                           pSource);
+    RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, bWasEnabled, FALSE, &bWasEnabled);
+
+done:
+    if (pNewGroups) HeapFree(GetProcessHeap(), 0, pNewGroups);
+    if (pStatistics) HeapFree(GetProcessHeap(), 0, pStatistics);
+    if (pSource) HeapFree(GetProcessHeap(), 0, pSource);
+    if (pDefaultDacl) HeapFree(GetProcessHeap(), 0, pDefaultDacl);
+    if (pPrimaryGroup) HeapFree(GetProcessHeap(), 0, pPrimaryGroup);
+    if (pOwner) HeapFree(GetProcessHeap(), 0, pOwner);
+    if (pPrivileges) HeapFree(GetProcessHeap(), 0, pPrivileges);
+    if (pGroups) HeapFree(GetProcessHeap(), 0, pGroups);
+    if (pUser) HeapFree(GetProcessHeap(), 0, pUser);
+    HeapFree(GetProcessHeap(), 0, pServiceSid);
+    return NT_SUCCESS(Status) ? ERROR_SUCCESS : RtlNtStatusToDosError(Status);
+}
+
+/*
+ * A service whose SID type is SERVICE_SID_TYPE_UNRESTRICTED runs with its
+ * service SID in the token, so objects can grant access to that service only.
+ * The SID goes into processes that run one service; a shared process keeps the
+ * plain account token.
+ */
+static DWORD
+ScmApplyServiceSid(
+    _In_ PSERVICE pService,
+    _Inout_ PSERVICE_IMAGE pImage)
+{
+    DWORD dwSidType = SERVICE_SID_TYPE_NONE, dwSize = sizeof(dwSidType), dwType = REG_NONE;
+    HANDLE hBaseToken = pImage->hToken, hToken;
+    HKEY hServiceKey;
+    DWORD dwError;
+
+    if (!(pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
+        return ERROR_SUCCESS;
+
+    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hServiceKey) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExW(hServiceKey, L"ServiceSidType", NULL, &dwType, (LPBYTE)&dwSidType,
+                             &dwSize) != ERROR_SUCCESS || dwType != REG_DWORD || dwSize != sizeof(DWORD))
+        {
+            dwSidType = SERVICE_SID_TYPE_NONE;
+        }
+        RegCloseKey(hServiceKey);
+    }
+    if (dwSidType != SERVICE_SID_TYPE_UNRESTRICTED)
+        return ERROR_SUCCESS;
+
+    if (hBaseToken == NULL &&
+        !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_QUERY_SOURCE | TOKEN_DUPLICATE, &hBaseToken))
+    {
+        return GetLastError();
+    }
+
+    dwError = ScmCreateServiceSidToken(hBaseToken, pService->lpServiceName, &hToken);
+    if (hBaseToken != pImage->hToken)
+        CloseHandle(hBaseToken);
+    if (dwError != ERROR_SUCCESS)
+    {
+        DPRINT1("Adding the service SID of %S failed (Error %lu)\n", pService->lpServiceName, dwError);
+        return dwError;
+    }
+
+    if (pImage->hToken != NULL)
+        CloseHandle(pImage->hToken);
+    pImage->hToken = hToken;
+    return ERROR_SUCCESS;
+}
+
+
 static
 DWORD
 ScmLogonService(
@@ -513,7 +686,7 @@ ScmLogonService(
 
     if (ScmIsLocalSystemAccount(pImage->pszAccountName) ||
         ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName)))
-        return ERROR_SUCCESS;
+        return ScmApplyServiceSid(pService, pImage);
 
     /* Get the user and domain names */
     ptr = wcschr(pImage->pszAccountName, L'\\');
@@ -591,6 +764,9 @@ done:
 
     if (ptr != NULL)
         *ptr = L'\\';
+
+    if (dwError == ERROR_SUCCESS)
+        dwError = ScmApplyServiceSid(pService, pImage);
 
     return dwError;
 }

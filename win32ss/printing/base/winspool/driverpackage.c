@@ -401,19 +401,24 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         }
     }
 
-    GetDirective(hInf, Sections, SectionCount, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile));
-    GetDirective(hInf, Sections, SectionCount, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile));
-    GetDirective(hInf, Sections, SectionCount, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile));
-    GetDirective(hInf, Sections, SectionCount, L"DefaultDataType", DefaultDataType, ARRAYSIZE(DefaultDataType));
-    if (!GetDirective(hInf, Sections, SectionCount, L"DataFile", DataFile, ARRAYSIZE(DataFile)))
-        StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
-
-    /* Version 4 drivers have neither, the spooler only runs version 3 drivers */
-    if (!*DriverFile || !*ConfigFile)
+    /* A version 4 driver has no files for the spooler, which runs version 3 drivers */
+    if (SetupFindFirstLineW(hInf, L"Version", L"ClassVer", &Context) &&
+        SetupGetStringFieldW(&Context, 1, Include, ARRAYSIZE(Include), NULL) && Include[0] == L'4')
     {
         hr = HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
         goto Cleanup;
     }
+
+    /* As the printer INF entries define, DriverFile defaults to the install section
+     * name and ConfigFile to DriverFile */
+    if (!GetDirective(hInf, Sections, SectionCount, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile)))
+        StringCchCopyW(DriverFile, ARRAYSIZE(DriverFile), InstallSection);
+    if (!GetDirective(hInf, Sections, SectionCount, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile)))
+        StringCchCopyW(ConfigFile, ARRAYSIZE(ConfigFile), DriverFile);
+    GetDirective(hInf, Sections, SectionCount, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile));
+    GetDirective(hInf, Sections, SectionCount, L"DefaultDataType", DefaultDataType, ARRAYSIZE(DefaultDataType));
+    if (!GetDirective(hInf, Sections, SectionCount, L"DataFile", DataFile, ARRAYSIZE(DataFile)))
+        StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
 
     // shortcut: LanguageMonitor and VendorSetup directives are not processed, install the monitor separately.
 

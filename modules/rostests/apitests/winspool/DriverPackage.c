@@ -60,6 +60,7 @@ static const char TestInf[] =
     "\r\n"
     "[TESTNEEDS]\r\n"
     "CopyFiles=@TESTPKG.GPD\r\n"
+    "DataFile=TESTPKG.GPD\r\n"
     "DataSection=TESTPKG_DATA\r\n"
     "Needs=NEEDS_A\r\n"
     "\r\n"

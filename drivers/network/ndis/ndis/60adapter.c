@@ -214,6 +214,27 @@ Ndis6AllocateInterfaceIndex(VOID)
     return (NET_IFINDEX)Next;
 }
 
+static
+UINT32
+Ndis6ReadNetLuidIndex(
+    _In_opt_ PDEVICE_OBJECT Pdo)
+{
+    HANDLE DriverKey;
+    ULONG Value;
+
+    if (Pdo == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return 0;
+
+    if (!NT_SUCCESS(IoOpenDeviceRegistryKey(Pdo, PLUGPLAY_REGKEY_DRIVER, KEY_QUERY_VALUE, &DriverKey)))
+        return 0;
+
+    if (!Ndis6ReadAdapterKeyword(DriverKey, L"NetLuidIndex", &Value) || Value > 0x00ffffff)
+        Value = 0;
+    ZwClose(DriverKey);
+
+    return Value;
+}
+
 static VOID
 Ndis6AllocateInterfaceIdentity(
     _In_opt_ PDEVICE_OBJECT Pdo,
@@ -221,20 +242,25 @@ Ndis6AllocateInterfaceIdentity(
 {
     LONG Next;
     NET_IFTYPE IfType;
+    UINT32 LuidIndex;
 
-    /* NET_LUID reserves 24 bits for NetLuidIndex and zero is invalid. Keep
-     * IfIndex and NetLuidIndex identical so NdisIfGetInterfaceIndexFromNetLuid
-     * preserves the adapter identity. */
+    /* The network class installer stores the NetLuidIndex of the adapter in
+     * its driver key, and user mode builds the adapter LUID from it. Without
+     * one, keep IfIndex and NetLuidIndex identical. NET_LUID reserves 24 bits
+     * for NetLuidIndex and zero is invalid. */
     IfType = Ndis6ReadInterfaceType(Pdo);
+    LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
+    if (LuidIndex != 0 && Ndis6IsNetLuidIndexAllocated(IfType, LuidIndex))
+        LuidIndex = 0;
     do
     {
         Next = (LONG)Ndis6AllocateInterfaceIndex();
-    } while (Ndis6IsNetLuidIndexAllocated(IfType, (UINT32)Next));
+    } while (LuidIndex == 0 && Ndis6IsNetLuidIndexAllocated(IfType, (UINT32)Next));
 
     Ext->IfIndex = (NET_IFINDEX)Next;
     Ext->NetLuid.Value = 0;
     Ext->NetLuid.Info.IfType = IfType;
-    Ext->NetLuid.Info.NetLuidIndex = (ULONG64)(ULONG)Next;
+    Ext->NetLuid.Info.NetLuidIndex = LuidIndex != 0 ? LuidIndex : (ULONG)Next;
 }
 
 typedef struct _NDIS6_IF_STACK_ENTRY

@@ -173,8 +173,7 @@ ExfRundownCompleted(IN PEX_RUNDOWN_REF RunRef)
     /*
      * Drivers also call this on a descriptor that was never run down, to make
      * ExAcquireRundownProtection fail until ExReInitializeRundownProtection;
-     * wireguard.sys does so when it pauses its adapter, and release
-     * builds of Windows accept it.
+     * release builds of Windows accept it.
      */
     ExpSetRundown(RunRef, EX_RUNDOWN_ACTIVE);
 }

@@ -3101,8 +3101,7 @@ WSPIoctl(IN  SOCKET Handle,
                 Errno = WSAEFAULT;
                 break;
             }
-            /* shortcut: tcpip reports no ICMP unreachable to UDP sockets, so both values behave as FALSE;
-               keep the value once tcpip and AFD report them */
+            /* FIXME: the value is not kept; tcpip reports no ICMP unreachable to UDP sockets */
             Errno = NO_ERROR;
             Ret = NO_ERROR;
             break;

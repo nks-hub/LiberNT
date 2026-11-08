@@ -37,7 +37,6 @@ static DWORD ServiceTag = 0;
 
 /* The critical section synchronizes service control requests */
 static CRITICAL_SECTION ControlServiceCriticalSection;
-/* The delayed start thread; ScmShutdownServiceDatabase stops it and waits for it */
 static HANDLE ScmDelayedAutoStartStop;
 static HANDLE ScmDelayedAutoStartWorker;
 static DWORD PipeTimeout = 30000; /* 30 Seconds */
@@ -519,7 +518,6 @@ ScmQueryTokenInfo(
     return pInfo;
 }
 
-/* Builds a primary token like hBaseToken with the service SID (S-1-5-80-...) as an owner group */
 static DWORD
 ScmCreateServiceSidToken(
     _In_ HANDLE hBaseToken,
@@ -584,7 +582,6 @@ ScmCreateServiceSidToken(
     pNewGroups->Groups[i].Attributes = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_OWNER;
 
     InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
-    /* NtCreateToken reads the quality of service even for a primary token */
     ObjectAttributes.SecurityQualityOfService = &Qos;
     Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, FALSE, &bWasEnabled);
     if (!NT_SUCCESS(Status))
@@ -618,12 +615,6 @@ done:
     return NT_SUCCESS(Status) ? ERROR_SUCCESS : RtlNtStatusToDosError(Status);
 }
 
-/*
- * A service whose SID type is SERVICE_SID_TYPE_UNRESTRICTED runs with its
- * service SID in the token, so objects can grant access to that service only.
- * The SID goes into processes that run one service; the configuration refuses
- * it for a shared process, which keeps the plain account token.
- */
 static DWORD
 ScmApplyServiceSid(
     _In_ PSERVICE pService,
@@ -636,7 +627,6 @@ ScmApplyServiceSid(
     dwSidType = ScmGetServiceDword(pService, L"ServiceSidType", SERVICE_SID_TYPE_NONE);
     if (!(pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
     {
-        /* Written to the registry directly; the configuration functions refuse it */
         if (dwSidType != SERVICE_SID_TYPE_NONE)
         {
             DPRINT1("%S runs in a shared process and cannot have its service SID\n", pService->lpServiceName);
@@ -769,7 +759,6 @@ done:
     if (dwError == ERROR_SUCCESS)
         dwError = ScmApplyServiceSid(pService, pImage);
 
-    /* The caller frees the image only; what the logon opened goes here */
     if (dwError != ERROR_SUCCESS)
     {
         if (pImage->hProfile != NULL)
@@ -1840,7 +1829,6 @@ ScmShutdownServiceDatabase(VOID)
 {
     DPRINT("ScmShutdownServiceDatabase() called\n");
 
-    /* The delayed start thread uses the database and holds references to services */
     if (ScmDelayedAutoStartWorker != NULL)
     {
         SetEvent(ScmDelayedAutoStartStop);
@@ -2764,7 +2752,6 @@ ScmIsDeferredDuringSetup(
 }
 
 
-/* A DWORD of the service key, or Default when it has none */
 DWORD
 ScmGetServiceDword(
     _In_ PSERVICE pService,
@@ -2785,10 +2772,8 @@ ScmGetServiceDword(
     return dwValue;
 }
 
-/* Windows starts delayed automatic services about two minutes after the others */
 #define SCM_DELAYED_AUTO_START_DELAY (120 * 1000)
 
-/* The delayed automatic services chosen at boot, referenced, ending with NULL */
 static DWORD
 WINAPI
 ScmDelayedAutoStartThread(
@@ -2802,7 +2787,6 @@ ScmDelayedAutoStartThread(
     for (Count = 0; Services[Count] != NULL; Count++)
         ;
 
-    /* The list is chosen at boot; a later DelayedAutostart change waits for the next boot */
     if (WaitForSingleObject(ScmDelayedAutoStartStop, SCM_DELAYED_AUTO_START_DELAY) == WAIT_TIMEOUT)
     {
         for (i = 0; i < Count && !ScmShutdown; i++)
@@ -2859,7 +2843,6 @@ ScmAutoStartServices(VOID)
             DPRINT1("WARNING: Could not open the associated Safe Boot key\n");
     }
 
-    /* Room for every service and the NULL that ends the list */
     i = 1;
     for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
         i++;
@@ -2879,7 +2862,6 @@ ScmAutoStartServices(VOID)
              !ScmIsSafeBootServiceAllowed(CurrentService, hSafeBootKey)) ||
             ScmIsDeferredDuringSetup(CurrentService);
 
-        /* A delayed automatic service starts after all the others */
         if (!CurrentService->ServiceVisited && CurrentService->dwStartType == SERVICE_AUTO_START &&
             ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
         {
@@ -3026,10 +3008,6 @@ ScmAutoStartServices(VOID)
 }
 
 
-/*
- * Sends SERVICE_CONTROL_PRESHUTDOWN to the services that accept it and waits
- * for each one to stop, at most its PreshutdownTimeout (10 s by default).
- */
 static VOID
 ScmPreshutdownServices(VOID)
 {
@@ -3053,7 +3031,6 @@ ScmPreshutdownServices(VOID)
          ServiceEntry = ServiceEntry->Flink)
     {
         CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
-        /* A paused service runs and takes controls too */
         if ((CurrentService->Status.dwControlsAccepted & SERVICE_ACCEPT_PRESHUTDOWN) &&
             CurrentService->lpImage != NULL &&
             CurrentService->Status.dwCurrentState != SERVICE_STOPPED &&
@@ -3075,11 +3052,6 @@ ScmPreshutdownServices(VOID)
         CurrentService = Waits[i].Service;
         Waits[i].Deadline = GetTickCount64() + ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
 
-        /*
-         * The reference keeps the service, not its image: a stop that ends
-         * meanwhile closes the pipe of the image. The copy of the handle keeps
-         * the pipe open until the control is sent.
-         */
         ScmLockDatabaseShared();
         if (CurrentService->lpImage != NULL && CurrentService->Status.dwCurrentState != SERVICE_STOPPED &&
             !DuplicateHandle(GetCurrentProcess(), CurrentService->lpImage->hControlPipe, GetCurrentProcess(),

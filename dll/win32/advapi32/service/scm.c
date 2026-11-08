@@ -2638,7 +2638,6 @@ QueryServiceConfig2A(SC_HANDLE hService,
             }
             break;
 
-        /* These structures hold a single DWORD */
         case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
         case SERVICE_CONFIG_SERVICE_SID_INFO:
         case SERVICE_CONFIG_PRESHUTDOWN_INFO:
@@ -2792,7 +2791,6 @@ QueryServiceConfig2W(SC_HANDLE hService,
             }
             break;
 
-        /* These structures hold a single DWORD */
         case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
         case SERVICE_CONFIG_SERVICE_SID_INFO:
         case SERVICE_CONFIG_PRESHUTDOWN_INFO:

@@ -1483,7 +1483,7 @@ RtlConvertSidToUnicodeString(
     _In_ BOOLEAN AllocateDestinationString
 );
 
-#ifdef NTOS_MODE_USER /* The kernel gets it from the DDK headers */
+#ifdef NTOS_MODE_USER
 NTSYSAPI
 NTSTATUS
 NTAPI

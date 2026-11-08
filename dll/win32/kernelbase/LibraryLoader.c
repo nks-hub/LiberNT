@@ -11,15 +11,6 @@
 NTSYSAPI NTSTATUS NTAPI LdrLockLoaderLock(_In_ ULONG Flags, _Out_opt_ PULONG Disposition, _Out_ PULONG_PTR Cookie);
 NTSYSAPI NTSTATUS NTAPI LdrUnlockLoaderLock(_In_ ULONG Flags, _In_opt_ ULONG_PTR Cookie);
 
-/*
- * As on Windows, KernelBase resolves GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
- * with ntdll!RtlPcToFileHeader. Loaders that map DLLs from memory hook that
- * import of KernelBase so that addresses inside such a DLL resolve to their
- * executable. Reference counting, pinning and the lookup by name stay in
- * kernel32. The loader lock covers both lookups, so the module that holds
- * the address cannot unload, and another one take its place, in between.
- */
-
 /* Invalid flags go to kernel32 unchanged, which rejects them before any lookup */
 static BOOL
 KbValidModuleHandleFlags(_In_ DWORD dwFlags)

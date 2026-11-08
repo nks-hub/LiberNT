@@ -47,13 +47,12 @@ include(acpi.cmake)
 include(apic.cmake)
 include(smp.cmake)
 
-# freeldr, rosload and the UEFI loaders link the mini HAL
-if(ARCH STREQUAL "i386")
-    add_subdirectory(minihal)
-endif()
-
 if(ARCH STREQUAL "i386" AND (SARCH STREQUAL "pc98" OR SARCH STREQUAL "xbox"))
     message(FATAL_ERROR "The SMP HAL does not support ${SARCH}")
+endif()
+
+if(ARCH STREQUAL "i386")
+    add_subdirectory(minihal)
 endif()
 
 if(ARCH STREQUAL "i386" OR ARCH STREQUAL "amd64")

@@ -221,7 +221,7 @@ MiClampBytes(
     return (Value < Minimum) ? Minimum : ((Value > Maximum) ? Maximum : Value);
 }
 
-#define MI_DIRECT_CACHE_RUN 64
+#define MI_DIRECT_CACHE_RUN MI_FRAME_CACHE_BATCH
 
 static NTSTATUS
 MiSetDirectRunCache(ULONG Frame, ULONG Count, ULONG Flags)
@@ -311,6 +311,7 @@ MiSetDirectFrameCache(ULONG Frame, ULONG Count, ULONG Flags)
 {
     NTSTATUS Status = STATUS_SUCCESS;
 
+    ASSERT(Count <= MI_FRAME_CACHE_BATCH);
     if (Frame >= MiSystem.Pfn.DirectFrames)
         return STATUS_SUCCESS;
     if (Count > MiSystem.Pfn.DirectFrames - Frame)
@@ -394,6 +395,7 @@ MiInitializePhase0(
     MmHighestUserAddress = (PVOID)MI_HIGHEST_USER_ADDRESS;
     MmCriticalSectionTimeout.QuadPart = -(LONGLONG)MmCritsectTimeoutSeconds * 10000000LL;
     KeInitializeMutant(&MmSystemLoadLock, FALSE);
+    MiPageFileCreationInitialize();
 
     DbgPrint("Memory manager: starting\n");
     Largest = MiScanMemoryDescriptors(LoaderBlock, &LargestEnd);
@@ -528,6 +530,7 @@ MiInitializePhase0(
     DbgPrint("Kernel address space: system mappings at %p, nonpaged pool at %p (%I64u MB), "
              "paged pool at %p (%I64u MB)\n", (PVOID)(ULONG_PTR)MiSystem.SystemPtes->Base, MmNonPagedPoolStart,
              NonPagedBytes / _1MB, MmPagedPoolStart, PagedBytes / _1MB);
+    ASSERT(!MiPoolReady);
     InitializePool(NonPagedPool, 0);
     InitializePool(PagedPool, 0);
     MiPoolReady = TRUE;

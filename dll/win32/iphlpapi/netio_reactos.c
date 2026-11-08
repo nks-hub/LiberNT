@@ -508,10 +508,6 @@ static void interface_zones(const MIB_IPINTERFACE_ROW *Row, const MIB_IPINTERFAC
     }
 }
 
-/*
- * IPv4 has no use for the DHCPv6 flags, yet Windows keeps and reports them.
- * They are kept in the TCP/IP key of the interface; without one they read as set.
- */
 static HKEY ip4_interface_key(NET_IFINDEX Index, REGSAM Access)
 {
     WCHAR Path[128];
@@ -528,7 +524,6 @@ static HKEY ip4_interface_key(NET_IFINDEX Index, REGSAM Access)
                Guid.Data1, Guid.Data2, Guid.Data3, Guid.Data4[0], Guid.Data4[1], Guid.Data4[2],
                Guid.Data4[3], Guid.Data4[4], Guid.Data4[5], Guid.Data4[6], Guid.Data4[7]);
     Path[ARRAYSIZE(Path) - 1] = UNICODE_NULL;
-    /* Reading does not create the key */
     if (Access & KEY_SET_VALUE)
         Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, Path, 0, NULL, 0, Access, NULL, &Key, NULL);
     else
@@ -601,7 +596,6 @@ DWORD WINAPI SetIpInterfaceEntry(PMIB_IPINTERFACE_ROW Row)
     Other = interface_flag(Row->OtherStatefulConfigurationSupported, Current.OtherStatefulConfigurationSupported);
     if (Row->Family == AF_INET && Advertising)
         return ERROR_INVALID_PARAMETER;
-    /* The DHCPv6 flags do not apply to IPv4, which ignores them */
     if (Row->Family == AF_INET6 && !Advertising && !Current.AdvertisingEnabled &&
         (Managed != Current.ManagedAddressConfigurationSupported || Other != Current.OtherStatefulConfigurationSupported))
         return ERROR_INVALID_PARAMETER;

@@ -46,7 +46,6 @@ test_SitePrefixLength(void)
     ULONG Size = 0;
     DWORD Error;
 
-    /* The loopback interface */
     if (!GetRow(1, &Original))
         return;
     trace("Loopback IPv4 SitePrefixLength %lu\n", Original.SitePrefixLength);
@@ -68,7 +67,6 @@ test_SitePrefixLength(void)
     if (GetRow(1, &ReadBack))
         ok(ReadBack.SitePrefixLength == 0, "SitePrefixLength is %lu after setting 0\n", ReadBack.SitePrefixLength);
 
-    /* An interface of an adapter reads back its own value */
     GetAdaptersAddresses(AF_INET, 0, NULL, NULL, &Size);
     Addresses = HeapAlloc(GetProcessHeap(), 0, Size);
     if (Addresses && GetAdaptersAddresses(AF_INET, 0, NULL, Addresses, &Size) == NO_ERROR)
@@ -94,7 +92,6 @@ test_Dhcpv6Flags(void)
     if (!GetRow(1, &Original))
         return;
 
-    /* IPv4 takes the DHCPv6 flags and reads them back */
     Row = Original;
     Row.SitePrefixLength = 0;
     Row.ManagedAddressConfigurationSupported = !Row.ManagedAddressConfigurationSupported;

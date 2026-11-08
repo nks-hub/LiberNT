@@ -1584,8 +1584,6 @@ CLanStatus::EnumerateTrayConnections()
 
     TRACE("InitializeNetTaskbarNotifications\n");
 
-    /* Connections that appear later, such as the adapter of a VPN tunnel,
-     * are added behind the known ones */
     Index = 1;
     for (pItem = m_pHead; pItem; pItem = pItem->pNext)
     {
@@ -1620,11 +1618,6 @@ CLanStatus::EnumerateTrayConnections()
         NcFreeNetconProperties(pProps);
         if (pItem)
         {
-            /*
-             * A connection that went away and came back keeps its GUID but can
-             * have another interface. The object enumerated now describes it,
-             * so the item and its status dialogs take that one.
-             */
             pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
             pNetCon.p->AddRef();
             pItem->pNet->Release();

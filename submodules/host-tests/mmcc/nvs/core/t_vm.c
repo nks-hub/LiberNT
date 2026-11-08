@@ -10,6 +10,11 @@
 #include "mmharness.h"
 #include "ntprotectshim.h"
 
+_Thread_local SIZE_T MiHostFailAllocationSize;
+_Thread_local SIZE_T MiHostPauseAllocationSize;
+_Thread_local volatile LONG *MiHostAllocationEntered;
+_Thread_local volatile LONG *MiHostAllocationResume;
+
 #define KB64 0x10000ULL
 
 static void
@@ -1238,6 +1243,16 @@ VmRotateLifecycle(void)
                            MI_PROT_READWRITE)));
     CHECK(MiRotateQuery(&Space, Reserved, PAGE_SIZE, Mapped, Regular) == STATUS_INVALID_PAGE_PROTECTION);
     CHECK(NT_SUCCESS(Free(&Space, Reserved, 0, MI_MEM_RELEASE)));
+    MiHostFailAllocationSize = 2 * sizeof(MI_FRAME_NUMBER);
+    Status = Alloc(&Space, &Base, 2 * PAGE_SIZE, MI_MEM_RESERVE | MI_MEM_COMMIT | MI_MEM_ROTATE,
+                   MI_PROT_READWRITE);
+    CHECK(Status == STATUS_INSUFFICIENT_RESOURCES);
+    CHECK(MiHostFailAllocationSize == 0);
+    CHECK(Space.VadRoot.NodeCount == 0);
+    CHECK(Space.CommittedPages == 0 && World.System.CommittedPages == 0);
+    if (Space.VadRoot.NodeCount != 0)
+        CHECK(NT_SUCCESS(Free(&Space, Base, 0, MI_MEM_RELEASE)));
+    Base = 0;
     CHECK(NT_SUCCESS(Alloc(&Space, &Base, 2 * PAGE_SIZE, MI_MEM_RESERVE | MI_MEM_COMMIT | MI_MEM_ROTATE,
                            MI_PROT_READWRITE)));
     CHECK(NT_SUCCESS(MiRotateQuery(&Space, Base, 2 * PAGE_SIZE, Mapped, Regular)));
@@ -1260,6 +1275,106 @@ VmRotateLifecycle(void)
     ProcessDestroy(&World, &Space);
     WorldExpectClean(&World, 256);
     WorldDestroy(&World);
+}
+
+typedef struct _ROTATE_RESERVE_WORKER
+{
+    PMI_ADDRESS_SPACE Space;
+    ULONG64 Base;
+    NTSTATUS Status;
+    volatile LONG Entered;
+    volatile LONG Resume;
+} ROTATE_RESERVE_WORKER;
+
+static void *
+VmRotateReserveWorker(void *Argument)
+{
+    ROTATE_RESERVE_WORKER *Worker = Argument;
+
+    MiHostCpu = 1;
+    MiHostPauseAllocationSize = 2 * sizeof(MI_FRAME_NUMBER);
+    MiHostAllocationEntered = &Worker->Entered;
+    MiHostAllocationResume = &Worker->Resume;
+    Worker->Status = Alloc(Worker->Space, &Worker->Base, 2 * PAGE_SIZE,
+                           MI_MEM_RESERVE | MI_MEM_COMMIT | MI_MEM_ROTATE, MI_PROT_READWRITE);
+    return NULL;
+}
+
+static void
+VmRotateConcurrentReservation(void)
+{
+    TEST_WORLD World;
+    MI_ADDRESS_SPACE Space;
+    ROTATE_RESERVE_WORKER Worker = {0};
+    pthread_t Thread;
+    ULONG64 Other = 0x40000000ULL;
+    NTSTATUS Status;
+    ULONG i;
+
+    WorldCreate(&World, 256, 2, 1000);
+    ProcessCreate(&World, &Space);
+    Worker.Space = &Space;
+    Worker.Base = Other;
+    MI_ASSERT(pthread_create(&Thread, NULL, VmRotateReserveWorker, &Worker) == 0);
+    for (i = 0; i < 1000000 && !__atomic_load_n(&Worker.Entered, __ATOMIC_ACQUIRE); i++)
+        sched_yield();
+    CHECK(__atomic_load_n(&Worker.Entered, __ATOMIC_ACQUIRE) != 0);
+    Status = Alloc(&Space, &Other, 2 * PAGE_SIZE, MI_MEM_RESERVE, MI_PROT_READWRITE);
+    CHECK(NT_SUCCESS(Status));
+    __atomic_store_n(&Worker.Resume, 1, __ATOMIC_RELEASE);
+    MI_ASSERT(pthread_join(Thread, NULL) == 0);
+    CHECK(Worker.Status == STATUS_CONFLICTING_ADDRESSES);
+    if (NT_SUCCESS(Status))
+        CHECK(NT_SUCCESS(Free(&Space, Other, 0, MI_MEM_RELEASE)));
+    if (NT_SUCCESS(Worker.Status))
+        CHECK(NT_SUCCESS(Free(&Space, Worker.Base, 0, MI_MEM_RELEASE)));
+    ProcessDestroy(&World, &Space);
+    WorldExpectClean(&World, 256);
+    WorldDestroy(&World);
+}
+
+static void
+VmRotatePageFailure(void)
+{
+    ULONG Available;
+    BOOLEAN SawFailure = FALSE, SawSuccess = FALSE;
+
+    for (Available = 0; Available <= 8; Available++)
+    {
+        TEST_WORLD World;
+        MI_ADDRESS_SPACE Space;
+        ULONG64 Base = 0x40000000ULL;
+        ULONG Held[64], Count = 0, Frame, i;
+        NTSTATUS Status;
+
+        WorldCreate(&World, 64, 1, 1000);
+        ProcessCreate(&World, &Space);
+        while ((Frame = MiPfnAllocatePage(&World.System.Pfn, MI_ALLOCATE_NO_RECLAIM | TEST_ANY_FRAME)) != MI_FRAME_INVALID)
+            Held[Count++] = Frame;
+        for (i = 0; i < Available; i++)
+            MiPfnFreePage(&World.System.Pfn, Held[--Count]);
+
+        Status = Alloc(&Space, &Base, 3 * PAGE_SIZE, MI_MEM_RESERVE | MI_MEM_COMMIT | MI_MEM_ROTATE,
+                       MI_PROT_READWRITE);
+        if (NT_SUCCESS(Status))
+        {
+            SawSuccess = TRUE;
+            CHECK(NT_SUCCESS(Free(&Space, Base, 0, MI_MEM_RELEASE)));
+        }
+        else
+        {
+            SawFailure = TRUE;
+            CHECK(Status == STATUS_NO_MEMORY);
+            CHECK(Space.VadRoot.NodeCount == 0);
+            CHECK(Space.CommittedPages == 0 && World.System.CommittedPages == 0);
+        }
+        for (i = 0; i < Count; i++)
+            MiPfnFreePage(&World.System.Pfn, Held[i]);
+        ProcessDestroy(&World, &Space);
+        WorldExpectClean(&World, 64);
+        WorldDestroy(&World);
+    }
+    CHECK(SawFailure && SawSuccess);
 }
 
 static BOOLEAN
@@ -1340,6 +1455,8 @@ void
 TestVm(void)
 {
     VmCommitTableOutOfMemory();
+    VmRotateConcurrentReservation();
+    VmRotatePageFailure();
     VmRotateLifecycle();
     VmWindowsProtection();
     VmExecutableWriteTracking();
@@ -1908,6 +2025,7 @@ typedef struct _PAGING_GROWTH
     volatile LONG Go;
     volatile LONG Stop;
     volatile LONG Attempts;
+    volatile LONG SizeReads;
     volatile LONG Seen[4];
     volatile LONG Owner[257];
 } PAGING_GROWTH;
@@ -1947,13 +2065,31 @@ PagingGrowthWorker(void *Argument)
 }
 
 static
+void *
+PagingSizeReader(void *Argument)
+{
+    PAGING_GROWTH *Growth = Argument;
+
+    while (!__atomic_load_n(&Growth->Go, __ATOMIC_ACQUIRE))
+        sched_yield();
+    while (!__atomic_load_n(&Growth->Stop, __ATOMIC_ACQUIRE))
+    {
+        ULONG64 Size = MiPageFileSlotCount(&Growth->PageFile);
+
+        MI_ASSERT(Size == 65 || Size == 130 || Size == 257);
+        __atomic_add_fetch(&Growth->SizeReads, 1, __ATOMIC_RELAXED);
+    }
+    return NULL;
+}
+
+static
 void
 PagingConcurrentSlotGrowth(void)
 {
     PAGING_GROWTH Growth = {0};
     PAGING_GROWTH_WORKER Workers[4];
     MI_PAGEFILE_OPS Ops = {0};
-    pthread_t Threads[4];
+    pthread_t Threads[4], SizeThread;
     ULONG64 Held[64];
     double Deadline = NowSeconds() + 30;
     ULONG i;
@@ -1974,8 +2110,10 @@ PagingConcurrentSlotGrowth(void)
         MI_ASSERT(NowSeconds() < Deadline);
         sched_yield();
     }
+    MI_ASSERT(pthread_create(&SizeThread, NULL, PagingSizeReader, &Growth) == 0);
     __atomic_store_n(&Growth.Go, 1, __ATOMIC_RELEASE);
-    while (__atomic_load_n(&Growth.Attempts, __ATOMIC_RELAXED) < 1000)
+    while (__atomic_load_n(&Growth.Attempts, __ATOMIC_RELAXED) < 1000 ||
+           __atomic_load_n(&Growth.SizeReads, __ATOMIC_RELAXED) == 0)
     {
         MI_ASSERT(NowSeconds() < Deadline);
         sched_yield();
@@ -1993,6 +2131,7 @@ PagingConcurrentSlotGrowth(void)
     __atomic_store_n(&Growth.Stop, 1, __ATOMIC_RELEASE);
     for (i = 0; i < RTL_NUMBER_OF(Threads); i++)
         MI_ASSERT(pthread_join(Threads[i], NULL) == 0);
+    MI_ASSERT(pthread_join(SizeThread, NULL) == 0);
     CHECK(Growth.PageFile.SlotCount == 257 && Growth.PageFile.SlotsInUse == RTL_NUMBER_OF(Held));
     for (i = 0; i < RTL_NUMBER_OF(Held); i++)
         MiPageFileReleaseSlot(&Growth.PageFile, Held[i]);

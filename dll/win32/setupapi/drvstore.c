@@ -343,10 +343,6 @@ StageCabinetCallback(
     }
 }
 
-/*
- * Copies one package file into the store unless the same file is there.
- * A file the package does not carry is skipped; a failed copy fails.
- */
 static BOOL
 StagePackageFile(
     IN PCWSTR SourceRoot,
@@ -659,7 +655,6 @@ SETUPAPI_StageDriverPackage(
     if (!CreateDirectoryPath(Store))
         return FALSE;
 
-    /* A package staged before is checked file by file, so a missing or changed file is copied again */
     hInf = SetupOpenInfFileW(Source, NULL, INF_STYLE_WIN4, NULL);
     if (hInf != INVALID_HANDLE_VALUE)
     {
@@ -953,7 +948,6 @@ CheckStoreRequest(
     if (*ReturnLength < MAX_PATH)
         return E_INVALIDARG;
 
-    /* The store holds packages for the machine, also for a 32-bit caller on a 64-bit system */
     GetNativeSystemInfo(&SystemInfo);
     if (Architecture != SystemInfo.wProcessorArchitecture)
         return E_INVALIDARG;

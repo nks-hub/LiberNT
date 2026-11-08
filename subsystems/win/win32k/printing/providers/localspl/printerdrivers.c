@@ -1011,7 +1011,6 @@ BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags
         return FALSE;
     }
 
-    /* The package of the driver comes first: when it cannot be recorded, the key stays as it was */
     if (level == 8 && di.pszInfPath && *di.pszInfPath)
     {
         lres = RegSetValueExW(hdrv, L"InfPath", 0, REG_SZ, (const BYTE*)di.pszInfPath,

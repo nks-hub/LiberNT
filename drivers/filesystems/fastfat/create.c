@@ -614,26 +614,26 @@ Return Value:
     UNICODE_STRING FinalName = {0};
     UNICODE_STRING RemainingPart;
     UNICODE_STRING NextRemainingPart = {0};
-    UNICODE_STRING UpcasedFinalName;
+    UNICODE_STRING _SEH2_VOLATILE UpcasedFinalName;
     WCHAR UpcasedBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE];
 
-    OEM_STRING OemFinalName;
+    OEM_STRING _SEH2_VOLATILE OemFinalName;
     UCHAR OemBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE*2];
 
     PDIRENT Dirent;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG LfnByteOffset;
     ULONG DirentByteOffset;
 
     BOOLEAN PostIrp = FALSE;
-    BOOLEAN OplockPostIrp = FALSE;
+    BOOLEAN _SEH2_VOLATILE OplockPostIrp = FALSE;
     BOOLEAN TrailingBackslash;
     BOOLEAN FirstLoop = TRUE;
 
     ULONG MatchFlags = 0;
 
     CCB LocalCcb;
-    UNICODE_STRING Lfn;
+    UNICODE_STRING _SEH2_VOLATILE Lfn;
     UNICODE_STRING OrigLfn = {0};
 
     WCHAR LfnBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE];
@@ -4965,7 +4965,7 @@ Return Value:
     PCCB _SEH2_VOLATILE Ccb = NULL;
 
     PDIRENT _SEH2_VOLATILE Dirent = NULL;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG DirentsNeeded;
     ULONG DirentByteOffset;
 
@@ -4982,9 +4982,9 @@ Return Value:
     ULONG _SEH2_VOLATILE DirentsInFirstPage = 0;
     PDIRENT _SEH2_VOLATILE FirstPageDirent = 0;
 
-    PBCB SecondPageBcb = NULL;
+    PBCB _SEH2_VOLATILE SecondPageBcb = NULL;
     ULONG SecondPageOffset = 0;
-    PDIRENT SecondPageDirent = NULL;
+    PDIRENT _SEH2_VOLATILE SecondPageDirent = NULL;
 
     BOOLEAN _SEH2_VOLATILE DirentFromPool = FALSE;
 

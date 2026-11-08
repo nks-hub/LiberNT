@@ -255,7 +255,7 @@ Return Value:
     PVCB Vcb;
     PDCB Dcb;
     PCCB Ccb;
-    PBCB Bcb;
+    PBCB _SEH2_VOLATILE Bcb;
 
     ULONG i;
     PUCHAR Buffer;
@@ -263,7 +263,7 @@ Return Value:
 
     PUNICODE_STRING UniArgFileName;
     WCHAR LongFileNameBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE];
-    UNICODE_STRING LongFileName;
+    UNICODE_STRING _SEH2_VOLATILE LongFileName;
     UNICODE_STRING OrigFileName;
     FILE_INFORMATION_CLASS FileInformationClass;
     ULONG FileIndex;
@@ -417,7 +417,7 @@ Return Value:
     _SEH2_TRY {
 
         ULONG BaseLength;
-        ULONG BytesConverted;
+        ULONG _SEH2_VOLATILE BytesConverted;
 
         //
         // If we are in the Fsp now because we had to wait earlier,

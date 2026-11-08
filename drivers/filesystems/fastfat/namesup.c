@@ -530,7 +530,7 @@ Return Value:
 
     if (Fcb->FullFileName.Buffer == NULL) {
 
-        UNICODE_STRING Lfn;
+        UNICODE_STRING _SEH2_VOLATILE Lfn;
         PFCB TmpFcb = Fcb;
         PFCB StopFcb;
         PWCHAR TmpBuffer;
@@ -766,7 +766,7 @@ Return Value:
         BOOLEAN TrySuggestedShortName;
 
         PDIRENT Dirent;
-        PBCB Bcb = NULL;
+        PBCB _SEH2_VOLATILE Bcb = NULL;
         ULONG ByteOffset;
         NTSTATUS Status;
 

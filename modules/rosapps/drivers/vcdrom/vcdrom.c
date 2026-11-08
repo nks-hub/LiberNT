@@ -185,7 +185,7 @@ VcdUnload(PDRIVER_OBJECT DriverObject)
 NTSTATUS
 ViCreateDriveLetter(PDRIVER_OBJECT DriverObject, WCHAR Letter, WCHAR *EffectiveLetter, PDEVICE_OBJECT *DeviceObject)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     HANDLE LinkHandle;
     WCHAR DriveLetter[3], CurLetter;
     PDEVICE_OBJECT LocalDeviceObject;
@@ -1080,7 +1080,7 @@ NTSTATUS
 NTAPI
 VcdDeviceControl(PDEVICE_OBJECT DeviceObject, PIRP Irp)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     UNICODE_STRING Image;
     PIO_STACK_LOCATION Stack;
     PMOUNT_PARAMETERS MountParameters;

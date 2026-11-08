@@ -2270,7 +2270,7 @@ CdFastIoClientRequest(
     _In_ PDEVICE_OBJECT DeviceObject)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    CONDRV_CLIENT_REQUEST Header;
+    CONDRV_CLIENT_REQUEST _SEH2_VOLATILE Header;
     PFILE_OBJECT Target;
     PCD_FILE File;
     NTSTATUS Status = STATUS_SUCCESS;

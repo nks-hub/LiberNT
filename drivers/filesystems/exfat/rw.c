@@ -152,7 +152,7 @@ ExFatRead(
     PEXFAT_VCB Vcb;
     PEXFAT_FCB Fcb;
     PEXFAT_CCB Ccb;
-    LARGE_INTEGER Offset = Stack->Parameters.Read.ByteOffset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset = Stack->Parameters.Read.ByteOffset;
     ULONG Length = Stack->Parameters.Read.Length;
     UINT BytesRead = 0;
     PVOID Buffer;
@@ -351,7 +351,7 @@ ExFatWrite(
     PEXFAT_VCB Vcb;
     PEXFAT_FCB Fcb;
     PEXFAT_CCB Ccb;
-    LARGE_INTEGER Offset = Stack->Parameters.Write.ByteOffset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset = Stack->Parameters.Write.ByteOffset;
     ULONG Length = Stack->Parameters.Write.Length;
     UINT BytesWritten = 0;
     PVOID Buffer;
@@ -361,7 +361,7 @@ ExFatWrite(
     BOOLEAN NoCache;
     LARGE_INTEGER EndOffset;
     LARGE_INTEGER OldValidDataLength;
-    IO_STATUS_BLOCK FlushStatus;
+    IO_STATUS_BLOCK _SEH2_VOLATILE FlushStatus;
 
     if (DeviceObject == ExFatGlobalData->DeviceObject || !FileObject)
         return STATUS_INVALID_DEVICE_REQUEST;

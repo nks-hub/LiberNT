@@ -188,7 +188,7 @@ ViCreateDriveLetter(PDRIVER_OBJECT DriverObject, WCHAR Letter, WCHAR *EffectiveL
     NTSTATUS _SEH2_VOLATILE Status;
     HANDLE LinkHandle;
     WCHAR DriveLetter[3], CurLetter;
-    PDEVICE_OBJECT LocalDeviceObject;
+    PDEVICE_OBJECT _SEH2_VOLATILE LocalDeviceObject;
     PDEVICE_EXTENSION DeviceExtension;
     OBJECT_ATTRIBUTES ObjectAttributes;
     UNICODE_STRING DeviceCount, DeviceName;

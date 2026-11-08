@@ -3783,7 +3783,7 @@ static NTSTATUS set_valid_data_length_information(device_extension* Vcb, PIRP Ir
     file_ref* fileref = ccb ? ccb->fileref : NULL;
     NTSTATUS Status;
     LARGE_INTEGER time;
-    CC_FILE_SIZES ccfs;
+    CC_FILE_SIZES _SEH2_VOLATILE ccfs;
     LIST_ENTRY rollback;
     bool set_size = false;
     ULONG filter;

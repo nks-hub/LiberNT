@@ -234,11 +234,11 @@ FsdSetFsLabelInformation(
     PFILE_FS_LABEL_INFORMATION FsLabelInfo)
 {
     PDEVICE_EXTENSION DeviceExt;
-    PVOID Context = NULL;
+    PVOID _SEH2_VOLATILE Context = NULL;
     ULONG DirIndex = 0;
-    PDIR_ENTRY Entry;
+    PDIR_ENTRY _SEH2_VOLATILE Entry;
     PVFATFCB pRootFcb;
-    LARGE_INTEGER FileOffset;
+    LARGE_INTEGER _SEH2_VOLATILE FileOffset;
     BOOLEAN LabelFound = FALSE;
     DIR_ENTRY VolumeLabelDirEntry;
     ULONG VolumeLabelDirIndex;

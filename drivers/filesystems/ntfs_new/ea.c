@@ -545,7 +545,7 @@ NtfsFsdQueryEa(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     PFileContextBlock FileCB;
     PVolumeContextBlock VolCB;
     PUCHAR Output;
-    ULONG BytesWritten = 0;
+    ULONG _SEH2_VOLATILE BytesWritten = 0;
     NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();

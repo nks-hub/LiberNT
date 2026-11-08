@@ -617,7 +617,7 @@ NTSTATUS
 CdProcessException (
     _In_opt_ PIRP_CONTEXT IrpContext,
     _Inout_ PIRP Irp,
-    _In_ NTSTATUS ExceptionCode
+    _In_ NTSTATUS _SEH2_VOLATILE ExceptionCode
     )
 
 /*++

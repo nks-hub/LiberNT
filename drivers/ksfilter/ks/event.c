@@ -96,7 +96,7 @@ KspEnableEvent(
 {
     PIO_STACK_LOCATION IoStack;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    KSEVENT Event;
+    KSEVENT _SEH2_VOLATILE Event;
     PKSEVENT_ITEM EventItem, FoundEventItem;
     PKSEVENTDATA EventData;
     const KSEVENT_SET *FoundEventSet;

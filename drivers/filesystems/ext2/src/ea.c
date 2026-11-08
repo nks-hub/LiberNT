@@ -118,7 +118,7 @@ Ext2QueryEa (
 
 	NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
-	struct ext4_xattr_ref xattr_ref;
+	struct ext4_xattr_ref _SEH2_VOLATILE xattr_ref;
 	PCHAR UserBuffer;
 
 	ULONG _SEH2_VOLATILE UserBufferLength = 0;
@@ -453,7 +453,7 @@ Ext2SetEa (
 
 	NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
-	struct ext4_xattr_ref xattr_ref;
+	struct ext4_xattr_ref _SEH2_VOLATILE xattr_ref;
 	PCHAR UserBuffer;
 	ULONG UserBufferLength;
 

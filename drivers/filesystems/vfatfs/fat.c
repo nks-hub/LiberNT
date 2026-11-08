@@ -180,7 +180,7 @@ FAT16FindAndMarkAvailableCluster(
     PVOID BaseAddress;
     ULONG ChunkSize;
     PVOID Context = 0;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PUSHORT Block;
     PUSHORT BlockEnd;
 
@@ -252,7 +252,7 @@ FAT12FindAndMarkAvailableCluster(
     ULONG i, j;
     PVOID BaseAddress;
     PVOID Context;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
 
     FatLength = DeviceExt->FatInfo.NumberOfClusters + 2;
     *Cluster = 0;
@@ -319,7 +319,7 @@ FAT32FindAndMarkAvailableCluster(
     PVOID BaseAddress;
     ULONG ChunkSize;
     PVOID Context;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PULONG Block;
     PULONG BlockEnd;
 
@@ -497,7 +497,7 @@ FAT32CountAvailableClusters(
     ULONG i;
     ULONG ChunkSize;
     PVOID Context = NULL;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     ULONG FatLength;
 
     ChunkSize = CACHEPAGESIZE(DeviceExt);

@@ -2194,7 +2194,7 @@ void get_raid56_lock_range(chunk* c, uint64_t address, uint64_t length, uint64_t
 
 __attribute__((nonnull(1,3)))
 NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data, uint32_t length, PIRP Irp, chunk* c, bool file_write, uint64_t irp_offset, ULONG priority) {
-    write_data_context wtc;
+    write_data_context _SEH2_VOLATILE wtc;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     uint64_t lockaddr, locklen;
 

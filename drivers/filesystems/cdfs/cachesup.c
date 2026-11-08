@@ -70,8 +70,8 @@ Return Value:
     BOOLEAN _SEH2_VOLATILE CleanupDirContext = FALSE;
     BOOLEAN UpdateFcbSizes = FALSE;
 
-    DIRENT Dirent = {0};
-    DIRENT_ENUM_CONTEXT DirContext = {0};
+    DIRENT _SEH2_VOLATILE Dirent = {0};
+    DIRENT_ENUM_CONTEXT _SEH2_VOLATILE DirContext = {0};
 
     PAGED_CODE();
 

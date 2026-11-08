@@ -2241,7 +2241,7 @@ PspQueryJobProcessIdList(
 
         Status = PspEnumerateProcessesInJobLocked(Job,
                                                   PspQueryJobProcessIdListCallback,
-                                                  &QueryContext);
+                                                  (PVOID)&QueryContext);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -2261,7 +2261,7 @@ PspQueryJobProcessIdList(
         {
             Status = PspEnumerateProcessesInJobLocked(ChildJob,
                                                       PspQueryJobProcessIdListCallback,
-                                                      &QueryContext);
+                                                      (PVOID)&QueryContext);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -3290,7 +3290,7 @@ NtSetInformationJobObject(
 
         _SEH2_TRY
         {
-            RtlCopyMemory(&AssociateCpInfo,
+            RtlCopyMemory((void *)&AssociateCpInfo,
                           JobInformation,
                           sizeof(AssociateCpInfo));
         }
@@ -3301,7 +3301,7 @@ NtSetInformationJobObject(
         }
         _SEH2_END;
 
-        Status = PspAssociateCompletionPortWithJob(Job, &AssociateCpInfo);
+        Status = PspAssociateCompletionPortWithJob(Job, (PJOBOBJECT_ASSOCIATE_COMPLETION_PORT)&AssociateCpInfo);
         break;
     }
     case JobObjectBasicUIRestrictions:

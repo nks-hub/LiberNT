@@ -442,7 +442,7 @@ NtAlpcQueryInformation(
                         ProbeForWriteUlong(ReturnLength);
                         *ReturnLength = 0;
                     }
-                    Status = SepCaptureSid(PortInformation, PreviousMode, PagedPool, TRUE, &Sid);
+                    Status = SepCaptureSid(PortInformation, PreviousMode, PagedPool, TRUE, (PSID *)&Sid);
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {

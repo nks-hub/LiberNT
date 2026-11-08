@@ -3807,7 +3807,7 @@ NtSetInformationProcess(
             PVOID StackBase = NULL;
             SIZE_T StackSize;
 
-            RtlZeroMemory(&StackInfo, sizeof(StackInfo));
+            RtlZeroMemory((void *)&StackInfo, sizeof(StackInfo));
             _SEH2_TRY
             {
                 if (ProcessInformationLength == sizeof(PROCESS_STACK_ALLOCATION_INFORMATION_EX))
@@ -4832,7 +4832,7 @@ NtSetInformationThread(
                 break;
 
             /* Probe and capture the thread name */
-            Status = ProbeAndCaptureUnicodeString(&CapturedThreadName,
+            Status = ProbeAndCaptureUnicodeString((PUNICODE_STRING)&CapturedThreadName,
                                                   PreviousMode,
                                                   (PUNICODE_STRING)ThreadInformation);
             if (!NT_SUCCESS(Status))
@@ -4868,7 +4868,7 @@ NtSetInformationThread(
             }
 
             /* Free the captured string */
-            ReleaseCapturedUnicodeString(&CapturedThreadName, PreviousMode);
+            ReleaseCapturedUnicodeString((PUNICODE_STRING)&CapturedThreadName, PreviousMode);
 
             /* Replace the original thread name with the new one */
             if (NT_SUCCESS(Status))
@@ -5086,7 +5086,7 @@ NtSetInformationThread(
             if (!NT_SUCCESS(Status))
                 break;
 
-            Status = KeSetSelectedCpuSetsThread(&Thread->Tcb, CpuSetCount, &CpuSetMask);
+            Status = KeSetSelectedCpuSetsThread(&Thread->Tcb, CpuSetCount, (PULONG64)&CpuSetMask);
             if (NT_SUCCESS(Status))
             {
                 PspLockThreadSecurityExclusive(Thread);

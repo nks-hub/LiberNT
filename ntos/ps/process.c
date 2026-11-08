@@ -3108,7 +3108,7 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
     ReturnImageHandles = CapturedCreateInfo.InitState.WriteOutputOnExit;
     if (ReturnImageHandles)
         ImageFileAccess |= CapturedCreateInfo.InitState.AdditionalFileAccess;
-    Status = ZwOpenFile(&hFile,
+    Status = ZwOpenFile((PHANDLE)&hFile,
                         ImageFileAccess,
                         &LocalFileObjectAttributes,
                         &IoStatusBlock,
@@ -3116,7 +3116,7 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
                         FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
     if (Status == STATUS_ACCESS_DENIED && ImageFileAccess != (SYNCHRONIZE | FILE_EXECUTE))
     {
-        Status = ZwOpenFile(&hFile,
+        Status = ZwOpenFile((PHANDLE)&hFile,
                             SYNCHRONIZE | FILE_EXECUTE,
                             &LocalFileObjectAttributes,
                             &IoStatusBlock,
@@ -3171,7 +3171,7 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
     /*
      * Step 2: Create an image section from the file
      */
-    Status = ZwCreateSection(&hSection,
+    Status = ZwCreateSection((PHANDLE)&hSection,
                              SECTION_ALL_ACCESS,
                              NULL,
                              NULL,

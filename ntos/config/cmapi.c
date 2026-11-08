@@ -735,7 +735,7 @@ DoAgain:
             Result = CmpFindNameInList(Hive,
                                        &Parent->ValueList,
                                        ValueName,
-                                       &ChildIndex,
+                                       (PULONG)&ChildIndex,
                                        &CurrentChild);
             if (!Result)
             {
@@ -800,7 +800,7 @@ DoAgain:
         _SEH2_TRY
         {
             /* Copy it */
-            RtlCopyMemory(&SmallData, Data, DataLength);
+            RtlCopyMemory((void *)&SmallData, Data, DataLength);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -1142,7 +1142,7 @@ DoAgain:
                                           KeyValueInformation,
                                           Length,
                                           ResultLength,
-                                          &Status);
+                                          (PNTSTATUS)&Status);
             if (Result == SearchNeedExclusiveLock)
             {
                 /* Release the value cell */
@@ -1313,7 +1313,7 @@ DoAgain:
                                       KeyValueInformation,
                                       Length,
                                       ResultLength,
-                                      &Status);
+                                      (PNTSTATUS)&Status);
         if (Result == SearchNeedExclusiveLock)
         {
             /* Cleanup state */
@@ -1599,7 +1599,7 @@ CmQueryKey(_In_ PCM_KEY_CONTROL_BLOCK Kcb,
                 ASSERT(Parent);
 
                 /* Track cell references */
-                if (!HvTrackCellRef(&CellReferences, Hive, Kcb->KeyCell))
+                if (!HvTrackCellRef((PHV_TRACK_CELL_REF)&CellReferences, Hive, Kcb->KeyCell))
                 {
                     /* Not enough memory to track references */
                     Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -1685,7 +1685,7 @@ CmQueryKey(_In_ PCM_KEY_CONTROL_BLOCK Kcb,
 
 Quickie:
     /* Release references */
-    HvReleaseFreeCellRefArray(&CellReferences);
+    HvReleaseFreeCellRefArray((PHV_TRACK_CELL_REF)&CellReferences);
 
     /* Release locks */
     CmpReleaseKcbLock(Kcb);

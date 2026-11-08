@@ -942,7 +942,7 @@ DispatchToUser:
                     LocalExceptRecord.ExceptionCode = STATUS_ACCESS_VIOLATION;
                     LocalExceptRecord.ExceptionFlags = 0;
                     LocalExceptRecord.NumberParameters = 0;
-                    RtlRaiseException(&LocalExceptRecord);
+                    RtlRaiseException((PEXCEPTION_RECORD)&LocalExceptRecord);
                 }
 
                 /* Align context size and get stack pointer */
@@ -995,7 +995,7 @@ DispatchToUser:
                 /* Dispatch exception to user-mode */
                 _SEH2_YIELD(return);
             }
-            _SEH2_EXCEPT((RtlCopyMemory(&LocalExceptRecord, _SEH2_GetExceptionInformation()->ExceptionRecord, sizeof(EXCEPTION_RECORD)), EXCEPTION_EXECUTE_HANDLER))
+            _SEH2_EXCEPT((RtlCopyMemory((void *)&LocalExceptRecord, _SEH2_GetExceptionInformation()->ExceptionRecord, sizeof(EXCEPTION_RECORD)), EXCEPTION_EXECUTE_HANDLER))
             {
                 /* Check if we got a stack overflow and raise that instead */
                 if ((NTSTATUS)LocalExceptRecord.ExceptionCode ==

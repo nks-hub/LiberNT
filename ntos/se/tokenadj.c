@@ -527,7 +527,7 @@ NtAdjustPrivilegesToken(
                                                      0,
                                                      PagedPool,
                                                      TRUE,
-                                                     &CapturedPrivileges,
+                                                     (PLUID_AND_ATTRIBUTES *)&CapturedPrivileges,
                                                      &CapturedLength);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -781,7 +781,7 @@ NtAdjustGroupsToken(
                                                     0,
                                                     PagedPool,
                                                     TRUE,
-                                                    &CapturedGroups,
+                                                    (PSID_AND_ATTRIBUTES *)&CapturedGroups,
                                                     &CapturedLength);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

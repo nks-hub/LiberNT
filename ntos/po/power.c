@@ -1799,7 +1799,7 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
             _SEH2_TRY
             {
                 RtlCopyMemory(&Context, InputBuffer, sizeof(Context));
-                Status = PopCreatePowerRequest(&Context, PreviousMode, &Handle);
+                Status = PopCreatePowerRequest(&Context, PreviousMode, (PHANDLE)&Handle);
                 if (NT_SUCCESS(Status)) *(PHANDLE)OutputBuffer = Handle;
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

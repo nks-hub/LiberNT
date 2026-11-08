@@ -1960,7 +1960,7 @@ Return Value:
                                  EaBuffer,
                                  EaLength,
                                  FileAttributes,
-                                 &Lfn,
+                                 (PUNICODE_STRING)&Lfn,
                                  IsPagingFile,
                                  NoEaKnowledge,
                                  DeleteOnClose,
@@ -2098,11 +2098,11 @@ Return Value:
         //  Free up any string buffers we allocated
         //
 
-        FatFreeStringBuffer( &OemFinalName);
+        FatFreeStringBuffer( (PVOID)&OemFinalName);
 
-        FatFreeStringBuffer( &UpcasedFinalName);
+        FatFreeStringBuffer( (PVOID)&UpcasedFinalName);
 
-        FatFreeStringBuffer( &Lfn);
+        FatFreeStringBuffer( (PVOID)&Lfn);
     } _SEH2_END;
 
     //
@@ -5071,7 +5071,7 @@ Return Value:
                                       ParentDcb,
                                       DirentByteOffset,
                                       sizeof(DIRENT),
-                                      &DirentBcb,
+                                      (PBCB *)&DirentBcb,
 #ifndef __REACTOS__
                                       &Dirent,
 #else
@@ -5105,7 +5105,7 @@ Return Value:
                                           ParentDcb,
                                           SecondPageOffset,
                                           sizeof(DIRENT),
-                                          &SecondPageBcb,
+                                          (PBCB *)&SecondPageBcb,
 #ifndef __REACTOS__
                                           &SecondPageDirent,
 #else

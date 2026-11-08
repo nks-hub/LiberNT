@@ -3303,7 +3303,7 @@ Return Value:
 
         if ( SplitAtVbo != 0 ) {
 
-            FatLookupLastMcbEntry( Vcb, Mcb, &DontCare, &Lbo, NULL );
+            FatLookupLastMcbEntry( Vcb, Mcb, &DontCare, (PLBO)&Lbo, NULL );
 
             FatSetFatEntry( IrpContext,
                             Vcb,
@@ -3324,7 +3324,7 @@ Return Value:
             TargetVbo = SplitAtVbo;
             SourceVbo = 0;
 
-            while (FatLookupMcbEntry(Vcb, RemainingMcb, SourceVbo, &Lbo, &ByteCount, NULL)) {
+            while (FatLookupMcbEntry(Vcb, RemainingMcb, SourceVbo, (PLBO)&Lbo, (PULONG)&ByteCount, NULL)) {
 
                 FatAddMcbEntry( Vcb, Mcb, TargetVbo, Lbo, ByteCount );
 
@@ -3416,7 +3416,7 @@ Return Value:
         //  Append the runs from SecondMcb to Mcb
         //
 
-        (void)FatLookupLastMcbEntry( Vcb, Mcb, &SpliceVbo, &SpliceLbo, NULL );
+        (void)FatLookupLastMcbEntry( Vcb, Mcb, (PVBO)&SpliceVbo, &SpliceLbo, NULL );
 
         SourceVbo = 0;
         TargetVbo = SpliceVbo + 1;
@@ -3919,7 +3919,7 @@ Arguments:
                                        Vcb,
                                        FatReservedBytes( &Vcb->Bpb ),
                                        FatBytesPerFat( &Vcb->Bpb ),
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        &PinnedFat,
                                        RegularOperation,
                                        FALSE );
@@ -3986,7 +3986,7 @@ Arguments:
                                        Vcb,
                                        OffsetIntoVolumeFile,
                                        sizeof(FAT_ENTRY),
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        (PVOID *)&PinnedFatEntry32,
                                        RegularOperation,
                                        FALSE );
@@ -4042,7 +4042,7 @@ Arguments:
                                        Vcb,
                                        OffsetIntoVolumeFile,
                                        sizeof(USHORT),
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        (PVOID *)&PinnedFatEntry,
                                        RegularOperation,
                                        FALSE );
@@ -4936,7 +4936,7 @@ Return Value:
                                Vcb,
                                FatReservedBytes( &Vcb->Bpb ),
                                FatBytesPerFat( &Vcb->Bpb ),
-                               &Bcb,
+                               (PBCB *)&Bcb,
                                (PVOID *)&FatBuffer );
 
             FatLookup12BitEntry(FatBuffer, 0, &FirstFatEntry);
@@ -4977,7 +4977,7 @@ Return Value:
                                Vcb,
                                Offset,
                                PAGE_SIZE,
-                               &Bcb,
+                               (PBCB *)&Bcb,
                                &pv);
 
             if (FatIndexBitSize == 32) {
@@ -5091,7 +5091,7 @@ Return Value:
                                        Vcb,
                                        Offset,
                                        PAGE_SIZE,
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        &pv );
 
                     FatBuffer = (PUSHORT)pv;

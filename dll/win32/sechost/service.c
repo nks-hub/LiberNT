@@ -52,8 +52,8 @@ struct notify_data
     SERVICE_NOTIFYW *notify_buffer;
     HANDLE calling_thread, ready_evt;
 #ifdef __REACTOS__
-    void (*done)( void *context );  /* called when the request ends and no longer uses notify_buffer */
-    BOOL (*wanted)( void *context );  /* whether a request that timed out is still waited for */
+    void (*done)( void *context );
+    BOOL (*wanted)( void *context );
     void *done_context;
 #endif
     struct list entry;
@@ -1302,7 +1302,6 @@ static DWORD WINAPI notify_thread(void *user)
     SetThreadDescription(GetCurrentThread(), L"wine_sechost_notify_service_status");
 
 #ifdef __REACTOS__
-    /* A subscription request times out now and then, so that it can end with its subscription */
     do
     {
 #endif
@@ -1338,7 +1337,6 @@ static DWORD WINAPI notify_thread(void *user)
 #ifdef __REACTOS__
         if (cparams->pszServiceNames)
         {
-            /* A MULTI_SZ that the caller frees with LocalFree, as SERVICE_NOTIFY_2W says */
             SIZE_T len = wcslen(cparams->pszServiceNames);
             WCHAR *names = LocalAlloc(LMEM_FIXED, (len + 2) * sizeof(WCHAR));
 
@@ -1489,23 +1487,15 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeA( SC_HANDLE service, DW
     return NotifyServiceStatusChangeW( service, mask, (SERVICE_NOTIFYW *)notify_buffer );
 }
 
-/*
- * A subscription keeps one status change request pending on the handle of the
- * caller, from its own thread, which the result reaches as an APC, and calls
- * the callback for each one. Each request has its own buffer: the service
- * manager can complete a request only through its handle, so a request that
- * is still pending when the subscription ends keeps its buffer until it ends.
- */
-/* Tells services.exe that a request does not use up the report of the current state (services.h) */
 #define SERVICE_NOTIFY_SUBSCRIPTION 0x80000000
 
 struct subscription_request
 {
     SERVICE_NOTIFYW notify;
-    HANDLE done_event;  /* set when the worker of the request no longer uses it */
+    HANDLE done_event;
     LONG refs;
     BOOL fired;
-    volatile LONG abandoned;  /* the subscription ended while the request was pending */
+    volatile LONG abandoned;
 };
 
 struct _SC_NOTIFICATION_REGISTRATION
@@ -1537,7 +1527,6 @@ static BOOL request_wanted( void *param )
     return !req->abandoned;
 }
 
-/* Called by the worker of the request as its last use of the buffer */
 static void request_finished( void *param )
 {
     struct subscription_request *req = param;
@@ -1571,7 +1560,6 @@ static DWORD WINAPI subscription_thread( void *param )
 
     SetThreadDescription( GetCurrentThread(), L"sechost_service_subscription" );
 
-    /* A callback may have unsubscribed */
     while (WaitForSingleObject( sub->stop_event, 0 ) != WAIT_OBJECT_0)
     {
         err = ERROR_NOT_ENOUGH_MEMORY;
@@ -1605,12 +1593,10 @@ static DWORD WINAPI subscription_thread( void *param )
             ;
         if (req->fired && WaitForSingleObject( sub->stop_event, 0 ) != WAIT_OBJECT_0)
         {
-            /* The next request starts only after this one has completely ended */
             WaitForSingleObject( req->done_event, INFINITE );
             if (req->notify.dwNotificationStatus == ERROR_SUCCESS)
                 sub->callback( req->notify.dwNotificationTriggered, sub->context );
         }
-        /* A request still pending ends at its next timeout and closes its notify handle */
         InterlockedExchange( &req->abandoned, TRUE );
         release_request( req );
     }
@@ -1693,7 +1679,6 @@ VOID WINAPI UnsubscribeServiceChangeNotifications( PSC_NOTIFICATION_REGISTRATION
 
     if (!subscription) return;
     SetEvent( subscription->stop_event );
-    /* Waits for a callback that runs; from a callback the thread ends by itself after it returns */
     if (subscription->thread_id != GetCurrentThreadId())
         WaitForSingleObject( subscription->thread, INFINITE );
     release_subscription( subscription );

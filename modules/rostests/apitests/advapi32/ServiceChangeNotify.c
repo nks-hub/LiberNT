@@ -39,7 +39,6 @@ CreateTestService(SC_HANDLE Manager)
                           SERVICE_DEMAND_START, SERVICE_ERROR_IGNORE, Path, NULL, NULL, NULL, NULL, NULL);
 }
 
-/* Windows passes 0 to the callback, so only the calls count */
 static BOOL
 WaitCallback(void)
 {
@@ -69,7 +68,6 @@ test_Subscribe(SC_HANDLE Manager)
     {
         ok(WaitCallback(), "No callback for the created service\n");
 
-        /* The service goes away only when its last handle closes */
         Callbacks = 0;
         ok(DeleteService(Service), "DeleteService failed (%lu)\n", GetLastError());
         CloseServiceHandle(Service);
@@ -77,7 +75,6 @@ test_Subscribe(SC_HANDLE Manager)
     }
     pUnsubscribe(Subscription);
 
-    /* Subscriptions can follow each other on the same handle */
     for (i = 0; i < 5; i++)
     {
         Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscription);
@@ -86,7 +83,6 @@ test_Subscribe(SC_HANDLE Manager)
             pUnsubscribe(Subscription);
     }
 
-    /* SC_MANAGER_ENUMERATE_SERVICE is the access a database subscription needs */
     Minimal = OpenSCManagerW(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
     ok(Minimal != NULL, "OpenSCManagerW failed (%lu)\n", GetLastError());
     if (Minimal)
@@ -131,7 +127,6 @@ CountThreads(void)
     return Count;
 }
 
-/* Subscriptions that end on a quiet handle leave no thread behind once their requests end */
 static void
 test_SubscribeCleanup(SC_HANDLE Manager)
 {
@@ -161,7 +156,6 @@ IgnoreNotify(PVOID Parameter)
     UNREFERENCED_PARAMETER(Parameter);
 }
 
-/* Windows 11: a mixed mask is an invalid parameter, a mask of the other kind of handle a wrong handle */
 static void
 test_Masks(SC_HANDLE Manager)
 {
@@ -208,7 +202,6 @@ test_ServiceNames(void)
     SC_HANDLE Manager, Service;
     DWORD Error, Start;
 
-    /* A handle of its own: closing it ends a request that never fires */
     Manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
     if (!Manager)
         return;
@@ -250,7 +243,6 @@ ServiceNotified(PVOID Parameter)
     InterlockedIncrement(&StatusApcs);
 }
 
-/* A status request on a service handle, repeated after each result as a service monitor does */
 static void
 test_ServiceStatus(SC_HANDLE Manager)
 {
@@ -265,7 +257,6 @@ test_ServiceStatus(SC_HANDLE Manager)
     if (!Service)
         return;
 
-    /* A subscription to the status of a service, as a service monitor uses */
     if (pSubscribe && pUnsubscribe)
     {
         PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
@@ -277,7 +268,6 @@ test_ServiceStatus(SC_HANDLE Manager)
         if (Error == ERROR_SUCCESS)
             pUnsubscribe(Subscription);
 
-        /* SERVICE_QUERY_STATUS is the access a status subscription needs */
         StatusOnly = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
         ok(StatusOnly != NULL, "OpenServiceW failed (%lu)\n", GetLastError());
         if (StatusOnly)
@@ -311,7 +301,6 @@ test_ServiceStatus(SC_HANDLE Manager)
         ok(Notify.pszServiceNames == NULL, "Request %lu: service names %p\n", i, Notify.pszServiceNames);
     }
 
-    /* Creating another service does not end a request on a service handle */
     {
         SC_HANDLE Other;
 
@@ -338,7 +327,6 @@ test_ServiceStatus(SC_HANDLE Manager)
            Notify.dwNotificationStatus, Notify.dwNotificationTriggered);
     }
 
-    /* Deleting the service ends the request with DELETE_PENDING */
     ZeroMemory(&Notify, sizeof(Notify));
     Notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
     Notify.pfnNotifyCallback = ServiceNotified;
@@ -374,7 +362,6 @@ START_TEST(ServiceChangeNotify)
         return;
     }
 
-    /* A test service left by an earlier run */
     Service = OpenServiceW(Manager, TEST_SERVICE, DELETE);
     if (Service)
     {

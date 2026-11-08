@@ -10483,7 +10483,6 @@ BOOL TrayOverflow_IsOpen(VOID)
            g_pTrayOverflow->IsWindowVisible() && g_pTrayOverflow->m_AnimPhase != TFY_CLOSE;
 }
 
-/* The screen rectangle of an icon in the open overflow flyout */
 BOOL TrayOverflow_GetIconRect(IN HWND hWnd, IN UINT uID, OUT RECT *prcIcon)
 {
     if (!TrayOverflow_IsOpen())

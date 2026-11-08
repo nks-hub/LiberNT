@@ -1174,10 +1174,7 @@ NetClassInstaller(
         }
     }
 
-    /*
-     * InstallNetDevice publishes the GUID as NetCfgInstanceId, so another
-     * install must not check the same suggested GUID before that.
-     */
+    /* Two installs must not pick the same suggested GUID before InstallNetDevice publishes it */
     if (IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET))
     {
         hInstanceIdLock = CreateMutexW(NULL, FALSE, L"Global\\NetCfgxInstanceId");

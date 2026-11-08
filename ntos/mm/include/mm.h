@@ -100,6 +100,9 @@ typedef struct _MI_ADDRESS_SPACE
     ULONG64 Granularity;
 } MI_ADDRESS_SPACE, *PMI_ADDRESS_SPACE;
 
+typedef BOOLEAN (*PMI_EXPAND_COMMIT)(_Inout_ struct _MI_SYSTEM *System, _In_ LONG64 Pages,
+                                      _In_ LONG64 Limit, _In_ BOOLEAN Wait);
+
 typedef struct _MI_SYSTEM
 {
     const MI_ARCH_DESCRIPTOR *Arch;
@@ -121,10 +124,23 @@ typedef struct _MI_SYSTEM
     BOOLEAN (*ChargeOwnerCommit)(_In_ PVOID Owner, _In_ LONG64 Pages);
     VOID (*ReturnOwnerCommit)(_In_ PVOID Owner, _In_ LONG64 Pages);
     ULONG64 (*OwnerProcessors)(_In_ PVOID Owner);
-    BOOLEAN (*ExpandCommit)(_Inout_ struct _MI_SYSTEM *System, _In_ LONG64 Pages, _In_ LONG64 Limit,
-                            _In_ BOOLEAN Wait);
+    PMI_EXPAND_COMMIT ExpandCommit;
     VOID (*UnusedSegmentsExceeded)(_Inout_ struct _MI_SYSTEM *System);
 } MI_SYSTEM, *PMI_SYSTEM;
+
+FORCEINLINE
+struct _MI_PAGEFILE *
+MiSystemGetPageFile(_In_ PMI_SYSTEM System)
+{
+    return MI_ATOMIC_READ_POINTER(&System->PageFile);
+}
+
+FORCEINLINE
+PMI_EXPAND_COMMIT
+MiSystemGetExpandCommit(_In_ PMI_SYSTEM System)
+{
+    return (PMI_EXPAND_COMMIT)MI_ATOMIC_READ_POINTER(&System->ExpandCommit);
+}
 
 NTSTATUS MiSystemInitialize(_Out_ PMI_SYSTEM System, _In_ PMI_PFN PfnArray, _In_ ULONG FrameCount,
                             _In_ ULONG CpuCount, _In_ LONG64 CommitLimit);
@@ -332,6 +348,18 @@ typedef struct _MI_PAGEFILE
     volatile LONG64 PagesRead;
 } MI_PAGEFILE, *PMI_PAGEFILE;
 
+FORCEINLINE
+ULONG64
+MiPageFileSlotCount(_Inout_ PMI_PAGEFILE PageFile)
+{
+    ULONG64 SlotCount;
+
+    MI_ASSERT(PageFile != NULL);
+    SlotCount = (ULONG64)MI_ATOMIC_READ64((volatile LONG64 *)&PageFile->SlotCount);
+    MI_ASSERT(SlotCount != 0);
+    return SlotCount;
+}
+
 BOOLEAN MiSpaceFindEmptyRange(_In_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 PageCount, _In_ ULONG64 Alignment,
                               _In_ ULONG64 LowestVpn, _In_ ULONG64 HighestVpn, _In_ BOOLEAN TopDown,
                               _Out_ PULONG64 StartingVpn);
@@ -360,7 +388,7 @@ NTSTATUS MiQueryWorkingSetEx(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 Addre
 NTSTATUS MiQueryWorkingSetList(_Inout_ PMI_ADDRESS_SPACE Space, _Inout_ PULONG64 Address,
                                _Out_ PMI_WORKING_SET_ENTRY Entries, _In_ ULONG Capacity, _Out_ PULONG Count,
                                _Out_ PBOOLEAN More);
-NTSTATUS MiRotatePopulate(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 BaseAddress, _In_ ULONG64 RegionSize);
+NTSTATUS MiRotatePopulateLocked(_Inout_ PMI_ADDRESS_SPACE Space, _Inout_ PMI_VAD Vad, _Inout_ PMI_FRAME_NUMBER Frames);
 VOID MiRotateReleaseLocked(_Inout_ PMI_ADDRESS_SPACE Space, _Inout_ PMI_VAD Vad);
 NTSTATUS MiRotateQuery(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 VirtualAddress, _In_ ULONG64 Size,
                        _Out_ PMI_FRAME_NUMBER Mapped, _Out_ PMI_FRAME_NUMBER Regular);
@@ -546,6 +574,19 @@ typedef struct _MI_SEGMENT
     ULONG64 ReadGeneration;
     PMI_CHUNK_INDEX ChunkIndex;
 } MI_SEGMENT, *PMI_SEGMENT;
+
+FORCEINLINE
+VOID
+MiAdjustSegmentCount(_Inout_ volatile LONG *Count, _In_ LONG Delta)
+{
+    LONG Previous;
+
+    MI_ASSERT(Delta == 1 || Delta == -1);
+    Previous = MI_ATOMIC_ADD32(Count, Delta);
+    MI_ASSERT(Previous >= (Delta < 0 ? 1 : 0));
+    MI_ASSERT(Delta < 0 || Previous < 0x7fffffff);
+    UNREFERENCED_PARAMETER(Previous);
+}
 
 #define MI_IMAGE_WINDOW_MAXIMUM_SLOTS 0x100000ULL
 

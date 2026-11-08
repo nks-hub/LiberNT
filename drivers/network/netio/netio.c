@@ -572,11 +572,6 @@ WfpCreateDevice(
 static PDEVICE_OBJECT NetioNsiDevice;
 static PDRIVER_DISPATCH NetioWfpDispatch[IRP_MJ_MAXIMUM_FUNCTION + 1];
 
-/*
- * \Device\Nsi exists so that drivers which filter NSI requests can attach
- * to it. LiberNT's NSI provider lives in nsi.dll and does not send requests
- * to this device, so it only accepts opens and closes.
- */
 static NTSTATUS NTAPI
 NetioDispatch(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp)
 {

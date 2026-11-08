@@ -29,9 +29,6 @@ NetioInterfaceLuid(
 {
     NET_LUID Luid;
 
-    /* An interface bound to an NDIS adapter has the adapter's LUID, which can
-     * come from the driver key. Otherwise use the LUID the user-mode NSI
-     * provider builds from the TDI interface entry. */
     if (NdisIfGetNetLuidFromInterfaceIndex(Index, &Luid) == NDIS_STATUS_SUCCESS && Luid.Value)
         return Luid;
     Luid.Value = 0;
@@ -51,11 +48,6 @@ NetioLuidIndex(
     if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
         return Index;
 
-    /*
-     * Only an interface without an NDIS adapter has a LUID made from its index
-     * (see NetioInterfaceLuid). An interface with an adapter at that index is
-     * another one; 0 matches no interface.
-     */
     Index = (NET_IFINDEX)Luid->Info.NetLuidIndex;
     if (NdisIfGetNetLuidFromInterfaceIndex(Index, &AdapterLuid) == NDIS_STATUS_SUCCESS && AdapterLuid.Value)
         return 0;
@@ -350,7 +342,6 @@ GetBestRoute2(
     }
     if (InterfaceLuid != NULL && InterfaceIndex == 0 && InterfaceLuid->Value != 0)
     {
-        /* An unknown LUID names no interface, not any of them */
         InterfaceIndex = NetioLuidIndex(InterfaceLuid);
         if (InterfaceIndex == 0)
             return STATUS_NOT_FOUND;
@@ -503,7 +494,7 @@ Done:
 #define NETIO_IF_ENTRY_SIZE FIELD_OFFSET(IFEntry, if_descr[NETIO_MAX_DESCRIPTION + 1])
 #define NETIO_UNCHANGED_ULONG ((ULONG)-1)
 #define NETIO_UNCHANGED_BOOLEAN ((BOOLEAN)0xFF)
-#define NETIO_ROUTE_TYPE_DIRECT 3 /* MIB_IPROUTE_TYPE_DIRECT */
+#define NETIO_ROUTE_TYPE_DIRECT 3
 
 static
 NTSTATUS
@@ -557,7 +548,6 @@ NetioOperStatus(
     return IfOperStatusUnknown;
 }
 
-/* Reads the IFEntry of every TDI interface; the entries are NETIO_IF_ENTRY_SIZE bytes apart */
 static
 NTSTATUS
 NetioQueryInterfaces(
@@ -649,7 +639,6 @@ NetioFindInterface(
     return NULL;
 }
 
-/* Returns the rows of a \Device\Ip6 table after an IP6_TABLE_HEADER; the caller frees the buffer */
 static
 NTSTATUS
 NetioQueryIp6Table(
@@ -791,7 +780,6 @@ NetioFillIpInterface6(
     Row->DisableDefaultRoutes = Interface->DisableDefaultRoutes;
 }
 
-/* Builds the MIB_IPINTERFACE_ROW of every interface of one family (AF_INET or AF_INET6) */
 static
 NTSTATUS
 NetioQueryIpInterfaces(
@@ -893,7 +881,7 @@ GetIfEntry2(
         return STATUS_INVALID_PARAMETER;
     Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
-        return STATUS_INVALID_PARAMETER;
+        return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
 
     Status = NetioQueryInterfaces(&Entries, &Count);
     if (!NT_SUCCESS(Status))
@@ -964,7 +952,7 @@ GetIpInterfaceEntry(
         return STATUS_INVALID_PARAMETER;
     Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
-        return STATUS_INVALID_PARAMETER;
+        return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
 
     Status = NetioQueryIpInterfaces(Row->Family, FALSE, &Rows, &Count);
     if (!NT_SUCCESS(Status))
@@ -1027,7 +1015,6 @@ NetioZones(
 {
     ULONG Level, Zone;
 
-    /* Zero tells tcpip to keep the zone of that level */
     for (Level = 0; Level < ScopeLevelCount; Level++)
     {
         Zone = (Row->ZoneIndices[Level] == NETIO_UNCHANGED_ULONG) ? Current->ZoneIndices[Level] :
@@ -1036,7 +1023,6 @@ NetioZones(
     }
 }
 
-/* Same rules as the user-mode SetIpInterfaceEntry in iphlpapi */
 NTSTATUS
 NTAPI
 SetIpInterfaceEntry(
@@ -1078,7 +1064,7 @@ SetIpInterfaceEntry(
     Other = NetioFlag(Row->OtherStatefulConfigurationSupported, Current.OtherStatefulConfigurationSupported);
     if (Row->Family == AF_INET && Advertising)
         return STATUS_INVALID_PARAMETER;
-    /* The DHCPv6 flags do not apply to IPv4, which ignores them */
+    /* FIXME: the DHCPv6 flags of an IPv4 row are not kept */
     if (Row->Family == AF_INET6 && !Advertising && !Current.AdvertisingEnabled &&
         (Managed != Current.ManagedAddressConfigurationSupported ||
          Other != Current.OtherStatefulConfigurationSupported))
@@ -1193,7 +1179,6 @@ NetioQueryRoutes4(
         if (Entities[i].tei_entity != CL_NL_ENTITY)
             continue;
 
-        /* Size the buffer from the route count, with room for routes added meanwhile */
         RtlZeroMemory(&Snmp, sizeof(Snmp));
         Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
                                IP_MIB_STATS_ID, &Snmp, sizeof(Snmp), &Returned);
@@ -1252,7 +1237,6 @@ NetioQueryRoutes4(
             Row->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = Routes[j].Dest & Routes[j].Mask;
             Row->DestinationPrefix.PrefixLength = (UINT8)NetioPrefixLength(Routes[j].Mask);
             Row->NextHop.si_family = AF_INET;
-            /* A direct route goes to the local address of the interface; on-link has no gateway */
             Row->NextHop.Ipv4.sin_addr.s_addr = (Routes[j].Type == NETIO_ROUTE_TYPE_DIRECT) ? 0 : Routes[j].NextHop;
             Row->SitePrefixLength = 0;
             Row->Metric = Routes[j].Metric1;
@@ -1347,7 +1331,6 @@ NetioQueryRoutes6(
     return STATUS_SUCCESS;
 }
 
-/* The routes of AF_INET, AF_INET6 or both (AF_UNSPEC); the caller frees the array */
 static
 NTSTATUS
 NetioQueryRoutes(
@@ -1373,7 +1356,6 @@ NetioQueryRoutes(
     if (NT_SUCCESS(Status) && (Family == AF_INET6 || Family == AF_UNSPEC))
     {
         Status = NetioQueryRoutes6(Entries, EntryCount, &Result, &Found, &Capacity);
-        /* A system without IPv6 still has its IPv4 routes */
         if (Status == STATUS_OBJECT_NAME_NOT_FOUND && Family == AF_UNSPEC)
             Status = STATUS_SUCCESS;
     }
@@ -1430,12 +1412,6 @@ GetIpForwardTable2(
     return STATUS_SUCCESS;
 }
 
-/*
- * Route and IP interface change notifications. One system thread keeps an
- * IOCTL_IP_WAIT_CHANGE request pending on \Device\Ip. When tcpip reports a
- * change, it compares the routes and IP interfaces with the previous snapshot
- * and calls the registered callbacks with each added, changed or deleted row.
- */
 #define NETIO_CHANGE_ROUTE      1
 #define NETIO_CHANGE_INTERFACE  2
 
@@ -1475,7 +1451,6 @@ NetioReleaseNotify(
         KeSetEvent(&Notify->Released, IO_NO_INCREMENT, FALSE);
 }
 
-/* Calls every callback of this kind and family; Row is NULL for the initial notification */
 static
 VOID
 NetioNotify(
@@ -1534,7 +1509,6 @@ NetioNotify(
         }
         else if (Kind == NETIO_CHANGE_ROUTE)
         {
-            /* Every callback gets its own copy; some change the row they are given */
             Route = *(const MIB_IPFORWARD_ROW2 *)Row;
             ((PIPFORWARD_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, &Route, Type);
         }
@@ -1569,7 +1543,6 @@ NetioRouteChanged(
 {
     MIB_IPFORWARD_ROW2 A = *Left, B = *Right;
 
-    /* The age and the lifetimes count down on their own */
     A.Age = B.Age = 0;
     A.ValidLifetime = B.ValidLifetime = 0;
     A.PreferredLifetime = B.PreferredLifetime = 0;
@@ -1584,7 +1557,6 @@ NetioInterfaceChanged(
 {
     MIB_IPINTERFACE_ROW A = *Left, B = *Right;
 
-    /* IPv6 picks a new random reachable time from time to time */
     A.ReachableTime = B.ReachableTime = 0;
     return !RtlEqualMemory(&A, &B, sizeof(A));
 }
@@ -1666,10 +1638,6 @@ NetioFreeSnapshot(
     RtlZeroMemory(Snapshot, sizeof(*Snapshot));
 }
 
-/*
- * A snapshot is complete or fails: an interface or route missing only because
- * a query failed would be reported as deleted.
- */
 static
 NTSTATUS
 NetioTakeSnapshot(
@@ -1684,7 +1652,6 @@ NetioTakeSnapshot(
     if (NT_SUCCESS(Status))
     {
         Status = NetioQueryIpInterfaces(AF_INET6, TRUE, &Snapshot->Interfaces[1], &Snapshot->InterfaceCount[1]);
-        /* A system without IPv6 has no IPv6 interfaces */
         if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
             Status = STATUS_SUCCESS;
     }
@@ -1716,13 +1683,12 @@ NetioChangeWorker(
 
     NetioChangeThread = PsGetCurrentThread();
     HaveOld = NT_SUCCESS(NetioTakeSnapshot(&Old));
-    Retry.QuadPart = -50000000LL; /* 5 s */
+    Retry.QuadPart = -50000000LL;
 
     for (;;)
     {
         Changed = FALSE;
 
-        /* Made again after a failure; until then the snapshots are compared on every timeout */
         if (Completed == NULL)
         {
             if (EventHandle == NULL)
@@ -1772,12 +1738,10 @@ NetioChangeWorker(
             }
             else if (Status == STATUS_TIMEOUT && (Stale || !HaveOld || !Pending))
             {
-                /* A change came while the last snapshot failed, or tcpip cannot report changes */
                 Changed = TRUE;
             }
         }
 
-        /* New registrations that asked for an initial notification */
         NetioNotify(0, AF_UNSPEC, NULL, MibInitialNotification, TRUE);
 
         if (!Changed)
@@ -1789,7 +1753,6 @@ NetioChangeWorker(
             continue;
         }
         Stale = FALSE;
-        /* Without an earlier snapshot there is nothing to compare with */
         if (HaveOld)
         {
             NetioCompareRoutes(Old.Routes, Old.RouteCount, New.Routes, New.RouteCount);
@@ -1819,7 +1782,7 @@ NetioRegisterChange(
     NTSTATUS Status;
     LONG State;
 
-    StartWait.QuadPart = -10000LL; /* 1 ms */
+    StartWait.QuadPart = -10000LL;
 
     if (Callback == NULL || NotificationHandle == NULL ||
         (Family != AF_UNSPEC && Family != AF_INET && Family != AF_INET6))
@@ -1840,11 +1803,6 @@ NetioRegisterChange(
     Notify->InitialPending = InitialNotification;
     KeInitializeEvent(&Notify->Released, NotificationEvent, FALSE);
 
-    /*
-     * One registration starts the worker; the others wait until it runs, so
-     * none of them is listed without a worker. A failed start fails only the
-     * registration that tried it, and the next one tries again.
-     */
     for (;;)
     {
         State = InterlockedCompareExchange(&NetioChangeState, NETIO_CHANGE_STARTING, NETIO_CHANGE_STOPPED);
@@ -1930,7 +1888,6 @@ CancelMibChangeNotify2(
     if (Notify == NULL)
         return STATUS_INVALID_HANDLE;
 
-    /* A callback may cancel its own registration; the worker frees it after the call */
     if (PsGetCurrentThread() == NetioChangeThread)
     {
         Notify->FreeOnRelease = TRUE;
@@ -1939,7 +1896,6 @@ CancelMibChangeNotify2(
         return STATUS_SUCCESS;
     }
 
-    /* No callback of this registration runs after the function returns */
     if (InterlockedDecrement(&Notify->References) != 0)
         KeWaitForSingleObject(&Notify->Released, Executive, KernelMode, FALSE, NULL);
     ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);

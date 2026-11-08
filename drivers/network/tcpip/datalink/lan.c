@@ -1498,13 +1498,13 @@ BOOLEAN BindAdapter(
 
     IF->NdisIfIndex = BindParameters->BoundIfIndex;
     IF->IfType = (ULONG)BindParameters->BoundIfNetluid.Info.IfType;
-    IF->NetLuid = BindParameters->BoundIfNetluid.Value;
     IF->PhysicalMedium = BindParameters->PhysicalMediumType;
     IF->Wireless = BindParameters->PhysicalMediumType == NdisPhysicalMediumWirelessLan ||
                    BindParameters->PhysicalMediumType == NdisPhysicalMediumWirelessWan ||
                    BindParameters->PhysicalMediumType == NdisPhysicalMediumNative802_11;
     IF->HalfDuplex = BindParameters->MediaDuplexState == MediaDuplexStateHalf;
     IF->TransmitLinkSpeed = BindParameters->XmitLinkSpeed;
+    IF->NetLuid = BindParameters->BoundIfNetluid.Value;
 
     /*
      * Query per-adapter configuration from the registry

@@ -191,10 +191,6 @@ QueryToken(
     return Buffer;
 }
 
-/*
- * Neither the integrity label nor a group for deny only is enabled, yet an
- * effective only copy keeps both, as on Windows 11.
- */
 static
 VOID
 DuplicateTokenAsEffectiveKeepsLabel(VOID)
@@ -296,10 +292,6 @@ static SID AuthenticatedSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURI
 static SID NetworkSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_NETWORK_RID } };
 static SID ServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_SERVICE_RID } };
 
-/*
- * The label sits between groups that an effective only copy removes, before
- * and after it, so its index and the index of the owner both have to move.
- */
 static
 VOID
 DuplicateCreatedTokenAsEffective(

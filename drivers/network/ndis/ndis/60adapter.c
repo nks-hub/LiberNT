@@ -234,7 +234,6 @@ Ndis6ReadNetLuidIndex(
     return Value;
 }
 
-/* Reserves the next free index for IfType in Next; only a collision moves on, 0x10000 of them fail */
 static NTSTATUS
 Ndis6ReserveNextNetLuidIndex(
     _In_ NET_IFTYPE IfType,
@@ -294,10 +293,6 @@ Ndis6AllocateInterfaceIdentity(
     return STATUS_SUCCESS;
 }
 
-/*
- * Moves the reserved NetLuidIndex of Ext to IfType: the new pair is reserved
- * before the old one is freed, so a failure keeps the old identity.
- */
 static NTSTATUS
 Ndis6RetypeInterfaceIdentity(
     _Inout_ PNDIS6_ADAPTER_EXT Ext,

@@ -543,7 +543,6 @@ VOID NTAPI ProtocolReceive(
                 continue;
             }
 
-            /* Without a link header the first byte of the IP header is examined */
             HeaderBuffer = NdisGetDataBuffer(NetBuffer, max(Adapter->HeaderSize, 1), &HeaderStorage, 1, 0);
             if (!HeaderBuffer)
                 continue;
@@ -1093,7 +1092,6 @@ VOID LANTransmit(
     }
 
     if (Adapter->Media == NdisMediumIP && Type == LAN_PROTO_ARP) {
-        /* A raw IP link resolves no addresses */
         LanSendDone(Adapter);
         (*PC(NdisPacket)->DLComplete)(PC(NdisPacket)->Context, NdisPacket, NDIS_STATUS_NOT_SUPPORTED);
         return;

@@ -7,8 +7,4 @@
 
 #pragma once
 
-/*
- * Winlogon of session %lu waits on this auto-reset event and handles a signal
- * like Ctrl+Alt+Del from the keyboard. Only SYSTEM may set it.
- */
 #define WINLOGON_SOFTWARE_SAS_EVENT L"Global\\WinlogonSoftwareSas%lu"

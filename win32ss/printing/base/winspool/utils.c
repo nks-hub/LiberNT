@@ -106,9 +106,9 @@ DWORD UnicodeToAnsiZZInPlace(PWSTR pwszzField)
 LONG WINAPI
 IntProtectHandle( HANDLE hSpooler, BOOL Close )
 {
-    BOOL Bad = TRUE;
+    BOOL _SEH2_VOLATILE Bad = TRUE;
     LONG Ret;
-    PSPOOLER_HANDLE pHandle = NULL;
+    PSPOOLER_HANDLE _SEH2_VOLATILE pHandle = NULL;
 
     EnterCriticalSection(&rtlCritSec);
 

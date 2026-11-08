@@ -26,7 +26,7 @@ BOOL
 IntSetClassMenuName(IN PCLS Class,
                     IN PUNICODE_STRING MenuName)
 {
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     /* Change the base class first */
     Class = Class->pclsBase;

@@ -992,7 +992,7 @@ BuildUserModeWindowStationName(
     OUT PUNICODE_STRING* WindowStationName,
     OUT PUNICODE_STRING* TebStaticUnicodeString)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     SIZE_T MemSize;
 
     LUID CallerLuid;
@@ -1118,12 +1118,12 @@ NtUserCreateWindowStation(
     DWORD Unknown5,
     DWORD Unknown6)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     HWINSTA hWinSta = NULL;
-    OBJECT_ATTRIBUTES LocalObjectAttributes;
+    OBJECT_ATTRIBUTES _SEH2_VOLATILE LocalObjectAttributes;
     PUNICODE_STRING WindowStationName = NULL;
     PUNICODE_STRING TebStaticUnicodeString = NULL;
-    KPROCESSOR_MODE OwnerMode = UserMode;
+    KPROCESSOR_MODE _SEH2_VOLATILE OwnerMode = UserMode;
 
     TRACE("NtUserCreateWindowStation called\n");
 
@@ -1158,7 +1158,7 @@ NtUserCreateWindowStation(
         {
             /* No, build the new window station name */
             Status = BuildUserModeWindowStationName(ObjectAttributes,
-                                                    &LocalObjectAttributes,
+                                                    (POBJECT_ATTRIBUTES)&LocalObjectAttributes,
                                                     &WindowStationName,
                                                     &TebStaticUnicodeString);
             if (!NT_SUCCESS(Status))
@@ -1213,7 +1213,7 @@ NtUserCreateWindowStation(
     FreeUserModeWindowStationName(WindowStationName,
                                   TebStaticUnicodeString,
                                   (OwnerMode == KernelMode ? ObjectAttributes : NULL),
-                                  &LocalObjectAttributes);
+                                  (POBJECT_ATTRIBUTES)&LocalObjectAttributes);
 
     if (!NT_SUCCESS(Status))
     {
@@ -1254,12 +1254,12 @@ NtUserOpenWindowStation(
     IN POBJECT_ATTRIBUTES ObjectAttributes,
     IN ACCESS_MASK dwDesiredAccess)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     HWINSTA hWinSta = NULL;
-    OBJECT_ATTRIBUTES LocalObjectAttributes;
+    OBJECT_ATTRIBUTES _SEH2_VOLATILE LocalObjectAttributes;
     PUNICODE_STRING WindowStationName = NULL;
     PUNICODE_STRING TebStaticUnicodeString = NULL;
-    KPROCESSOR_MODE OwnerMode = UserMode;
+    KPROCESSOR_MODE _SEH2_VOLATILE OwnerMode = UserMode;
 
     TRACE("NtUserOpenWindowStation called\n");
 
@@ -1315,7 +1315,7 @@ NtUserOpenWindowStation(
         {
             /* No, build the new window station name */
             Status = BuildUserModeWindowStationName(ObjectAttributes,
-                                                    &LocalObjectAttributes,
+                                                    (POBJECT_ATTRIBUTES)&LocalObjectAttributes,
                                                     &WindowStationName,
                                                     &TebStaticUnicodeString);
             if (!NT_SUCCESS(Status))
@@ -1363,7 +1363,7 @@ NtUserOpenWindowStation(
     FreeUserModeWindowStationName(WindowStationName,
                                   TebStaticUnicodeString,
                                   (OwnerMode == KernelMode ? ObjectAttributes : NULL),
-                                  &LocalObjectAttributes);
+                                  (POBJECT_ATTRIBUTES)&LocalObjectAttributes);
 
     if (!NT_SUCCESS(Status))
     {
@@ -2382,7 +2382,7 @@ NtUserSetWindowStationUser(
     BOOL Ret = FALSE;
     NTSTATUS Status;
     PWINSTATION_OBJECT WindowStation = NULL;
-    LUID luidUser;
+    LUID _SEH2_VOLATILE luidUser;
 
     UserEnterExclusive();
 

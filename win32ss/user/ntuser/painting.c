@@ -2432,7 +2432,7 @@ NtUserDrawCaptionTemp(
    UINT uFlags)
 {
    PWND pWnd = NULL;
-   UNICODE_STRING SafeStr = {0};
+   UNICODE_STRING _SEH2_VOLATILE SafeStr = {0};
    NTSTATUS Status = STATUS_SUCCESS;
    RECTL SafeRect;
    BOOL Ret;
@@ -2477,7 +2477,7 @@ NtUserDrawCaptionTemp(
    }
 
    if (str != NULL)
-      Ret = UserDrawCaption(pWnd, hDC, &SafeRect, hFont, hIcon, &SafeStr, uFlags);
+      Ret = UserDrawCaption(pWnd, hDC, &SafeRect, hFont, hIcon, (PUNICODE_STRING)&SafeStr, uFlags);
    else
    {
       if ( RECTL_bIsEmptyRect(&SafeRect) && hFont == 0 && hIcon == 0 )

@@ -862,7 +862,7 @@ NtUserGetUpdatedClipboardFormats(
     _Out_ PUINT pcFormatsOut)
 {
     PWINSTATION_OBJECT pWinStaObj;
-    BOOL bRet = FALSE;
+    BOOL _SEH2_VOLATILE bRet = FALSE;
     UINT cAvailable, i;
 
     UserEnterShared();
@@ -971,7 +971,7 @@ NtUserEmptyClipboard(VOID)
 INT APIENTRY
 NtUserGetClipboardFormatName(UINT fmt, LPWSTR lpszFormatName, INT cchMaxCount)
 {
-    INT iRet = 0;
+    INT _SEH2_VOLATILE iRet = 0;
 
     UserEnterShared();
 
@@ -1132,7 +1132,7 @@ cleanup:
 HANDLE APIENTRY
 NtUserGetClipboardData(UINT fmt, PGETCLIPBDATA pgcd)
 {
-    HANDLE hRet = NULL;
+    HANDLE _SEH2_VOLATILE hRet = NULL;
     PCLIP pElement;
     PWINSTATION_OBJECT pWinStaObj;
     UINT uSourceFmt = fmt;

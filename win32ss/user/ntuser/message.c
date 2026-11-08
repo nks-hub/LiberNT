@@ -224,7 +224,7 @@ MsgMemorySize(PMSGMEMORY MsgMemoryEntry, WPARAM wParam, LPARAM lParam)
     CREATESTRUCTW *Cs;
     PLARGE_STRING WindowName;
     PUNICODE_STRING ClassName;
-    UINT Size = 0;
+    UINT _SEH2_VOLATILE Size = 0;
 
     /* A number of pointer messages explicitly permit a null lParam. Do not
      * turn those into a callback buffer backed by address zero. */
@@ -623,7 +623,7 @@ CopyMsgToKernelMem(MSG *KernelModeMsg, MSG *UserModeMsg, PMSGMEMORY MsgMemoryEnt
                 MDICREATESTRUCTW Mdi;
                 MDICREATESTRUCTW *CapturedMdi = KernelMem;
                 PBYTE Data = (PBYTE)(CapturedMdi + 1);
-                SIZE_T ClassBytes = 0, TitleBytes = 0;
+                SIZE_T _SEH2_VOLATILE ClassBytes = 0, TitleBytes = 0;
 
                 Status = MmCopyFromCaller(&Mdi,
                                           (PVOID)UserModeMsg->lParam,
@@ -3023,7 +3023,7 @@ static NTSTATUS
 IntCaptureAnsiString(_In_ PCSZ Source, _Out_ PUNICODE_STRING Destination)
 {
     ANSI_STRING AnsiString;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     RtlZeroMemory(Destination, sizeof(*Destination));
     _SEH2_TRY

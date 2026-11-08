@@ -7184,7 +7184,7 @@ NtUserTrackPopupMenuEx(
 {
     PMENU menu;
     PWND pWnd;
-    TPMPARAMS tpm;
+    TPMPARAMS _SEH2_VOLATILE tpm;
     BOOL Ret = FALSE;
     USER_REFERENCE_ENTRY WndRef, MenuRef;
 
@@ -7235,7 +7235,7 @@ NtUserTrackPopupMenuEx(
 
     UserRefObjectCo(pWnd, &WndRef);
     UserRefObjectCo(menu, &MenuRef);
-    Ret = IntTrackPopupMenuEx(menu, fuFlags, x, y, pWnd, (lptpm ? &tpm : NULL));
+    Ret = IntTrackPopupMenuEx(menu, fuFlags, x, y, pWnd, (lptpm ? (const TPMPARAMS *)&tpm : NULL));
     UserDerefObjectCo(menu);
     UserDerefObjectCo(pWnd);
 

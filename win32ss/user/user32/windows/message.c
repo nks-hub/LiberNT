@@ -1638,7 +1638,7 @@ IntCallWindowProcW(BOOL IsAnsiProc,
   MSG UnicodeMsg;
   BOOL Hook = FALSE, MsgOverride = FALSE, Dialog, DlgOverride = FALSE;
   BOOL DpiContextChanged;
-  LRESULT Result = 0, PreResult = 0;
+  LRESULT _SEH2_VOLATILE Result = 0, PreResult = 0;
   ULONG PreviousDpiContext;
   DWORD Data = 0;
 
@@ -1727,7 +1727,7 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_END;
       }
 
-      if (! MsgiUnicodeToAnsiReply(&AnsiMsg, &UnicodeMsg, &Result))
+      if (! MsgiUnicodeToAnsiReply(&AnsiMsg, &UnicodeMsg, (LRESULT *)&Result))
       {
           goto Exit;
       }
@@ -1804,7 +1804,7 @@ IntCallWindowProcA(BOOL IsAnsiProc,
   MSG UnicodeMsg;
   BOOL Hook = FALSE, MsgOverride = FALSE, Dialog, DlgOverride = FALSE;
   BOOL DpiContextChanged;
-  LRESULT Result = 0, PreResult = 0;
+  LRESULT _SEH2_VOLATILE Result = 0, PreResult = 0;
   ULONG PreviousDpiContext;
   DWORD Data = 0;
 
@@ -1947,7 +1947,7 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_END;
       }
 
-      if (! MsgiAnsiToUnicodeReply(&UnicodeMsg, &AnsiMsg, &Result))
+      if (! MsgiAnsiToUnicodeReply(&UnicodeMsg, &AnsiMsg, (LRESULT *)&Result))
       {
          goto Exit;
       }
@@ -2183,7 +2183,7 @@ WINAPI
 DECLSPEC_HOTPATCH
 DispatchMessageA(CONST MSG *lpmsg)
 {
-    LRESULT Ret = 0;
+    LRESULT _SEH2_VOLATILE Ret = 0;
     MSG UnicodeMsg;
 #ifndef WOW64_I386_RUNTIME
     PWND Wnd;
@@ -2246,7 +2246,7 @@ DispatchMessageA(CONST MSG *lpmsg)
 #ifdef WOW64_I386_RUNTIME
        if (!MsgiAnsiToUnicodeMessage(lpmsg->hwnd, &UnicodeMsg, (LPMSG)lpmsg)) return FALSE;
        Ret = NtUserDispatchMessage(&UnicodeMsg);
-       if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, &Ret)) return FALSE;
+       if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, (LRESULT *)&Ret)) return FALSE;
 #else
        if ( (lpmsg->message != WM_PAINT) && !(Wnd->state & WNDS_SERVERSIDEWINDOWPROC) )
        {
@@ -2266,7 +2266,7 @@ DispatchMessageA(CONST MSG *lpmsg)
 
           Ret = NtUserDispatchMessage(&UnicodeMsg);
 
-          if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, &Ret))
+          if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, (LRESULT *)&Ret))
           {
              return FALSE;
           }
@@ -2286,7 +2286,7 @@ WINAPI
 DECLSPEC_HOTPATCH
 DispatchMessageW(CONST MSG *lpmsg)
 {
-    LRESULT Ret = 0;
+    LRESULT _SEH2_VOLATILE Ret = 0;
 #ifndef WOW64_I386_RUNTIME
     PWND Wnd;
 #endif

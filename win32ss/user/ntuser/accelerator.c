@@ -174,7 +174,7 @@ NtUserCopyAcceleratorTable(
     ULONG EntriesCount)
 {
     PACCELERATOR_TABLE Accel;
-    ULONG Ret = 0;
+    ULONG _SEH2_VOLATILE Ret = 0;
 
     TRACE("Enter NtUserCopyAcceleratorTable\n");
     UserEnterShared();

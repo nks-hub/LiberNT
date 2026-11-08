@@ -3819,14 +3819,14 @@ NtGdiExtCreateRegion(
     DWORD Count,
     LPRGNDATA RgnData)
 {
-    HRGN hRgn;
+    HRGN _SEH2_VOLATILE hRgn;
     PREGION Region;
-    DWORD nCount = 0;
-    DWORD iType = 0;
-    DWORD dwSize = 0;
+    DWORD _SEH2_VOLATILE nCount = 0;
+    DWORD _SEH2_VOLATILE iType = 0;
+    DWORD _SEH2_VOLATILE dwSize = 0;
     UINT i;
-    RECT* rects = NULL;
-    NTSTATUS Status = STATUS_SUCCESS;
+    RECT* _SEH2_VOLATILE rects = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     MATRIX matrix;
     XFORMOBJ xo;
 

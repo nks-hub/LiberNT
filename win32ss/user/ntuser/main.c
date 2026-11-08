@@ -569,7 +569,7 @@ IntIsGuiImage(
     _In_ PEPROCESS Process)
 {
     PIMAGE_NT_HEADERS pNtHeaders;
-    BOOL bGui = FALSE;
+    BOOL _SEH2_VOLATILE bGui = FALSE;
 
     if (!Process->Peb || !Process->SectionBaseAddress)
         return FALSE;

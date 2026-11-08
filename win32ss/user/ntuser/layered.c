@@ -486,10 +486,10 @@ NtUserUpdateLayeredWindow(
    RECT *prcDirty)
 {
    UPDATELAYEREDWINDOWINFO info;
-   POINT Dst, Src; 
-   SIZE Size;
-   RECT Dirty;
-   BLENDFUNCTION blend = { AC_SRC_OVER, 0, 255, 0 };
+   POINT _SEH2_VOLATILE Dst, Src; 
+   SIZE _SEH2_VOLATILE Size;
+   RECT _SEH2_VOLATILE Dirty;
+   BLENDFUNCTION _SEH2_VOLATILE blend = { AC_SRC_OVER, 0, 255, 0 };
    PWND pWnd;
    BOOL Ret = FALSE;
 
@@ -544,14 +544,14 @@ NtUserUpdateLayeredWindow(
 
    info.cbSize   = sizeof(info);
    info.hdcDst   = hdcDst;
-   info.pptDst   = pptDst? &Dst : NULL;
-   info.psize    = &Size;
+   info.pptDst   = pptDst? (const POINTL *)&Dst : NULL;
+   info.psize    = (const SIZE *)&Size;
    info.hdcSrc   = hdcSrc;
-   info.pptSrc   = pptSrc ? &Src : NULL;
+   info.pptSrc   = pptSrc ? (const POINTL *)&Src : NULL;
    info.crKey    = crKey;
-   info.pblend   = &blend;
+   info.pblend   = (const BLENDFUNCTION *)&blend;
    info.dwFlags  = dwFlags;
-   info.prcDirty = prcDirty ? &Dirty : NULL;
+   info.prcDirty = prcDirty ? (const RECTL *)&Dirty : NULL;
    Ret = IntUpdateLayeredWindowI( pWnd, &info );
 Exit:
    TRACE("Leave NtUserUpdateLayeredWindow, ret=%i\n", Ret);

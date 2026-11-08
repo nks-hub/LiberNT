@@ -2917,7 +2917,7 @@ NTSTATUS
 IntCompositionDwmGetFrame(_In_ PVOID pUser)
 {
     DWM_FRAME_HEADER Frame;
-    DWM_FRAME_HEADER Input = {0};
+    DWM_FRAME_HEADER _SEH2_VOLATILE Input = {0};
     static PWND s_stack[DWM_MAX_WINDOWS];
     PWND pwndDesktop, pwndChild;
     PPDEVOBJ ppdev;

@@ -709,7 +709,7 @@ GetDesktopWindow(VOID)
     return (HWND)NtUserCallOneParam(0, ONEPARAM_ROUTINE_ROS_GETDESKTOPWINDOW);
 #else
     PWND Wnd;
-    HWND Ret = NULL;
+    HWND _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -1028,7 +1028,7 @@ GetAncestor(_In_ HWND hwnd, _In_ UINT uType)
     /* Special handling optimized for speed */
     if (uType == GA_PARENT)
     {
-        HWND hwndAncestor = NULL;
+        HWND _SEH2_VOLATILE hwndAncestor = NULL;
 
         _SEH2_TRY
         {
@@ -1097,7 +1097,7 @@ GetLastActivePopup(HWND hWnd)
     return (HWND)NtUserCallHwnd(hWnd, HWND_ROUTINE_ROS_GETLASTACTIVEPOPUP);
 #else
     PWND Wnd;
-    HWND Ret = hWnd;
+    HWND _SEH2_VOLATILE Ret = hWnd;
 
     Wnd = ValidateHwnd(hWnd);
     if (Wnd != NULL)
@@ -1137,7 +1137,7 @@ GetParent(HWND hWnd)
     return NULL;
 #else
     PWND Wnd, WndParent;
-    HWND Ret = NULL;
+    HWND _SEH2_VOLATILE Ret = NULL;
 
     Wnd = ValidateHwnd(hWnd);
     if (Wnd != NULL)
@@ -1192,7 +1192,7 @@ GetWindow(HWND hWnd,
     return ULongToHandle(NtUserCallHwndParam(hWnd, uCmd, HWNDPARAM_ROUTINE_ROS_GETWINDOW));
 #else
     PWND Wnd, FoundWnd;
-    HWND Ret = NULL;
+    HWND _SEH2_VOLATILE Ret = NULL;
 
     Wnd = ValidateHwnd(hWnd);
     if (!Wnd)
@@ -1289,7 +1289,7 @@ GetWindowInfo(HWND hWnd,
     PWND pWnd;
     PCLS pCls = NULL;
     SIZE Size = {0,0};
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     if ( !pwi || pwi->cbSize != sizeof(WINDOWINFO))
        SetLastError(ERROR_INVALID_PARAMETER); // Just set the error and go!
@@ -1443,8 +1443,8 @@ int WINAPI
 GetWindowTextA(HWND hWnd, LPSTR lpString, int nMaxCount)
 {
 #ifdef WOW64_I386_RUNTIME
-    WCHAR *Buffer = NULL;
-    INT Length = 0;
+    WCHAR * _SEH2_VOLATILE Buffer = NULL;
+    INT _SEH2_VOLATILE Length = 0;
 
     if (lpString == NULL || nMaxCount <= 0) return 0;
 
@@ -1566,7 +1566,7 @@ int WINAPI
 GetWindowTextW(HWND hWnd, LPWSTR lpString, int nMaxCount)
 {
 #ifdef WOW64_I386_RUNTIME
-    INT Length = 0;
+    INT _SEH2_VOLATILE Length = 0;
 
     if (lpString == NULL || nMaxCount <= 0) return 0;
 
@@ -1675,7 +1675,7 @@ IsChild(HWND hWndParent,
     return FALSE;
 #else
     PWND WndParent, DesktopWnd,  Wnd;
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     WndParent = ValidateHwnd(hWndParent);
     if (!WndParent)
@@ -1814,7 +1814,7 @@ IsWindowVisible(HWND hWnd)
 #ifdef WOW64_I386_RUNTIME
     return !!NtUserCallHwnd(hWnd, HWND_ROUTINE_ROS_ISWINDOWVISIBLE);
 #else
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
     PWND Wnd = ValidateHwnd(hWnd);
 
     if (Wnd != NULL)
@@ -2516,8 +2516,8 @@ WINAPI
 GetWindowCompositionAttribute(HWND hWnd, PVOID AttributeData)
 {
     PWINDOW_COMPOSITION_ATTRIBUTE_DATA Request = AttributeData;
-    ULONG Attribute, Size, Required, Value = 0;
-    PVOID Data;
+    ULONG _SEH2_VOLATILE Attribute, Size, Required, Value = 0;
+    PVOID _SEH2_VOLATILE Data;
     BOOL SetOnly = FALSE;
     BOOL Result = TRUE;
 

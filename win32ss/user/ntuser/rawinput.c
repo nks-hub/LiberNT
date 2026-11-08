@@ -956,7 +956,7 @@ NtUserGetRegisteredRawInputDevices(
 {
     PPROCESSINFO ppi;
     UINT Capacity, Count;
-    DWORD Ret = (DWORD)-1;
+    DWORD _SEH2_VOLATILE Ret = (DWORD)-1;
 
     if (cbSize != sizeof(RAWINPUTDEVICE) || !puiNumDevices)
     {
@@ -1015,7 +1015,7 @@ NtUserGetRawInputDeviceList(
     PLIST_ENTRY Entry;
     PRAWINPUT_DEVICE_OBJECT Device;
     UINT Count = 0, i;
-    DWORD Ret = (DWORD)-1;
+    DWORD _SEH2_VOLATILE Ret = (DWORD)-1;
 
     if (cbSize != sizeof(RAWINPUTDEVICELIST))
     {
@@ -1083,7 +1083,7 @@ NtUserGetRawInputDeviceInfo(
     PRAWINPUT_DEVICE_OBJECT Device;
     UINT cbData = 0, Len = 0, cbCopy = 0;
     PVOID pSource = NULL;
-    DWORD Ret = (DWORD)-1;
+    DWORD _SEH2_VOLATILE Ret = (DWORD)-1;
 
     _SEH2_TRY
     {
@@ -1173,7 +1173,7 @@ NtUserGetRawInputData(
     PTHREADINFO pti;
     PRAWINPUT RawInput;
     UINT Size;
-    DWORD Ret = (DWORD)-1;
+    DWORD _SEH2_VOLATILE Ret = (DWORD)-1;
 
     UserEnterShared();
     pti = PsGetCurrentThreadWin32Thread();
@@ -1248,7 +1248,7 @@ NtUserGetRawInputBuffer(
     PLIST_ENTRY Entry, Next;
     PUSER_MESSAGE Message;
     UINT cbBuffer, cbUsable, cbTotal = 0, cbNext = 0, cbReturn, cbItem, Count = 0;
-    DWORD Ret = (DWORD)-1;
+    DWORD _SEH2_VOLATILE Ret = (DWORD)-1;
 
     if (cbSizeHeader != sizeof(RAWINPUTHEADER) || !pcbSize)
     {

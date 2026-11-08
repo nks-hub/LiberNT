@@ -143,7 +143,7 @@ co_IntClientLoadLibrary(PUNICODE_STRING pstrLibName,
    ULONG ArgumentLength;
    PCLIENT_LOAD_LIBRARY_ARGUMENTS pArguments;
    NTSTATUS Status;
-   BOOL bResult = FALSE;
+   BOOL _SEH2_VOLATILE bResult = FALSE;
    ULONG_PTR pLibNameBuffer = 0, pInitFuncBuffer = 0;
 
    /* Do not allow the desktop thread to do callback to user mode */
@@ -504,7 +504,7 @@ co_IntCallWindowProc(WNDPROC Proc,
 HMENU APIENTRY
 co_IntLoadSysMenuTemplate(VOID)
 {
-   LRESULT Result = 0;
+   LRESULT _SEH2_VOLATILE Result = 0;
    NTSTATUS Status;
    PVOID ResultPointer;
    ULONG ResultLength;
@@ -594,7 +594,7 @@ co_IntCallHookProc(INT HookId,
 {
    ULONG ArgumentLength;
    PVOID Argument = NULL;
-   LRESULT Result = 0;
+   LRESULT _SEH2_VOLATILE Result = 0;
    NTSTATUS Status;
    PVOID ResultPointer;
    ULONG ResultLength;
@@ -1417,7 +1417,7 @@ co_ClientImmLoadLayout(
     _In_ HKL hKL,
     _Inout_ PIMEINFOEX pImeInfoEx)
 {
-    BOOL ret = FALSE;
+    BOOL _SEH2_VOLATILE ret = FALSE;
     NTSTATUS Status;
     IMMLOADLAYOUT_CALLBACK_ARGUMENTS Common = { hKL };
     ULONG ResultLength = sizeof(IMMLOADLAYOUT_CALLBACK_OUTPUT);
@@ -1469,7 +1469,7 @@ co_ClientMonitorEnumProc(
     PVOID ResultPointer = NULL;
     ULONG ResultLength = sizeof(BOOL);
     NTSTATUS Status;
-    BOOL ret = FALSE;
+    BOOL _SEH2_VOLATILE ret = FALSE;
 
     Common.Proc = Proc;
     Common.hMonitor = hMonitor;

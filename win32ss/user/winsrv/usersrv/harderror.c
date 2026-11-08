@@ -391,7 +391,7 @@ UserpFormatMessages(
     HWND hwndOwner;
     PMESSAGE_RESOURCE_ENTRY MessageResource;
     PWSTR FormatString, pszBuffer;
-    size_t cszBuffer;
+    size_t _SEH2_VOLATILE cszBuffer;
 
     /* Open client process */
     InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
@@ -826,7 +826,7 @@ BuildMessage:
         else
         {
             RtlStringCbPrintfExW(pszBuffer, cszBuffer,
-                                 &pszBuffer, &cszBuffer,
+                                 &pszBuffer, (size_t *)&cszBuffer,
                                  0,
                                  FormatString,
                                  CopyParameters[0], CopyParameters[1],
@@ -839,7 +839,7 @@ BuildMessage:
                     Message->ValidResponseOptions == OptionOkCancel)
                 {
                     RtlStringCbPrintfExW(pszBuffer, cszBuffer,
-                                         &pszBuffer, &cszBuffer,
+                                         &pszBuffer, (size_t *)&cszBuffer,
                                          0,
                                          L"\n%wZ",
                                          &g_OKTerminateU);
@@ -847,7 +847,7 @@ BuildMessage:
                 if (Message->ValidResponseOptions == OptionOkCancel)
                 {
                     RtlStringCbPrintfExW(pszBuffer, cszBuffer,
-                                         &pszBuffer, &cszBuffer,
+                                         &pszBuffer, (size_t *)&cszBuffer,
                                          0,
                                          L"\n%wZ",
                                          &g_CancelDebugU);

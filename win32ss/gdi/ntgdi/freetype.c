@@ -8903,11 +8903,11 @@ NtGdiExtTextOutW(
 {
     BOOL Result = FALSE;
     NTSTATUS Status = STATUS_SUCCESS;
-    RECTL SafeRect;
+    RECTL _SEH2_VOLATILE SafeRect;
     BYTE LocalBuffer[STACK_TEXT_BUFFER_SIZE];
     PVOID Buffer = LocalBuffer;
-    LPCWSTR SafeString = NULL;
-    PINT SafeDx = NULL;
+    LPCWSTR _SEH2_VOLATILE SafeString = NULL;
+    PINT _SEH2_VOLATILE SafeDx = NULL;
     ULONG BufSize, StringSize, DxSize = 0;
     const UINT ValidOptions = ETO_OPAQUE | ETO_CLIPPED | ETO_GLYPH_INDEX |
                               ETO_RTLREADING | ETO_NUMERICSLOCAL |
@@ -9012,7 +9012,7 @@ NtGdiExtTextOutW(
                             XStart,
                             YStart,
                             fuOptions,
-                            &SafeRect,
+                            (PRECTL)&SafeRect,
                             SafeString,
                             Count,
                             SafeDx,

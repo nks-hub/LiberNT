@@ -649,7 +649,7 @@ NtGdiRectVisible(
     NTSTATUS Status = STATUS_SUCCESS;
     PDC dc = DC_LockDc(hDC);
     BOOL Result = FALSE;
-    RECTL Rect;
+    RECTL _SEH2_VOLATILE Rect;
     PREGION prgn;
 
     if (!dc)
@@ -685,7 +685,7 @@ NtGdiRectVisible(
     if (prgn)
     {
          IntLPtoDP(dc, (LPPOINT)&Rect, 2);
-         Result = REGION_RectInRegion(prgn, &Rect);
+         Result = REGION_RectInRegion(prgn, (const RECTL *)&Rect);
     }
     DC_UnlockDc(dc);
 

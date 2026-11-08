@@ -4531,7 +4531,7 @@ NtUserSetWindowPlacement(HWND hWnd,
                          WINDOWPLACEMENT *lpwndpl)
 {
    PWND Wnd;
-   WINDOWPLACEMENT Safepl;
+   WINDOWPLACEMENT _SEH2_VOLATILE Safepl;
    UINT Flags;
    BOOL Ret = FALSE;
    USER_REFERENCE_ENTRY Ref;
@@ -4571,7 +4571,7 @@ NtUserSetWindowPlacement(HWND hWnd,
 
     UserRefObjectCo(Wnd, &Ref);
     if (!UserIsDesktopWindow(Wnd) && !UserIsMessageWindow(Wnd))
-        Ret = IntSetWindowPlacement(Wnd, &Safepl, Flags);
+        Ret = IntSetWindowPlacement(Wnd, (WINDOWPLACEMENT *)&Safepl, Flags);
     UserDerefObjectCo(Wnd);
 
     if (Ret)

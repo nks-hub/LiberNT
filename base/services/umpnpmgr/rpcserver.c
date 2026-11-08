@@ -3656,11 +3656,6 @@ ReenumerateDeviceInstance(
 }
 
 
-/*
- * Takes a software device (SWD\...) out of the device tree when its last
- * SwDevice handle closes. Its registry keys stay, so the next SwDeviceCreate
- * of the same instance finds its settings again.
- */
 static CONFIGRET
 RemoveSoftwareDeviceInstance(
     _In_ LPWSTR pszDeviceInstance)
@@ -3682,7 +3677,6 @@ RemoveSoftwareDeviceInstance(
     if (!NT_SUCCESS(Status))
         return NtStatusToCrError(Status);
 
-    /* The root bus no longer reports the device; enumerating it deletes the device node */
     RtlInitUnicodeString(&EnumerateData.DeviceInstance, szRootDeviceInstanceID);
     EnumerateData.Flags = 0;
     Status = NtPlugPlayControl(PlugPlayControlEnumerateDevice, &EnumerateData, sizeof(EnumerateData));
@@ -3690,10 +3684,6 @@ RemoveSoftwareDeviceInstance(
 }
 
 
-/*
- * A software device with a handle lifetime leaves when the process that
- * holds its handle ends, also when that process never closes the handle.
- */
 typedef struct _SOFTWARE_DEVICE_WATCH
 {
     LIST_ENTRY ListEntry;
@@ -3739,17 +3729,11 @@ StopSoftwareDeviceWatch(
     if (!Watch)
         return;
 
-    /* Waits for a callback that already runs; that callback finds no watch and returns */
     UnregisterWaitEx(Watch->Wait, INVALID_HANDLE_VALUE);
     CloseHandle(Watch->Process);
     HeapFree(GetProcessHeap(), 0, Watch);
 }
 
-/*
- * The watch stays listed while the device is removed, so that a
- * StopSoftwareDeviceWatch for the same instance, which the next owner calls
- * before it creates the device again, waits for this callback to return.
- */
 static VOID
 CALLBACK
 SoftwareDeviceOwnerEnded(
@@ -3768,7 +3752,6 @@ SoftwareDeviceOwnerEnded(
         Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
     ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
 
-    /* A StopSoftwareDeviceWatch that took the watch frees it after this returns */
     if (!Listed)
         return;
 
@@ -3811,7 +3794,6 @@ WatchSoftwareDeviceInstance(
         return CR_FAILURE;
     }
 
-    /* The lock holds back a callback for an ended process until the watch is listed */
     AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
     if (!RegisterWaitForSingleObject(&Watch->Wait, Watch->Process, SoftwareDeviceOwnerEnded, Watch,
                                      INFINITE, WT_EXECUTEONLYONCE))

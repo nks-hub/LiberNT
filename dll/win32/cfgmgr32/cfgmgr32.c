@@ -143,7 +143,6 @@ static LSTATUS open_device_classes_key( HKEY root, const WCHAR *key, REGSAM acce
 }
 
 #ifdef __REACTOS__
-/* Creates Class\{ClassGUID}\NNNN for a device without a software key and records it as its Driver value */
 static LSTATUS create_driver_key( HKEY dev_key, WCHAR *driver, DWORD driver_len )
 {
     WCHAR class_guid[39];
@@ -2794,7 +2793,6 @@ CONFIGRET WINAPI CM_Open_DevNode_Key_Ex( DEVINST node, REGSAM access, ULONG prof
         DWORD len = sizeof(driver);
 
 #ifdef __REACTOS__
-        /* Writing the Driver value of a new software key needs write access */
         if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, open ? access : access | KEY_QUERY_VALUE | KEY_SET_VALUE,
                                     open, &dev_key ))) return map_error( err );
         if (RegQueryValueExW( dev_key, L"Driver", NULL, NULL, (BYTE *)driver, &len ))

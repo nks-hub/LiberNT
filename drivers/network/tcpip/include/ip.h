@@ -173,7 +173,6 @@ typedef struct _IP_INTERFACE {
     PUCHAR Address;               /* Pointer to interface address */
     UINT  AddressLength;          /* Length of address in bytes */
     UINT  Index;                  /* Index of adapter (used to add ip addr) */
-    ULONG64 NetLuid;              /* NET_LUID of the NDIS interface; 0 if none */
     LL_TRANSMIT_ROUTINE Transmit; /* Pointer to transmit function */
     PVOID TCPContext;             /* TCP Content for this interface */
     SEND_RECV_STATS Stats;        /* Send/Receive statistics */
@@ -181,6 +180,7 @@ typedef struct _IP_INTERFACE {
     BOOLEAN HalfDuplex;
     ULONG PhysicalMedium;
     ULONG64 TransmitLinkSpeed;
+    ULONG64 NetLuid;              /* NET_LUID of the NDIS interface; 0 if none */
     BOOLEAN ManualMetric;
     UINT  InterfaceMetric;
     BOOLEAN Forwarding;

@@ -312,12 +312,12 @@ ULONG64
 NTAPI
 EmuGuestThunk(
     _In_ PVOID Native,
-    _In_opt_ PCSTR Signature)
+    _In_opt_ PCSTR _SEH2_VOLATILE Signature)
 {
     CHAR Described[EMU_HOST_MAX_ARGUMENTS + 2];
     UCHAR Code[] = { 0x4C, 0x8B, 0xD1, 0xB8, 0, 0, 0, 0, 0x0F, 0x05, 0xC3 };
     PEMU_HOST_THUNK Thunk;
-    ULONG Index, Count, Service, Named = MAXULONG;
+    ULONG _SEH2_VOLATILE Index, Count, Service, Named = MAXULONG;
     ULONG64 Stub = 0;
 
     if (Native && !Signature)
@@ -424,7 +424,7 @@ EmuHostCall(
 {
     ULONG64 Arguments[EMU_HOST_MAX_ARGUMENTS] = { 0 };
     ULONG64 Slots[EMU_HOST_MAX_ARGUMENTS * 2] = { 0 };
-    ULONG Count = Thunk->Count, Index, Used = 0;
+    ULONG _SEH2_VOLATILE Count = Thunk->Count, Index, Used = 0;
     ULONG64 Result;
     PULONG64 Vectors;
     ULONG_PTR Base, Limit, Rsp;
@@ -780,7 +780,7 @@ EmuCallDescribed(
 static
 ULONG64
 EmuImportThunkTarget(
-    _In_ ULONG64 Rip)
+    _In_ ULONG64 _SEH2_VOLATILE Rip)
 {
     PULONG Code;
     ULONG Depth;

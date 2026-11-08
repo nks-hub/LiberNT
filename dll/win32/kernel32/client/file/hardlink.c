@@ -29,9 +29,9 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
     ULONG NeededSize;
     IO_STATUS_BLOCK IoStatusBlock;
     OBJECT_ATTRIBUTES ObjectAttributes;
-    HANDLE hTarget = INVALID_HANDLE_VALUE;
+    HANDLE _SEH2_VOLATILE hTarget = INVALID_HANDLE_VALUE;
     PFILE_LINK_INFORMATION _SEH2_VOLATILE LinkInformation = NULL;
-    UNICODE_STRING LinkTarget, LinkName;
+    UNICODE_STRING _SEH2_VOLATILE LinkTarget, LinkName;
 
     /* Initialize */
     LinkTarget.Buffer = LinkName.Buffer = NULL;

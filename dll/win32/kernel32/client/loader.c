@@ -439,7 +439,7 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
                DWORD dwFlags)
 {
     UNICODE_STRING DllName;
-    HINSTANCE hInst;
+    HINSTANCE _SEH2_VOLATILE hInst;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PWSTR SearchPath;
     ULONG DllCharacteristics = 0;

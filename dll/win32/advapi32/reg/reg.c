@@ -5203,7 +5203,7 @@ RegSetValueExW(
     _In_ DWORD Reserved,
     _In_ DWORD dwType,
     _In_ CONST BYTE* lpData,
-    _In_ DWORD cbData)
+    _In_ DWORD _SEH2_VOLATILE cbData)
 {
     UNICODE_STRING ValueName;
     HANDLE KeyHandle;

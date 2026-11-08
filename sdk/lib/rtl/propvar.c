@@ -68,7 +68,7 @@ PropertyLengthAsVariant(IN PSERIALIZEDPROPERTYVALUE pProp,
                         IN BYTE bReserved)
 {
     ULONG Length = 0;
-    PVOID BaseAddress = NULL;
+    PVOID _SEH2_VOLATILE BaseAddress = NULL;
     ULONG (*ProcedureAddress)(PSERIALIZEDPROPERTYVALUE, ULONG, USHORT, BYTE);
 
     _SEH2_TRY
@@ -102,7 +102,7 @@ RtlConvertPropertyToVariant(IN PSERIALIZEDPROPERTYVALUE prop,
                             IN PPMemoryAllocator pma)
 {
     BOOLEAN Success = FALSE;
-    PVOID BaseAddress = NULL;
+    PVOID _SEH2_VOLATILE BaseAddress = NULL;
     BOOLEAN (*ProcedureAddress)(PSERIALIZEDPROPERTYVALUE, USHORT, PROPVARIANT*, PPMemoryAllocator);
 
     _SEH2_TRY
@@ -139,7 +139,7 @@ RtlConvertVariantToProperty(IN const PROPVARIANT * pvar,
                             IN OUT PULONG pcIndirect OPTIONAL)
 {
     PSERIALIZEDPROPERTYVALUE Serialized = NULL;
-    PVOID BaseAddress = NULL;
+    PVOID _SEH2_VOLATILE BaseAddress = NULL;
     PSERIALIZEDPROPERTYVALUE (*ProcedureAddress)(const PROPVARIANT*, USHORT, PSERIALIZEDPROPERTYVALUE,
                                                  PULONG, PROPID, BOOLEAN, PULONG);
 

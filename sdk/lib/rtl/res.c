@@ -217,7 +217,7 @@ static NTSTATUS LdrpAccessResource( PVOID BaseAddress, IMAGE_RESOURCE_DATA_ENTRY
                                     void **ptr, ULONG *size )
 #endif
 {
-    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
 
     _SEH2_TRY
     {

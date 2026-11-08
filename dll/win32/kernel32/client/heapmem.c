@@ -658,7 +658,7 @@ GlobalFlags(HGLOBAL hMem)
  */
 HGLOBAL
 NTAPI
-GlobalFree(HGLOBAL hMem)
+GlobalFree(HGLOBAL _SEH2_VOLATILE hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     LPVOID Ptr;

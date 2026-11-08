@@ -841,7 +841,7 @@ ConMsgPuts(
 {
     INT Len;
     DWORD _SEH2_VOLATILE dwLength  = 0;
-    LPWSTR lpMsgBuf = NULL;
+    LPWSTR _SEH2_VOLATILE lpMsgBuf = NULL;
 
     /*
      * Sanitize dwFlags. This version always ignores explicitly the inserts
@@ -914,7 +914,7 @@ ConMsgPrintf2V(
 {
     INT Len;
     DWORD _SEH2_VOLATILE dwLength  = 0;
-    LPWSTR lpMsgBuf = NULL;
+    LPWSTR _SEH2_VOLATILE lpMsgBuf = NULL;
 
     /*
      * Sanitize dwFlags. This version always ignores explicitly the inserts.

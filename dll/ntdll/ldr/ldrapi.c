@@ -1327,7 +1327,7 @@ LdrEnumerateLoadedModules(
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     NTSTATUS Status;
     ULONG_PTR Cookie;
-    BOOLEAN Stop = FALSE;
+    BOOLEAN _SEH2_VOLATILE Stop = FALSE;
 
     /* Check parameters */
     if ((ReservedFlag) || !(EnumProc)) return STATUS_INVALID_PARAMETER;

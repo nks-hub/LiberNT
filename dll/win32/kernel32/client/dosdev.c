@@ -31,7 +31,7 @@ IsGlobalDeviceMap(
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     DWORD ReturnLength;
     UNICODE_STRING GlobalString;
-    OBJECT_NAME_INFORMATION NameInfo, *PNameInfo;
+    OBJECT_NAME_INFORMATION NameInfo, *_SEH2_VOLATILE PNameInfo;
 
     /* We need both parameters */
     if (DirectoryHandle == 0 || IsGlobal == NULL)

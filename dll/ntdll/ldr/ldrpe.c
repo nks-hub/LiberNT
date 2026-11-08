@@ -75,7 +75,7 @@ LdrpSnapIAT(IN PLDR_DATA_TABLE_ENTRY ExportLdrEntry,
 {
     PVOID Iat = NULL;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
-    PIMAGE_THUNK_DATA OriginalThunk, FirstThunk;
+    PIMAGE_THUNK_DATA _SEH2_VOLATILE OriginalThunk, FirstThunk;
     PIMAGE_NT_HEADERS NtHeader;
     PIMAGE_SECTION_HEADER SectionHeader;
     PIMAGE_EXPORT_DIRECTORY ExportDirectory;
@@ -1250,8 +1250,8 @@ LdrpReferenceLoadedDll(
     _In_ BOOLEAN Redirected,
     _Out_ PVOID *BaseAddress)
 {
-    PLDR_DATA_TABLE_ENTRY LdrEntry = NULL;
-    LDRP_WALK_SET Set;
+    PLDR_DATA_TABLE_ENTRY _SEH2_VOLATILE LdrEntry = NULL;
+    LDRP_WALK_SET _SEH2_VOLATILE Set;
     BOOLEAN _SEH2_VOLATILE Referenced = FALSE, Walk = FALSE, SetReady = FALSE;
 
 #if defined(_M_ARM64)

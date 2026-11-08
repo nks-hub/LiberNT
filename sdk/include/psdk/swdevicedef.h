@@ -28,3 +28,10 @@ typedef struct _SW_DEVICE_CREATE_INFO
     PCWSTR pszDeviceLocation;
     const SECURITY_DESCRIPTOR *pSecurityDescriptor;
 } SW_DEVICE_CREATE_INFO, *PSW_DEVICE_CREATE_INFO;
+
+typedef enum _SW_DEVICE_LIFETIME
+{
+    SWDeviceLifetimeHandle,
+    SWDeviceLifetimeParentPresent,
+    SWDeviceLifetimeMax
+} SW_DEVICE_LIFETIME, *PSW_DEVICE_LIFETIME;

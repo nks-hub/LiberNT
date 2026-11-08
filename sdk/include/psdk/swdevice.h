@@ -17,13 +17,6 @@ extern "C" {
 DECLARE_HANDLE(HSWDEVICE);
 typedef HSWDEVICE *PHSWDEVICE;
 
-typedef enum _SW_DEVICE_LIFETIME
-{
-    SWDeviceLifetimeHandle,
-    SWDeviceLifetimeParentPresent,
-    SWDeviceLifetimeMax
-} SW_DEVICE_LIFETIME, *PSW_DEVICE_LIFETIME;
-
 typedef VOID (WINAPI *SW_DEVICE_CREATE_CALLBACK)(
     _In_ HSWDEVICE hSwDevice,
     _In_ HRESULT CreateResult,

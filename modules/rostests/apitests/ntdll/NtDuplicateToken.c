@@ -361,7 +361,13 @@ DuplicateCreatedTokenAsEffective(
         ok(EffectiveGroups->GroupCount == ARRAYSIZE(Kept), "The copy has %lu groups, expected %u\n",
            EffectiveGroups->GroupCount, (UINT)ARRAYSIZE(Kept));
         for (Index = 0; Index < EffectiveGroups->GroupCount && Index < ARRAYSIZE(Kept); Index++)
-            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is not the expected SID\n", Index);
+        {
+            WCHAR Text[64];
+            UNICODE_STRING SidText = { 0, sizeof(Text), Text };
+
+            RtlConvertSidToUnicodeString(&SidText, EffectiveGroups->Groups[Index].Sid, FALSE);
+            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is %wZ\n", Index, &SidText);
+        }
     }
     if (EffectiveLabel)
         ok(EqualSid(EffectiveLabel->Label.Sid, &MediumSid), "The integrity level is not the label of the token\n");

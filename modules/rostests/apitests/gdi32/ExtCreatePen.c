@@ -531,7 +531,6 @@ void Test_ExtCreatePen_Params2()
 
 }
 
-/* A cosmetic PS_NULL pen is the null pen whatever brush it gets */
 static void Test_ExtCreatePen_CosmeticNull(void)
 {
     LOGBRUSH logbrush;

@@ -6,6 +6,7 @@
  */
 
 #include "precomp.h"
+#include <tlhelp32.h>
 
 static
 HANDLE
@@ -373,23 +374,70 @@ DuplicateCreatedTokenAsEffective(
     CloseHandle(EffectiveToken);
 }
 
+static
+BOOL
+ImpersonateLsass(VOID)
+{
+    PROCESSENTRY32W Entry = { sizeof(Entry) };
+    HANDLE Snapshot, Process, Token, Duplicate;
+    BOOL Found, Done = FALSE;
+
+    Snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (Snapshot == INVALID_HANDLE_VALUE)
+        return FALSE;
+    for (Found = Process32FirstW(Snapshot, &Entry); Found; Found = Process32NextW(Snapshot, &Entry))
+    {
+        if (!_wcsicmp(Entry.szExeFile, L"lsass.exe"))
+            break;
+    }
+    CloseHandle(Snapshot);
+    if (!Found)
+        return FALSE;
+
+    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, Entry.th32ProcessID);
+    if (!Process)
+        return FALSE;
+    if (OpenProcessToken(Process, TOKEN_DUPLICATE | TOKEN_QUERY, &Token))
+    {
+        if (DuplicateTokenEx(Token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenImpersonation, &Duplicate))
+        {
+            Done = SetThreadToken(NULL, Duplicate);
+            CloseHandle(Duplicate);
+        }
+        CloseHandle(Token);
+    }
+    CloseHandle(Process);
+    return Done;
+}
+
 START_TEST(NtDuplicateToken)
 {
     NTSTATUS Status;
-    BOOLEAN WasEnabled;
+    BOOLEAN WasEnabled, Impersonating = FALSE;
 
     DuplicateTokenAsEffective();
     DuplicateTokenAsEffectiveKeepsLabel();
 
+    /* Windows 11 grants SeCreateTokenPrivilege to lsass.exe only */
     Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, FALSE, &WasEnabled);
+    if (!NT_SUCCESS(Status) && ImpersonateLsass())
+    {
+        Impersonating = TRUE;
+        Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, TRUE, &WasEnabled);
+    }
     if (!NT_SUCCESS(Status))
     {
         skip("Cannot create tokens (Status 0x%lx)\n", Status);
+        if (Impersonating)
+            RevertToSelf();
         return;
     }
     /* An owner after removed groups moves down with them */
     DuplicateCreatedTokenAsEffective(&AuthenticatedSid, &AuthenticatedSid);
     /* An owner that the copy removes falls back to the user */
     DuplicateCreatedTokenAsEffective(&NetworkSid, &SystemSid);
-    RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, WasEnabled, FALSE, &WasEnabled);
+    if (Impersonating)
+        RevertToSelf();
+    else
+        RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, WasEnabled, FALSE, &WasEnabled);
 }

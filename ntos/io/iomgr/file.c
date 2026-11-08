@@ -4691,7 +4691,6 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            /* Without a cancel routine the request stays pending */
             if (!IoCancelIrp(Irp) && NotCancelled)
                 *NotCancelled = Irp;
             Found = TRUE;
@@ -4757,19 +4756,9 @@ IopCancelIoFileExKernelApc(
     Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel,
                                                           Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
 
-    /*
-     * A driver without a cancel routine may wait alertably for a synchronous
-     * request. This APC interrupted the wait of the thread; the alert ends the
-     * wait that the thread goes back to, while the request is still pending.
-     */
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
     {
-        /*
-         * IopCompleteRequest of this request drops the alert if the request
-         * ends before the wait takes it. The request is still pending and
-         * this APC runs in its thread, which completes it.
-         */
-        NotCancelled->AllocationFlags |= IOP_IRP_CANCEL_ALERTED;
+        /* FIXME: the alert outlives a request the driver completes before the wait takes it */
         KeAlertThread(Thread, UserMode);
     }
     Context->Status = STATUS_SUCCESS;

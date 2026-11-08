@@ -406,12 +406,6 @@ C_ASSERT(sizeof(PVOID) != 8 || sizeof(IOP_IRP_EXTENSION) == 0x50);
 
 VOID NTAPI IopFreeIrpExtension(_Inout_ PIRP Irp);
 
-/*
- * Private AllocationFlags bit, above the IRP_* allocation bits of iotypes.h:
- * CancelSynchronousIo alerted the thread waiting for this request.
- */
-#define IOP_IRP_CANCEL_ALERTED 0x80
-
 //
 // I/O Completion Context for IoSetIoCompletionRoutineEx
 //

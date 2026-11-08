@@ -131,12 +131,6 @@ Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex);
 
-/*
- * Takes NetLuidIndex for an adapter, in the same list as
- * NdisIfAllocateNetLuidIndex, when no other adapter or allocation has it
- * (STATUS_OBJECT_NAME_COLLISION otherwise). NdisIfFreeNetLuidIndex gives it
- * back.
- */
 NTSTATUS
 Ndis6ReserveNetLuidIndex(
     _In_ NET_IFTYPE IfType,

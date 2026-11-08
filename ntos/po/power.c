@@ -1793,7 +1793,7 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
         case PowerRequestCreate:
         {
             COUNTED_REASON_CONTEXT Context;
-            HANDLE Handle = NULL;
+            HANDLE _SEH2_VOLATILE Handle = NULL;
 
             if (!InputBuffer || InputBufferLength != sizeof(Context) || !OutputBuffer || OutputBufferLength != sizeof(Handle)) return STATUS_INVALID_PARAMETER;
             _SEH2_TRY
@@ -1953,7 +1953,7 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
 
         case SystemReserveHiberFile:
         {
-            BOOLEAN Enable = FALSE;
+            BOOLEAN _SEH2_VOLATILE Enable = FALSE;
 
             if (InputBuffer == NULL || InputBufferLength != sizeof(BOOLEAN) ||
                 OutputBuffer != NULL || OutputBufferLength != 0)

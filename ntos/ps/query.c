@@ -1350,7 +1350,7 @@ NtQueryInformationProcess(
         /* DOS Device Map */
         case ProcessDeviceMap:
         {
-            ULONG Flags = 0;
+            ULONG _SEH2_VOLATILE Flags = 0;
 
             if (ProcessInformationLength == sizeof(PROCESS_DEVICEMAP_INFORMATION_EX))
             {
@@ -1691,7 +1691,7 @@ NtQueryInformationProcess(
         case ProcessMitigationPolicy:
         case ProcessHandleCheckingMode:
         {
-            PSP_MITIGATION_POLICY_INFORMATION Information = {0};
+            PSP_MITIGATION_POLICY_INFORMATION _SEH2_VOLATILE Information = {0};
             PHANDLE_TABLE HandleTable;
             ULONG Flags;
 
@@ -2536,7 +2536,7 @@ NtSetInformationProcess(
     PROCESS_FOREGROUND_BACKGROUND _SEH2_VOLATILE Foreground = {0};
     PVOID ExceptionPort;
     ULONG _SEH2_VOLATILE Break = 0;
-    KAFFINITY ValidAffinity, Affinity = 0;
+    KAFFINITY _SEH2_VOLATILE ValidAffinity, Affinity = 0;
     KPRIORITY _SEH2_VOLATILE BasePriority = 0;
     UCHAR MemoryPriority = 0;
     BOOLEAN _SEH2_VOLATILE DisableBoost = 0;
@@ -3052,9 +3052,9 @@ NtSetInformationProcess(
         case ProcessMitigationPolicy:
         case ProcessHandleCheckingMode:
         {
-            PSP_MITIGATION_POLICY_INFORMATION Information = {0};
+            PSP_MITIGATION_POLICY_INFORMATION _SEH2_VOLATILE Information = {0};
             PHANDLE_TABLE HandleTable;
-            ULONG Flags = 0;
+            ULONG _SEH2_VOLATILE Flags = 0;
 
             _SEH2_TRY
             {
@@ -3408,7 +3408,7 @@ NtSetInformationProcess(
 
         case ProcessPagePriority:
         {
-            PAGE_PRIORITY_INFORMATION PagePriority = {0};
+            PAGE_PRIORITY_INFORMATION _SEH2_VOLATILE PagePriority = {0};
 
             if (ProcessInformationLength != sizeof(PagePriority))
             {
@@ -3756,7 +3756,7 @@ NtSetInformationProcess(
 
         case ProcessPowerThrottlingState:
         {
-            PROCESS_POWER_THROTTLING_STATE PowerThrottlingState = {0};
+            PROCESS_POWER_THROTTLING_STATE _SEH2_VOLATILE PowerThrottlingState = {0};
             PPO_PROCESS_ENERGY_CONTEXT EnergyContext;
 
             _SEH2_TRY
@@ -3801,9 +3801,9 @@ NtSetInformationProcess(
 
         case ProcessThreadStackAllocation:
         {
-            PPROCESS_STACK_ALLOCATION_INFORMATION StackAllocation = ProcessInformation;
+            PPROCESS_STACK_ALLOCATION_INFORMATION _SEH2_VOLATILE StackAllocation = ProcessInformation;
             PPROCESS_STACK_ALLOCATION_INFORMATION_EX StackAllocationEx = ProcessInformation;
-            PROCESS_STACK_ALLOCATION_INFORMATION StackInfo;
+            PROCESS_STACK_ALLOCATION_INFORMATION _SEH2_VOLATILE StackInfo;
             PVOID StackBase = NULL;
             SIZE_T StackSize;
 
@@ -4064,7 +4064,7 @@ NtSetInformationThread(
 
         case ThreadAffinityMask:
         {
-            KAFFINITY Affinity = 0, CombinedAffinity;
+            KAFFINITY _SEH2_VOLATILE Affinity = 0, CombinedAffinity;
 
             /* Check buffer length */
             if (ThreadInformationLength != sizeof(ULONG_PTR))
@@ -4146,7 +4146,7 @@ NtSetInformationThread(
 
         case ThreadGroupInformation:
         {
-            GROUP_AFFINITY GroupAffinity = {0};
+            GROUP_AFFINITY _SEH2_VOLATILE GroupAffinity = {0};
             KAFFINITY CombinedAffinity;
 
             if (ThreadInformationLength != sizeof(GROUP_AFFINITY))
@@ -4209,7 +4209,7 @@ NtSetInformationThread(
 
         case ThreadImpersonationToken:
         {
-            HANDLE TokenHandle = NULL;
+            HANDLE _SEH2_VOLATILE TokenHandle = NULL;
 
             /* Check buffer length */
             if (ThreadInformationLength != sizeof(HANDLE))
@@ -4252,7 +4252,7 @@ NtSetInformationThread(
 
         case ThreadQuerySetWin32StartAddress:
         {
-            PVOID Address = NULL;
+            PVOID _SEH2_VOLATILE Address = NULL;
 
             /* Check buffer length */
             if (ThreadInformationLength != sizeof(ULONG_PTR))
@@ -4295,7 +4295,7 @@ NtSetInformationThread(
 
         case ThreadIdealProcessor:
         {
-            ULONG IdealProcessor = 0;
+            ULONG _SEH2_VOLATILE IdealProcessor = 0;
 
             /* Check buffer length */
             if (ThreadInformationLength != sizeof(ULONG))
@@ -4358,7 +4358,7 @@ NtSetInformationThread(
 
         case ThreadPriorityBoost:
         {
-            ULONG DisableBoost = 0;
+            ULONG _SEH2_VOLATILE DisableBoost = 0;
 
             /* Check buffer length */
             if (ThreadInformationLength != sizeof(ULONG))
@@ -4401,7 +4401,7 @@ NtSetInformationThread(
 
         case ThreadPagePriority:
         {
-            PAGE_PRIORITY_INFORMATION PagePriority = {0};
+            PAGE_PRIORITY_INFORMATION _SEH2_VOLATILE PagePriority = {0};
 
             if (ThreadInformationLength != sizeof(PagePriority))
             {
@@ -4441,7 +4441,7 @@ NtSetInformationThread(
 
         case ThreadZeroTlsCell:
         {
-            ULONG_PTR TlsIndex = 0;
+            ULONG_PTR _SEH2_VOLATILE TlsIndex = 0;
             PETHREAD ProcThread;
 
             /* Check buffer length */
@@ -4568,7 +4568,7 @@ NtSetInformationThread(
 
         case ThreadBreakOnTermination:
         {
-            ULONG Break = 0;
+            ULONG _SEH2_VOLATILE Break = 0;
 
             /* Check buffer length */
             if (ThreadInformationLength != sizeof(ULONG))
@@ -4699,7 +4699,7 @@ NtSetInformationThread(
 
         case ThreadDynamicCodePolicyInfo:
         {
-            ULONG DynamicCodePolicy = 0;
+            ULONG _SEH2_VOLATILE DynamicCodePolicy = 0;
 
             _SEH2_TRY
             {
@@ -4795,7 +4795,7 @@ NtSetInformationThread(
 #if (NTDDI_VERSION >= NTDDI_WIN10_RS1) || defined(__REACTOS__)
         case ThreadNameInformation:
         {
-            UNICODE_STRING CapturedThreadName;
+            UNICODE_STRING _SEH2_VOLATILE CapturedThreadName;
             PUNICODE_STRING NewThreadName;
 
             /* Check buffer length */
@@ -4892,7 +4892,7 @@ NtSetInformationThread(
 
         case ThreadIdealProcessorEx:
         {
-            PROCESSOR_NUMBER ProcessorNumber = {0};
+            PROCESSOR_NUMBER _SEH2_VOLATILE ProcessorNumber = {0};
             UCHAR PreviousIdealProcessor;
 
             /* Check buffer length */
@@ -4976,7 +4976,7 @@ NtSetInformationThread(
         case ThreadWow64Context:
         {
 #ifdef _WIN64
-            WOW64_CONTEXT Wow64Context;
+            WOW64_CONTEXT _SEH2_VOLATILE Wow64Context;
 
             Status = ObReferenceObjectByHandle(ThreadHandle, THREAD_SET_CONTEXT, PsThreadType, PreviousMode, (PVOID*)&Thread, NULL);
             if (!NT_SUCCESS(Status)) break;
@@ -5010,7 +5010,7 @@ NtSetInformationThread(
 
         case ThreadEnableAlignmentFaultFixup:
         {
-            BOOLEAN EnableFixup = FALSE;
+            BOOLEAN _SEH2_VOLATILE EnableFixup = FALSE;
 
             _SEH2_TRY
             {
@@ -5043,7 +5043,7 @@ NtSetInformationThread(
 
         case ThreadSelectedCpuSets:
         {
-            ULONG64 CpuSetMask = 0;
+            ULONG64 _SEH2_VOLATILE CpuSetMask = 0;
             ULONG CpuSetCount = ThreadInformationLength / sizeof(ULONG64);
 
             if ((ThreadInformationLength % sizeof(ULONG64)) != 0)
@@ -5100,7 +5100,7 @@ NtSetInformationThread(
 
         case ThreadWorkOnBehalfTicket:
         {
-            ALPC_WORK_ON_BEHALF_TICKET Ticket = {0};
+            ALPC_WORK_ON_BEHALF_TICKET _SEH2_VOLATILE Ticket = {0};
             PETHREAD TicketThread = NULL;
             PETHREAD OldThread;
 
@@ -5158,7 +5158,7 @@ NtSetInformationThread(
 
         case ThreadDbgkWerReportActive:
         {
-            ULONG Value = 0;
+            ULONG _SEH2_VOLATILE Value = 0;
 
             _SEH2_TRY
             {
@@ -5192,7 +5192,7 @@ NtSetInformationThread(
         case ThreadAttachContainer:
         case ThreadCpuAccountingInformation:
         {
-            HANDLE ObjectHandle = NULL;
+            HANDLE _SEH2_VOLATILE ObjectHandle = NULL;
 
             _SEH2_TRY
             {
@@ -5246,7 +5246,7 @@ NtSetInformationThread(
         case ThreadExplicitCaseSensitivity:
         case ThreadStrongerBadHandleChecks:
         {
-            ULONG Value = 0;
+            ULONG _SEH2_VOLATILE Value = 0;
 
             if (ThreadInformationLength != sizeof(ULONG))
             {

@@ -549,7 +549,7 @@ NtSetUuidSeed(IN PUCHAR Seed)
     NTSTATUS _SEH2_VOLATILE Status;
     BOOLEAN _SEH2_VOLATILE GotContext;
     PACCESS_TOKEN Token;
-    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    SECURITY_SUBJECT_CONTEXT _SEH2_VOLATILE SubjectContext;
     LUID CallerLuid, SystemLuid = SYSTEM_LUID;
 
     PAGED_CODE();

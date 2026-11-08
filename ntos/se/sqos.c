@@ -69,7 +69,7 @@ SepCaptureSecurityQualityOfService(
     {
         if (AccessMode != KernelMode)
         {
-            SECURITY_QUALITY_OF_SERVICE SafeQos;
+            SECURITY_QUALITY_OF_SERVICE _SEH2_VOLATILE SafeQos;
 
             _SEH2_TRY
             {

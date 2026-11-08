@@ -1014,7 +1014,7 @@ FsRtlNotifyFilterReportChange(IN PNOTIFY_SYNC NotifySync,
     PNOTIFY_CHANGE NotifyChange;
     PREAL_NOTIFY_SYNC RealNotifySync;
     PFILE_NOTIFY_INFORMATION FileNotifyInfo;
-    BOOLEAN IsStream, IsParent, PoolQuotaCharged;
+    BOOLEAN _SEH2_VOLATILE IsStream, IsParent, PoolQuotaCharged;
     STRING TargetDirectory, TargetName, ParentName, IntNormalizedParentName;
     ULONG NumberOfBytes, TargetNumberOfParts, FullNumberOfParts, LastPartOffset = 0, ParentNameOffset, ParentNameLength;
     ULONG DataLength, AlignedDataLength;

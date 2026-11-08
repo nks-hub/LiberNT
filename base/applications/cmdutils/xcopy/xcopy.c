@@ -788,8 +788,7 @@ static int XCOPY_ParseCommandLine(WCHAR *suppliedsource,
                 case 'R': flags |= OPT_REPLACEREAD;   break;
                 case 'K': flags |= OPT_KEEPATTRS;     break;
 #ifdef __REACTOS__
-                /* Restartable mode needs COPY_FILE_RESTARTABLE, which CopyFileEx ignores */
-                case 'Z': break;
+                case 'Z': WINE_FIXME("ignoring /Z\n"); break;
 #endif
                 case 'H': flags |= OPT_COPYHIDSYS;    break;
                 case 'C': flags |= OPT_IGNOREERRORS;  break;

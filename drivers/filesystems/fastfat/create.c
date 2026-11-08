@@ -305,8 +305,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
     BOOLEAN ExceptionCompletedIrp = FALSE;
@@ -576,7 +576,7 @@ Return Value:
 
 {
     NTSTATUS Status;
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
     PIO_STACK_LOCATION IrpSp;
 
     PFILE_OBJECT FileObject;
@@ -606,10 +606,10 @@ Return Value:
     ULONG CreateDisposition;
 
     PVCB Vcb;
-    PFCB Fcb = NULL;
+    PFCB _SEH2_VOLATILE Fcb = NULL;
     PCCB Ccb;
     PDCB ParentDcb;
-    PDCB FinalDcb = NULL;
+    PDCB _SEH2_VOLATILE FinalDcb = NULL;
 
     UNICODE_STRING FinalName = {0};
     UNICODE_STRING RemainingPart;
@@ -910,7 +910,7 @@ Return Value:
             if (RelatedFileObject == NULL ||
                 FatDecodeFileObject( RelatedFileObject,
                                      &DecodeVcb,
-                                     &Fcb,
+                                     (PFCB *)&Fcb,
                                      &Ccb ) == UserVolumeOpen) {
 
                 NT_ASSERT( RelatedFileObject == NULL || Vcb == DecodeVcb );
@@ -1753,7 +1753,7 @@ Return Value:
                                                  IrpSp,
                                                  FileObject,
                                                  Vcb,
-                                                 &Fcb,
+                                                 (PDCB *)&Fcb,
                                                  ParentDcb,
                                                  Dirent,
                                                  LfnByteOffset,
@@ -1793,7 +1793,7 @@ Return Value:
             Iosb = FatOpenExistingFile( IrpContext,
                                         FileObject,
                                         Vcb,
-                                        &Fcb,
+                                        (PFCB *)&Fcb,
                                         ParentDcb,
                                         Dirent,
                                         LfnByteOffset,
@@ -4961,10 +4961,10 @@ Return Value:
 {
     IO_STATUS_BLOCK Iosb;
 
-    PDCB Dcb = NULL;
-    PCCB Ccb = NULL;
+    PDCB _SEH2_VOLATILE Dcb = NULL;
+    PCCB _SEH2_VOLATILE Ccb = NULL;
 
-    PDIRENT Dirent = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
     PBCB DirentBcb = NULL;
     ULONG DirentsNeeded;
     ULONG DirentByteOffset;
@@ -4979,14 +4979,14 @@ Return Value:
     BOOLEAN CreateLfn;
 
     ULONG BytesInFirstPage = 0;
-    ULONG DirentsInFirstPage = 0;
-    PDIRENT FirstPageDirent = 0;
+    ULONG _SEH2_VOLATILE DirentsInFirstPage = 0;
+    PDIRENT _SEH2_VOLATILE FirstPageDirent = 0;
 
     PBCB SecondPageBcb = NULL;
     ULONG SecondPageOffset = 0;
     PDIRENT SecondPageDirent = NULL;
 
-    BOOLEAN DirentFromPool = FALSE;
+    BOOLEAN _SEH2_VOLATILE DirentFromPool = FALSE;
 
 
     OEM_STRING ShortName;
@@ -5370,7 +5370,7 @@ Return Value:
 
         if ( Ccb != NULL ) {
 
-            FatDeleteCcb( IrpContext, &Ccb );
+            FatDeleteCcb( IrpContext, (PCCB *)&Ccb );
         }
 
 #ifdef _MSC_VER
@@ -5593,7 +5593,7 @@ Return Value:
                 if (ARGUMENT_PRESENT( FileObject )) {
                     FileObject->SectionObjectPointer = NULL;
                 }
-                FatDeleteFcb( IrpContext, &Dcb );
+                FatDeleteFcb( IrpContext, (PFCB *)&Dcb );
             }
         }
 

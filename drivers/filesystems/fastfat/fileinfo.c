@@ -226,8 +226,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -307,8 +307,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -1967,7 +1967,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PFILE_BASIC_INFORMATION Buffer;
 
@@ -2769,7 +2769,7 @@ Return Value:
 
     DIRENT Dirent;
 
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     OEM_STRING OldOemName;
     OEM_STRING NewOemName;
@@ -2786,7 +2786,7 @@ Return Value:
 
     PDIRENT DotDotDirent = NULL;
     PDIRENT FirstPageDirent = NULL;
-    PDIRENT NewDirent = NULL;
+    PDIRENT _SEH2_VOLATILE NewDirent = NULL;
     PDIRENT OldDirent = NULL;
     PDIRENT SecondPageDirent = NULL;
     PDIRENT ShortDirent = NULL;
@@ -3619,7 +3619,7 @@ Return Value:
 #endif
                                           FALSE,
                                           TRUE,
-                                          &Status );
+                                          (PNTSTATUS)&Status );
 
             NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -3649,7 +3649,7 @@ Return Value:
 #endif
                                               FALSE,
                                               TRUE,
-                                              &Status );
+                                              (PNTSTATUS)&Status );
 
                 NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -3850,7 +3850,7 @@ Return Value:
 #endif
                                               FALSE,
                                               TRUE,
-                                              &Status );
+                                              (PNTSTATUS)&Status );
 
                 NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -4150,12 +4150,12 @@ Return Value:
     ULONG NewAllocationSize = 0;
     ULONG HeaderSize = 0;
 
-    BOOLEAN FileSizeTruncated = FALSE;
+    BOOLEAN _SEH2_VOLATILE FileSizeTruncated = FALSE;
     BOOLEAN CacheMapInitialized = FALSE;
-    BOOLEAN ResourceAcquired = FALSE;
-    ULONG OriginalFileSize = 0;
-    ULONG OriginalValidDataLength = 0;
-    ULONG OriginalValidDataToDisk = 0;
+    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
+    ULONG _SEH2_VOLATILE OriginalFileSize = 0;
+    ULONG _SEH2_VOLATILE OriginalValidDataLength = 0;
+    ULONG _SEH2_VOLATILE OriginalValidDataToDisk = 0;
 
     PAGED_CODE();
 
@@ -4445,18 +4445,18 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PFILE_END_OF_FILE_INFORMATION Buffer;
 
     ULONG NewFileSize = 0;
-    ULONG InitialFileSize = 0;
-    ULONG InitialValidDataLength = 0;
-    ULONG InitialValidDataToDisk = 0;
+    ULONG _SEH2_VOLATILE InitialFileSize = 0;
+    ULONG _SEH2_VOLATILE InitialValidDataLength = 0;
+    ULONG _SEH2_VOLATILE InitialValidDataToDisk = 0;
 
-    BOOLEAN CacheMapInitialized = FALSE;
-    BOOLEAN UnwindFileSizes = FALSE;
-    BOOLEAN ResourceAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE CacheMapInitialized = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindFileSizes = FALSE;
+    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
 
 
     PAGED_CODE();
@@ -4843,12 +4843,12 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PFILE_VALID_DATA_LENGTH_INFORMATION Buffer;
 
     ULONG NewValidDataLength;
-    BOOLEAN ResourceAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -5004,7 +5004,7 @@ FatRenameEAs (
     IN POEM_STRING OldOemName
     )
 {
-    BOOLEAN LockedEaFcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE LockedEaFcb = FALSE;
 
     PBCB EaBcb = NULL;
     PDIRENT EaDirent;

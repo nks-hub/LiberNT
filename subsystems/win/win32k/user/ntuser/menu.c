@@ -6300,7 +6300,7 @@ NtUserGetTitleBarInfo(
     PTITLEBARINFO bti)
 {
     PWND WindowObject;
-    TITLEBARINFO bartitleinfo;
+    TITLEBARINFO _SEH2_VOLATILE bartitleinfo;
     BOOLEAN retValue = FALSE;
 
     TRACE("Enter NtUserGetTitleBarInfo\n");
@@ -6793,7 +6793,7 @@ NtUserDrawMenuBarTemp(
 {
    PMENU Menu;
    PWND Window;
-   RECT Rect;
+   RECT _SEH2_VOLATILE Rect;
    NTSTATUS Status = STATUS_SUCCESS;
    DWORD Ret = 0;
 

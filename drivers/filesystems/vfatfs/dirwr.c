@@ -184,7 +184,7 @@ vfatRenameEntry(
     OEM_STRING NameA;
     ULONG StartIndex;
     PVOID Context = NULL;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PFATX_DIR_ENTRY pDirEntry;
     NTSTATUS Status;
 
@@ -1055,7 +1055,7 @@ FATXDelEntry(
 {
     ULONG CurrentCluster = 0, NextCluster;
     PVOID Context = NULL;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PFATX_DIR_ENTRY pDirEntry;
     ULONG StartIndex;
     NTSTATUS Status;

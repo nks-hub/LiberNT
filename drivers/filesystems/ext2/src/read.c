@@ -319,7 +319,7 @@ Ext2ReadInode (
     OUT PULONG              BytesRead
 )
 {
-    PEXT2_EXTENT    Chain = NULL;
+    PEXT2_EXTENT    _SEH2_VOLATILE Chain = NULL;
     PEXT2_EXTENT    Extent = NULL, Prev = NULL;
 
     IO_STATUS_BLOCK IoStatus;

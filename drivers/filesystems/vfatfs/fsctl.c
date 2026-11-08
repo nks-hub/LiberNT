@@ -349,11 +349,11 @@ ReadVolumeLabel(
 {
     PDEVICE_EXTENSION DeviceExt = NULL;
     PDEVICE_OBJECT DeviceObject = NULL;
-    PVOID Context = NULL;
+    PVOID _SEH2_VOLATILE Context = NULL;
     ULONG DirIndex = 0;
-    PDIR_ENTRY Entry;
+    PDIR_ENTRY _SEH2_VOLATILE Entry;
     PVFATFCB pFcb = NULL;
-    LARGE_INTEGER FileOffset;
+    LARGE_INTEGER _SEH2_VOLATILE FileOffset;
     ULONG SizeDirEntry;
     ULONG EntriesPerPage;
     OEM_STRING StringO;

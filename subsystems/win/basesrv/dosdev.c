@@ -99,7 +99,7 @@ IsGlobalSymbolicLink(HANDLE LinkHandle,
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     DWORD ReturnLength;
     UNICODE_STRING GlobalString;
-    OBJECT_NAME_INFORMATION NameInfo, *PNameInfo;
+    OBJECT_NAME_INFORMATION NameInfo, *_SEH2_VOLATILE PNameInfo;
 
     /* We need both parameters */
     if (LinkHandle == 0 || IsGlobal == NULL)
@@ -497,7 +497,7 @@ CSR_API(BaseSrvDefineDosDevice)
     BOOLEAN RemoveDefinition;
     BOOLEAN HandleTarget;
     BOOLEAN _SEH2_VOLATILE Broadcast = FALSE;
-    BOOLEAN IsGlobal = FALSE;
+    BOOLEAN _SEH2_VOLATILE IsGlobal = FALSE;
     ULONG CchLengthLeft;
     ULONG CchLength;
     ULONG TargetLength;
@@ -513,7 +513,7 @@ CSR_API(BaseSrvDefineDosDevice)
         UCHAR Buffer[256];
     } Dacl;
     ACCESS_MASK AccessMask;
-    LUID CallerLuid;
+    LUID _SEH2_VOLATILE CallerLuid;
     WCHAR * CurrentPtr;
     WCHAR CurrentChar;
     PWSTR OrigPtr;

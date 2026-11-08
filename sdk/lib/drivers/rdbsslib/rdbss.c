@@ -1924,7 +1924,7 @@ RxCommonCleanup(
     PFILE_OBJECT FileObject;
     LARGE_INTEGER TruncateSize;
     PLARGE_INTEGER TruncateSizePtr;
-    BOOLEAN NeedPurge, FcbTableAcquired, OneLeft, IsFile, FcbAcquired, LeftForDelete;
+    BOOLEAN _SEH2_VOLATILE NeedPurge, FcbTableAcquired, OneLeft, IsFile, FcbAcquired, LeftForDelete;
 
     PAGED_CODE();
 
@@ -2289,7 +2289,7 @@ RxCommonClose(
     PFOBX Fobx;
     NTSTATUS Status;
     PFILE_OBJECT FileObject;
-    BOOLEAN DereferenceFobx, AcquiredFcb;
+    BOOLEAN _SEH2_VOLATILE DereferenceFobx, AcquiredFcb;
 
     PAGED_CODE();
 
@@ -3191,12 +3191,12 @@ RxCommonRead(
     PNET_ROOT NetRoot;
     PVOID SystemBuffer;
     PFILE_OBJECT FileObject;
-    LARGE_INTEGER ByteOffset;
+    LARGE_INTEGER _SEH2_VOLATILE ByteOffset;
     PIO_STACK_LOCATION Stack;
     PLOWIO_CONTEXT LowIoContext;
     PRDBSS_DEVICE_OBJECT RxDeviceObject;
     ULONG ReadLength, CapturedRxContextSerialNumber = RxContext->SerialNumber;
-    BOOLEAN CanWait, PagingIo, NoCache, Sync, PostRequest, IsPipe, ReadCachingEnabled, ReadCachingDisabled, InFsp, OwnerSet;
+    BOOLEAN _SEH2_VOLATILE CanWait, PagingIo, NoCache, Sync, PostRequest, IsPipe, ReadCachingEnabled, ReadCachingDisabled, InFsp, OwnerSet;
 
     PAGED_CODE();
 
@@ -3659,7 +3659,7 @@ RxCommonSetInformation(
     PNET_ROOT NetRoot;
     PIO_STACK_LOCATION Stack;
     FILE_INFORMATION_CLASS Class;
-    BOOLEAN CanWait, FcbTableAcquired, FcbAcquired;
+    BOOLEAN _SEH2_VOLATILE CanWait, FcbTableAcquired, FcbAcquired;
 
     PAGED_CODE();
 
@@ -3932,7 +3932,7 @@ RxCommonWrite(
 {
     PIRP Irp;
     PFCB Fcb;
-    PFOBX Fobx;
+    PFOBX _SEH2_VOLATILE Fobx;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PNET_ROOT NetRoot;
     PSRV_OPEN SrvOpen;
@@ -3943,8 +3943,8 @@ RxCommonWrite(
     PLOWIO_CONTEXT LowIoContext;
     PRDBSS_DEVICE_OBJECT RxDeviceObject;
     ULONG WriteLength, CapturedRxContextSerialNumber = RxContext->SerialNumber;
-    LONGLONG FileSize, ValidDataLength, InitialFileSize, InitialValidDataLength = 0;
-    BOOLEAN CanWait, PagingIo, NoCache, Sync, NormalFile, WriteToEof, IsPipe, NoPreposting, InFsp, RecursiveWriteThrough, CalledByLazyWriter, SwitchBackToAsync, ExtendingFile, ExtendingValidData, UnwindOutstandingAsync, ResourceOwnerSet, PostIrp, ContextReferenced;
+    LONGLONG _SEH2_VOLATILE FileSize, ValidDataLength, InitialFileSize, InitialValidDataLength = 0;
+    BOOLEAN _SEH2_VOLATILE CanWait, PagingIo, NoCache, Sync, NormalFile, WriteToEof, IsPipe, NoPreposting, InFsp, RecursiveWriteThrough, CalledByLazyWriter, SwitchBackToAsync, ExtendingFile, ExtendingValidData, UnwindOutstandingAsync, ResourceOwnerSet, PostIrp, ContextReferenced;
 
     PAGED_CODE();
 
@@ -5506,7 +5506,7 @@ RxDriverEntry(
     IN PUNICODE_STRING RegistryPath)
 {
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    USHORT i, State = 0;
+    USHORT _SEH2_VOLATILE i, State = 0;
 
     DPRINT("RxDriverEntry(%p, %p)\n", DriverObject, RegistryPath);
 
@@ -9232,7 +9232,7 @@ RxStartMinirdr(
     OUT PBOOLEAN PostToFsp)
 {
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    BOOLEAN Wait, AlreadyStarted;
+    BOOLEAN _SEH2_VOLATILE Wait, AlreadyStarted;
     PRDBSS_DEVICE_OBJECT _SEH2_VOLATILE DeviceObject;
 
     /* If we've not been post, then, do it */

@@ -795,7 +795,7 @@ KiDispatchException(IN PEXCEPTION_RECORD ExceptionRecord,
                     IN BOOLEAN FirstChance)
 {
     CONTEXT Context;
-    EXCEPTION_RECORD LocalExceptRecord;
+    EXCEPTION_RECORD _SEH2_VOLATILE LocalExceptRecord;
 
     /* Increase number of Exception Dispatches */
     KeGetCurrentPrcb()->KeExceptionDispatchCount++;

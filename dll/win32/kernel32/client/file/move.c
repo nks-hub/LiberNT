@@ -554,7 +554,7 @@ BasepOpenFileForMove(IN LPCWSTR File,
                      IN ULONG ShareAccess,
                      IN ULONG OpenOptions)
 {
-    RTL_RELATIVE_NAME_U RelativeName;
+    RTL_RELATIVE_NAME_U _SEH2_VOLATILE RelativeName;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     IO_STATUS_BLOCK IoStatusBlock;
     FILE_ATTRIBUTE_TAG_INFORMATION TagInfo;
@@ -727,7 +727,7 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
     COPY_PROGRESS_CONTEXT CopyContext;
     OBJECT_ATTRIBUTES ObjectAttributes;
     PFILE_RENAME_INFORMATION RenameInfo;
-    UNICODE_STRING NewPathU, ExistingPathU;
+    UNICODE_STRING _SEH2_VOLATILE NewPathU, ExistingPathU;
     FILE_ATTRIBUTE_TAG_INFORMATION TagInfo;
     HANDLE _SEH2_VOLATILE SourceHandle = INVALID_HANDLE_VALUE, NewHandle, ExistingHandle;
     BOOL Ret = FALSE, ReplaceIfExists, DelayUntilReboot, AttemptReopenWithoutReparse;

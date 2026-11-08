@@ -1640,7 +1640,7 @@ IntCallWindowProcW(BOOL IsAnsiProc,
   BOOL DpiContextChanged;
   LRESULT _SEH2_VOLATILE Result = 0, PreResult = 0;
   ULONG PreviousDpiContext;
-  DWORD Data = 0;
+  DWORD _SEH2_VOLATILE Data = 0;
 
   if (WndProc == NULL)
   {
@@ -1806,7 +1806,7 @@ IntCallWindowProcA(BOOL IsAnsiProc,
   BOOL DpiContextChanged;
   LRESULT _SEH2_VOLATILE Result = 0, PreResult = 0;
   ULONG PreviousDpiContext;
-  DWORD Data = 0;
+  DWORD _SEH2_VOLATILE Data = 0;
 
   TRACE("IntCallWindowProcA: IsAnsiProc : %s, WndProc %p, pWnd %p, hWnd %p, Msg %u, wParam %Iu, lParam %Iu.\n",
       IsAnsiProc ? "TRUE" : "FALSE", WndProc, pWnd, hWnd, Msg, wParam, lParam);

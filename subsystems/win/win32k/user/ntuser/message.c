@@ -3380,7 +3380,7 @@ NtUserMessageCall( HWND hWnd,
         break;
     case FNID_BROADCASTSYSTEMMESSAGE:
         {
-            BROADCASTPARM parm, *retparam;
+            BROADCASTPARM _SEH2_VOLATILE parm, *_SEH2_VOLATILE retparam;
             DWORD_PTR RetVal = 0;
 
             if (ResultInfo)
@@ -3694,7 +3694,7 @@ NtUserMessageCall( HWND hWnd,
         break;
     case FNID_SENDMESSAGECALLBACK:
         {
-            CALL_BACK_INFO CallBackInfo;
+            CALL_BACK_INFO _SEH2_VOLATILE CallBackInfo;
             ULONG_PTR uResult;
 
             _SEH2_TRY
@@ -3724,7 +3724,7 @@ NtUserMessageCall( HWND hWnd,
         break;
     case FNID_SENDMESSAGE:
         {
-            BOOL Allowed = TRUE;
+            BOOL _SEH2_VOLATILE Allowed = TRUE;
 
             if (Msg == WM_DRAWITEM)
             {
@@ -3773,7 +3773,7 @@ NtUserMessageCall( HWND hWnd,
     case FNID_SENDMESSAGEFF:
     case FNID_SENDMESSAGEWTOOPTION:
         {
-            DOSENDMESSAGE dsm, *pdsm = (PDOSENDMESSAGE)ResultInfo;
+            DOSENDMESSAGE _SEH2_VOLATILE dsm, *pdsm = (PDOSENDMESSAGE)ResultInfo;
             LRESULT MessageResult;
             if (ResultInfo)
             {

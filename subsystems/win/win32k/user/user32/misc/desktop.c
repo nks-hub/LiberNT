@@ -478,7 +478,7 @@ SystemParametersInfoA(UINT uiAction,
 		      PVOID pvParam,
 		      UINT fWinIni)
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    Hook = BeginIfHookedUserApiHook();
 
@@ -509,7 +509,7 @@ SystemParametersInfoW(UINT uiAction,
 		      PVOID pvParam,
 		      UINT fWinIni)
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    Hook = BeginIfHookedUserApiHook();
 

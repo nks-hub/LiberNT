@@ -1335,7 +1335,7 @@ RtlpDphReportCorruptedBlock(
     _In_ ULONG ValidationInfo)
 {
     PVOID Size = (PVOID)(ULONG_PTR)RtlpDphGetBlockSizeFromCorruptedBlock(Block);
-    DPH_BLOCK_INFORMATION SafeInfo = {0};
+    DPH_BLOCK_INFORMATION _SEH2_VOLATILE SafeInfo = {0};
 
     DPRINT1("Corrupted heap block %p\n", Block);
 

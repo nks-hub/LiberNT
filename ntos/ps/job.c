@@ -2214,7 +2214,7 @@ PspQueryJobProcessIdList(
 )
 {
     NTSTATUS _SEH2_VOLATILE Status;
-    PSP_QUERY_JOB_PROCESS_ID_CONTEXT QueryContext;
+    PSP_QUERY_JOB_PROCESS_ID_CONTEXT _SEH2_VOLATILE QueryContext;
     PEJOB ChildJob;
 
     /* Check if the buffer provided is large enough to hold at least the
@@ -3286,7 +3286,7 @@ NtSetInformationJobObject(
     }
     case JobObjectAssociateCompletionPortInformation:
     {
-        JOBOBJECT_ASSOCIATE_COMPLETION_PORT AssociateCpInfo;
+        JOBOBJECT_ASSOCIATE_COMPLETION_PORT _SEH2_VOLATILE AssociateCpInfo;
 
         _SEH2_TRY
         {

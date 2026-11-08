@@ -1074,7 +1074,7 @@ EtwpTraceClassicEvent(
     _In_ KPROCESSOR_MODE PreviousMode)
 {
     MOF_FIELD MofFields[MAX_MOF_FIELDS];
-    EVENT_TRACE_HEADER Header;
+    EVENT_TRACE_HEADER _SEH2_VOLATILE Header;
     PEVENT_TRACE_HEADER Record;
     PWMI_BUFFER_HEADER Buffer;
     PETWP_LOGGER Logger;

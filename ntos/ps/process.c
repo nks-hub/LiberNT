@@ -2658,7 +2658,7 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     HANDLE hProcess = NULL, hThread = NULL;
-    HANDLE hSection = NULL, hFile = NULL;
+    HANDLE _SEH2_VOLATILE hSection = NULL, hFile = NULL;
     HANDLE _SEH2_VOLATILE hCallerFile = NULL;
     PFILE_OBJECT ImageFileObject;
     OBJECT_HANDLE_INFORMATION ImageFileInformation;

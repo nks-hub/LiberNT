@@ -644,7 +644,7 @@ CmSetValueKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
     HCELL_INDEX CurrentChild, Cell;
     NTSTATUS Status;
     BOOLEAN Found, Result;
-    ULONG Count, ChildIndex, SmallData, Storage;
+    ULONG _SEH2_VOLATILE Count, ChildIndex, SmallData, Storage;
     VALUE_SEARCH_RETURN_TYPE SearchResult;
     BOOLEAN FirstTry = TRUE, FlusherLocked = FALSE;
     HCELL_INDEX ParentCell = HCELL_NIL, ChildCell = HCELL_NIL;
@@ -1070,7 +1070,7 @@ CmQueryValueKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
                 IN ULONG Length,
                 IN PULONG ResultLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PCM_KEY_VALUE ValueData;
     ULONG Index;
     BOOLEAN ValueCached = FALSE;
@@ -1187,7 +1187,7 @@ CmEnumerateValueKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
                     IN ULONG Length,
                     IN PULONG ResultLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PHHIVE Hive;
     PCM_KEY_NODE Parent;
     HCELL_INDEX CellToRelease = HCELL_NIL, CellToRelease2 = HCELL_NIL;
@@ -1564,7 +1564,7 @@ CmQueryKey(_In_ PCM_KEY_CONTROL_BLOCK Kcb,
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PHHIVE Hive;
     PCM_KEY_NODE Parent;
-    HV_TRACK_CELL_REF CellReferences = {0};
+    HV_TRACK_CELL_REF _SEH2_VOLATILE CellReferences = {0};
     PKEY_CACHED_INFORMATION CachedInformation = KeyInformation;
     PKEY_FULL_INFORMATION FullInformation = KeyInformation;
 

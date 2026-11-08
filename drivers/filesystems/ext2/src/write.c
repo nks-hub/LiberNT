@@ -678,7 +678,7 @@ Ext2WriteInode (
     OUT PULONG              BytesWritten
     )
 {
-    PEXT2_EXTENT    Chain = NULL;
+    PEXT2_EXTENT    _SEH2_VOLATILE Chain = NULL;
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY {

@@ -170,10 +170,10 @@ Return Value:
 
     PFILE_OBJECT FileObject;
 
-    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
     BOOLEAN _SEH2_VOLATILE CleanupCompoundPathEntry = FALSE;
 
-    FILE_ENUM_CONTEXT FileContext = {0};
+    FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext = {0};
     BOOLEAN _SEH2_VOLATILE CleanupFileContext = FALSE;
     BOOLEAN FoundEntry;
 
@@ -1535,10 +1535,10 @@ Return Value:
     NODE_TYPE_CODE NodeTypeCode;
     TYPE_OF_OPEN TypeOfOpen;
 
-    FILE_ENUM_CONTEXT FileContext;
+    FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext;
     BOOLEAN _SEH2_VOLATILE CleanupFileContext = FALSE;
 
-    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
     BOOLEAN _SEH2_VOLATILE CleanupCompoundPathEntry = FALSE;
 
     FILE_ID FileId;

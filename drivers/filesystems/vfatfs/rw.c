@@ -876,8 +876,8 @@ VfatWrite(
     PVFAT_IRP_CONTEXT IrpContext = *pIrpContext;
     PVFATFCB Fcb;
     PERESOURCE Resource = NULL;
-    LARGE_INTEGER ByteOffset;
-    LARGE_INTEGER OldFileSize;
+    LARGE_INTEGER _SEH2_VOLATILE ByteOffset;
+    LARGE_INTEGER _SEH2_VOLATILE OldFileSize;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG Length = 0;
     PVOID Buffer;

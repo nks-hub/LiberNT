@@ -270,8 +270,8 @@ INT
 WSAAPI
 getsockopt(IN SOCKET s,
            IN INT level,
-           IN INT optname,
-           OUT CHAR FAR* optval,
+           IN INT _SEH2_VOLATILE optname,
+           OUT CHAR FAR* _SEH2_VOLATILE optval,
            IN OUT INT FAR* optlen)
 {
     PWSPROCESS Process;
@@ -279,7 +279,7 @@ getsockopt(IN SOCKET s,
     PWSSOCKET Socket;
     INT _SEH2_VOLATILE ErrorCode;
     INT _SEH2_VOLATILE Status;
-    WSAPROTOCOL_INFOW ProtocolInfo;
+    WSAPROTOCOL_INFOW _SEH2_VOLATILE ProtocolInfo;
     PCHAR _SEH2_VOLATILE OldOptVal = NULL;
     INT _SEH2_VOLATILE OldOptLen = 0;
     DPRINT("getsockopt: %lx, %lx, %lx\n", s, level, optname);

@@ -3591,7 +3591,7 @@ LdrpInit(PCONTEXT Context,
 {
     LARGE_INTEGER Timeout;
     PTEB Teb = NtCurrentTeb();
-    NTSTATUS Status, LoaderStatus = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status, LoaderStatus = STATUS_SUCCESS;
     MEMORY_BASIC_INFORMATION MemoryBasicInfo;
     PPEB Peb = NtCurrentPeb();
     BOOLEAN Redirected;

@@ -4186,7 +4186,7 @@ IntCompositionCancelWindowBltTarget(
 }
 
 NTSTATUS
-IntCompositionDwmDxSurface(_In_ PVOID pUser)
+IntCompositionDwmDxSurface(_In_ PVOID _SEH2_VOLATILE pUser)
 {
     DWM_DX_SURFACE_EXCHANGE Request;
     REDIRECT_ENTRY *Entry = NULL;

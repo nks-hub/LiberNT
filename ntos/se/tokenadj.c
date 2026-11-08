@@ -446,7 +446,7 @@ NtAdjustPrivilegesToken(
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode;
     PTOKEN Token;
-    PLUID_AND_ATTRIBUTES CapturedPrivileges = NULL;
+    PLUID_AND_ATTRIBUTES _SEH2_VOLATILE CapturedPrivileges = NULL;
     ULONG CapturedCount = 0;
     ULONG CapturedLength = 0;
     ULONG NewStateSize = 0;
@@ -694,7 +694,7 @@ NtAdjustGroupsToken(
     ULONG CapturedCount = 0;
     ULONG CapturedLength = 0;
     ULONG NewStateSize = 0;
-    PSID_AND_ATTRIBUTES CapturedGroups = NULL;
+    PSID_AND_ATTRIBUTES _SEH2_VOLATILE CapturedGroups = NULL;
     BOOLEAN ChangesMade = FALSE;
 
     PAGED_CODE();

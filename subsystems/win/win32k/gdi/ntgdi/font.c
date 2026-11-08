@@ -1645,7 +1645,7 @@ NtGdiHfontCreate(
     _In_ FLONG  fl,
     _In_opt_ PVOID pvCliData)
 {
-  ENUMLOGFONTEXDVW SafeLogfont;
+  ENUMLOGFONTEXDVW _SEH2_VOLATILE SafeLogfont;
   NTSTATUS Status = STATUS_SUCCESS;
 
   /* Silence GCC warnings */

@@ -549,14 +549,14 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
     FILE_INFORMATION_CLASS  fi;
 
     OEM_STRING              Oem = { 0 };
-    UNICODE_STRING          Unicode = { 0 };
+    UNICODE_STRING          _SEH2_VOLATILE Unicode = { 0 };
     PEXT2_DIR_ENTRY2        _SEH2_VOLATILE pDir = NULL;
 
     ULONG                   ByteOffset;
     ULONG                   RecLen = 0;
     ULONG                   EntrySize = 0;
 
-    EXT2_FILLDIR_CONTEXT    fc = { 0 };
+    EXT2_FILLDIR_CONTEXT    _SEH2_VOLATILE fc = { 0 };
 
     _SEH2_TRY {
 

@@ -112,8 +112,8 @@ NpQueryDirectory(IN PNP_DCB Dcb,
     PIO_STACK_LOCATION IoStack = IoGetCurrentIrpStackLocation(Irp);
     FILE_INFORMATION_CLASS InformationClass;
     PUNICODE_STRING FileName;
-    BOOLEAN InitialQuery, ReturnSingleEntry, Found = FALSE, Overflow = FALSE;
-    ULONG Length, NameOffset, Index, NextIndex, Offset = 0, LastOffset = 0, UsedLength = 0;
+    BOOLEAN _SEH2_VOLATILE InitialQuery, ReturnSingleEntry, Found = FALSE, Overflow = FALSE;
+    ULONG _SEH2_VOLATILE Length, NameOffset, Index, NextIndex, Offset = 0, LastOffset = 0, UsedLength = 0;
     ULONG EntryLength, NameLength;
     PLIST_ENTRY NextEntry;
     PUCHAR Buffer;

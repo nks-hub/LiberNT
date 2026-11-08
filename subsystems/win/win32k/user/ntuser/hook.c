@@ -457,7 +457,7 @@ co_IntCallDebugHook(PHOOK Hook,
 {
     LRESULT lResult = 0;
     ULONG Size;
-    DEBUGHOOKINFO Debug;
+    DEBUGHOOKINFO _SEH2_VOLATILE Debug;
     PVOID HooklParam = NULL;
     BOOL BadChk = FALSE;
 
@@ -595,7 +595,7 @@ co_UserCallNextHookEx(PHOOK Hook,
     if ((Hook->HookId == WH_MOUSE) ||
         (Hook->HookId == WH_CBT && Code == HCBT_CLICKSKIPPED))
     {
-        MOUSEHOOKSTRUCTEX Mouse;
+        MOUSEHOOKSTRUCTEX _SEH2_VOLATILE Mouse;
         if (lParam)
         {
             _SEH2_TRY
@@ -670,7 +670,7 @@ co_UserCallNextHookEx(PHOOK Hook,
 
         case WH_KEYBOARD_LL:
         {
-            KBDLLHOOKSTRUCT Keyboard;
+            KBDLLHOOKSTRUCT _SEH2_VOLATILE Keyboard;
 
             if (lParam)
             {
@@ -710,7 +710,7 @@ co_UserCallNextHookEx(PHOOK Hook,
         case WH_SYSMSGFILTER:
         case WH_GETMESSAGE:
         {
-            MSG Msg;
+            MSG _SEH2_VOLATILE Msg;
 
             if (lParam)
             {
@@ -841,7 +841,7 @@ co_UserCallNextHookEx(PHOOK Hook,
 
                 case HCBT_MOVESIZE:
                 {
-                    RECTL rt;
+                    RECTL _SEH2_VOLATILE rt;
 
                     TRACE("HOOK HCBT_MOVESIZE\n");
 
@@ -878,7 +878,7 @@ co_UserCallNextHookEx(PHOOK Hook,
 
                 case HCBT_ACTIVATE:
                 {
-                    CBTACTIVATESTRUCT CbAs;
+                    CBTACTIVATESTRUCT _SEH2_VOLATILE CbAs;
 
                     TRACE("HOOK HCBT_ACTIVATE\n");
                     if (lParam)
@@ -927,7 +927,7 @@ co_UserCallNextHookEx(PHOOK Hook,
         case WH_JOURNALPLAYBACK:
         case WH_JOURNALRECORD:
         {
-            EVENTMSG EventMsg;
+            EVENTMSG _SEH2_VOLATILE EventMsg;
 
             if (lParam)
             {

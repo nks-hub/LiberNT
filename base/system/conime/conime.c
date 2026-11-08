@@ -3299,7 +3299,7 @@ wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, INT nCmd
         return 0;
     }
 
-    MSG msg;
+    MSG _SEH2_VOLATILE msg;
     _SEH2_TRY
     {
         // Main loop

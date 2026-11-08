@@ -74,7 +74,7 @@ DxgkpDeliverAcpiEvent(
 {
     PDXGKDDI_NOTIFY_ACPI_EVENT Notify;
     NTSTATUS _SEH2_VOLATILE Status;
-    ULONG    Flags = 0;
+    ULONG    _SEH2_VOLATILE Flags = 0;
 
     PAGED_CODE();
 

@@ -1074,7 +1074,7 @@ NtSetInformationTransaction(
     _In_ ULONG TransactionInformationLength)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    TRANSACTION_PROPERTIES_INFORMATION Properties;
+    TRANSACTION_PROPERTIES_INFORMATION _SEH2_VOLATILE Properties;
     PKTRANSACTION Transaction;
     NTSTATUS Status;
     PAGED_CODE();

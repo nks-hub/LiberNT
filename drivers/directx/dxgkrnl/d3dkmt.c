@@ -3771,7 +3771,7 @@ DxgkpQueryAdapterInfoCaptured(
         case KMTQAITYPE_UMDRIVERNAME:
         {
             D3DKMT_UMDFILENAMEINFO *pDriverName;
-            D3DKMT_UMDFILENAMEINFO DriverName;
+            D3DKMT_UMDFILENAMEINFO _SEH2_VOLATILE DriverName;
             NTSTATUS Status;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
@@ -4075,7 +4075,7 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_QUERY_GPUMMU_CAPS:
         {
-            D3DKMT_QUERY_GPUMMU_CAPS Query;
+            D3DKMT_QUERY_GPUMMU_CAPS _SEH2_VOLATILE Query;
 
             /*
              * Not gated on the reported version.  Windows answers this query
@@ -4302,9 +4302,9 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_NODEMETADATA:
         {
-            D3DKMT_NODEMETADATA Metadata;
+            D3DKMT_NODEMETADATA _SEH2_VOLATILE Metadata;
             PDXGKDDI_GET_NODE_METADATA GetNodeMetadata;
-            NTSTATUS Status = STATUS_UNSUCCESSFUL;
+            NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Metadata))
@@ -4359,7 +4359,7 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_NODEPERFDATA:
         {
-            D3DKMT_NODE_PERFDATA Request = {0};
+            D3DKMT_NODE_PERFDATA _SEH2_VOLATILE Request = {0};
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Request))
@@ -4844,7 +4844,7 @@ DxgkpQueryAdapterInfoCaptured(
          */
         case KMTQAITYPE_PHYSICALADAPTERDEVICEIDS:
         {
-            D3DKMT_QUERY_DEVICE_IDS Query;
+            D3DKMT_QUERY_DEVICE_IDS _SEH2_VOLATILE Query;
             NTSTATUS IdStatus;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||

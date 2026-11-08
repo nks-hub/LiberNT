@@ -74,8 +74,8 @@ Ext2FollowLink (
 {
     NTSTATUS        Status = STATUS_LINK_FAILED;
 
-    UNICODE_STRING  UniName;
-    OEM_STRING      OemName;
+    UNICODE_STRING  _SEH2_VOLATILE UniName;
+    OEM_STRING      _SEH2_VOLATILE OemName;
     BOOLEAN         _SEH2_VOLATILE bOemBuffer = FALSE;
 
     PEXT2_MCB       Target = NULL;
@@ -570,7 +570,7 @@ NTSTATUS
 Ext2ScanDir (
     IN PEXT2_IRP_CONTEXT    IrpContext,
     IN PEXT2_VCB            Vcb,
-    IN PEXT2_MCB            Parent,
+    IN PEXT2_MCB            _SEH2_VOLATILE Parent,
     IN PUNICODE_STRING      FileName,
     OUT PULONG              Inode,
     OUT struct dentry     **dentry
@@ -692,7 +692,7 @@ Ext2OverwriteEa(
     PIRP				  Irp;
     PIO_STACK_LOCATION  IrpSp;
 
-    struct ext4_xattr_ref xattr_ref;
+    struct ext4_xattr_ref _SEH2_VOLATILE xattr_ref;
     BOOLEAN             _SEH2_VOLATILE XattrRefAcquired = FALSE;
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
@@ -1956,7 +1956,7 @@ Ext2Create (IN PEXT2_IRP_CONTEXT IrpContext)
     PEXT2_VCB           _SEH2_VOLATILE Vcb = 0;
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_OBJECT_NAME_NOT_FOUND;
     PEXT2_FCBVCB        Xcb = NULL;
-    BOOLEAN             PostIrp = FALSE;
+    BOOLEAN             _SEH2_VOLATILE PostIrp = FALSE;
     BOOLEAN             _SEH2_VOLATILE VcbResourceAcquired = FALSE;
 
     DeviceObject = IrpContext->DeviceObject;

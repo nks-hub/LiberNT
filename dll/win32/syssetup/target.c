@@ -761,7 +761,7 @@ TargetRegistrationCallback(
 static VOID
 RegisterTargetComponents(VOID)
 {
-    TARGET_REGISTRATION Registration;
+    TARGET_REGISTRATION _SEH2_VOLATILE Registration;
 
     Registration.DefaultContext = SetupInitDefaultQueueCallback(NULL);
 

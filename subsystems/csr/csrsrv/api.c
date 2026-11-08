@@ -592,7 +592,7 @@ CsrApiRequestThread(IN PVOID Parameter)
     LARGE_INTEGER TimeOut;
     PCSR_THREAD CurrentThread, CsrThread;
     NTSTATUS Status;
-    CSR_REPLY_CODE ReplyCode;
+    CSR_REPLY_CODE _SEH2_VOLATILE ReplyCode;
     PCSR_API_MESSAGE _SEH2_VOLATILE ReplyMsg;
     CSR_API_MESSAGE ReceiveMsg;
     PCSR_PROCESS CsrProcess;

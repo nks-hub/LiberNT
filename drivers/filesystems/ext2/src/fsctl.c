@@ -2055,10 +2055,10 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
     PIO_STACK_LOCATION          IoStackLocation;
     PDEVICE_OBJECT              TargetDeviceObject;
     NTSTATUS                    _SEH2_VOLATILE Status = STATUS_UNRECOGNIZED_VOLUME;
-    PDEVICE_OBJECT              VolumeDeviceObject = NULL;
+    PDEVICE_OBJECT              _SEH2_VOLATILE VolumeDeviceObject = NULL;
     PEXT2_VCB                   _SEH2_VOLATILE Vcb = NULL, OldVcb = NULL;
-    PVPB                        OldVpb = NULL, Vpb = NULL;
-    PEXT2_SUPER_BLOCK           Ext2Sb = NULL;
+    PVPB _SEH2_VOLATILE OldVpb = NULL, Vpb = NULL;
+    PEXT2_SUPER_BLOCK           _SEH2_VOLATILE Ext2Sb = NULL;
     ULONG                       dwBytes;
     DISK_GEOMETRY               DiskGeometry;
 
@@ -2379,7 +2379,7 @@ Ext2VerifyVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
     NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PEXT2_SUPER_BLOCK       ext2_sb = NULL;
+    PEXT2_SUPER_BLOCK       _SEH2_VOLATILE ext2_sb = NULL;
     PEXT2_VCB               _SEH2_VOLATILE Vcb = NULL;
     BOOLEAN                 _SEH2_VOLATILE VcbResourceAcquired = FALSE;
     PIRP                    Irp;

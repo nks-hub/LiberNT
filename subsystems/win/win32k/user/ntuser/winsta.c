@@ -1121,8 +1121,8 @@ NtUserCreateWindowStation(
     NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     HWINSTA hWinSta = NULL;
     OBJECT_ATTRIBUTES _SEH2_VOLATILE LocalObjectAttributes;
-    PUNICODE_STRING WindowStationName = NULL;
-    PUNICODE_STRING TebStaticUnicodeString = NULL;
+    PUNICODE_STRING _SEH2_VOLATILE WindowStationName = NULL;
+    PUNICODE_STRING _SEH2_VOLATILE TebStaticUnicodeString = NULL;
     KPROCESSOR_MODE _SEH2_VOLATILE OwnerMode = UserMode;
 
     TRACE("NtUserCreateWindowStation called\n");
@@ -1257,8 +1257,8 @@ NtUserOpenWindowStation(
     NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     HWINSTA hWinSta = NULL;
     OBJECT_ATTRIBUTES _SEH2_VOLATILE LocalObjectAttributes;
-    PUNICODE_STRING WindowStationName = NULL;
-    PUNICODE_STRING TebStaticUnicodeString = NULL;
+    PUNICODE_STRING _SEH2_VOLATILE WindowStationName = NULL;
+    PUNICODE_STRING _SEH2_VOLATILE TebStaticUnicodeString = NULL;
     KPROCESSOR_MODE _SEH2_VOLATILE OwnerMode = UserMode;
 
     TRACE("NtUserOpenWindowStation called\n");

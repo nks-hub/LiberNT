@@ -1271,14 +1271,14 @@ Return Value:
 {
     NTSTATUS Status = STATUS_SUCCESS;
 
-    DIRENT_ENUM_CONTEXT DirContext = {0};
-    DIRENT Dirent = {0};
+    DIRENT_ENUM_CONTEXT _SEH2_VOLATILE DirContext = {0};
+    DIRENT _SEH2_VOLATILE Dirent = {0};
 
     PUNICODE_STRING NameToUse;
     ULONG DirentOffset;
 
-    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
-    FILE_ENUM_CONTEXT FileContext;
+    COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext;
 
     PFCB _SEH2_VOLATILE ParentFcb = NULL;
     BOOLEAN _SEH2_VOLATILE ReleaseParentFcb = FALSE;

@@ -395,7 +395,7 @@ NtAlpcQueryInformation(
     ALPC_SERVER_SESSION_INFORMATION Session;
     PALPC_PORT Peer;
     PEPROCESS Process;
-    PSID Sid = NULL;
+    PSID _SEH2_VOLATILE Sid = NULL;
     PTOKEN Token;
     PTOKEN_USER UserInfo;
     ULONG _SEH2_VOLATILE ReferenceCount = 0;

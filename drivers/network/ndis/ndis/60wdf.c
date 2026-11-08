@@ -495,8 +495,6 @@ NdisWdfGetAdapterContextFromAdapterHandle(
     if (Adapter == NULL || !Adapter->IsNdis6)
         return NULL;
 
-    /* Windows answers for every NDIS 6 miniport, so a miniport that is not
-     * WDF-managed can find its adapter from the FDO device extension this way */
     Ext = NDIS6_EXT(Adapter);
     return Ext ? Ext->MiniportAdapterContext : NULL;
 }

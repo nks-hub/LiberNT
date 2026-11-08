@@ -1095,7 +1095,7 @@ NtSetInformationTransaction(
         {
             ProbeForRead(TransactionInformation, TransactionInformationLength, sizeof(ULONG));
         }
-        RtlCopyMemory(&Properties,
+        RtlCopyMemory((void *)&Properties,
                       TransactionInformation,
                       FIELD_OFFSET(TRANSACTION_PROPERTIES_INFORMATION, Description));
     }

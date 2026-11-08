@@ -659,7 +659,7 @@ NtfsQueryAllocatedRanges(
         if (NT_SUCCESS(Status))
         {
             RtlCopyMemory(
-                &Query,
+                (void *)&Query,
                 IrpSp->Parameters.FileSystemControl.
                     Type3InputBuffer,
                 sizeof(Query));
@@ -822,7 +822,7 @@ NtfsGetRetrievalPointers(
         if (NT_SUCCESS(Status))
         {
             RtlCopyMemory(
-                &Input,
+                (void *)&Input,
                 IrpSp->Parameters.FileSystemControl.
                     Type3InputBuffer,
                 sizeof(Input));
@@ -1016,7 +1016,7 @@ NtfsGetVolumeBitmap(
         if (NT_SUCCESS(Status))
         {
             RtlCopyMemory(
-                &Input,
+                (void *)&Input,
                 IrpSp->Parameters.FileSystemControl.
                     Type3InputBuffer,
                 sizeof(Input));

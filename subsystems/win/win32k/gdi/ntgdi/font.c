@@ -1660,7 +1660,7 @@ NtGdiHfontCreate(
   _SEH2_TRY
   {
       ProbeForRead(pelfw, sizeof(ENUMLOGFONTEXDVW), 1);
-      RtlCopyMemory(&SafeLogfont, pelfw, sizeof(ENUMLOGFONTEXDVW));
+      RtlCopyMemory((void *)&SafeLogfont, pelfw, sizeof(ENUMLOGFONTEXDVW));
   }
   _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
   {
@@ -1673,7 +1673,7 @@ NtGdiHfontCreate(
       return NULL;
   }
 
-  return HfontCreate(&SafeLogfont, cjElfw, lft, fl, pvCliData);
+  return HfontCreate((const ENUMLOGFONTEXDVW *)&SafeLogfont, cjElfw, lft, fl, pvCliData);
 }
 
 

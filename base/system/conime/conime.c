@@ -3303,10 +3303,10 @@ wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, INT nCmd
     _SEH2_TRY
     {
         // Main loop
-        while (GetMessageW(&msg, NULL, 0, 0))
+        while (GetMessageW((LPMSG)&msg, NULL, 0, 0))
         {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            TranslateMessage((const MSG *)&msg);
+            DispatchMessageW((const MSG *)&msg);
         }
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

@@ -779,7 +779,7 @@ IntDefWindowProc(
                         {
                             RtlUnicodeToMultiByteN(outbuf,
                                                    wParam - 1,
-                                                   &Length,
+                                                   (PULONG)&Length,
                                                    buf,
                                                    Wnd->strName.Length);
                         }
@@ -823,7 +823,7 @@ IntDefWindowProc(
                 _SEH2_TRY
                 {
                     RtlInitAnsiString(&AnsiString, (PCSZ)lParam);
-                    Status = RtlAnsiStringToUnicodeString(&UnicodeString,
+                    Status = RtlAnsiStringToUnicodeString((PUNICODE_STRING)&UnicodeString,
                                                           &AnsiString,
                                                           TRUE);
                 }
@@ -842,7 +842,7 @@ IntDefWindowProc(
 
             lResult = DefSetText(Wnd, Text);
             if (UnicodeString.Buffer)
-                RtlFreeUnicodeString(&UnicodeString);
+                RtlFreeUnicodeString((PUNICODE_STRING)&UnicodeString);
 
             if (!lResult)
                 break;
@@ -1569,7 +1569,7 @@ IntDefWindowProc(
                                    sizeof(RECT),
                                    1);
 
-                      RtlCopyMemory(&rt,
+                      RtlCopyMemory((void *)&rt,
                                     (PVOID)lParam,
                                     sizeof(RECT));
                   }

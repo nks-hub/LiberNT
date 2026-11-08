@@ -1347,7 +1347,7 @@ LdrEnumerateLoadedModules(
         /* Call the enumeration proc inside SEH */
         _SEH2_TRY
         {
-            EnumProc(LdrEntry, Context, &Stop);
+            EnumProc(LdrEntry, Context, (BOOLEAN *)&Stop);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {

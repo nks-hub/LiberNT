@@ -74,7 +74,7 @@ PropertyLengthAsVariant(IN PSERIALIZEDPROPERTYVALUE pProp,
     _SEH2_TRY
     {
         /*  Simply call the appropriate Ole32 export */
-        ProcedureAddress = LoadOle32Export(&BaseAddress,
+        ProcedureAddress = LoadOle32Export((PVOID *)&BaseAddress,
                                            "StgPropertyLengthAsVariant");
 
         Length = ProcedureAddress(pProp, cbProp, CodePage, bReserved);
@@ -108,7 +108,7 @@ RtlConvertPropertyToVariant(IN PSERIALIZEDPROPERTYVALUE prop,
     _SEH2_TRY
     {
         /*  Simply call the appropriate Ole32 export */
-        ProcedureAddress = LoadOle32Export(&BaseAddress,
+        ProcedureAddress = LoadOle32Export((PVOID *)&BaseAddress,
                                            "StgConvertPropertyToVariant");
 
         Success = ProcedureAddress(prop, CodePage, pvar, pma);
@@ -146,7 +146,7 @@ RtlConvertVariantToProperty(IN const PROPVARIANT * pvar,
     _SEH2_TRY
     {
         /*  Simply call the appropriate Ole32 export */
-        ProcedureAddress = LoadOle32Export(&BaseAddress,
+        ProcedureAddress = LoadOle32Export((PVOID *)&BaseAddress,
                                            "StgConvertVariantToProperty");
 
         Serialized = ProcedureAddress(pvar, CodePage, pprop, pcb, pid, fReserved, pcIndirect);

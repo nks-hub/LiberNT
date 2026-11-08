@@ -1170,7 +1170,7 @@ NtUserFindExistingCursorIcon(
     _SEH2_TRY
     {
         ProbeForRead(param, sizeof(*param), 1);
-        RtlCopyMemory(&paramSafe, param, sizeof(paramSafe));
+        RtlCopyMemory((void *)&paramSafe, param, sizeof(paramSafe));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

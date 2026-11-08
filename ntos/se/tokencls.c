@@ -1958,7 +1958,7 @@ NtSetInformationToken(
                                            PreviousMode,
                                            PagedPool,
                                            FALSE,
-                                           &CapturedSid);
+                                           (PSID *)&CapturedSid);
                     if (NT_SUCCESS(Status))
                     {
                         /* Lock the token */

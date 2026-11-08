@@ -593,7 +593,7 @@ AVrfpLoadAndInitializeProvider(PVERIFIER_PROVIDER Provider)
         if (LdrpCallInitRoutine(Provider->EntryPoint,
                                 Provider->BaseAddress,
                                 DLL_PROCESS_VERIFIER,
-                                &Descriptor))
+                                (PVOID)&Descriptor))
         {
             if (Descriptor && Descriptor->Length == sizeof(RTL_VERIFIER_PROVIDER_DESCRIPTOR))
             {

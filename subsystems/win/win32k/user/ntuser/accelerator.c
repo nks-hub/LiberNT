@@ -392,7 +392,7 @@ NtUserTranslateAccelerator(
     _SEH2_TRY
     {
         ProbeForRead(pUnsafeMessage, sizeof(MSG), 4);
-        RtlCopyMemory(&Message, pUnsafeMessage, sizeof(MSG));
+        RtlCopyMemory((void *)&Message, pUnsafeMessage, sizeof(MSG));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -429,7 +429,7 @@ NtUserTranslateAccelerator(
 
     for (i = 0; i < Accel->Count; i++)
     {
-        if (co_IntTranslateAccelerator(Window, &Message, &Accel->Table[i]))
+        if (co_IntTranslateAccelerator(Window, (const MSG *)&Message, &Accel->Table[i]))
         {
             Ret = 1;
             break;

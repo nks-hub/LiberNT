@@ -866,7 +866,7 @@ CsrApiRequestThread(IN PVOID Parameter)
                     /* Call the API and get the reply code */
                     ReplyMsg = NULL;
                     ReplyPort = CsrApiPort;
-                    ServerDll->DispatchTable[ApiId](&ReceiveMsg, &ReplyCode);
+                    ServerDll->DispatchTable[ApiId](&ReceiveMsg, (PCSR_REPLY_CODE)&ReplyCode);
 
                     /* Increase the static thread count */
                     InterlockedIncrementUL(&CsrpStaticThreadCount);
@@ -1104,7 +1104,7 @@ CsrApiRequestThread(IN PVOID Parameter)
 
             /* Call the API, get the reply code and return the result */
             ReplyCode = CsrReplyImmediately;
-            ReplyMsg->Status = ServerDll->DispatchTable[ApiId](&ReceiveMsg, &ReplyCode);
+            ReplyMsg->Status = ServerDll->DispatchTable[ApiId](&ReceiveMsg, (PCSR_REPLY_CODE)&ReplyCode);
 
             /* Increase the static thread count */
             InterlockedIncrementUL(&CsrpStaticThreadCount);

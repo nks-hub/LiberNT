@@ -84,8 +84,8 @@ Ext2FollowLink (
 
     _SEH2_TRY {
 
-        RtlZeroMemory(&UniName, sizeof(UNICODE_STRING));
-        RtlZeroMemory(&OemName, sizeof(OEM_STRING));
+        RtlZeroMemory((void *)&UniName, sizeof(UNICODE_STRING));
+        RtlZeroMemory((void *)&OemName, sizeof(OEM_STRING));
 
         /* exit if we jump into a possible symlink forever loop */
         if ((Linkdep + 1) > EXT2_MAX_NESTED_LINKS ||
@@ -134,7 +134,7 @@ Ext2FollowLink (
         }
 
         /* convert oem string to unicode string */
-        UniName.MaximumLength = (USHORT)Ext2OEMToUnicodeSize(Vcb, &OemName);
+        UniName.MaximumLength = (USHORT)Ext2OEMToUnicodeSize(Vcb, (PANSI_STRING)&OemName);
         if (UniName.MaximumLength <= 0) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
             _SEH2_LEAVE;
@@ -149,7 +149,7 @@ Ext2FollowLink (
             _SEH2_LEAVE;
         }
         RtlZeroMemory(UniName.Buffer, UniName.MaximumLength);
-        Status = Ext2OEMToUnicode(Vcb, &UniName, &OemName);
+        Status = Ext2OEMToUnicode(Vcb, (PUNICODE_STRING)&UniName, (POEM_STRING)&OemName);
         if (!NT_SUCCESS(Status)) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
             _SEH2_LEAVE;
@@ -159,7 +159,7 @@ Ext2FollowLink (
         Status = Ext2LookupFile(
                      IrpContext,
                      Vcb,
-                     &UniName,
+                     (PUNICODE_STRING)&UniName,
                      Parent,
                      &Target,
                      Linkdep
@@ -738,7 +738,7 @@ Ext2OverwriteEa(
         if (!NT_SUCCESS(Status))
             _SEH2_LEAVE;
 
-        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, (struct ext4_xattr_ref *)&xattr_ref));
         if (!NT_SUCCESS(Status)) {
             DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
             _SEH2_LEAVE;
@@ -749,7 +749,7 @@ Ext2OverwriteEa(
         //
         // Remove all existing EA entries.
         //
-        ext4_xattr_purge_items(&xattr_ref);
+        ext4_xattr_purge_items((struct ext4_xattr_ref *)&xattr_ref);
         xattr_ref.dirty = TRUE;
         Status = STATUS_SUCCESS;
 
@@ -786,7 +786,7 @@ Ext2OverwriteEa(
             EaName.Buffer = &FullEa->EaName[0];
 
             Status = Ext2WinntError(ret =
-                ext4_fs_set_xattr(&xattr_ref,
+                ext4_fs_set_xattr((struct ext4_xattr_ref *)&xattr_ref,
                     EXT4_XATTR_INDEX_USER,
                     EaName.Buffer,
                     EaName.Length,
@@ -798,7 +798,7 @@ Ext2OverwriteEa(
 
             if (ret == -ENODATA) {
                 Status = Ext2WinntError(
-                    ext4_fs_set_xattr(&xattr_ref,
+                    ext4_fs_set_xattr((struct ext4_xattr_ref *)&xattr_ref,
                         EXT4_XATTR_INDEX_USER,
                         EaName.Buffer,
                         EaName.Length,
@@ -816,9 +816,9 @@ Ext2OverwriteEa(
         if (XattrRefAcquired) {
             if (!NT_SUCCESS(Status)) {
                 xattr_ref.dirty = FALSE;
-                ext4_fs_put_xattr_ref(&xattr_ref);
+                ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref);
 			} else {
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+				Status = Ext2WinntError(ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref));
 			}
         }
     } _SEH2_END;
@@ -2016,7 +2016,7 @@ Ext2Create (IN PEXT2_IRP_CONTEXT IrpContext)
             Status = Ext2CreateVolume(IrpContext, Vcb);
         } else {
 
-            Status = Ext2CreateFile(IrpContext, Vcb, &PostIrp);
+            Status = Ext2CreateFile(IrpContext, Vcb, (PBOOLEAN)&PostIrp);
         }
 
     } _SEH2_FINALLY {

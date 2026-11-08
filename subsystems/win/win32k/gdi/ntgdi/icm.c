@@ -62,7 +62,7 @@ NtGdiCreateColorSpace(
     _SEH2_TRY
     {
         ProbeForRead( pLogColorSpace, sizeof(LOGCOLORSPACEEXW), 1);
-        RtlCopyMemory(&Safelcs, pLogColorSpace, sizeof(LOGCOLORSPACEEXW));
+        RtlCopyMemory((void *)&Safelcs, pLogColorSpace, sizeof(LOGCOLORSPACEEXW));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -76,7 +76,7 @@ NtGdiCreateColorSpace(
         return NULL;
     }
 
-    return IntGdiCreateColorSpace(&Safelcs);
+    return IntGdiCreateColorSpace((PLOGCOLORSPACEEXW)&Safelcs);
 }
 
 BOOL

@@ -1095,13 +1095,13 @@ EtwpTraceClassicEvent(
     {
         if (PreviousMode != KernelMode)
             ProbeForRead(Fields, FieldSize, sizeof(UCHAR));
-        RtlCopyMemory(&Header, Fields, sizeof(Header));
+        RtlCopyMemory((void *)&Header, Fields, sizeof(Header));
 
         if (Header.Flags & WNODE_FLAG_USE_GUID_PTR)
         {
             if (PreviousMode != KernelMode)
                 ProbeForRead((PVOID)(ULONG_PTR)Header.GuidPtr, sizeof(GUID), sizeof(UCHAR));
-            RtlCopyMemory(&Header.Guid, (PVOID)(ULONG_PTR)Header.GuidPtr, sizeof(GUID));
+            RtlCopyMemory((void *)&Header.Guid, (PVOID)(ULONG_PTR)Header.GuidPtr, sizeof(GUID));
         }
 
         if (Header.Flags & WNODE_FLAG_USE_MOF_PTR)

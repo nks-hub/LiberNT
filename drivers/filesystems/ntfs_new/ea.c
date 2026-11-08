@@ -593,7 +593,7 @@ NtfsFsdQueryEa(_In_ PDEVICE_OBJECT VolumeDeviceObject,
             Status = NtfsQueryEa(FileCB,
                                  IrpSp,
                                  Output,
-                                 &BytesWritten);
+                                 (PULONG)&BytesWritten);
         }
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

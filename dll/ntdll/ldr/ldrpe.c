@@ -1263,12 +1263,12 @@ LdrpReferenceLoadedDll(
     RtlAcquireSRWLockShared(&LdrpModuleDatatableLock);
     _SEH2_TRY
     {
-        if (LdrpFindLoadedForwarder(DllPath, DllName, Redirected, &LdrEntry) &&
+        if (LdrpFindLoadedForwarder(DllPath, DllName, Redirected, (PLDR_DATA_TABLE_ENTRY *)&LdrEntry) &&
             LdrpIsModuleReady(LdrEntry))
         {
             if (*(volatile USHORT *)&LdrEntry->LoadCount == 0xFFFF)
                 Referenced = TRUE;
-            else if ((SetReady = LdrpAllocateWalkSet(&Set)))
+            else if ((SetReady = LdrpAllocateWalkSet((PLDRP_WALK_SET)&Set)))
                 Referenced = LdrpTryReferenceModule(LdrEntry, FALSE, (PBOOLEAN)&Walk);
         }
     }
@@ -1280,10 +1280,10 @@ LdrpReferenceLoadedDll(
     RtlReleaseSRWLockShared(&LdrpModuleDatatableLock);
 
     if (Walk)
-        LdrpWalkLoadCount(LdrEntry, LDRP_UPDATE_REFCOUNT, &Set);
+        LdrpWalkLoadCount(LdrEntry, LDRP_UPDATE_REFCOUNT, (PLDRP_WALK_SET)&Set);
     RtlReleaseSRWLockShared(&LdrpLoadCountWalkLock);
     if (SetReady)
-        LdrpFreeWalkSet(&Set);
+        LdrpFreeWalkSet((PLDRP_WALK_SET)&Set);
 
     if (!Referenced)
         return FALSE;

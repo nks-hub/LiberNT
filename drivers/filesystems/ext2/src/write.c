@@ -694,7 +694,7 @@ Ext2WriteInode (
                      Offset,
                      Size,
                      S_ISDIR(Mcb->Inode.i_mode) ? FALSE : TRUE,
-                     &Chain
+                     (PEXT2_EXTENT *)&Chain
                  );
 
         if (!NT_SUCCESS(Status)) {

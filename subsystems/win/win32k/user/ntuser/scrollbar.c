@@ -1233,11 +1233,11 @@ NtUserSBGetParms(
    _SEH2_TRY
    {
       ProbeForWrite(lpsi, sizeof(SCROLLINFO), 1);
-      RtlCopyMemory(&psi, lpsi, sizeof(SCROLLINFO));
+      RtlCopyMemory((void *)&psi, lpsi, sizeof(SCROLLINFO));
       if (pSBData)
       {
          ProbeForRead(pSBData, sizeof(SBDATA), 1);
-         RtlCopyMemory(&SBDataSafe, pSBData, sizeof(SBDATA));
+         RtlCopyMemory((void *)&SBDataSafe, pSBData, sizeof(SBDATA));
       }
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -1266,16 +1266,16 @@ NtUserSBGetParms(
       if (pKernelSBData)
          SBDataSafe = *pKernelSBData;
       else
-         RtlZeroMemory(&SBDataSafe, sizeof(SBDataSafe));
+         RtlZeroMemory((void *)&SBDataSafe, sizeof(SBDataSafe));
    }
 
    UserRefObjectCo(Window, &Ref);
-   Ret = co_IntGetScrollInfo(Window, fnBar, &SBDataSafe, &psi);
+   Ret = co_IntGetScrollInfo(Window, fnBar, (PSBDATA)&SBDataSafe, (LPSCROLLINFO)&psi);
    UserDerefObjectCo(Window);
 
    _SEH2_TRY
    {
-      RtlCopyMemory(lpsi, &psi, sizeof(SCROLLINFO));
+      RtlCopyMemory(lpsi, (const void *)&psi, sizeof(SCROLLINFO));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {

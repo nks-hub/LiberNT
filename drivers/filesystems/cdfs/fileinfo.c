@@ -1330,8 +1330,8 @@ Return Value:
             //  This could be optimized somewhat.
             //
 
-            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
-            CdInitializeFileContext( IrpContext, &FileContext );
+            CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
+            CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
 
             CleanupDirectoryLookup = TRUE;
 
@@ -1339,15 +1339,15 @@ Return Value:
                                CdQueryFidPathTableOffset( Fcb->FileId ),
                                Fcb->Ordinal,
                                FALSE,
-                               &CompoundPathEntry );
+                               (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
-            CdUpdatePathEntryName( IrpContext, &CompoundPathEntry.PathEntry, TRUE );
+            CdUpdatePathEntryName( IrpContext, (PPATH_ENTRY)&CompoundPathEntry.PathEntry, TRUE );
 
             if (!CdFindDirectory( IrpContext,
                                   ParentFcb,
-                                  &CompoundPathEntry.PathEntry.CdCaseDirName,
+                                  (PCD_NAME)&CompoundPathEntry.PathEntry.CdCaseDirName,
                                   TRUE,
-                                  &FileContext )) {
+                                  (PFILE_ENUM_CONTEXT)&FileContext )) {
 
                 //
                 //  If we failed to find the child directory by name in the parent
@@ -1366,28 +1366,28 @@ Return Value:
             //  Initialize the search dirent structures.
             //
 
-            CdInitializeDirContext( IrpContext, &DirContext );
-            CdInitializeDirent( IrpContext, &Dirent );
+            CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
+            CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
 
             CleanupFileLookup = TRUE;
 
             CdLookupDirent( IrpContext,
                             ParentFcb,
                             CdQueryFidDirentOffset( Fcb->FileId ),
-                            &DirContext );
+                            (PDIRENT_ENUM_CONTEXT)&DirContext );
 
             CdUpdateDirentFromRawDirent( IrpContext,
                                          ParentFcb,
-                                         &DirContext,
-                                         &Dirent );
+                                         (PDIRENT_ENUM_CONTEXT)&DirContext,
+                                         (PDIRENT)&Dirent );
 
             //
             //  Now update the dirent name.
             //
 
-            CdUpdateDirentName( IrpContext, &Dirent, TRUE );
+            CdUpdateDirentName( IrpContext, (PDIRENT)&Dirent, TRUE );
 
-            NameToUse = &Dirent.CdCaseFileName.FileName;
+            NameToUse = (PUNICODE_STRING)&Dirent.CdCaseFileName.FileName;
             DirentOffset = Dirent.DirentOffset;
         }
 
@@ -1433,7 +1433,7 @@ Return Value:
         } else if (CleanupDirectoryLookup) {
 
             CdCleanupCompoundPathEntry( IrpContext, &CompoundPathEntry );
-            CdCleanupFileContext( IrpContext, &FileContext );
+            CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
         }
 
         if (ReleaseParentFcb) {

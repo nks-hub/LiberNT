@@ -562,7 +562,7 @@ NtSetUuidSeed(IN PUCHAR Seed)
     _SEH2_TRY
     {
         /* Get our caller context and remember to release it */
-        SeCaptureSubjectContext(&SubjectContext);
+        SeCaptureSubjectContext((PSECURITY_SUBJECT_CONTEXT)&SubjectContext);
         GotContext = TRUE;
 
         /* Get caller access token and its associated ID */
@@ -602,7 +602,7 @@ NtSetUuidSeed(IN PUCHAR Seed)
     /* Release context if required */
     if (GotContext)
     {
-        SeReleaseSubjectContext(&SubjectContext);
+        SeReleaseSubjectContext((PSECURITY_SUBJECT_CONTEXT)&SubjectContext);
     }
 
     return Status;

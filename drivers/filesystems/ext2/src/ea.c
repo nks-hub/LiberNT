@@ -172,7 +172,7 @@ Ext2QueryEa (
 		}
 		MainResourceAcquired = TRUE;
 
-		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, (struct ext4_xattr_ref *)&xattr_ref));
 		if (!NT_SUCCESS(Status)) {
 			DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
 			_SEH2_LEAVE;
@@ -208,7 +208,7 @@ Ext2QueryEa (
 				// At the moment we only need to know whether the item exists
 				// and its size.
 				//
-				Status = Ext2WinntError(ext4_fs_get_xattr(&xattr_ref,
+				Status = Ext2WinntError(ext4_fs_get_xattr((struct ext4_xattr_ref *)&xattr_ref,
 					EXT4_XATTR_INDEX_USER,
 					Str.Buffer,
 					Str.Length,
@@ -250,7 +250,7 @@ Ext2QueryEa (
 				// the xattr_ref without acquiring Inode lock.
 				//
 				ASSERT(NT_SUCCESS(Ext2WinntError(
-					ext4_fs_get_xattr(&xattr_ref,
+					ext4_fs_get_xattr((struct ext4_xattr_ref *)&xattr_ref,
 						EXT4_XATTR_INDEX_USER,
 						Str.Buffer,
 						Str.Length,
@@ -290,7 +290,7 @@ Ext2QueryEa (
 			EaIterator.EaIndexCounter = 1;
 
 			xattr_ref.iter_arg = &EaIterator;
-			ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
+			ext4_fs_xattr_iterate((struct ext4_xattr_ref *)&xattr_ref, Ext2IterateAllEa);
 
 			RemainingUserBufferLength = EaIterator.RemainingUserBufferLength;
 
@@ -329,7 +329,7 @@ Ext2QueryEa (
 			EaIterator.EaIndexCounter = 1;
 
 			xattr_ref.iter_arg = &EaIterator;
-			ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
+			ext4_fs_xattr_iterate((struct ext4_xattr_ref *)&xattr_ref, Ext2IterateAllEa);
 
 			RemainingUserBufferLength = EaIterator.RemainingUserBufferLength;
 
@@ -352,10 +352,10 @@ Ext2QueryEa (
 		if (XattrRefAcquired) {
 			if (!NT_SUCCESS(Status)) {
 				xattr_ref.dirty = FALSE;
-				ext4_fs_put_xattr_ref(&xattr_ref);
+				ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref);
 			}
 			else
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+				Status = Ext2WinntError(ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref));
 		}
 
 		if (MainResourceAcquired) {
@@ -504,7 +504,7 @@ Ext2SetEa (
 		}
 		MainResourceAcquired = TRUE;
 
-		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, (struct ext4_xattr_ref *)&xattr_ref));
 		if (!NT_SUCCESS(Status)) {
 			DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
 			_SEH2_LEAVE;
@@ -515,7 +515,7 @@ Ext2SetEa (
 		//
 		// Remove all existing EA entries.
 		//
-		ext4_xattr_purge_items(&xattr_ref);
+		ext4_xattr_purge_items((struct ext4_xattr_ref *)&xattr_ref);
 		xattr_ref.dirty = TRUE;
 		Status = STATUS_SUCCESS;
 
@@ -553,7 +553,7 @@ Ext2SetEa (
 				EaName.Buffer = &FullEa->EaName[0];
 
 				Status = Ext2WinntError(ret =
-					ext4_fs_set_xattr_ordered(&xattr_ref,
+					ext4_fs_set_xattr_ordered((struct ext4_xattr_ref *)&xattr_ref,
 						EXT4_XATTR_INDEX_USER,
 						EaName.Buffer,
 						EaName.Length,
@@ -568,9 +568,9 @@ Ext2SetEa (
 		if (XattrRefAcquired) {
 			if (!NT_SUCCESS(Status)) {
 				xattr_ref.dirty = FALSE;
-				ext4_fs_put_xattr_ref(&xattr_ref);
+				ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref);
 			} else
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+				Status = Ext2WinntError(ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref));
 		}
 
 		if (FcbLockAcquired) {

@@ -379,7 +379,7 @@ getsockopt(IN SOCKET s,
                 if (!OldOptVal) return Status;
 
                 /* We did, so we have to convert the unicode info to ansi */
-                ErrorCode = MapUnicodeProtocolInfoToAnsi(&ProtocolInfo,
+                ErrorCode = MapUnicodeProtocolInfoToAnsi((LPWSAPROTOCOL_INFOW)&ProtocolInfo,
                                                          (LPWSAPROTOCOL_INFOA)
                                                          OldOptVal);
 

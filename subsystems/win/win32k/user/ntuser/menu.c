@@ -6317,7 +6317,7 @@ NtUserGetTitleBarInfo(
     _SEH2_TRY
     {
         ProbeForRead(bti, sizeof(TITLEBARINFO), 1);
-        RtlCopyMemory(&bartitleinfo, bti, sizeof(TITLEBARINFO));
+        RtlCopyMemory((void *)&bartitleinfo, bti, sizeof(TITLEBARINFO));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6327,7 +6327,7 @@ NtUserGetTitleBarInfo(
     _SEH2_END
 
     /* Get the tile bar info */
-    retValue = intGetTitleBarInfo(WindowObject, &bartitleinfo);
+    retValue = intGetTitleBarInfo(WindowObject, (PTITLEBARINFO)&bartitleinfo);
     if (!retValue)
     {
         // intGetTitleBarInfo() set LastError.
@@ -6338,7 +6338,7 @@ NtUserGetTitleBarInfo(
     _SEH2_TRY
     {
         ProbeForWrite(bti, sizeof(TITLEBARINFO), 1);
-        RtlCopyMemory(bti, &bartitleinfo, sizeof(TITLEBARINFO));
+        RtlCopyMemory(bti, (const void *)&bartitleinfo, sizeof(TITLEBARINFO));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6815,7 +6815,7 @@ NtUserDrawMenuBarTemp(
    _SEH2_TRY
    {
       ProbeForRead(pRect, sizeof(RECT), sizeof(ULONG));
-      RtlCopyMemory(&Rect, pRect, sizeof(RECT));
+      RtlCopyMemory((void *)&Rect, pRect, sizeof(RECT));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {
@@ -6829,7 +6829,7 @@ NtUserDrawMenuBarTemp(
       goto Exit; // Return 0
    }
 
-   Ret = IntDrawMenuBarTemp(Window, hDC, &Rect, Menu, hFont);
+   Ret = IntDrawMenuBarTemp(Window, hDC, (LPRECTL)&Rect, Menu, hFont);
 
 Exit:
    UserLeave();

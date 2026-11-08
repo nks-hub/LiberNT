@@ -3460,7 +3460,7 @@ NtUserFindWindowEx(HWND hwndParent,
                }
 
                if (!IntGetAtomFromStringOrAtom((PUNICODE_STRING)&ClassName,
-                                               &ClassAtom))
+                                               (RTL_ATOM *)&ClassAtom))
                {
                    EngSetLastError(ERROR_CANNOT_FIND_WND_CLASS);
                    _SEH2_LEAVE;

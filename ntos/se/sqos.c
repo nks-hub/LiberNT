@@ -92,7 +92,7 @@ SepCaptureSecurityQualityOfService(
                              * the system if it's buggy, SEH would catch that! So make a local
                              * copy of the qos structure.
                              */
-                            RtlCopyMemory(&SafeQos,
+                            RtlCopyMemory((void *)&SafeQos,
                                           ObjectAttributes->SecurityQualityOfService,
                                           sizeof(SECURITY_QUALITY_OF_SERVICE));
                             *Present = TRUE;
@@ -129,7 +129,7 @@ SepCaptureSecurityQualityOfService(
                     if (CapturedQos != NULL)
                     {
                         RtlCopyMemory(CapturedQos,
-                                      &SafeQos,
+                                      (const void *)&SafeQos,
                                       sizeof(SECURITY_QUALITY_OF_SERVICE));
                         *CapturedSecurityQualityOfService = CapturedQos;
                     }

@@ -3801,7 +3801,7 @@ DxgkpQueryAdapterInfoCaptured(
                                                  DxgkpIsWow64Caller() ? L"UserModeDriverNameWow"
                                                                       : L"UserModeDriverName",
                                                 (ULONG)DriverName.Version,
-                                                DriverName.UmdFileName,
+                                                (PWSTR)DriverName.UmdFileName,
                                                 ARRAYSIZE(DriverName.UmdFileName));
             if (!NT_SUCCESS(Status))
             {
@@ -4104,7 +4104,7 @@ DxgkpQueryAdapterInfoCaptured(
                 DXGKP_QUERY_RETURN(STATUS_INVALID_PARAMETER);
             if (!Adapter->GpuMmuCapsValid)
                 DXGKP_QUERY_RETURN(STATUS_NOT_SUPPORTED);
-            RtlZeroMemory(&Query.Caps, sizeof(Query.Caps));
+            RtlZeroMemory((void *)&Query.Caps, sizeof(Query.Caps));
             Query.Caps.Flags.ReadOnlyMemorySupported = Adapter->GpuMmuCaps.ReadOnlyMemorySupported;
             Query.Caps.Flags.NoExecuteMemorySupported = Adapter->GpuMmuCaps.NoExecuteMemorySupported;
             Query.Caps.Flags.CacheCoherentMemorySupported = Adapter->GpuMmuCaps.CacheCoherentMemorySupported;
@@ -4330,12 +4330,12 @@ DxgkpQueryAdapterInfoCaptured(
                 DXGKP_QUERY_RETURN(STATUS_NOT_SUPPORTED);
             if (!DxgkAcquireKmdCall(Adapter))
                 DXGKP_QUERY_RETURN(STATUS_DEVICE_NOT_READY);
-            RtlZeroMemory(&Metadata.NodeData, sizeof(Metadata.NodeData));
+            RtlZeroMemory((void *)&Metadata.NodeData, sizeof(Metadata.NodeData));
             _SEH2_TRY
             {
                 Status = GetNodeMetadata(Adapter->MiniportDeviceContext,
                                          Metadata.NodeOrdinalAndAdapterIndex & 0xFFFF,
-                                         &Metadata.NodeData);
+                                         (DXGKARG_GETNODEMETADATA *)&Metadata.NodeData);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {
@@ -4863,7 +4863,7 @@ DxgkpQueryAdapterInfoCaptured(
             _SEH2_END;
             if (Query.PhysicalAdapterIndex != 0)
                 DXGKP_QUERY_RETURN(STATUS_INVALID_PARAMETER);
-            IdStatus = DxgkpQueryAdapterDeviceIds(Adapter, &Query.DeviceIds);
+            IdStatus = DxgkpQueryAdapterDeviceIds(Adapter, (D3DKMT_DEVICE_IDS *)&Query.DeviceIds);
             if (!NT_SUCCESS(IdStatus))
                 DXGKP_QUERY_RETURN(IdStatus);
             _SEH2_TRY

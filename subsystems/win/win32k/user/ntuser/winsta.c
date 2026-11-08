@@ -1159,8 +1159,8 @@ NtUserCreateWindowStation(
             /* No, build the new window station name */
             Status = BuildUserModeWindowStationName(ObjectAttributes,
                                                     (POBJECT_ATTRIBUTES)&LocalObjectAttributes,
-                                                    &WindowStationName,
-                                                    &TebStaticUnicodeString);
+                                                    (PUNICODE_STRING *)&WindowStationName,
+                                                    (PUNICODE_STRING *)&TebStaticUnicodeString);
             if (!NT_SUCCESS(Status))
             {
                 ERR("BuildUserModeWindowStationName() failed, Status 0x%08lx\n", Status);
@@ -1316,8 +1316,8 @@ NtUserOpenWindowStation(
             /* No, build the new window station name */
             Status = BuildUserModeWindowStationName(ObjectAttributes,
                                                     (POBJECT_ATTRIBUTES)&LocalObjectAttributes,
-                                                    &WindowStationName,
-                                                    &TebStaticUnicodeString);
+                                                    (PUNICODE_STRING *)&WindowStationName,
+                                                    (PUNICODE_STRING *)&TebStaticUnicodeString);
             if (!NT_SUCCESS(Status))
             {
                 ERR("BuildUserModeWindowStationName() failed, Status 0x%08lx\n", Status);

@@ -241,7 +241,7 @@ ScmInitServiceNotify(VOID)
 static PNOTIFY_HANDLE
 ScmGetNotifyFromHandle(SC_NOTIFY_RPC_HANDLE Handle)
 {
-    PNOTIFY_HANDLE pNotify = NULL;
+    PNOTIFY_HANDLE _SEH2_VOLATILE pNotify = NULL;
 
     _SEH2_TRY
     {
@@ -465,7 +465,7 @@ ScmCreateNotify(DWORD dwNotifyMask)
 static PMANAGER_HANDLE
 ScmGetServiceManagerFromHandle(SC_RPC_HANDLE Handle)
 {
-    PMANAGER_HANDLE pManager = NULL;
+    PMANAGER_HANDLE _SEH2_VOLATILE pManager = NULL;
 
     _SEH2_TRY
     {
@@ -485,7 +485,7 @@ ScmGetServiceManagerFromHandle(SC_RPC_HANDLE Handle)
 static PSERVICE_HANDLE
 ScmGetServiceFromHandle(SC_RPC_HANDLE Handle)
 {
-    PSERVICE_HANDLE pService = NULL;
+    PSERVICE_HANDLE _SEH2_VOLATILE pService = NULL;
 
     _SEH2_TRY
     {

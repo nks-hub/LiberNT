@@ -74,7 +74,7 @@ LdrpSnapIAT(IN PLDR_DATA_TABLE_ENTRY ExportLdrEntry,
             IN PWSTR DllPath OPTIONAL)
 {
     PVOID Iat = NULL;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIMAGE_THUNK_DATA OriginalThunk, FirstThunk;
     PIMAGE_NT_HEADERS NtHeader;
     PIMAGE_SECTION_HEADER SectionHeader;
@@ -1216,7 +1216,7 @@ LdrpFindReferencedForwarder(
     _Out_ PVOID *TargetBase)
 {
     PLDR_DATA_TABLE_ENTRY LdrEntry;
-    NTSTATUS Status = STATUS_RETRY;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_RETRY;
 
     RtlAcquireSRWLockShared(&LdrpModuleDatatableLock);
     _SEH2_TRY
@@ -1252,7 +1252,7 @@ LdrpReferenceLoadedDll(
 {
     PLDR_DATA_TABLE_ENTRY LdrEntry = NULL;
     LDRP_WALK_SET Set;
-    BOOLEAN Referenced = FALSE, Walk = FALSE, SetReady = FALSE;
+    BOOLEAN _SEH2_VOLATILE Referenced = FALSE, Walk = FALSE, SetReady = FALSE;
 
 #if defined(_M_ARM64)
     if (ChpeIsChpeProcess())
@@ -1269,7 +1269,7 @@ LdrpReferenceLoadedDll(
             if (*(volatile USHORT *)&LdrEntry->LoadCount == 0xFFFF)
                 Referenced = TRUE;
             else if ((SetReady = LdrpAllocateWalkSet(&Set)))
-                Referenced = LdrpTryReferenceModule(LdrEntry, FALSE, &Walk);
+                Referenced = LdrpTryReferenceModule(LdrEntry, FALSE, (PBOOLEAN)&Walk);
         }
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

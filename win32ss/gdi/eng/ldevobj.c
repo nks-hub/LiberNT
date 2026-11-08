@@ -794,7 +794,7 @@ LDEVOBJ_bProbeAndCaptureDevmode(
     DEVMODEW dmSearch;
     PDEVMODEW pdmCurrent, pdm, pdmSelected = NULL;
     ULONG i;
-    ULONG ulVirtualWidth = 0, ulVirtualHeight = 0;
+    ULONG _SEH2_VOLATILE ulVirtualWidth = 0, ulVirtualHeight = 0;
     BOOL bResult = TRUE;
     NTSTATUS Status;
 

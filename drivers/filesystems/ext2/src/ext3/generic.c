@@ -210,7 +210,7 @@ Ext2LoadGroup(IN PEXT2_VCB Vcb)
     struct ext3_sb_info *sbi = &Vcb->sbi;
     ext3_fsblk_t sb_block = 1;
     unsigned long i;
-    BOOLEAN rc = FALSE;
+    BOOLEAN _SEH2_VOLATILE rc = FALSE;
 
     _SEH2_TRY {
 
@@ -660,7 +660,7 @@ Ext2LoadBlock (IN PEXT2_VCB Vcb,
                IN ULONG     Index,
                IN PVOID     Buffer )
 {
-    struct buffer_head *bh = NULL;
+    struct buffer_head * _SEH2_VOLATILE bh = NULL;
     BOOLEAN             rc = 0;
 
     _SEH2_TRY {
@@ -687,7 +687,7 @@ Ext2LoadBlock (IN PEXT2_VCB Vcb,
     } _SEH2_FINALLY {
 
         if (bh)
-            fini_bh(&bh);
+            fini_bh((struct buffer_head **)&bh);
     } _SEH2_END;
 
     return rc;
@@ -700,7 +700,7 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN ULONG                Index,
                 IN PVOID                Buf )
 {
-    struct buffer_head *bh = NULL;
+    struct buffer_head * _SEH2_VOLATILE bh = NULL;
     BOOLEAN             rc = 0;
 
     _SEH2_TRY {
@@ -723,7 +723,7 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
     } _SEH2_FINALLY {
 
         if (bh)
-            fini_bh(&bh);
+            fini_bh((struct buffer_head **)&bh);
     } _SEH2_END;
 
     return rc;
@@ -736,7 +736,7 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN ULONG                size,
                 IN PVOID                buf )
 {
-    struct buffer_head *bh = NULL;
+    struct buffer_head * _SEH2_VOLATILE bh = NULL;
     BOOLEAN             rc;
 
     _SEH2_TRY {
@@ -770,7 +770,7 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
             _SEH2_TRY {
                 RtlCopyMemory(buf, bh->b_data + delta, len);
             } _SEH2_FINALLY {
-                fini_bh(&bh);
+                fini_bh((struct buffer_head **)&bh);
             } _SEH2_END;
 
             buf = (PUCHAR)buf + len;
@@ -783,7 +783,7 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
     } _SEH2_FINALLY {
 
         if (bh)
-            fini_bh(&bh);
+            fini_bh((struct buffer_head **)&bh);
 
     } _SEH2_END;
 
@@ -798,7 +798,7 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN ULONG                size
     )
 {
-    struct buffer_head *bh = NULL;
+    struct buffer_head * _SEH2_VOLATILE bh = NULL;
     BOOLEAN             rc = 0;
 
     _SEH2_TRY {
@@ -842,7 +842,7 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
                 }
                 mark_buffer_dirty(bh);
             } _SEH2_FINALLY {
-                fini_bh(&bh);
+                fini_bh((struct buffer_head **)&bh);
             } _SEH2_END;
 
             offset = offset + len;
@@ -854,7 +854,7 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
     } _SEH2_FINALLY {
 
         if (bh)
-            fini_bh(&bh);
+            fini_bh((struct buffer_head **)&bh);
 
     } _SEH2_END;
 
@@ -1885,7 +1885,7 @@ Ext2AddEntry (
     struct dentry        **Dentry
 )
 {
-    struct dentry          *de = NULL;
+    struct dentry          * _SEH2_VOLATILE de = NULL;
 
     NTSTATUS                status = STATUS_UNSUCCESSFUL;
     OEM_STRING              oem;
@@ -1957,7 +1957,7 @@ Ext2SetFileType (
     )
 {
     struct inode *dir = Dcb->Inode;
-    struct buffer_head *bh = NULL;
+    struct buffer_head * _SEH2_VOLATILE bh = NULL;
     struct ext3_dir_entry_2 *de;
     struct inode *inode;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
@@ -2026,7 +2026,7 @@ Ext2RemoveEntry (
 )
 {
     struct inode *dir = Dcb->Inode;
-    struct buffer_head *bh = NULL;
+    struct buffer_head * _SEH2_VOLATILE bh = NULL;
     struct ext3_dir_entry_2 *de;
     struct inode *inode;
     int rc = -ENOENT;
@@ -2104,7 +2104,7 @@ Ext2SetParentEntry (
 {
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
 
-    PEXT2_DIR_ENTRY2        pSelf   = NULL;
+    PEXT2_DIR_ENTRY2        _SEH2_VOLATILE pSelf   = NULL;
     PEXT2_DIR_ENTRY2        pParent = NULL;
 
     ULONG                   dwBytes = 0;

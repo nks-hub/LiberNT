@@ -985,12 +985,12 @@ RhExecuteUserSpbTransfers(
 {
     PSPB_TRANSFER_LIST_ENTRY Transfers;
     PSPB_TRANSFER_BUFFER_LIST_ENTRY *Lists;
-    PUCHAR Data = NULL;
+    PUCHAR _SEH2_VOLATILE Data = NULL;
     ULONG TotalLength = 0;
     ULONG Offset;
-    ULONG Index;
-    ULONG Entry;
-    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG _SEH2_VOLATILE Index;
+    ULONG _SEH2_VOLATILE Entry;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     *BytesTransferred = 0;
     Transfers = ExAllocatePoolWithTag(NonPagedPool, TransferCount * (sizeof(*Transfers) + sizeof(*Lists)), RH_TAG);

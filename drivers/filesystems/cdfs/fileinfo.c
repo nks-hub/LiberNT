@@ -145,7 +145,7 @@ Return Value:
     PFCB Fcb;
     PCCB Ccb;
 
-    BOOLEAN ReleaseFcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleaseFcb = FALSE;
 
     PAGED_CODE();
 
@@ -1280,11 +1280,11 @@ Return Value:
     COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
     FILE_ENUM_CONTEXT FileContext;
 
-    PFCB ParentFcb = NULL;
-    BOOLEAN ReleaseParentFcb = FALSE;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
+    BOOLEAN _SEH2_VOLATILE ReleaseParentFcb = FALSE;
 
-    BOOLEAN CleanupFileLookup = FALSE;
-    BOOLEAN CleanupDirectoryLookup = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupFileLookup = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupDirectoryLookup = FALSE;
 
     WCHAR ShortNameBuffer[ BYTE_COUNT_8_DOT_3 / 2 ];
     USHORT ShortNameLength;

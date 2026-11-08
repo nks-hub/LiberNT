@@ -145,7 +145,7 @@ PspCopyThreadWow64Context(IN PETHREAD Thread,
     PWOW64_CPURESERVED Cpu;
     ULONG Flags = Context->ContextFlags & ~WOW64_CONTEXT_i386;
     BOOLEAN Attached = Process != PsGetCurrentProcess();
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (!PspIsX86Wow64Process(Process)) return STATUS_INVALID_PARAMETER;
     Status = PspArchCopyLiveWow64Context(Thread, Context, SetContext);
@@ -352,7 +352,7 @@ PspQueryProcessTelemetryIdInformation(
     ULONG TotalLength;
     ULONG Offset;
     ULONG WriteLength;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -711,10 +711,10 @@ PspCaptureProcessCommandLine(
     _Out_ PUSHORT CommandLineLength)
 {
     PRTL_USER_PROCESS_PARAMETERS Parameters;
-    UNICODE_STRING CommandLine = {0};
+    UNICODE_STRING _SEH2_VOLATILE CommandLine = {0};
     KAPC_STATE ApcState;
-    PWSTR Copy = NULL;
-    NTSTATUS Status = STATUS_SUCCESS;
+    PWSTR _SEH2_VOLATILE Copy = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (!Process->Peb)
         return STATUS_NOT_FOUND;
@@ -784,8 +784,8 @@ NtQueryInformationProcess(
 {
     PEPROCESS Process;
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    NTSTATUS Status;
-    ULONG Length = 0;
+    NTSTATUS _SEH2_VOLATILE Status;
+    ULONG _SEH2_VOLATILE Length = 0;
 
     PAGED_CODE();
 
@@ -2325,7 +2325,7 @@ NtQueryInformationProcess(
             if (!NT_SUCCESS(Status))
                 break;
 
-            Status = PspQueryProcessTelemetryIdInformation(Process, ProcessInformation, ProcessInformationLength, &Length);
+            Status = PspQueryProcessTelemetryIdInformation(Process, ProcessInformation, ProcessInformationLength, (PULONG)&Length);
             ObDereferenceObject(Process);
             break;
         }
@@ -2527,28 +2527,28 @@ NtSetInformationProcess(
     PEPROCESS Process;
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     ACCESS_MASK Access;
-    NTSTATUS Status;
-    HANDLE PortHandle = NULL;
-    HANDLE TokenHandle = NULL;
-    HANDLE DirectoryHandle = NULL;
-    PROCESS_SESSION_INFORMATION SessionInfo = {0};
-    PROCESS_PRIORITY_CLASS PriorityClass = {0};
-    PROCESS_FOREGROUND_BACKGROUND Foreground = {0};
+    NTSTATUS _SEH2_VOLATILE Status;
+    HANDLE _SEH2_VOLATILE PortHandle = NULL;
+    HANDLE _SEH2_VOLATILE TokenHandle = NULL;
+    HANDLE _SEH2_VOLATILE DirectoryHandle = NULL;
+    PROCESS_SESSION_INFORMATION _SEH2_VOLATILE SessionInfo = {0};
+    PROCESS_PRIORITY_CLASS _SEH2_VOLATILE PriorityClass = {0};
+    PROCESS_FOREGROUND_BACKGROUND _SEH2_VOLATILE Foreground = {0};
     PVOID ExceptionPort;
-    ULONG Break = 0;
+    ULONG _SEH2_VOLATILE Break = 0;
     KAFFINITY ValidAffinity, Affinity = 0;
-    KPRIORITY BasePriority = 0;
+    KPRIORITY _SEH2_VOLATILE BasePriority = 0;
     UCHAR MemoryPriority = 0;
-    BOOLEAN DisableBoost = 0;
-    ULONG DefaultHardErrorMode = 0;
-    ULONG DebugFlags = 0, EnableFixup = 0, Boost = 0;
-    ULONG NoExecute = 0, VdmPower = 0;
-    ULONG CheckStackExtents = 0;
+    BOOLEAN _SEH2_VOLATILE DisableBoost = 0;
+    ULONG _SEH2_VOLATILE DefaultHardErrorMode = 0;
+    ULONG _SEH2_VOLATILE DebugFlags = 0, EnableFixup = 0, Boost = 0;
+    ULONG _SEH2_VOLATILE NoExecute = 0, VdmPower = 0;
+    ULONG _SEH2_VOLATILE CheckStackExtents = 0;
     BOOLEAN HasPrivilege;
     PLIST_ENTRY Next;
     PETHREAD Thread;
 #if defined(_M_ARM64)
-    MANAGE_WRITES_TO_EXECUTABLE_MEMORY ManageWrites;
+    MANAGE_WRITES_TO_EXECUTABLE_MEMORY _SEH2_VOLATILE ManageWrites;
 #endif
     PAGED_CODE();
 
@@ -3895,12 +3895,12 @@ NtSetInformationThread(
     PETHREAD Thread;
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     NTSTATUS Status;
-    KPRIORITY Priority = 0;
+    KPRIORITY _SEH2_VOLATILE Priority = 0;
     PEPROCESS Process;
     PTEB Teb;
-    THREAD_POWER_THROTTLING_STATE PowerThrottling = {0};
+    THREAD_POWER_THROTTLING_STATE _SEH2_VOLATILE PowerThrottling = {0};
 #if defined(_M_ARM64)
-    MANAGE_WRITES_TO_EXECUTABLE_MEMORY ManageWrites;
+    MANAGE_WRITES_TO_EXECUTABLE_MEMORY _SEH2_VOLATILE ManageWrites;
 #endif
 
     PAGED_CODE();

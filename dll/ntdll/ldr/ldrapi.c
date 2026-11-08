@@ -1046,7 +1046,7 @@ LdrVerifyImageMatchesChecksum(
     HANDLE SectionHandle;
     SIZE_T ViewSize;
     PVOID ViewBase;
-    BOOLEAN Result = FALSE, NoActualCheck;
+    BOOLEAN _SEH2_VOLATILE Result = FALSE, NoActualCheck;
     NTSTATUS Status;
     PVOID ImportName;
     ULONG Size;
@@ -1186,7 +1186,7 @@ LdrQueryProcessModuleInformationEx(
     PLIST_ENTRY Entry, InitEntry;
     PLDR_DATA_TABLE_ENTRY Module, InitModule;
     PRTL_PROCESS_MODULE_INFORMATION ModulePtr = NULL;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG UsedSize = FIELD_OFFSET(RTL_PROCESS_MODULES, Modules);
     ANSI_STRING AnsiString;
     PCHAR p;
@@ -1985,7 +1985,7 @@ LdrGetDllFullName(PVOID hModule, UNICODE_STRING *FullDllName)
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     PLIST_ENTRY ListHead, NextEntry;
     PPEB Peb = NtCurrentPeb();
-    NTSTATUS Status = STATUS_DLL_NOT_FOUND;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_DLL_NOT_FOUND;
     UNICODE_STRING Name;
     BOOLEAN Shared, Found = FALSE;
 

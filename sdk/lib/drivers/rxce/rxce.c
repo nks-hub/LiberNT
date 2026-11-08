@@ -787,7 +787,7 @@ RxChangeBufferingState(
 {
     PFCB Fcb;
     NTSTATUS Status, MiniStatus;
-    ULONG NewBufferingState, OldBufferingState;
+    ULONG _SEH2_VOLATILE NewBufferingState, OldBufferingState;
 
     PAGED_CODE();
 
@@ -806,7 +806,7 @@ RxChangeBufferingState(
         if (ComputeNewState)
         {
             MINIRDR_CALL_THROUGH(MiniStatus, Fcb->MRxDispatch, MRxComputeNewBufferingState,
-                                 ((PMRX_SRV_OPEN)SrvOpen, Context, &NewBufferingState));
+                                 ((PMRX_SRV_OPEN)SrvOpen, Context, (PULONG)&NewBufferingState));
             if (MiniStatus != STATUS_SUCCESS)
             {
                 NewBufferingState = 0;
@@ -1970,7 +1970,7 @@ RxCreateSrvOpen(
     IN OUT PFCB Fcb)
 {
     ULONG Flags;
-    PSRV_OPEN SrvOpen = NULL;
+    PSRV_OPEN _SEH2_VOLATILE SrvOpen = NULL;
     POOL_TYPE PoolType;
 
     PAGED_CODE();
@@ -2638,11 +2638,11 @@ RxFinalizeConnection(
     IN OUT PV_NET_ROOT VNetRoot OPTIONAL,
     IN LOGICAL ForceFilesClosed)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PRX_PREFIX_TABLE PrefixTable;
-    ULONG UncleanAny, UncleanDir;
-    LONG FilesOpen, AdditionalRef;
-    BOOLEAN PrefixLocked, FcbTableLocked, ForceClose;
+    ULONG _SEH2_VOLATILE UncleanAny, UncleanDir;
+    LONG _SEH2_VOLATILE FilesOpen, AdditionalRef;
+    BOOLEAN _SEH2_VOLATILE PrefixLocked, FcbTableLocked, ForceClose;
 
     PAGED_CODE();
 
@@ -3685,7 +3685,7 @@ RxFindOrCreateConnections(
     PSRV_CALL SrvCall;
     PNET_ROOT NetRoot;
     PV_NET_ROOT VNetRoot;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PRX_PREFIX_TABLE PrefixTable;
     UNICODE_STRING RemainingName, NetRootName;
 
@@ -5251,8 +5251,8 @@ RxLockUserBuffer(
     IN LOCK_OPERATION Operation,
     IN ULONG BufferLength)
 {
-    PIRP Irp = NULL;
-    PMDL Mdl = NULL;
+    PIRP _SEH2_VOLATILE Irp = NULL;
+    PMDL _SEH2_VOLATILE Mdl = NULL;
 
     PAGED_CODE();
 

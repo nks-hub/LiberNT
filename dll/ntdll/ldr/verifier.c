@@ -552,7 +552,7 @@ AVrfpLoadAndInitializeProvider(PVERIFIER_PROVIDER Provider)
     UNICODE_STRING DllPath;
     PRTL_VERIFIER_PROVIDER_DESCRIPTOR Descriptor = NULL;
     PIMAGE_NT_HEADERS ImageNtHeader;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     RtlInitEmptyUnicodeString(&DllPath, StringBuffer, sizeof(StringBuffer));
     RtlAppendUnicodeToString(&DllPath, SharedUserData->NtSystemRoot);

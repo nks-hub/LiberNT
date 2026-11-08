@@ -2800,7 +2800,7 @@ NtGdiGetPath(
     LPBYTE Types,
     INT nSize)
 {
-    INT ret = -1;
+    INT _SEH2_VOLATILE ret = -1;
     PPATH pPath;
     DC *dc;
 

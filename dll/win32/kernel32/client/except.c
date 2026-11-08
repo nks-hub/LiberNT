@@ -336,7 +336,7 @@ BasepCheckForReadOnlyResource(IN PVOID Ptr)
     SIZE_T Size2;
     MEMORY_BASIC_INFORMATION mbi;
     NTSTATUS Status;
-    LONG Ret = EXCEPTION_CONTINUE_SEARCH;
+    LONG _SEH2_VOLATILE Ret = EXCEPTION_CONTINUE_SEARCH;
 
     /* Check if it was an attempt to write to a read-only image section! */
     Status = NtQueryVirtualMemory(NtCurrentProcess(),

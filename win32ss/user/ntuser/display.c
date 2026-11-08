@@ -409,7 +409,7 @@ NtUserEnumDisplayDevices(
     UNICODE_STRING ustrDevice;
     WCHAR awcDevice[CCHDEVICENAME];
     DISPLAY_DEVICEW dispdev = { 0 };
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     TRACE("Enter NtUserEnumDisplayDevices(%wZ, %lu)\n",
           pustrDevice, iDevNum);

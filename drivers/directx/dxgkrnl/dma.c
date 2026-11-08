@@ -118,7 +118,7 @@ DxgkContextRenderInitialize(
     ULONG PatchCount;
     PMDL Mdl;
     PVOID Kernel;
-    PVOID User = NULL;
+    PVOID _SEH2_VOLATILE User = NULL;
 
     PAGED_CODE();
     if (Context == NULL)
@@ -1143,7 +1143,7 @@ DxgkpPresent(
     PDXGKRNL_CONTEXT         Context = NULL;
     DXGKRNL_PRESENT_ENTRY    Entry;
     ULONG64                  PresentId;
-    NTSTATUS                 Status;
+    NTSTATUS                 _SEH2_VOLATILE Status;
     BOOLEAN                  DestinationIsInternal = FALSE;
     BOOLEAN                  WindowTargetIssued = FALSE;
     DXGKRNL_WINDOW_BLT_TARGET WindowTarget;

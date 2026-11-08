@@ -916,7 +916,7 @@ NtQuerySymbolicLinkObject(IN HANDLE LinkHandle,
                           OUT PUNICODE_STRING LinkTarget,
                           OUT PULONG ResultLength OPTIONAL)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     UNICODE_STRING SafeLinkTarget = { 0, 0, NULL };
     POBJECT_SYMBOLIC_LINK SymlinkObject;
     POBJECT_HEADER ObjectHeader;

@@ -283,7 +283,7 @@ SendTo_NFS41Driver(
     IN PULONG           pOutputDataLen)
 {
     HANDLE  DeviceHandle;       // The mini rdr device handle
-    BOOL    rc = FALSE;
+    BOOL    _SEH2_VOLATILE rc = FALSE;
     ULONG   Status;
 
     Status = WN_SUCCESS;

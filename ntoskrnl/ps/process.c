@@ -1836,7 +1836,7 @@ PspFindWow64SystemDllExport(IN HANDLE ProcessHandle,
 {
     PEPROCESS Process;
     KAPC_STATE ApcState;
-    PVOID Function = NULL;
+    PVOID _SEH2_VOLATILE Function = NULL;
     NTSTATUS Status;
 
     Status = ObReferenceObjectByHandle(ProcessHandle, PROCESS_VM_READ, PsProcessType, KernelMode, (PVOID *)&Process, NULL);
@@ -2655,11 +2655,11 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
                     IN OUT PPS_CREATE_INFO CreateInfo,
                     IN OUT PPS_ATTRIBUTE_LIST AttributeList OPTIONAL)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     HANDLE hProcess = NULL, hThread = NULL;
     HANDLE hSection = NULL, hFile = NULL;
-    HANDLE hCallerFile = NULL;
+    HANDLE _SEH2_VOLATILE hCallerFile = NULL;
     PFILE_OBJECT ImageFileObject;
     OBJECT_HANDLE_INFORMATION ImageFileInformation;
     ACCESS_MASK ImageFileAccess = SYNCHRONIZE | FILE_EXECUTE;
@@ -2701,7 +2701,7 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
     BOOLEAN ComponentFilterPresent = FALSE;
     PVOID HandleListPointer = NULL;
     SIZE_T HandleListSize = 0;
-    SIZE_T HandleCount = 0;
+    SIZE_T _SEH2_VOLATILE HandleCount = 0;
     PHANDLE CapturedHandleList = NULL;
     BOOLEAN HandleListPresent = FALSE;
     PS_BNO_ISOLATION_PARAMETERS BnoIsolation;
@@ -3143,7 +3143,7 @@ NtCreateUserProcess(OUT PHANDLE ProcessHandle,
                                                ImageFileInformation.GrantedAccess,
                                                IoFileObjectType,
                                                KernelMode,
-                                               &hCallerFile);
+                                               (PHANDLE)&hCallerFile);
                 ObDereferenceObject(ImageFileObject);
             }
         }

@@ -165,16 +165,16 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
 
     PFILE_OBJECT FileObject;
 
     COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
-    BOOLEAN CleanupCompoundPathEntry = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupCompoundPathEntry = FALSE;
 
     FILE_ENUM_CONTEXT FileContext = {0};
-    BOOLEAN CleanupFileContext = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupFileContext = FALSE;
     BOOLEAN FoundEntry;
 
     PVCB Vcb;
@@ -205,7 +205,7 @@ Return Value:
     PCCB RelatedCcb = NULL;
 
     PFCB NextFcb;
-    PFCB CurrentFcb = NULL;
+    PFCB _SEH2_VOLATILE CurrentFcb = NULL;
 
     //
     //  During the open we need to combine the related file object name
@@ -441,7 +441,7 @@ Return Value:
             try_return( Status = CdOpenByFileId( IrpContext,
                                                  IrpSp,
                                                  Vcb,
-                                                 &CurrentFcb ));
+                                                 (PFCB *)&CurrentFcb ));
         }
 
         //
@@ -479,7 +479,7 @@ Return Value:
 
             try_return( Status = CdOpenExistingFcb( IrpContext,
                                                     IrpSp,
-                                                    &CurrentFcb,
+                                                    (PFCB *)&CurrentFcb,
                                                     UserVolumeOpen,
                                                     FALSE,
                                                     NULL ));
@@ -505,7 +505,7 @@ Return Value:
             //
 
             CdFindPrefix( IrpContext,
-                          &CurrentFcb,
+                          (PFCB *)&CurrentFcb,
                           &RemainingName.FileName,
                           IgnoreCase );
         }
@@ -542,7 +542,7 @@ Return Value:
 
                 try_return( Status = CdOpenExistingFcb( IrpContext,
                                                         IrpSp,
-                                                        &CurrentFcb,
+                                                        (PFCB *)&CurrentFcb,
                                                         UserFileOpen,
                                                         IgnoreCase,
                                                         RelatedCcb ));
@@ -574,7 +574,7 @@ Return Value:
 
                 try_return( Status = CdOpenExistingFcb( IrpContext,
                                                         IrpSp,
-                                                        &CurrentFcb,
+                                                        (PFCB *)&CurrentFcb,
                                                         UserDirectoryOpen,
                                                         IgnoreCase,
                                                         RelatedCcb ));
@@ -792,7 +792,7 @@ Return Value:
                 try_return( Status = CdOpenDirectoryFromPathEntry( IrpContext,
                                                                    IrpSp,
                                                                    Vcb,
-                                                                   &CurrentFcb,
+                                                                   (PFCB *)&CurrentFcb,
                                                                    &FinalName,
                                                                    IgnoreCase,
                                                                    ShortNameMatch,
@@ -808,7 +808,7 @@ Return Value:
             CdOpenDirectoryFromPathEntry( IrpContext,
                                           IrpSp,
                                           Vcb,
-                                          &CurrentFcb,
+                                          (PFCB *)&CurrentFcb,
                                           &FinalName,
                                           IgnoreCase,
                                           ShortNameMatch,
@@ -920,7 +920,7 @@ Return Value:
         try_return( Status = CdOpenFileFromFileContext( IrpContext,
                                                         IrpSp,
                                                         Vcb,
-                                                        &CurrentFcb,
+                                                        (PFCB *)&CurrentFcb,
                                                         &FinalName,
                                                         IgnoreCase,
                                                         (BOOLEAN) (MatchingName == &FileContext.ShortName),
@@ -1527,7 +1527,7 @@ Return Value:
 {
     NTSTATUS Status = STATUS_ACCESS_DENIED;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
     BOOLEAN Found;
 
     ULONG StreamOffset;
@@ -1536,10 +1536,10 @@ Return Value:
     TYPE_OF_OPEN TypeOfOpen;
 
     FILE_ENUM_CONTEXT FileContext;
-    BOOLEAN CleanupFileContext = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupFileContext = FALSE;
 
     COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
-    BOOLEAN CleanupCompoundPathEntry = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupCompoundPathEntry = FALSE;
 
     FILE_ID FileId;
     FILE_ID ParentFileId;
@@ -2150,11 +2150,11 @@ Return Value:
     ULONG CcbFlags = 0;
     FILE_ID FileId;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
     BOOLEAN FcbExisted;
 
     PFCB NextFcb;
-    PFCB ParentFcb = NULL;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
 
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -2428,11 +2428,11 @@ Return Value:
     ULONG CcbFlags = 0;
     FILE_ID FileId;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
     BOOLEAN FcbExisted;
 
     PFCB NextFcb;
-    PFCB ParentFcb = NULL;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
 
     NTSTATUS Status = STATUS_SUCCESS;
 

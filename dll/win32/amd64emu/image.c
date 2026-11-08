@@ -108,7 +108,7 @@ EmuAdoptGuestImage(
     _In_ PVOID ImageBase)
 {
     PIMAGE_NT_HEADERS Headers;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     _SEH2_TRY
     {
@@ -133,7 +133,7 @@ EmuMapGuestImage(
     IO_STATUS_BLOCK IoStatusBlock;
     HANDLE FileHandle, SectionHandle;
     SIZE_T ViewSize = 0;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     *ImageBase = NULL;
     InitializeObjectAttributes(&ObjectAttributes, (PUNICODE_STRING)Name, OBJ_CASE_INSENSITIVE, NULL, NULL);

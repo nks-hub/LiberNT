@@ -263,7 +263,7 @@ NtGdiCombineTransform(
     LPXFORM Unsafexform1,
     LPXFORM Unsafexform2)
 {
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     _SEH2_TRY
     {
@@ -836,7 +836,7 @@ NtGdiScaleWindowExtEx(
     PDC pDC;
     PDC_ATTR pdcattr;
     BOOL Ret = FALSE;
-    LONG X, Y;
+    LONG _SEH2_VOLATILE X, Y;
 
     pDC = DC_LockDc(hDC);
     if (!pDC)

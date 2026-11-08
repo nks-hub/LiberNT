@@ -656,7 +656,7 @@ EmuHostLoad(
     PEMU_HOST_INITIALIZE Initialize;
     UNICODE_STRING Library;
     WCHAR Buffer[MAX_PATH];
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PVOID Base;
 
     RtlInitEmptyUnicodeString(&Library, Buffer, sizeof(Buffer) - sizeof(WCHAR));

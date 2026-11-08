@@ -98,7 +98,7 @@ DbgkpSendWow64SystemDllMessage(IN PETHREAD Thread)
     OBJECT_ATTRIBUTES ObjectAttributes;
     IO_STATUS_BLOCK IoStatusBlock;
     PIMAGE_NT_HEADERS NtHeader;
-    PVOID Base = NULL;
+    PVOID _SEH2_VOLATILE Base = NULL;
     PTEB Teb;
     NTSTATUS Status;
 

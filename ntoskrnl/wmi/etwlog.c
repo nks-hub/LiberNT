@@ -1079,10 +1079,10 @@ EtwpTraceClassicEvent(
     PWMI_BUFFER_HEADER Buffer;
     PETWP_LOGGER Logger;
     PETHREAD Thread = PsGetCurrentThread();
-    ULONG FieldCount = 0, Total = FieldSize, Reserved, i;
+    ULONG _SEH2_VOLATILE FieldCount = 0, Total = FieldSize, Reserved, i;
     BOOLEAN Narrow;
     PUCHAR Data;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (!Fields || FieldSize < sizeof(EVENT_TRACE_HEADER) || FieldSize > MAXUSHORT)
         return STATUS_INVALID_PARAMETER;

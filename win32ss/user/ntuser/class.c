@@ -1165,7 +1165,7 @@ IntCreateClass(IN CONST WNDCLASSEXW* lpwcx,
     RTL_ATOM Atom, verAtom;
     WNDPROC WndProc;
     PWSTR pszMenuName = NULL;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     TRACE("lpwcx=%p ClassName=%wZ MenuName=%wZ dwFlags=%08x Desktop=%p pi=%p\n",
         lpwcx, ClassName, MenuName, dwFlags, Desktop, pi);
@@ -1782,9 +1782,9 @@ UserGetClassName(IN PCLS Class,
 {
     NTSTATUS Status = STATUS_SUCCESS;
     WCHAR szStaticTemp[32];
-    PWSTR szTemp = NULL;
+    PWSTR _SEH2_VOLATILE szTemp = NULL;
     ULONG BufLen = sizeof(szStaticTemp);
-    INT Ret = 0;
+    INT _SEH2_VOLATILE Ret = 0;
 
     /* Note: Accessing the buffer in ClassName may raise an exception! */
 
@@ -2562,7 +2562,7 @@ NtUserRegisterClassExWOW(
  */
 {
     WNDCLASSEXW CapturedClassInfo = {0};
-    UNICODE_STRING CapturedName = {0}, CapturedMenuName = {0}, CapturedVersion = {0};
+    UNICODE_STRING _SEH2_VOLATILE CapturedName = {0}, CapturedMenuName = {0}, CapturedVersion = {0};
     RTL_ATOM Ret = (RTL_ATOM)0;
     PPROCESSINFO ppi = GetW32ProcessInfo();
     BOOL Exception = FALSE;
@@ -2686,9 +2686,9 @@ InvalidParameter:
     {
         /* Register the class */
         Ret = UserRegisterClass(&CapturedClassInfo,
-                                &CapturedName,
-                                &CapturedVersion,
-                                &CapturedMenuName,
+                                (PUNICODE_STRING)&CapturedName,
+                                (PUNICODE_STRING)&CapturedVersion,
+                                (PUNICODE_STRING)&CapturedMenuName,
                                 fnID,
                                 Flags);
     }
@@ -2712,7 +2712,7 @@ IntNtUserSetClassLongPtr(HWND hWnd,
 {
     PPROCESSINFO pi;
     PWND Window;
-    ULONG_PTR Ret = 0;
+    ULONG_PTR _SEH2_VOLATILE Ret = 0;
 
     UserEnterExclusive();
 
@@ -2890,7 +2890,7 @@ NtUserGetClassInfo(
     RTL_ATOM ClassAtom = 0;
     PPROCESSINFO ppi;
     LPWSTR pszMenuName = NULL;
-    BOOL Ret = TRUE;
+    BOOL _SEH2_VOLATILE Ret = TRUE;
     NTSTATUS Status;
 
     _SEH2_TRY

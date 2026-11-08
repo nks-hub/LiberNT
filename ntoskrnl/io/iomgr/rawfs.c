@@ -383,7 +383,7 @@ RawMountVolume(IN PIO_STACK_LOCATION IoStackLocation)
     NTSTATUS Status;
     PDEVICE_OBJECT DeviceObject;
     PVOLUME_DEVICE_OBJECT Volume;
-    PFILE_OBJECT FileObject = NULL;
+    PFILE_OBJECT _SEH2_VOLATILE FileObject = NULL;
     PAGED_CODE();
 
     DPRINT("RawMountVolume(%p)\n", IoStackLocation);

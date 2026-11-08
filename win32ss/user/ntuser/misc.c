@@ -42,7 +42,7 @@ IntTID2PTI(HANDLE id)
 {
    NTSTATUS Status;
    PETHREAD Thread;
-   PTHREADINFO pti;
+   PTHREADINFO _SEH2_VOLATILE pti;
    Status = PsLookupThreadByThreadId(id, &Thread);
    if (!NT_SUCCESS(Status))
    {

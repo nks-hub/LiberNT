@@ -87,7 +87,7 @@ DirectDrawCreate (LPGUID lpGUID,
                   LPDIRECTDRAW* lplpDD,
                   LPUNKNOWN pUnkOuter)
 {
-    HRESULT retVal = DDERR_GENERIC;
+    HRESULT _SEH2_VOLATILE retVal = DDERR_GENERIC;
     /*
        remove this when UML diagram is in place
        this api is finished and is working as it should
@@ -141,7 +141,7 @@ DirectDrawCreateEx(LPGUID lpGUID,
                    REFIID id,
                    LPUNKNOWN pUnkOuter)
 {
-    HRESULT retVal = DDERR_GENERIC;
+    HRESULT _SEH2_VOLATILE retVal = DDERR_GENERIC;
     /*
         remove this when UML diagram is in place
         this api is finished and is working as it should

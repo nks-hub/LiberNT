@@ -2420,7 +2420,7 @@ RtlpIsValidBusyEntry(PHEAP Heap, PHEAP_ENTRY HeapEntry)
 {
     PHEAP_SEGMENT Segment;
     PHEAP_ENTRY Neighbor;
-    BOOLEAN Valid = FALSE;
+    BOOLEAN _SEH2_VOLATILE Valid = FALSE;
 
     _SEH2_TRY
     {
@@ -4535,8 +4535,8 @@ RtlWalkHeap(IN HANDLE HeapHandle,
     PHEAP Heap = HeapHandle;
     PRTL_HEAP_WALK_ENTRY WalkEntry = HeapEntry;
     RTL_HEAP_WALK_ENTRY Entry;
-    NTSTATUS Status = STATUS_INVALID_HANDLE;
-    BOOLEAN Locked = FALSE;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_INVALID_HANDLE;
+    BOOLEAN _SEH2_VOLATILE Locked = FALSE;
 
     if (!HeapEntry)
         return STATUS_INVALID_PARAMETER;
@@ -4614,7 +4614,7 @@ RtlQueryHeapInformation(HANDLE HeapHandle,
 {
     volatile HEAP *Heap = HeapHandle;
     ULONG Compatibility;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (HeapInformationClass != HeapCompatibilityInformation)
         return STATUS_INVALID_PARAMETER;

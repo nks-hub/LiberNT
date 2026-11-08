@@ -1815,7 +1815,7 @@ DECLSPEC_HOTPATCH
 SetScrollInfo(HWND Wnd, int SBType, LPCSCROLLINFO Info, BOOL bRedraw)
 {
    BOOL Hook;
-   INT Ret = 0;
+   INT _SEH2_VOLATILE Ret = 0;
 
    LoadUserApiHook();
 

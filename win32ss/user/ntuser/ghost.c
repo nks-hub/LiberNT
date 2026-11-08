@@ -107,7 +107,7 @@ HWND FASTCALL UserGhostWindowFromHungWindow(HWND hwndHung)
 HWND FASTCALL IntHungWindowFromGhostWindow(PWND pGhostWnd)
 {
     const GHOST_DATA *UserData;
-    HWND hwndTarget = NULL;
+    HWND _SEH2_VOLATILE hwndTarget = NULL;
 
     if (!IntIsGhostWindow(pGhostWnd))
     {

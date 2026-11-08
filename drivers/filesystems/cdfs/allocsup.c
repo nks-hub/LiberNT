@@ -133,10 +133,10 @@ Return Value:
 {
     BOOLEAN FirstPass = TRUE;
     ULONG McbEntryOffset;
-    PFCB ParentFcb = NULL;
-    BOOLEAN CleanupParent = FALSE;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
+    BOOLEAN _SEH2_VOLATILE CleanupParent = FALSE;
 
-    BOOLEAN UnlockFcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockFcb = FALSE;
 
     LONGLONG CurrentFileOffset;
     ULONG CurrentMcbOffset;

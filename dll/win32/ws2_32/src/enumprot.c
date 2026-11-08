@@ -330,7 +330,7 @@ WSCGetProviderPath(IN LPGUID lpProviderId,
     PWSTHREAD Thread;
     PWSPROCESS Process;
     PNSCATALOG Catalog;
-    INT ErrorCode, PathLen;
+    INT _SEH2_VOLATILE ErrorCode, PathLen;
     PROVIDER_ENUM_CONTEXT Context;
 
     DPRINT("WSCGetProviderPath: %p %p %p %p\n", lpProviderId, lpszProviderDllPath, lpProviderDllPathLen, lpErrno);

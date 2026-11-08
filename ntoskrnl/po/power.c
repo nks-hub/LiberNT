@@ -1728,7 +1728,7 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
                    OUT PVOID OutputBuffer  OPTIONAL,
                    IN ULONG OutputBufferLength)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
 
     PAGED_CODE();
@@ -2170,7 +2170,7 @@ NtGetDevicePowerState(IN HANDLE Device,
     PFILE_OBJECT FileObject;
     DEVICE_POWER_STATE CurrentState;
     KIRQL OldIrql;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PAGED_CODE();
 
     if (PreviousMode != KernelMode)

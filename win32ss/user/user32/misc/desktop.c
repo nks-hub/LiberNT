@@ -145,7 +145,7 @@ int WINAPI
 GetSystemMetrics(int nIndex)
 {
    BOOL Hook;
-   int Ret = 0;
+   int _SEH2_VOLATILE Ret = 0;
 
    if (!gpsi) // Fixme! Hax! Need Timos delay load support?
    {

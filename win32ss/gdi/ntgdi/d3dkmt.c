@@ -1004,7 +1004,7 @@ NtGdiDdDDIPresent(_In_ D3DKMT_PRESENT* unnamedParam1)
     CONST RECT *UserSubRects;
     RECT *CapturedSubRects = NULL;
     SIZE_T SubRectBytes;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     RtlZeroMemory(&Captured, sizeof(Captured));
     Status = D3dkmtCaptureUserStructure(
@@ -2343,11 +2343,11 @@ NTSTATUS
 APIENTRY
 NtGdiDdDDIPresentMultiPlaneOverlay(_In_ const struct _D3DKMT_PRESENT_MULTIPLANE_OVERLAY* unnamedParam1)
 {
-    D3DKMT_PRESENT_MULTIPLANE_OVERLAY Captured;
+    D3DKMT_PRESENT_MULTIPLANE_OVERLAY _SEH2_VOLATILE Captured;
     D3DKMT_MULTIPLANE_OVERLAY Planes[1 + RXGK_PRESENT_MAX_OVERLAYS];
     D3DKMT_MPO_PRESENT Request;
     RXGK_PRESENT_OVERLAY Attributes;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     UINT Index;
 
     RETURN_STATUS_IF_NULL(unnamedParam1);
@@ -2395,7 +2395,7 @@ NtGdiDdDDIPresentMultiPlaneOverlay(_In_ const struct _D3DKMT_PRESENT_MULTIPLANE_
     Request.BroadcastContextCount = Captured.BroadcastContextCount;
     if (Captured.BroadcastContextCount <= D3DDDI_MAX_BROADCAST_CONTEXT)
     {
-        RtlCopyMemory(Request.BroadcastContext, Captured.BroadcastContext,
+        RtlCopyMemory(Request.BroadcastContext, (const void *)Captured.BroadcastContext,
                       Captured.BroadcastContextCount * sizeof(Request.BroadcastContext[0]));
     }
     Request.VidPnSourceId = Captured.VidPnSourceId;
@@ -2598,7 +2598,7 @@ NtGdiDdDDIQueryVidPnExclusiveOwnership(_Inout_ struct _D3DKMT_QUERYVIDPNEXCLUSIV
     BOOLEAN HaveDisplay = FALSE;
     BOOLEAN HaveWindow = FALSE;
     BOOLEAN UserLockEntered;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     Status = D3dkmtCaptureUserStructure(
                  unnamedParam1, sizeof(Captured), &Captured);

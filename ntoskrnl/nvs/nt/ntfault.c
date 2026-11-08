@@ -47,7 +47,7 @@ MiCheckForUserStackOverflow(
     ULONG64 StackBase, StackLimit, DeallocationStack, Guaranteed, Page, Next, Size;
     ULONG64 GuardSize = MM_USER_STACK_GUARD_PAGES * PAGE_SIZE;
     ULONG64 OverflowReserve;
-    NTSTATUS Status = STATUS_GUARD_PAGE_VIOLATION;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_GUARD_PAGE_VIOLATION;
 #ifdef _WIN64
     PTEB32 Wow64Teb = NULL;
 #endif

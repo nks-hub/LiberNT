@@ -355,7 +355,7 @@ static
 BOOLEAN
 RtlpCriticalSectionOwnsDebugInfo(PRTL_CRITICAL_SECTION CriticalSection)
 {
-    BOOLEAN OwnsDebugInfo = FALSE;
+    BOOLEAN _SEH2_VOLATILE OwnsDebugInfo = FALSE;
 
     if (!CRITSECT_HAS_DEBUG_INFO(CriticalSection))
         return FALSE;

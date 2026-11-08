@@ -2879,7 +2879,7 @@ ProbeAndCaptureLargeString(
     OUT PLARGE_STRING plstrSafe,
     IN PLARGE_STRING plstrUnsafe)
 {
-    LARGE_STRING lstrTemp = {0};
+    LARGE_STRING _SEH2_VOLATILE lstrTemp = {0};
     PVOID pvBuffer = NULL;
 
     _SEH2_TRY
@@ -3430,7 +3430,7 @@ NtUserFindWindowEx(HWND hwndParent,
                    DWORD dwUnknown)
 {
    PWND Parent, ChildAfter;
-   UNICODE_STRING ClassName = {0}, WindowName = {0};
+   UNICODE_STRING _SEH2_VOLATILE ClassName = {0}, WindowName = {0};
    HWND Desktop, Ret = NULL;
    BOOL DoMessageWnd = FALSE;
    RTL_ATOM ClassAtom = (RTL_ATOM)0;
@@ -3457,7 +3457,7 @@ NtUserFindWindowEx(HWND hwndParent,
                    _SEH2_LEAVE;
                }
 
-               if (!IntGetAtomFromStringOrAtom(&ClassName,
+               if (!IntGetAtomFromStringOrAtom((PUNICODE_STRING)&ClassName,
                                                &ClassAtom))
                {
                    EngSetLastError(ERROR_CANNOT_FIND_WND_CLASS);
@@ -3566,7 +3566,7 @@ NtUserFindWindowEx(HWND hwndParent,
                 ustr.MaximumLength = (USHORT)min(TopLevelWindow->strName.MaximumLength, MAXUSHORT);
                 WindowMatches = !CheckWindowName ||
                                 (TopLevelWindow->strName.Length < 0xFFFF &&
-                                 !RtlCompareUnicodeString(&WindowName, &ustr, TRUE));
+                                 !RtlCompareUnicodeString((PCUNICODE_STRING)&WindowName, &ustr, TRUE));
                 ClassMatches = (ClassAtom == (RTL_ATOM)0) ||
                                ClassAtom == TopLevelWindow->pcls->atomNVClassName;
 
@@ -3576,7 +3576,7 @@ NtUserFindWindowEx(HWND hwndParent,
                    break;
                 }
 
-                if (IntFindWindow(TopLevelWindow, NULL, ClassAtom, &WindowName))
+                if (IntFindWindow(TopLevelWindow, NULL, ClassAtom, (PUNICODE_STRING)&WindowName))
                 {
                    /* window returns the handle of the top-level window, in case it found
                       the child window */
@@ -3591,7 +3591,7 @@ NtUserFindWindowEx(HWND hwndParent,
        else
        {
           TRACE("FindWindowEx: Not Desktop Parent!\n");
-          Ret = IntFindWindow(Parent, ChildAfter, ClassAtom, &WindowName);
+          Ret = IntFindWindow(Parent, ChildAfter, ClassAtom, (PUNICODE_STRING)&WindowName);
        }
 
        if (Ret == NULL && DoMessageWnd)
@@ -3600,7 +3600,7 @@ NtUserFindWindowEx(HWND hwndParent,
 
           if((MsgWindows = UserGetWindowObject(IntGetMessageWindow())))
           {
-             Ret = IntFindWindow(MsgWindows, ChildAfter, ClassAtom, &WindowName);
+             Ret = IntFindWindow(MsgWindows, ChildAfter, ClassAtom, (PUNICODE_STRING)&WindowName);
           }
        }
    }
@@ -3919,7 +3919,7 @@ NtUserGetListBoxInfo(
    PWND Wnd;
    PPROCESSINFO ppi;
    BOOL NotSameppi = FALSE;
-   DWORD Ret = 0;
+   DWORD _SEH2_VOLATILE Ret = 0;
 
    TRACE("Enter NtUserGetListBoxInfo\n");
    UserEnterShared();
@@ -4855,9 +4855,9 @@ BOOL APIENTRY
 NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
 {
    PWND Wnd;
-   LARGE_STRING SafeText;
+   LARGE_STRING _SEH2_VOLATILE SafeText;
    UNICODE_STRING UnicodeString;
-   BOOL Ret = TRUE;
+   BOOL _SEH2_VOLATILE Ret = TRUE;
 
    TRACE("Enter NtUserDefSetText\n");
 
@@ -4878,7 +4878,7 @@ NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
          return FALSE;
    }
    else
-      RtlZeroMemory(&SafeText, sizeof(SafeText));
+      RtlZeroMemory((void *)&SafeText, sizeof(SafeText));
 
    UserEnterExclusive();
 
@@ -4900,7 +4900,7 @@ NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
             ProbeForRead(SafeText.Buffer, SafeText.Length, sizeof(CHAR));
          else
             ProbeForRead(SafeText.Buffer, SafeText.Length, sizeof(WCHAR));
-         Ret = RtlLargeStringToUnicodeString(&UnicodeString, &SafeText);
+         Ret = RtlLargeStringToUnicodeString(&UnicodeString, (PLARGE_STRING)&SafeText);
       }
       _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
       {

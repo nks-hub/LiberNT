@@ -707,7 +707,7 @@ NtUserSetInformationThread(IN HANDLE ThreadHandle,
     {
         case UserThreadInitiateShutdown:
         {
-            ULONG CapturedFlags = 0;
+            ULONG _SEH2_VOLATILE CapturedFlags = 0;
 
             TRACE("Shutdown initiated\n");
 
@@ -731,7 +731,7 @@ NtUserSetInformationThread(IN HANDLE ThreadHandle,
             }
             _SEH2_END;
 
-            Status = UserInitiateShutdown(Thread, &CapturedFlags);
+            Status = UserInitiateShutdown(Thread, (PULONG)&CapturedFlags);
 
             /* Return the modified value to the caller */
             _SEH2_TRY

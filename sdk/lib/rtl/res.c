@@ -259,7 +259,7 @@ LdrFindResource_U(PVOID BaseAddress,
                   PIMAGE_RESOURCE_DATA_ENTRY* ResourceDataEntry)
 {
     void *res;
-    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
 
     _SEH2_TRY
     {
@@ -307,7 +307,7 @@ LdrFindResourceDirectory_U(IN PVOID BaseAddress,
                            OUT PIMAGE_RESOURCE_DIRECTORY* addr)
 {
     void *res;
-    NTSTATUS status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
 
     _SEH2_TRY
     {

@@ -840,7 +840,7 @@ ConMsgPuts(
     IN DWORD   dwLanguageId)
 {
     INT Len;
-    DWORD dwLength  = 0;
+    DWORD _SEH2_VOLATILE dwLength  = 0;
     LPWSTR lpMsgBuf = NULL;
 
     /*
@@ -913,7 +913,7 @@ ConMsgPrintf2V(
     IN va_list args)
 {
     INT Len;
-    DWORD dwLength  = 0;
+    DWORD _SEH2_VOLATILE dwLength  = 0;
     LPWSTR lpMsgBuf = NULL;
 
     /*

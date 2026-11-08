@@ -603,7 +603,7 @@ NtfsQueryAllocatedRanges(
     ULONG OutputLength;
     ULONG Capacity;
     ULONG Count;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     Irp->IoStatus.Information = 0;
     FileObject = IrpSp->FileObject;
@@ -771,7 +771,7 @@ NtfsGetRetrievalPointers(
     ULONG HeaderLength;
     ULONG Capacity;
     ULONG Count;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     Irp->IoStatus.Information = 0;
     FileObject = IrpSp->FileObject;
@@ -963,7 +963,7 @@ NtfsGetVolumeBitmap(
     ULONG HeaderLength;
     ULONG Capacity;
     ULONG Length;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     Irp->IoStatus.Information = 0;
     VolCB = VolumeDeviceObject

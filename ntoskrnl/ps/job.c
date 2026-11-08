@@ -2213,7 +2213,7 @@ PspQueryJobProcessIdList(
     _Out_ PULONG ReturnRequiredLength
 )
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PSP_QUERY_JOB_PROCESS_ID_CONTEXT QueryContext;
     PEJOB ChildJob;
 

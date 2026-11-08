@@ -79,7 +79,6 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 struct _WSK_SOCKET_INTERNAL;
 
-/* One posted datagram receive; while the client retains the indication it stays lent out */
 typedef struct _NETIO_RECEIVE
 {
     WSK_DATAGRAM_INDICATION Indication;
@@ -87,7 +86,7 @@ typedef struct _NETIO_RECEIVE
     PIRP Irp;
     PMDL Mdl;
     volatile BOOLEAN InFlight;
-    BOOLEAN Held;                   /* Received while the receive event was off */
+    BOOLEAN Held;
     SIZE_T Length;
     SOCKADDR_IN Remote;
     ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
@@ -95,18 +94,13 @@ typedef struct _NETIO_RECEIVE
     UCHAR Data[NETIO_RECEIVE_SIZE];
 } NETIO_RECEIVE, *PNETIO_RECEIVE;
 
-/*
- * One WskRegister. It lives until WskDeregister, which waits for every
- * captured provider NPI to be released and every socket of the client to be
- * destroyed; an accepted socket keeps its listening socket alive.
- */
 typedef struct _NETIO_WSK_CLIENT
 {
-    ULONG EventMask;                /* What WSK_SET_STATIC_EVENT_CALLBACKS enabled */
+    ULONG EventMask;
     KSPIN_LOCK Lock;
     BOOLEAN Deregistering;
-    LONG Users;                     /* Captured NPIs and sockets */
-    KEVENT Idle;                    /* Set while Users is 0 */
+    LONG Users;
+    KEVENT Idle;
 } NETIO_WSK_CLIENT, *PNETIO_WSK_CLIENT;
 
 typedef struct _WSK_SOCKET_INTERNAL
@@ -160,18 +154,17 @@ typedef struct _WSK_SOCKET_INTERNAL
     struct _WSK_SOCKET_INTERNAL *NextSocketToDereference;
     ULONG NumSocketDereferences;
 
-    PNETIO_WSK_CLIENT Client;       /* NULL for an accepted socket */
+    PNETIO_WSK_CLIENT Client;
 
-    /* Datagram sockets */
     const WSK_CLIENT_DATAGRAM_DISPATCH *DatagramDispatch;
-    BOOLEAN ReceiveEvents;          /* WSK_EVENT_RECEIVE_FROM is enabled */
-    BOOLEAN ReceiveEventsStatic;    /* by WSK_SET_STATIC_EVENT_CALLBACKS */
-    LONG ReceiveCallbacks;          /* WskReceiveFromEvent calls in progress */
-    PIRP DisableIrp;                /* Completes when those calls return */
-    BOOLEAN PktInfo;                /* IP_PKTINFO was requested */
+    BOOLEAN ReceiveEvents;
+    BOOLEAN ReceiveEventsStatic;
+    LONG ReceiveCallbacks;
+    PIRP DisableIrp;
+    BOOLEAN PktInfo;
     BOOLEAN ReceiveStarted;
     volatile BOOLEAN ReceiveClosing;
-    LONG ReceivesBusy;              /* receives in flight or retained by the client */
+    LONG ReceivesBusy;
     KEVENT ReceivesIdle;
     KSPIN_LOCK ReceiveLock;
     PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
@@ -221,12 +214,6 @@ WskControlSocket(_In_ PWSK_SOCKET SocketParam, _In_ WSK_CONTROL_SOCKET_TYPE Requ
                  _In_ SIZE_T OutputSize, _Out_writes_bytes_opt_(OutputSize) PVOID OutputBuffer,
                  _Out_opt_ SIZE_T *OutputSizeReturned, _Inout_opt_ PIRP Irp);
 
-/*
- * Querying the address file and setting its options build IRPs that need
- * PASSIVE_LEVEL, while WSK clients may call up to DISPATCH_LEVEL. Such a
- * request runs again in a system worker thread; giving held datagrams to a
- * client that enabled its receive event again runs there too.
- */
 typedef enum _NETIO_PASSIVE_KIND
 {
     NetioPassiveLocalAddress,
@@ -411,15 +398,9 @@ static VOID NTAPI DereferenceSocketsThread(_In_opt_ void *p)
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
-/*
- * Every registered WSK client uses the one thread. A driver that imports
- * NETIO.SYS loads it without DriverEntry, so the first user sets up the lock.
- * PsCreateSystemThread and ZwClose need PASSIVE_LEVEL, which a fast mutex
- * would raise to APC_LEVEL; a kernel mutex keeps it.
- */
 static KMUTEX DereferenceSocketsThreadLock;
 static ULONG DereferenceSocketsThreadUsers;
-static volatile LONG DereferenceSocketsThreadLockState;  /* 0 none, 1 initializing, 2 ready */
+static volatile LONG DereferenceSocketsThreadLockState;
 
 static NTSTATUS StartSocketDereferenceThread(void)
 {
@@ -440,7 +421,6 @@ static NTSTATUS StartSocketDereferenceThread(void)
     if (DereferenceSocketsThreadUsers == 0)
     {
         DereferenceSocketsThreadShouldRun = TRUE;
-        /* The last WskDeregister closes the handle, in whatever process it runs */
         InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
         status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, &Attributes, NULL, NULL,
                                       DereferenceSocketsThread, NULL);
@@ -532,7 +512,6 @@ NetioPassiveWorker(
     ExFreePoolWithTag(Request, TAG_NETIO);
 }
 
-/* The IRP, if there is one, completes in the worker thread; the request's buffers stay valid until then */
 static NTSTATUS
 NetioQueuePassive(
     _In_ PWSK_SOCKET_INTERNAL Socket,
@@ -909,7 +888,6 @@ WskControlSocket(
 
     FUNCTION_TRACE;
 
-    /* Setting IP_PKTINFO on a bound socket sends an IRP to the address file at PASSIVE_LEVEL */
     if (Socket != NULL && RequestType == WskSetOption && Level == IPPROTO_IP && ControlCode == IP_PKTINFO &&
         Socket->type == SOCK_DGRAM && Socket->LocalAddressFile != NULL && Irp != NULL &&
         InputBuffer != NULL && InputSize >= sizeof(ULONG) && KeGetCurrentIrql() > PASSIVE_LEVEL)
@@ -917,7 +895,6 @@ WskControlSocket(
         return NetioQueuePassive(Socket, NetioPassivePktInfo, Irp, NULL, *(PULONG)InputBuffer);
     }
 
-    /* Enabling an event callback takes no IRP; the result is then returned directly */
     if (Irp != NULL)
         IoSetNextIrpStackLocation(Irp);
 
@@ -990,7 +967,6 @@ WskControlSocket(
                             status = STATUS_SUCCESS;
                             if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM))
                             {
-                                /* WSK_SET_STATIC_EVENT_CALLBACKS callbacks stay on for the life of the socket */
                                 if (Socket->ReceiveEventsStatic)
                                     status = STATUS_INVALID_PARAMETER;
                                 else if (Control->EventMask & WSK_EVENT_DISABLE)
@@ -1016,14 +992,12 @@ WskControlSocket(
                         DPRINT1("WskControlSocket: IPPROTO_IP option %d Not implemented\n", ControlCode);
                         break;
                     }
-                    /* Above PASSIVE_LEVEL a bound socket needs an IRP to finish the change later */
                     if (InputBuffer == NULL || InputSize < sizeof(ULONG) ||
                         (Socket->LocalAddressFile && KeGetCurrentIrql() > PASSIVE_LEVEL))
                     {
                         status = STATUS_INVALID_PARAMETER;
                         break;
                     }
-                    /* Before the bind the option is applied when the address file opens */
                     Socket->PktInfo = *(PULONG)InputBuffer != 0;
                     status = Socket->LocalAddressFile ?
                              NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, Socket->PktInfo) :
@@ -1282,8 +1256,6 @@ WskReceiveFrom(
     return STATUS_NOT_IMPLEMENTED;
 }
 
-/* Datagram sockets */
-
 static NTSTATUS
 NetioSetAddressOption(
     _In_ PFILE_OBJECT AddressFile,
@@ -1340,7 +1312,6 @@ NetioReceiveDone(
 
 static IO_COMPLETION_ROUTINE NetioReceiveComplete;
 
-/* Posts the context's receive again; it stays with us when the socket is closing */
 static VOID
 NetioPostReceive(
     _In_ PNETIO_RECEIVE Receive)
@@ -1362,11 +1333,6 @@ NetioPostReceive(
 
     IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
     TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
-    /*
-     * tcpip writes IP_PKTINFO into the options when AO_OPTION_IP_PKTINFO is on.
-     * The buffer is there even while it is off, so that a receive posted
-     * before the client turns IP_PKTINFO on carries it too.
-     */
     ConnInfo->Options = Receive->Control;
     ConnInfo->OptionsLength = sizeof(Receive->Control);
     TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
@@ -1374,7 +1340,6 @@ NetioPostReceive(
     IoCallDriver(DeviceObject, Receive->Irp);
 }
 
-/* Completes a disable that waited for the receive event calls in progress */
 static VOID
 NetioCompleteDisable(
     _In_opt_ PIRP Irp)
@@ -1385,11 +1350,6 @@ NetioCompleteDisable(
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
 }
 
-/*
- * Gives one received datagram to WskReceiveFromEvent. A client that enabled
- * the event through SO_WSK_EVENT_CALLBACK and does not accept the datagram
- * has the event turned off; the datagram is held until it turns it on again.
- */
 static VOID
 NetioIndicateReceive(
     _In_ PNETIO_RECEIVE Receive)
@@ -1466,7 +1426,6 @@ NetioReceiveComplete(
         }
         else
         {
-            /* The event is off; the transport buffer is this receive */
             Receive->Held = Hold = TRUE;
         }
     }
@@ -1478,16 +1437,13 @@ NetioReceiveComplete(
     }
     else if (Hold)
     {
-        /* Given to the client when it enables the event again, or released on close */
     }
     else if (Status == STATUS_BUFFER_OVERFLOW && !Socket->ReceiveClosing)
     {
-        /* Larger than NETIO_RECEIVE_SIZE: the datagram is dropped */
         NetioPostReceive(Receive);
     }
     else
     {
-        /* Cancelled on close, or the address file failed; reposting would only fail again */
         if (!Socket->ReceiveClosing)
             DPRINT1("Datagram receive failed with status 0x%08lx, receiving stops\n", Status);
         NetioReceiveDone(Receive);
@@ -1495,7 +1451,6 @@ NetioReceiveComplete(
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
-/* Ends a hold that kept the receives allocated for NetioResumeReceives */
 static VOID
 NetioReceivesReleased(
     _In_ PWSK_SOCKET_INTERNAL Socket)
@@ -1504,7 +1459,6 @@ NetioReceivesReleased(
         KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
 }
 
-/* Gives the datagrams held while the event was off to the client */
 static VOID
 NetioResumeReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
@@ -1546,7 +1500,6 @@ NetioEnableReceiveEvent(
     {
         for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
             Resume |= Socket->Receives[i]->Held;
-        /* Keeps the receives allocated until the worker is done with them */
         if (Resume)
             InterlockedIncrement(&Socket->ReceivesBusy);
     }
@@ -1555,7 +1508,6 @@ NetioEnableReceiveEvent(
     if (!Resume)
         return NetioStartReceives(Socket);
 
-    /* The client gets the held datagrams outside of its own WskControlSocket call */
     Status = NetioQueuePassive(Socket, NetioPassiveResumeReceives, NULL, NULL, 0);
     if (Status != STATUS_PENDING)
     {
@@ -1565,10 +1517,6 @@ NetioEnableReceiveEvent(
     return STATUS_SUCCESS;
 }
 
-/*
- * Turns the receive event off. When calls to it are in progress, the IRP
- * completes after they return; without an IRP that is STATUS_EVENT_PENDING.
- */
 static NTSTATUS
 NetioDisableReceiveEvent(
     _In_ PWSK_SOCKET_INTERNAL Socket,
@@ -1619,7 +1567,6 @@ NetioFreeReceives(
     }
 }
 
-/* Starts the receive event loop of a bound datagram socket */
 static NTSTATUS
 NetioStartReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
@@ -1661,7 +1608,6 @@ Fail:
     return STATUS_INSUFFICIENT_RESOURCES;
 }
 
-/* Cancels the outstanding receives and waits for the client to release retained data */
 static VOID
 NetioStopReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
@@ -1685,7 +1631,7 @@ NetioStopReceives(
     }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
-    Timeout.QuadPart = -1000000LL; /* 100 ms */
+    Timeout.QuadPart = -1000000LL;
     do
     {
         /* A receive can be posted again just after a cancel; cancel until all are back */
@@ -1735,7 +1681,6 @@ WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _
     NTSTATUS Status;
     PMDL Mdl = NULL;
 
-    /* WSK allows this call up to DISPATCH_LEVEL; the address file is queried at PASSIVE_LEVEL */
     if (KeGetCurrentIrql() > PASSIVE_LEVEL)
         return NetioQueuePassive(Socket, NetioPassiveLocalAddress, Irp, LocalAddress, 0);
 
@@ -1770,7 +1715,6 @@ WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _
         goto Done;
     }
 
-    /* The IRP owns the MDL and frees it on completion */
     Status = TdiQueryInformation(Socket->LocalAddressFile, TDI_QUERY_ADDRESS_INFO, Mdl);
     if (NT_SUCCESS(Status))
     {
@@ -1850,8 +1794,6 @@ NetioSendItemComplete(
     return STATUS_SUCCESS;
 }
 
-/* Sends each buffer as one datagram. Send-side control data (IP_PKTINFO) is not applied:
- * tcpip picks the source address by its routing. */
 static NTSTATUS WSKAPI
 WskSendMessages(
     _In_ PWSK_SOCKET SocketParam,
@@ -1926,7 +1868,6 @@ WskSendMessages(
         }
         else if (Mdl != NULL)
         {
-            /* The datagram spans an MDL chain; tcpip takes one flat buffer */
             SIZE_T Copied = 0;
 
             Item->Copy = ExAllocatePoolWithTag(NonPagedPool, max(Length, 1), TAG_NETIO);
@@ -2015,11 +1956,6 @@ NetioDeferredSendWorker(
     ExFreePoolWithTag(Send, TAG_NETIO);
 }
 
-/*
- * Runs a send that a client issued above PASSIVE_LEVEL (WSK allows up to
- * DISPATCH_LEVEL) in a system worker thread. The buffers, the address and the
- * control data stay valid until the IRP completes, as WSK requires.
- */
 static NTSTATUS
 NetioDeferSend(
     _In_ PWSK_SOCKET SocketParam,
@@ -2112,7 +2048,6 @@ WskControlClient(
     _Out_writes_bytes_opt_(OutputSize) PVOID OutputBuffer,
     _Out_opt_ SIZE_T * OutputSizeReturned, _Inout_opt_ PIRP Irp)
 {
-    /* Only IPv4 sockets exist (see WskSocket) */
     static const WSK_TRANSPORT Transports[] =
     {
         { 0, SOCK_STREAM, IPPROTO_TCP, AF_INET },
@@ -2151,7 +2086,6 @@ WskControlClient(
             break;
 
         case WSK_TDI_BEHAVIOR:
-            /* Sockets always go to the TDI transports; there is no other path to choose */
             Status = (InputBuffer != NULL && InputSize >= sizeof(ULONG)) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
             break;
 
@@ -2486,7 +2420,6 @@ WskSocket(
             Socket->DatagramDispatch = Dispatch;
             KeInitializeSpinLock(&Socket->ReceiveLock);
             KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
-            /* WSK_SET_STATIC_EVENT_CALLBACKS turns receive events on for every new datagram socket */
             Socket->ReceiveEvents = Client != NULL &&
                                     (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
             Socket->ReceiveEventsStatic = Socket->ReceiveEvents;
@@ -2539,7 +2472,6 @@ WskSocket(
             goto err_out;
     }
 
-    /* WskDeregister waits for the sockets of the client; accepted sockets have none */
     if (Client != NULL)
     {
         if (!NetioAddClientUser((PNETIO_WSK_CLIENT)Client))
@@ -2599,7 +2531,6 @@ WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
     return STATUS_SUCCESS;
 }
 
-/* Every capture is released by its own WskReleaseProviderNPI */
 NTSTATUS WSKAPI
 WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PROVIDER_NPI npi)
 {
@@ -2609,7 +2540,6 @@ WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PR
 
     UNREFERENCED_PARAMETER(wait);
 
-    /* The provider is always ready, so there is nothing to wait for */
     if (Client == NULL || !NetioAddClientUser(Client))
         return STATUS_DEVICE_NOT_READY;
     npi->Client = (PWSK_CLIENT)Client;
@@ -2636,13 +2566,11 @@ WskDeregister(_In_ PWSK_REGISTRATION reg)
     if (Client == NULL)
         return;
 
-    /* New captures fail from now on; the ones made before still finish */
     KeAcquireSpinLock(&Client->Lock, &OldIrql);
     Client->Deregistering = TRUE;
     KeReleaseSpinLock(&Client->Lock, OldIrql);
     KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
 
-    /* The last user sets Idle under the lock; it has released the lock once we hold it */
     KeAcquireSpinLock(&Client->Lock, &OldIrql);
     KeReleaseSpinLock(&Client->Lock, OldIrql);
 

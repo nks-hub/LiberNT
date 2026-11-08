@@ -37,7 +37,6 @@ ReceiveFromEvent(
     UNREFERENCED_PARAMETER(SocketContext);
     UNREFERENCED_PARAMETER(Flags);
 
-    /* NULL when the socket closes */
     if (DataIndication == NULL)
         return STATUS_SUCCESS;
 
@@ -165,7 +164,6 @@ SetReceiveEvent(
     Control.NpiId = (PNPIID)&NPI_WSK_INTERFACE_ID;
     Control.EventMask = WSK_EVENT_RECEIVE_FROM | (Enable ? 0 : WSK_EVENT_DISABLE);
 
-    /* SO_WSK_EVENT_CALLBACK enables events without an IRP; only a disable takes one */
     if (Enable)
     {
         return ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskControlSocket(
@@ -229,7 +227,6 @@ SendTo(
     return Status;
 }
 
-/* Waits up to Milliseconds for ReceiveCount to reach Count */
 static
 LONG
 WaitReceives(
@@ -301,7 +298,6 @@ TestDispatchLevel(
     }
 }
 
-/* Static callbacks of WSK_SET_STATIC_EVENT_CALLBACKS stay on for the life of the socket */
 static
 VOID
 TestStaticCallbacks(VOID)
@@ -403,7 +399,6 @@ TestRun(VOID)
     ok_eq_long(Count, 1L);
     ok(WasSeen("DATA0001"), "DATA0001 was not indicated\n");
 
-    /* Turned off, a datagram waits until the event is on again */
     Status = SetReceiveEvent(Receiver, FALSE);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Status = SendTo(Sender, "DATA0002", WSKEVENTS_PORT);
@@ -416,7 +411,6 @@ TestRun(VOID)
     ok_eq_long(Count, 2L);
     ok(WasSeen("DATA0002"), "DATA0002 was not indicated after enabling the event again\n");
 
-    /* A refused datagram turns the event off; it and the next one come when the event is on again */
     Refuse = TRUE;
     Status = SendTo(Sender, "DATA0003", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
@@ -436,7 +430,6 @@ TestRun(VOID)
     ok(RtlEqualMemory(Seen[3], "DATA0004", 8) || RtlEqualMemory(Seen[4], "DATA0004", 8),
        "DATA0004 was not indicated after enabling the event again: %s %s\n", Seen[3], Seen[4]);
 
-    /* Requests that build IRPs for tcpip run later when issued at DISPATCH_LEVEL */
     TestDispatchLevel(Receiver, WSKEVENTS_PORT);
     Status = SendTo(Sender, "DATA0006", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);

@@ -199,6 +199,8 @@ NetioStopReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
 NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
 static VOID
+NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp);
+static VOID
 NetioReceivesReleased(_In_ PWSK_SOCKET_INTERNAL Socket);
 static VOID
 NetioResumeReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
@@ -219,6 +221,7 @@ typedef enum _NETIO_PASSIVE_KIND
     NetioPassiveLocalAddress,
     NetioPassivePktInfo,
     NetioPassiveResumeReceives,
+    NetioPassiveClose,
 } NETIO_PASSIVE_KIND;
 
 typedef struct _NETIO_PASSIVE_REQUEST
@@ -505,6 +508,10 @@ NetioPassiveWorker(
         case NetioPassiveResumeReceives:
             NetioResumeReceives(Socket);
             NetioReceivesReleased(Socket);
+            break;
+
+        case NetioPassiveClose:
+            NetioCloseSocket(Socket, Request->Irp);
             break;
     }
 
@@ -1023,11 +1030,10 @@ err_out:
     return STATUS_PENDING;
 }
 
-static NTSTATUS WSKAPI
-WskCloseSocket(_In_ PWSK_SOCKET SocketParam, _Inout_ PIRP Irp)
+static VOID
+NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp)
 {
     NTSTATUS status = STATUS_SUCCESS;
-    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
 
     IoSetNextIrpStackLocation(Irp);
 
@@ -1041,7 +1047,18 @@ WskCloseSocket(_In_ PWSK_SOCKET SocketParam, _Inout_ PIRP Irp)
 
     Irp->IoStatus.Status = status;
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+}
 
+static NTSTATUS WSKAPI
+WskCloseSocket(_In_ PWSK_SOCKET SocketParam, _Inout_ PIRP Irp)
+{
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+
+    /* The close completes once the client has released the datagrams it retains */
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL || Socket->ReceiveStarted)
+        return NetioQueuePassive(Socket, NetioPassiveClose, Irp, NULL, 0);
+
+    NetioCloseSocket(Socket, Irp);
     return STATUS_PENDING;
 }
 
@@ -2504,8 +2521,6 @@ static WSK_PROVIDER_DISPATCH provider_dispatch = {
 NTSTATUS WSKAPI
 WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
 {
-    FUNCTION_TRACE;
-
     PNETIO_WSK_CLIENT Client;
     NTSTATUS Status;
 

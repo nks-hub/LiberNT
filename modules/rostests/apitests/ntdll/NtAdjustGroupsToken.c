@@ -84,7 +84,6 @@ CheckGroupsUnchanged(
     if (After) RtlFreeHeap(RtlGetProcessHeap(), 0, After);
 }
 
-/* Returns an optional group that is enabled by default, or MAXULONG */
 static
 ULONG
 FindDefaultOptionalGroup(
@@ -104,7 +103,6 @@ FindDefaultOptionalGroup(
     return MAXULONG;
 }
 
-/* Disabling one group leaves the others alone, and a reset enables it again */
 static
 VOID
 AdjustOneGroup(VOID)
@@ -162,7 +160,6 @@ Cleanup:
     CloseHandle(Token);
 }
 
-/* A mandatory group in the list fails the call before any group changes */
 static
 VOID
 AdjustMandatoryGroup(VOID)
@@ -217,7 +214,6 @@ Cleanup:
     CloseHandle(Token);
 }
 
-/* The previous state holds copies of the SIDs and restores the token */
 static
 VOID
 AdjustWithPreviousState(VOID)
@@ -241,7 +237,6 @@ AdjustWithPreviousState(VOID)
     Disable.Groups[0].Attributes = 0;
     Expected = FIELD_OFFSET(TOKEN_GROUPS, Groups[1]) + RtlLengthSid(Before->Groups[Target].Sid);
 
-    /* A buffer that is too small changes nothing */
     Length = 0;
     Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, &Small, &Length);
     ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
@@ -267,7 +262,6 @@ AdjustWithPreviousState(VOID)
        "The previous attributes are 0x%lx, expected 0x%lx\n",
        Previous->Groups[0].Attributes, Before->Groups[Target].Attributes);
 
-    /* Giving the previous state back restores the token */
     Status = NtAdjustGroupsToken(Token, FALSE, Previous, 0, NULL, NULL);
     ok_hex(Status, STATUS_SUCCESS);
     CheckGroupsUnchanged(Token, Before);

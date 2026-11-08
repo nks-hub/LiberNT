@@ -360,7 +360,6 @@ SepAdjustGroups(
                 *ChangesMade = TRUE;
             }
 
-            /* Increment the count change */
             ChangeCount++;
         }
     }
@@ -820,7 +819,6 @@ NtAdjustGroupsToken(
                              &ChangeCount,
                              &SidsLength);
 
-    /* A group that cannot change fails the call before the token is touched */
     if (!NT_SUCCESS(Status))
         goto Quit;
 

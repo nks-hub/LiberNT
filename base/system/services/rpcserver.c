@@ -267,6 +267,9 @@ ScmReleaseNotify(PNOTIFY_HANDLE pNotify)
     CloseHandle(pNotify->hEvent);
     if (pNotify->pParamsList != NULL)
     {
+        /* A result that nobody took, for example after the request was abandoned */
+        if (pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->pszServiceNames != NULL)
+            HeapFree(GetProcessHeap(), 0, pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->pszServiceNames);
         HeapFree(GetProcessHeap(), 0, pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2);
         HeapFree(GetProcessHeap(), 0, pNotify->pParamsList);
     }

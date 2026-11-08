@@ -408,12 +408,13 @@ NtUserEnumDisplayDevices(
 {
     UNICODE_STRING ustrDevice;
     WCHAR awcDevice[CCHDEVICENAME];
-    DISPLAY_DEVICEW dispdev = { 0 };
+    DISPLAY_DEVICEW dispdev;
     NTSTATUS Status;
 
     TRACE("Enter NtUserEnumDisplayDevices(%wZ, %lu)\n",
           pustrDevice, iDevNum);
 
+    RtlZeroMemory(&dispdev, sizeof(dispdev));
     dispdev.cb = sizeof(dispdev);
 
     if (pustrDevice)

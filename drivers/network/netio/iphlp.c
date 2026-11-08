@@ -1064,7 +1064,7 @@ SetIpInterfaceEntry(
     Other = NetioFlag(Row->OtherStatefulConfigurationSupported, Current.OtherStatefulConfigurationSupported);
     if (Row->Family == AF_INET && Advertising)
         return STATUS_INVALID_PARAMETER;
-    /* The DHCPv6 flags do not apply to IPv4, which ignores them */
+    /* FIXME: the DHCPv6 flags of an IPv4 row are not kept */
     if (Row->Family == AF_INET6 && !Advertising && !Current.AdvertisingEnabled &&
         (Managed != Current.ManagedAddressConfigurationSupported ||
          Other != Current.OtherStatefulConfigurationSupported))

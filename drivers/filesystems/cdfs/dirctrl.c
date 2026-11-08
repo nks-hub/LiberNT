@@ -191,8 +191,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
-    ULONG Information = 0;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    ULONG _SEH2_VOLATILE Information = 0;
 
     ULONG LastEntry = 0;
     ULONG NextEntry = 0;
@@ -202,12 +202,12 @@ Return Value:
     ULONG VersionStringBytes;
 
     FILE_ENUM_CONTEXT FileContext;
-    PDIRENT ThisDirent = NULL;
+    PDIRENT _SEH2_VOLATILE ThisDirent = NULL;
     BOOLEAN InitialQuery;
-    BOOLEAN ReturnNextEntry = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReturnNextEntry = FALSE;
     BOOLEAN ReturnSingleEntry;
     BOOLEAN Found;
-    BOOLEAN DoCcbUpdate = FALSE;
+    BOOLEAN _SEH2_VOLATILE DoCcbUpdate = FALSE;
 
     PCHAR UserBuffer;
     ULONG BytesRemainingInBuffer;
@@ -311,7 +311,7 @@ Return Value:
                                  Fcb,
                                  Ccb,
                                  &FileContext,
-                                 &ReturnNextEntry,
+                                 (PBOOLEAN)&ReturnNextEntry,
                                  &ReturnSingleEntry,
                                  &InitialQuery );
 

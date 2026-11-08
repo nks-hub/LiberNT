@@ -482,10 +482,10 @@ ClasspEjectionControl(
     PCOMMON_DEVICE_EXTENSION commonExtension =
         (PCOMMON_DEVICE_EXTENSION) FdoExtension;
 
-    PFILE_OBJECT_EXTENSION fsContext = NULL;
-    NTSTATUS status;
-    PSCSI_REQUEST_BLOCK srb = NULL;
-    BOOLEAN countChanged = FALSE;
+    PFILE_OBJECT_EXTENSION _SEH2_VOLATILE fsContext = NULL;
+    NTSTATUS _SEH2_VOLATILE status;
+    PSCSI_REQUEST_BLOCK _SEH2_VOLATILE srb = NULL;
+    BOOLEAN _SEH2_VOLATILE countChanged = FALSE;
 
     PAGED_CODE();
 

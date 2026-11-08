@@ -547,7 +547,7 @@ VfatCommonRead(
 {
     PVFATFCB Fcb;
     PVOID Buffer;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     ULONG Length = 0;
     ULONG BytesPerSector;
     LARGE_INTEGER ByteOffset;
@@ -878,7 +878,7 @@ VfatWrite(
     PERESOURCE Resource = NULL;
     LARGE_INTEGER ByteOffset;
     LARGE_INTEGER OldFileSize;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG Length = 0;
     PVOID Buffer;
     ULONG BytesPerSector;

@@ -64,10 +64,10 @@ Return Value:
 --*/
 
 {
-    PFILE_OBJECT StreamFile = NULL;
-    BOOLEAN DecrementReference = FALSE;
+    PFILE_OBJECT _SEH2_VOLATILE StreamFile = NULL;
+    BOOLEAN _SEH2_VOLATILE DecrementReference = FALSE;
 
-    BOOLEAN CleanupDirContext = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupDirContext = FALSE;
     BOOLEAN UpdateFcbSizes = FALSE;
 
     DIRENT Dirent = {0};

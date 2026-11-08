@@ -58,7 +58,7 @@ Return Value:
 
 {
     PVCB Vcb;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
 
     ASSERT_IRP_CONTEXT( IrpContext );

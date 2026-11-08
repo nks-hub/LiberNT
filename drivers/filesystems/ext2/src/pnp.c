@@ -67,11 +67,11 @@ Ext2PnpCompletionRoutine (
 NTSTATUS
 Ext2Pnp (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    NTSTATUS            Status = STATUS_INVALID_PARAMETER;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_INVALID_PARAMETER;
 
-    PIRP                Irp;
+    PIRP                _SEH2_VOLATILE Irp;
     PIO_STACK_LOCATION  IrpSp;
-    PEXT2_VCB           Vcb = NULL;
+    PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
     PDEVICE_OBJECT      DeviceObject;
 
     _SEH2_TRY {
@@ -160,10 +160,10 @@ Ext2PnpQueryRemove (
     PEXT2_VCB         Vcb
 )
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     KEVENT   Event;
     BOOLEAN  bDeleted = FALSE;
-    BOOLEAN  VcbAcquired = FALSE;
+    BOOLEAN  _SEH2_VOLATILE VcbAcquired = FALSE;
 
     _SEH2_TRY {
 
@@ -243,7 +243,7 @@ Ext2PnpRemove (
     PEXT2_IRP_CONTEXT IrpContext,
     PEXT2_VCB         Vcb      )
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     KEVENT   Event;
     BOOLEAN  bDeleted;
 
@@ -311,7 +311,7 @@ Ext2PnpSurpriseRemove (
     PEXT2_IRP_CONTEXT IrpContext,
     PEXT2_VCB         Vcb      )
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KEVENT   Event;
     BOOLEAN  bDeleted;
 

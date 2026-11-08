@@ -95,7 +95,7 @@ KspEnableEvent(
     IN  ULONG EventItemSize OPTIONAL)
 {
     PIO_STACK_LOCATION IoStack;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KSEVENT Event;
     PKSEVENT_ITEM EventItem, FoundEventItem;
     PKSEVENTDATA EventData;

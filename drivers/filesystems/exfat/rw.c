@@ -157,7 +157,7 @@ ExFatRead(
     UINT BytesRead = 0;
     PVOID Buffer;
     FRESULT Result;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     BOOLEAN PagingIo = !!(Irp->Flags & IRP_PAGING_IO);
     BOOLEAN NoCache;
 
@@ -355,8 +355,8 @@ ExFatWrite(
     ULONG Length = Stack->Parameters.Write.Length;
     UINT BytesWritten = 0;
     PVOID Buffer;
-    FRESULT Result;
-    NTSTATUS Status;
+    FRESULT _SEH2_VOLATILE Result;
+    NTSTATUS _SEH2_VOLATILE Status;
     BOOLEAN PagingIo = !!(Irp->Flags & IRP_PAGING_IO);
     BOOLEAN NoCache;
     LARGE_INTEGER EndOffset;

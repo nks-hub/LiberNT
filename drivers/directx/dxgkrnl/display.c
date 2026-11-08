@@ -1019,7 +1019,7 @@ DxgkpReportTargetColorimetry(
     DXGK_COLORIMETRY Colorimetry;
     PLIST_ENTRY Entry;
     KIRQL OldIrql;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (Adapter->MiniportContext == NULL || Adapter->MiniportContext->UseDodLayout)
         return;
@@ -1717,7 +1717,7 @@ DxgkpDisplayCommitVidPnCandidateWithTarget(
     _In_opt_ CONST D3DKMDT_VIDEO_SIGNAL_INFO *RequestedTarget,
     _Out_ PDXGKP_DISPLAY_COMMIT_RESULT Result)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PDXGKP_VIDPN VidPn;
     SIZE_T i;
     BOOLEAN ForceDodPresentOnlyPath;
@@ -3147,7 +3147,7 @@ DxgkpCallMiniportShadowPresent(
     PDXGKDDI_QUERY_INTERFACE QueryInterfaceCallback = NULL;
     QUERY_INTERFACE QueryInterface;
     BOOLEAN InterfaceAcquired = FALSE;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     *Handled = FALSE;
     RtlZeroMemory(&PresentInterface, sizeof(PresentInterface));
@@ -3721,7 +3721,7 @@ DxgkpPointerBridgeSetPosition(
 {
     PDXGKDDI_SET_POINTER_POSITION PfnSetPosition;
     DXGKARG_SETPOINTERPOSITION PositionArgs;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PfnSetPosition = DXGK_CB(Adapter, DxgkDdiSetPointerPosition);
     if (PfnSetPosition == NULL)
@@ -3768,7 +3768,7 @@ DxgkpPointerBridgeSetShape(
     PDXGKDDI_SET_POINTER_SHAPE PfnSetShape;
     DXGKARG_SETPOINTERSHAPE ShapeArgs;
     ULONG RequiredSize;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PfnSetShape = DXGK_CB(Adapter, DxgkDdiSetPointerShape);
     if (PfnSetShape == NULL)

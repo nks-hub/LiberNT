@@ -526,7 +526,7 @@ DxgkpPollDisplayChildrenAdapter(
     PDXGKP_POLL_CHILD_SNAPSHOT Children = NULL;
     PDXGKDDI_QUERY_CHILD_STATUS QueryChildStatus;
     NTSTATUS RebuildStatus;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     ULONG ChildCount = 0;
     ULONG Index;
     BOOLEAN ConnectionChanged = FALSE;
@@ -659,7 +659,7 @@ DxgkPnpReadEdidExtensions(
     PDXGKDDI_QUERY_DEVICE_DESCRIPTOR QueryDeviceDescriptor;
     DXGK_DEVICE_DESCRIPTOR Descriptor;
     UCHAR Wanted, Read;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -1332,7 +1332,7 @@ DxgkpQueryChildConnectionForEnumeration(
 {
     PDXGKDDI_QUERY_CHILD_STATUS QueryChildStatus;
     DXGK_CHILD_STATUS ChildStatus;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     *ConnectionKnown = FALSE;
     *Connected = FALSE;

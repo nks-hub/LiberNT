@@ -15771,7 +15771,7 @@ DxgkVidMmMapAllocationUser(
     PMDL Mdl = NULL;
     MEMORY_CACHING_TYPE CacheType;
     ULONG_PTR UserOffset;
-    PVOID UserMapBase;
+    PVOID _SEH2_VOLATILE UserMapBase;
     PVOID UserVa;
     NTSTATUS Status;
     PEPROCESS Process;

@@ -113,7 +113,7 @@ Return Value:
 
     PVOID SystemBuffer;
 
-    BOOLEAN ReleaseFile = TRUE;
+    BOOLEAN _SEH2_VOLATILE ReleaseFile = TRUE;
 
     CD_IO_CONTEXT LocalIoContext;
 

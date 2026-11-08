@@ -28,7 +28,7 @@ KsLoadResource(
     OUT PVOID* Resource,
     OUT PULONG ResourceSize)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     LDR_RESOURCE_INFO ResourceInfo;
     PIMAGE_RESOURCE_DATA_ENTRY ResourceDataEntry;
     PVOID Data;

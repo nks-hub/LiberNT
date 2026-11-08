@@ -1552,7 +1552,7 @@ DxgkpInvokeQueryInterface(
     _In_ PVOID MiniportDeviceContext,
     _Inout_ PQUERY_INTERFACE QueryInterface)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY
     {
@@ -1573,7 +1573,7 @@ DxgkpInvokeQueryFeatureSupport(
     _In_ PVOID Context,
     INOUT_PDXGKARG_QUERYFEATURESUPPORT QueryFeatureSupport)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY
     {
@@ -2092,7 +2092,7 @@ DxgkpValidateAllocationListForIoctl(
     _In_ UINT AllocationCount)
 {
     UINT i;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (AllocationCount == 0)
         return STATUS_SUCCESS;
@@ -2608,7 +2608,7 @@ static NTSTATUS DxgkpCaptureDeviceName(_In_ PCWSTR Source, _In_ KPROCESSOR_MODE 
         return STATUS_INVALID_PARAMETER;
     for (Index = 0; Index < DestinationCount; ++Index)
     {
-        WCHAR Character = L'\0';
+        WCHAR _SEH2_VOLATILE Character = L'\0';
         NTSTATUS Status = STATUS_SUCCESS;
 
         _SEH2_TRY
@@ -2946,7 +2946,7 @@ DxgkpQueryPhysicalAdapterPnpKey(
     HANDLE Key = NULL;
     UINT Capacity;
     UINT Cch;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (Query->PhysicalAdapterIndex != 0 || CchDest == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -3268,7 +3268,7 @@ DxgkpQueryMiniportUmdPrivate(
     PDXGKRNL_PROCESS ProcessRecord = NULL;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
     PVOID InputData;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -6077,7 +6077,7 @@ DxgkUnlock(
 {
     PDXGKRNL_ADAPTER UnlockAdapter;
     PDXGKRNL_DEVICE  UnlockDevice;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     UINT ui;
 
     if (pUnlock == NULL)
@@ -6536,7 +6536,7 @@ DxgkpQueryScanLine(
 {
     PDXGKDDI_GET_SCAN_LINE GetScanLine;
     DXGKARG_GETSCANLINE GetScanLineArgs;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
     GetScanLine = DXGK_CB_FULL(Adapter, DxgkDdiGetScanLine);
@@ -7206,7 +7206,7 @@ DxgkpQueryMiniportPerfData(
     UINT Selector;
     PVOID Result;
     ULONG OutputSize;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PAGED_CODE();
 
@@ -8253,7 +8253,7 @@ DxgkpSetGammaRampCore(
     SIZE_T RampSize = 0;
     SIZE_T Index;
     BOOLEAN Found = FALSE;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -8862,7 +8862,7 @@ DxgkOfferAllocations(
     PDXGKRNL_DEVICE Device;
     PDXGKP_RESOURCE_ALLOCATION_SNAPSHOT ResourceSnapshots = NULL;
     UINT ResourceAllocationCount = 0;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -8964,7 +8964,7 @@ DxgkReclaimAllocations(
     PDXGKRNL_DEVICE Device;
     PDXGKP_RESOURCE_ALLOCATION_SNAPSHOT ResourceSnapshots = NULL;
     UINT ResourceAllocationCount = 0;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -12050,7 +12050,7 @@ DxgkpDispatchBufferedIoctlWorker(
     ULONG   IoControlCode = KmtRequest->IoControlCode;
     ULONG   MinimumLevel;
     KPROCESSOR_MODE EmbeddedBufferMode = KmtRequest->Internal ? KernelMode : KmtRequest->RequestorMode;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     MinimumLevel = DxgkpKmtIoctlMinimumConfiguredLevel(IoControlCode);
     if (MinimumLevel == 0 || REACTOS_WDDM_TARGET_LEVEL < MinimumLevel)

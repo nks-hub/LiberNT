@@ -253,14 +253,14 @@ Return Value:
 
 {
     THREAD_CONTEXT ThreadContext = {0};
-    PIRP_CONTEXT IrpContext = NULL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
     BOOLEAN Wait;
 
 #ifdef CD_SANITY
     PVOID PreviousTopLevel;
 #endif
 
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
 #if DBG
 

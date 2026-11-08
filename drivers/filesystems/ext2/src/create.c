@@ -76,7 +76,7 @@ Ext2FollowLink (
 
     UNICODE_STRING  UniName;
     OEM_STRING      OemName;
-    BOOLEAN         bOemBuffer = FALSE;
+    BOOLEAN         _SEH2_VOLATILE bOemBuffer = FALSE;
 
     PEXT2_MCB       Target = NULL;
 
@@ -279,17 +279,17 @@ Ext2LookupFile (
     IN ULONG                Linkdep
 )
 {
-    NTSTATUS        Status = STATUS_OBJECT_NAME_NOT_FOUND;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_OBJECT_NAME_NOT_FOUND;
     UNICODE_STRING  FileName;
-    PEXT2_MCB       Mcb = NULL;
-    struct dentry  *de = NULL;
+    PEXT2_MCB       _SEH2_VOLATILE Mcb = NULL;
+    struct dentry  * _SEH2_VOLATILE de = NULL;
 
     USHORT          i = 0, End;
     ULONG           Inode;
 
     BOOLEAN         bParent = FALSE;
-    BOOLEAN         bDirectory = FALSE;
-    BOOLEAN         LockAcquired = FALSE;
+    BOOLEAN         _SEH2_VOLATILE bDirectory = FALSE;
+    BOOLEAN         _SEH2_VOLATILE LockAcquired = FALSE;
     BOOLEAN         bNotFollow = FALSE;
 
     _SEH2_TRY {
@@ -434,7 +434,7 @@ Ext2LookupFile (
                                  Parent,
                                  &FileName,
                                  &Inode,
-                                 &de);
+                                 (struct dentry **)&de);
 
                     if (NT_SUCCESS(Status)) {
 
@@ -577,10 +577,10 @@ Ext2ScanDir (
 )
 {
     struct ext3_dir_entry_2 *dir_entry = NULL;
-    struct buffer_head     *bh = NULL;
-    struct dentry          *de = NULL;
+    struct buffer_head     * _SEH2_VOLATILE bh = NULL;
+    struct dentry          * _SEH2_VOLATILE de = NULL;
 
-    NTSTATUS                Status = STATUS_NO_SUCH_FILE;
+    NTSTATUS                _SEH2_VOLATILE Status = STATUS_NO_SUCH_FILE;
 
     DEBUG(DL_RES, ("Ext2ScanDir: %wZ\\%wZ\n", &Parent->FullName, FileName));
 
@@ -693,8 +693,8 @@ Ext2OverwriteEa(
     PIO_STACK_LOCATION  IrpSp;
 
     struct ext4_xattr_ref xattr_ref;
-    BOOLEAN             XattrRefAcquired = FALSE;
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN             _SEH2_VOLATILE XattrRefAcquired = FALSE;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PFILE_FULL_EA_INFORMATION FullEa;
     PCHAR EaBuffer;
@@ -832,15 +832,15 @@ Ext2CreateFile(
     PBOOLEAN          OpPostIrp
 )
 {
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION  IrpSp;
-    PEXT2_FCB           Fcb = NULL;
-    PEXT2_MCB           Mcb = NULL;
-    PEXT2_MCB           SymLink = NULL;
-    PEXT2_CCB           Ccb = NULL;
+    PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+    PEXT2_MCB           _SEH2_VOLATILE Mcb = NULL;
+    PEXT2_MCB           _SEH2_VOLATILE SymLink = NULL;
+    PEXT2_CCB           _SEH2_VOLATILE Ccb = NULL;
 
-    PEXT2_FCB           ParentFcb = NULL;
-    PEXT2_MCB           ParentMcb = NULL;
+    PEXT2_FCB           _SEH2_VOLATILE ParentFcb = NULL;
+    PEXT2_MCB           _SEH2_VOLATILE ParentMcb = NULL;
 
     UNICODE_STRING      FileName;
     PIRP                Irp;
@@ -853,10 +853,10 @@ Ext2CreateFile(
     BOOLEAN             bDir = FALSE;
 #endif
     BOOLEAN             bFcbAllocated = FALSE;
-    BOOLEAN             bCreated = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bCreated = FALSE;
 
-    BOOLEAN             bMainResourceAcquired = FALSE;
-    BOOLEAN             bFcbLockAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bMainResourceAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bFcbLockAcquired = FALSE;
 
     BOOLEAN             OpenDirectory;
     BOOLEAN             OpenTargetDirectory;
@@ -1009,7 +1009,7 @@ Ext2CreateFile(
                      Vcb,
                      &FileName,
                      ParentMcb,
-                     &Mcb,
+                     (PEXT2_MCB *)&Mcb,
                      0  /* always follow link */
                     );
 McbExisting:
@@ -1192,7 +1192,7 @@ Dissecting:
                              Vcb,
                              &RealName,
                              ParentMcb,
-                             &Mcb,
+                             (PEXT2_MCB *)&Mcb,
                              0);
                 if (!NT_SUCCESS(Status)) {
                     DbgBreak();
@@ -1953,11 +1953,11 @@ Ext2Create (IN PEXT2_IRP_CONTEXT IrpContext)
     PDEVICE_OBJECT      DeviceObject;
     PIRP                Irp;
     PIO_STACK_LOCATION  IrpSp;
-    PEXT2_VCB           Vcb = 0;
-    NTSTATUS            Status = STATUS_OBJECT_NAME_NOT_FOUND;
+    PEXT2_VCB           _SEH2_VOLATILE Vcb = 0;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_OBJECT_NAME_NOT_FOUND;
     PEXT2_FCBVCB        Xcb = NULL;
     BOOLEAN             PostIrp = FALSE;
-    BOOLEAN             VcbResourceAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE VcbResourceAcquired = FALSE;
 
     DeviceObject = IrpContext->DeviceObject;
     Irp = IrpContext->Irp;

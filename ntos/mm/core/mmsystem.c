@@ -17,7 +17,9 @@ MiChargeSystemCommit(
 {
     LONG64 Committed;
     LONG64 Limit;
+    PMI_EXPAND_COMMIT ExpandCommit;
 
+    MI_ASSERT(Pages >= 0);
     for (;;)
     {
         Limit = MI_ATOMIC_READ64(&System->CommitLimit);
@@ -26,12 +28,14 @@ MiChargeSystemCommit(
             break;
 
         MI_ATOMIC_ADD64(&System->CommittedPages, -Pages);
-        if (Pages <= 0 || System->ExpandCommit == NULL || !System->ExpandCommit(System, Pages, Limit, Wait))
+        ExpandCommit = MiSystemGetExpandCommit(System);
+        if (Pages <= 0 || ExpandCommit == NULL || !ExpandCommit(System, Pages, Limit, Wait))
             return FALSE;
     }
 
-    if (Pages > 0 && System->ExpandCommit != NULL && Committed > Limit - Limit / 10)
-        System->ExpandCommit(System, 0, Limit, FALSE);
+    ExpandCommit = MiSystemGetExpandCommit(System);
+    if (Pages > 0 && ExpandCommit != NULL && Committed > Limit - Limit / 10)
+        ExpandCommit(System, 0, Limit, FALSE);
 
     return TRUE;
 }
@@ -43,6 +47,7 @@ MiChargeCommit(
 {
     PMI_SYSTEM System = Space->System;
 
+    MI_ASSERT(Pages >= 0);
     if (!MiChargeSystemCommit(System, Pages, (BOOLEAN)!Space->IsSystem))
         return FALSE;
 
@@ -62,11 +67,17 @@ MiReturnCommit(
     _Inout_ PMI_ADDRESS_SPACE Space,
     _In_ LONG64 Pages)
 {
+    LONG64 Previous;
+
+    MI_ASSERT(Pages >= 0);
     if (Pages == 0)
         return;
 
-    MI_ATOMIC_ADD64(&Space->System->CommittedPages, -Pages);
-    MI_ATOMIC_ADD64(&Space->CommittedPages, -Pages);
+    Previous = MI_ATOMIC_ADD64(&Space->System->CommittedPages, -Pages);
+    MI_ASSERT(Previous >= Pages);
+    Previous = MI_ATOMIC_ADD64(&Space->CommittedPages, -Pages);
+    MI_ASSERT(Previous >= Pages);
+    UNREFERENCED_PARAMETER(Previous);
 
     if (Space->CommitOwner != NULL && Space->System->ReturnOwnerCommit != NULL)
         Space->System->ReturnOwnerCommit(Space->CommitOwner, Pages);

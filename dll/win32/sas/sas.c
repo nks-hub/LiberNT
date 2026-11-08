@@ -36,9 +36,7 @@ IsSasGenerationAllowed(
     if (Status != ERROR_SUCCESS)
         return FALSE;
 
-    /* shortcut: the Winlogon event admits SYSTEM only, so Ease of Access callers (uiAccess
-     * processes) cannot signal it; honour SAS_GENERATION_EASE_OF_ACCESS once the event
-     * grants them access */
+    /* TODO: SAS_GENERATION_EASE_OF_ACCESS needs a Winlogon event that uiAccess callers may signal */
     if (AsUser)
     {
         DPRINT1("SendSAS for Ease of Access applications is not supported\n");

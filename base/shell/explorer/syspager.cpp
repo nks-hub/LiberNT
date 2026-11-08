@@ -1113,9 +1113,6 @@ HRESULT CNotifyToolbar::GetIconRect(IN CONST NOTIFYICONIDENTIFIER *Identifier, O
 
         if (!IsItemVisible(Data))
         {
-            /* An icon in the overflow area is reported where it is shown: in the
-             * open overflow flyout, or else at the chevron that opens it. Some
-             * applications drop a click on an icon whose rectangle they cannot read. */
             HWND hwndChevron;
 
             if (TrayOverflow_GetIconRect(Data->hWnd, Data->uID, IconRect))

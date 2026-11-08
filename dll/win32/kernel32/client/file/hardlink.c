@@ -30,7 +30,7 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
     IO_STATUS_BLOCK IoStatusBlock;
     OBJECT_ATTRIBUTES ObjectAttributes;
     HANDLE hTarget = INVALID_HANDLE_VALUE;
-    PFILE_LINK_INFORMATION LinkInformation = NULL;
+    PFILE_LINK_INFORMATION _SEH2_VOLATILE LinkInformation = NULL;
     UNICODE_STRING LinkTarget, LinkName;
 
     /* Initialize */

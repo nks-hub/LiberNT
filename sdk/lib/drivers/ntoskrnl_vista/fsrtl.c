@@ -313,7 +313,7 @@ NTAPI
 FsRtlAllocateExtraCreateParameterList(IN FSRTL_ALLOCATE_ECPLIST_FLAGS Flags,
                                       OUT PECP_LIST *EcpList)
 {
-    PECP_LIST List = NULL;
+    PECP_LIST _SEH2_VOLATILE List = NULL;
 
     if (Flags & FSRTL_ALLOCATE_ECPLIST_FLAG_CHARGE_QUOTA)
     {
@@ -374,7 +374,7 @@ FsRtlAllocateExtraCreateParameter(IN LPCGUID EcpType,
 {
     POOL_TYPE PoolType = (Flags & FSRTL_ALLOCATE_ECP_FLAG_NONPAGED_POOL) ? NonPagedPool : PagedPool;
     ULONG TotalSize = ECP_HEADER_SIZE + SizeOfContext;
-    PECP_HEADER Header = NULL;
+    PECP_HEADER _SEH2_VOLATILE Header = NULL;
 
     *EcpContext = NULL;
 

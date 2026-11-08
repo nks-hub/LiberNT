@@ -400,7 +400,7 @@ void *
 lc_nt_map_pfns(const uint64_t *pfns, size_t count, int cache, int user, void **map_cookie)
 {
     PPFN_NUMBER Pfn;
-    PVOID Address = NULL;
+    PVOID _SEH2_VOLATILE Address = NULL;
     SIZE_T MdlSize;
     PMDL Mdl;
     size_t Index;

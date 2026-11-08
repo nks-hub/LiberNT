@@ -593,7 +593,7 @@ CsrApiRequestThread(IN PVOID Parameter)
     PCSR_THREAD CurrentThread, CsrThread;
     NTSTATUS Status;
     CSR_REPLY_CODE ReplyCode;
-    PCSR_API_MESSAGE ReplyMsg;
+    PCSR_API_MESSAGE _SEH2_VOLATILE ReplyMsg;
     CSR_API_MESSAGE ReceiveMsg;
     PCSR_PROCESS CsrProcess;
     PHARDERROR_MSG HardErrorMsg;
@@ -602,7 +602,7 @@ CsrApiRequestThread(IN PVOID Parameter)
     PCLIENT_DIED_MSG ClientDiedMsg;
     PDBGKM_MSG DebugMessage;
     ULONG ServerId, ApiId, MessageType, i;
-    HANDLE ReplyPort;
+    HANDLE _SEH2_VOLATILE ReplyPort;
 
     /* Setup LPC loop port and message */
     ReplyMsg = NULL;
@@ -1340,7 +1340,7 @@ CsrConnectToUser(VOID)
     STRING StartupName;
     PTEB Teb = NtCurrentTeb();
     PCSR_THREAD CsrThread;
-    BOOLEAN Connected = FALSE;
+    BOOLEAN _SEH2_VOLATILE Connected = FALSE;
 
     /* Check if we didn't already find it */
     if (!CsrClientThreadSetup)

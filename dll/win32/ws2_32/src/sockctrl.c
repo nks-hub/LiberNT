@@ -277,11 +277,11 @@ getsockopt(IN SOCKET s,
     PWSPROCESS Process;
     PWSTHREAD Thread;
     PWSSOCKET Socket;
-    INT ErrorCode;
-    INT Status;
+    INT _SEH2_VOLATILE ErrorCode;
+    INT _SEH2_VOLATILE Status;
     WSAPROTOCOL_INFOW ProtocolInfo;
-    PCHAR OldOptVal = NULL;
-    INT OldOptLen = 0;
+    PCHAR _SEH2_VOLATILE OldOptVal = NULL;
+    INT _SEH2_VOLATILE OldOptLen = 0;
     DPRINT("getsockopt: %lx, %lx, %lx\n", s, level, optname);
 
     /* Enter prolog */
@@ -367,7 +367,7 @@ getsockopt(IN SOCKET s,
                                                                optname,
                                                                optval,
                                                                optlen,
-                                                               &ErrorCode);
+                                                               (LPINT)&ErrorCode);
 
             /* Deference the Socket Context */
             WsSockDereference(Socket);

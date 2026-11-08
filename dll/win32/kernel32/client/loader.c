@@ -440,7 +440,7 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
 {
     UNICODE_STRING DllName;
     HINSTANCE hInst;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PWSTR SearchPath;
     ULONG DllCharacteristics = 0;
     DWORD SearchFlags;
@@ -848,7 +848,7 @@ HMODULE
 WINAPI
 GetModuleHandleForUnicodeString(PUNICODE_STRING ModuleName)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PVOID Module;
     LPWSTR DllPath;
 

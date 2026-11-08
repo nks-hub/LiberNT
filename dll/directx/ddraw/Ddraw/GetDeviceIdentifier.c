@@ -25,7 +25,7 @@ HRESULT WINAPI
 Main_DirectDraw_GetDeviceIdentifier(LPDDRAWI_DIRECTDRAW_INT This,
                                     LPDDDEVICEIDENTIFIER pDDDI, DWORD dwFlags)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
     DDDEVICEIDENTIFIER2 pDDDI2;
 
     ZeroMemory(&pDDDI2,sizeof(DDDEVICEIDENTIFIER2));
@@ -58,7 +58,7 @@ HRESULT WINAPI
 Main_DirectDraw_GetDeviceIdentifier7(LPDDRAWI_DIRECTDRAW_INT This,
                                      LPDDDEVICEIDENTIFIER2 pDDDI, DWORD dwFlags)
 {
-    HRESULT retVal = DDERR_INVALIDPARAMS;
+    HRESULT _SEH2_VOLATILE retVal = DDERR_INVALIDPARAMS;
 
     BOOL found = FALSE;
     DWORD iDevNum = 0;

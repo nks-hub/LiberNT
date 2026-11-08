@@ -59,7 +59,7 @@ ULONG WINAPI Main_DDrawSurface_AddRef(LPDDRAWI_DDRAWSURFACE_INT This)
 HRESULT WINAPI
 Main_DDrawSurface_QueryInterface(LPDDRAWI_DDRAWSURFACE_INT This, REFIID riid, LPVOID* ppObj)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
     *ppObj = NULL;
 
     DX_WINDBG_trace();

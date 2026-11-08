@@ -479,7 +479,7 @@ SetupMoveFile(
     OBJECT_ATTRIBUTES ObjectAttributes;
     PFILE_RENAME_INFORMATION RenameInfo;
     UNICODE_STRING NewPathU, ExistingPathU;
-    HANDLE SourceHandle = NULL;
+    HANDLE _SEH2_VOLATILE SourceHandle = NULL;
     BOOLEAN ReplaceIfExists;
 
     RtlInitUnicodeString(&ExistingPathU, ExistingFileName);
@@ -496,7 +496,7 @@ SetupMoveFile(
                                    NULL,
                                    NULL);
         /* Attempt to open source file */
-        Status = NtOpenFile(&SourceHandle,
+        Status = NtOpenFile((PHANDLE)&SourceHandle,
                             FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
                             &ObjectAttributes,
                             &IoStatusBlock,

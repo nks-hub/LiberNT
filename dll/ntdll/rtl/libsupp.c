@@ -272,7 +272,7 @@ RtlWalkFrameChain(OUT PVOID *Callers,
     ULONG_PTR Stack, NewStack, StackBegin, StackEnd = 0;
     ULONG_PTR Eip;
     BOOLEAN Result, StopSearch = FALSE;
-    ULONG i = 0;
+    ULONG _SEH2_VOLATILE i = 0;
 
     if ((Callers == NULL) || (Count == 0))
         return 0;
@@ -589,7 +589,7 @@ RtlImageNtHeaderEx(
     _In_ ULONG64 Size,
     _Out_ PIMAGE_NT_HEADERS *OutHeaders)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     /* Assume failure. This is also done in RtlpImageNtHeaderEx, but this is guarded by SEH. */
     if (OutHeaders != NULL)

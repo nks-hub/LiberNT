@@ -572,7 +572,7 @@ GlobalFlags(HGLOBAL hMem)
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     HANDLE Handle = NULL;
     ULONG Flags = 0;
-    UINT uFlags = GMEM_INVALID_HANDLE;
+    UINT _SEH2_VOLATILE uFlags = GMEM_INVALID_HANDLE;
 
     /* Start by locking the heap */
     RtlLockHeap(BaseHeap);
@@ -756,7 +756,7 @@ HGLOBAL
 NTAPI
 GlobalHandle(LPCVOID pMem)
 {
-    HANDLE Handle = NULL;
+    HANDLE _SEH2_VOLATILE Handle = NULL;
     ULONG Flags;
 
     /* Lock the heap */
@@ -767,7 +767,7 @@ GlobalHandle(LPCVOID pMem)
         if (!RtlGetUserInfoHeap(BaseHeap,
                                 HEAP_NO_SERIALIZE,
                                 (PVOID)pMem,
-                                &Handle,
+                                (PVOID *)&Handle,
                                 &Flags))
         {
             /* RTL Heap Manager does not know about this heap */
@@ -807,7 +807,7 @@ NTAPI
 GlobalLock(HGLOBAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
-    LPVOID Ptr = NULL;
+    LPVOID _SEH2_VOLATILE Ptr = NULL;
 
     /* Check if this was a simple allocated heap entry */
     if (!((ULONG_PTR)hMem & BASE_HEAP_IS_HANDLE_ENTRY))
@@ -1145,7 +1145,7 @@ GlobalSize(HGLOBAL hMem)
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     PVOID Handle = NULL;
     ULONG Flags = 0;
-    SIZE_T dwSize = MAXULONG_PTR;
+    SIZE_T _SEH2_VOLATILE dwSize = MAXULONG_PTR;
 
     /* Lock the heap */
     RtlLockHeap(BaseHeap);
@@ -1243,7 +1243,7 @@ NTAPI
 GlobalUnlock(HGLOBAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
-    BOOL RetVal = TRUE;
+    BOOL _SEH2_VOLATILE RetVal = TRUE;
 
     /* Check if this was a simple allocated heap entry */
     if (!((ULONG_PTR)hMem & BASE_HEAP_IS_HANDLE_ENTRY)) return RetVal;
@@ -1579,7 +1579,7 @@ LocalFlags(HLOCAL hMem)
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     HANDLE Handle = NULL;
     ULONG Flags = 0;
-    UINT uFlags = LMEM_INVALID_HANDLE;
+    UINT _SEH2_VOLATILE uFlags = LMEM_INVALID_HANDLE;
 
     /* Start by locking the heap */
     RtlLockHeap(BaseHeap);
@@ -1889,7 +1889,7 @@ NTAPI
 LocalUnlock(HLOCAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
-    BOOL RetVal = TRUE;
+    BOOL _SEH2_VOLATILE RetVal = TRUE;
 
     /* Check if this was a simple allocated heap entry */
     if (!((ULONG_PTR)hMem & BASE_HEAP_IS_HANDLE_ENTRY))

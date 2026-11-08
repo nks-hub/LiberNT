@@ -1916,7 +1916,7 @@ RxCommonCleanup(
     PRX_CONTEXT Context)
 {
 #define BugCheckFileId RDBSS_BUG_CHECK_CLEANUP
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
     PFOBX Fobx;
     ULONG OpenCount;
     NTSTATUS Status;
@@ -2921,7 +2921,7 @@ RxCommonQueryInformation(
     PFCB Fcb;
     PIRP Irp;
     PFOBX Fobx;
-    BOOLEAN Locked;
+    BOOLEAN _SEH2_VOLATILE Locked;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION Stack;
     FILE_INFORMATION_CLASS FileInfoClass;
@@ -3187,7 +3187,7 @@ RxCommonRead(
     PFCB Fcb;
     PIRP Irp;
     PFOBX Fobx;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PNET_ROOT NetRoot;
     PVOID SystemBuffer;
     PFILE_OBJECT FileObject;
@@ -3933,7 +3933,7 @@ RxCommonWrite(
     PIRP Irp;
     PFCB Fcb;
     PFOBX Fobx;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PNET_ROOT NetRoot;
     PSRV_OPEN SrvOpen;
     PFILE_OBJECT FileObject;
@@ -5115,7 +5115,7 @@ RxCreateFromNetRoot(
     PRX_CONTEXT Context,
     PUNICODE_STRING NetRootName)
 {
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
     NTSTATUS Status;
     PNET_ROOT NetRoot;
     PFILE_OBJECT FileObject;
@@ -5505,7 +5505,7 @@ RxDriverEntry(
     IN PDRIVER_OBJECT DriverObject,
     IN PUNICODE_STRING RegistryPath)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     USHORT i, State = 0;
 
     DPRINT("RxDriverEntry(%p, %p)\n", DriverObject, RegistryPath);
@@ -5870,7 +5870,7 @@ RxFindOrCreateFcb(
     PRX_CONTEXT RxContext,
     PUNICODE_STRING NetRootName)
 {
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
     ULONG Version;
     NTSTATUS Status;
     PNET_ROOT NetRoot;
@@ -9231,9 +9231,9 @@ RxStartMinirdr(
     IN PRX_CONTEXT RxContext,
     OUT PBOOLEAN PostToFsp)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     BOOLEAN Wait, AlreadyStarted;
-    PRDBSS_DEVICE_OBJECT DeviceObject;
+    PRDBSS_DEVICE_OBJECT _SEH2_VOLATILE DeviceObject;
 
     /* If we've not been post, then, do it */
     if (!BooleanFlagOn(RxContext->Flags, RX_CONTEXT_FLAG_IN_FSP))

@@ -134,7 +134,7 @@ CsrLoadServerDll(IN PCHAR DllString,
                  IN PCHAR EntryPoint OPTIONAL,
                  IN ULONG ServerId)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     ANSI_STRING DllName;
     UNICODE_STRING TempString, ErrorString;
     ULONG_PTR Parameters[2];

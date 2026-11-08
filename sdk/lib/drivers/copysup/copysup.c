@@ -48,7 +48,7 @@ FsRtlCopyRead2(
     IN PDEVICE_OBJECT DeviceObject,
     IN PVOID TopLevelContext)
 {
-    BOOLEAN Ret;
+    BOOLEAN _SEH2_VOLATILE Ret;
     ULONG PageCount;
     LARGE_INTEGER FinalOffset;
     PFSRTL_COMMON_FCB_HEADER Fcb;

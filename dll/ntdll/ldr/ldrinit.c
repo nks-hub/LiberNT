@@ -851,8 +851,8 @@ LdrpRunInitializeRoutines(IN PCONTEXT Context OPTIONAL)
     RTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED ActCtx;
     ULONG BreakOnDllLoad;
     PTEB OldTldTeb;
-    BOOLEAN DllStatus = FALSE;
-    BOOLEAN DllInitCompleted;
+    BOOLEAN _SEH2_VOLATILE DllStatus = FALSE;
+    BOOLEAN _SEH2_VOLATILE DllInitCompleted;
 
     DPRINT("LdrpRunInitializeRoutines() called for %wZ (%p/%p)\n",
         &LdrpImageEntry->BaseDllName,
@@ -1529,7 +1529,7 @@ LdrpGrowThreadTlsVector(
 {
     PLDRP_TLS_DATA TlsData;
     PLIST_ENTRY Link;
-    PVOID *OldVector, *NewVector;
+    PVOID * _SEH2_VOLATILE OldVector, *NewVector;
     SIZE_T OldBytes;
     ULONG OldCount, TlsIndex;
     NTSTATUS Status;
@@ -3789,7 +3789,7 @@ RtlpUserThreadStart(
     _In_ PVOID StartAddress,
     _In_ PVOID Parameter)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     StartAddress = LdrpGetThreadStartAddress(StartAddress);
 

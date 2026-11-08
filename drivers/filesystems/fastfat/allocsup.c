@@ -832,7 +832,7 @@ Arguments:
             //  Get the next fat entry, and update our Current variables.
             //
 
-            FatLookupFatEntry( IrpContext, Vcb, FatEntry, (PULONG)&FatEntry, &Context );
+            FatLookupFatEntry( IrpContext, Vcb, FatEntry, (PULONG)&FatEntry, (PFAT_ENUMERATION_CONTEXT)&Context );
 
             PriorLbo = CurrentLbo;
             CurrentLbo = FatGetLboFromIndex( Vcb, FatEntry );
@@ -1174,8 +1174,8 @@ Arguments:
             FatGetDirentFromFcbOrDcb( IrpContext,
                                       FcbOrDcb,
                                       FALSE,
-                                      &Dirent,
-                                      &Bcb );
+                                      (PDIRENT *)&Dirent,
+                                      (PBCB *)&Bcb );
             //
             //  Set this dirty right now since this call can fail.
             //
@@ -1573,7 +1573,7 @@ Return Value:
 
             NT_ASSERT( FcbOrDcb->FcbCondition == FcbGood );
 
-            FatGetDirentFromFcbOrDcb( IrpContext, FcbOrDcb, FALSE, &Dirent, &Bcb );
+            FatGetDirentFromFcbOrDcb( IrpContext, FcbOrDcb, FALSE, (PDIRENT *)&Dirent, (PBCB *)&Bcb );
 
             Dirent->FirstClusterOfFile = 0;
 
@@ -1598,18 +1598,18 @@ Return Value:
             //  one we will deallocate.
             //
 
-            FsRtlInitializeLargeMcb( &RemainingMcb, PagedPool );
+            FsRtlInitializeLargeMcb( (PLARGE_MCB)&RemainingMcb, PagedPool );
             UnwindWeAllocatedMcb = TRUE;
 
             FatSplitAllocation( IrpContext,
                                 Vcb,
                                 &FcbOrDcb->Mcb,
                                 DesiredAllocationSize,
-                                &RemainingMcb );
+                                (PLARGE_MCB)&RemainingMcb );
 
-            FatDeallocateDiskSpace( IrpContext, Vcb, &RemainingMcb, ((FcbOrDcb->FcbState & FCB_STATE_ZERO_ON_DEALLOCATION) != 0) );
+            FatDeallocateDiskSpace( IrpContext, Vcb, (PLARGE_MCB)&RemainingMcb, ((FcbOrDcb->FcbState & FCB_STATE_ZERO_ON_DEALLOCATION) != 0) );
 
-            FsRtlUninitializeLargeMcb( &RemainingMcb );
+            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&RemainingMcb );
         }
 
     } _SEH2_FINALLY {
@@ -1658,7 +1658,7 @@ Return Value:
 
             if ( UnwindWeAllocatedMcb ) {
 
-                FsRtlUninitializeLargeMcb( &RemainingMcb );
+                FsRtlUninitializeLargeMcb( (PLARGE_MCB)&RemainingMcb );
             }
 
             //
@@ -2700,7 +2700,7 @@ Return Value:
 
             for ( McbIndex = 0; McbIndex < RunsInMcb; McbIndex++ ) {
 
-                FatGetNextMcbEntry( Vcb, Mcb, McbIndex, &Vbo, (PLBO)&Lbo, &ByteCount );
+                FatGetNextMcbEntry( Vcb, Mcb, McbIndex, (PVBO)&Vbo, (PLBO)&Lbo, (PULONG)&ByteCount );
 
                 //
                 //  Assert that Fat files have no holes.
@@ -2865,7 +2865,7 @@ Return Value:
 
         for ( McbIndex = 0; McbIndex < RunsInMcb; McbIndex++ ) {
 
-            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, &Vbo, (PLBO)&Lbo, &ByteCount );
+            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, (PVBO)&Vbo, (PLBO)&Lbo, (PULONG)&ByteCount );
 
             //
             //  Assert that Fat files have no holes.
@@ -2913,7 +2913,7 @@ Return Value:
             ULONG i = 0;
 #endif
 
-            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, &Vbo, (PLBO)&Lbo, &ByteCount );
+            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, (PVBO)&Vbo, (PLBO)&Lbo, (PULONG)&ByteCount );
 
             //
             //  Mark the bits clear in the FreeClusterBitMap.
@@ -3104,7 +3104,7 @@ Return Value:
 
             for (Index = 0; Index <= McbIndex; Index++) {
 
-                FatGetNextMcbEntry(Vcb, Mcb, Index, &LocalVbo, &LocalLbo, &ByteCount);
+                FatGetNextMcbEntry(Vcb, Mcb, Index, &LocalVbo, &LocalLbo, (PULONG)&ByteCount);
 
                 if (ByteCount == 0xFFFFFFFF) {
 
@@ -3277,7 +3277,7 @@ Return Value:
         SourceVbo = SplitAtVbo;
         TargetVbo = 0;
 
-        while (FatLookupMcbEntry(Vcb, Mcb, SourceVbo, &Lbo, &ByteCount, NULL)) {
+        while (FatLookupMcbEntry(Vcb, Mcb, SourceVbo, (PLBO)&Lbo, (PULONG)&ByteCount, NULL)) {
 
             FatAddMcbEntry( Vcb, RemainingMcb, TargetVbo, Lbo, ByteCount );
 

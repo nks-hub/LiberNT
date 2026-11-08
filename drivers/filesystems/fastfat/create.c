@@ -1148,10 +1148,10 @@ Return Value:
                 //  we have to try with the UNICODE name instead.
                 //
 
-                FatEnsureStringBufferEnough( &OemFinalName,
+                FatEnsureStringBufferEnough( (PVOID)&OemFinalName,
                                              FinalName.Length);
 
-                Status = RtlUpcaseUnicodeStringToCountedOemString( &OemFinalName, &FinalName, FALSE );
+                Status = RtlUpcaseUnicodeStringToCountedOemString( (POEM_STRING)&OemFinalName, &FinalName, FALSE );
 
 
                 if (NT_SUCCESS(Status)) {
@@ -1187,13 +1187,13 @@ Return Value:
                     // strucsup.c, FatConstructNamesInFcb()).
                     //
 
-                    FatEnsureStringBufferEnough( &UpcasedFinalName,
+                    FatEnsureStringBufferEnough( (PVOID)&UpcasedFinalName,
                                                  FinalName.Length);
 
-                    Status = RtlDowncaseUnicodeString(&UpcasedFinalName, &FinalName, FALSE );
+                    Status = RtlDowncaseUnicodeString((PUNICODE_STRING)&UpcasedFinalName, &FinalName, FALSE );
                     NT_ASSERT( NT_SUCCESS( Status ));
 
-                    Status = RtlUpcaseUnicodeString( &UpcasedFinalName, &UpcasedFinalName, FALSE );
+                    Status = RtlUpcaseUnicodeString( (PUNICODE_STRING)&UpcasedFinalName, (PCUNICODE_STRING)&UpcasedFinalName, FALSE );
                     NT_ASSERT( NT_SUCCESS( Status ));
 
 
@@ -1375,7 +1375,7 @@ Return Value:
                                            DeleteOnClose,
                                            OpenRequiringOplock,
                                            FileNameOpenedDos,
-                                           &OplockPostIrp );
+                                           (PBOOLEAN)&OplockPostIrp );
 
                 if (Iosb.Status != STATUS_PENDING) {
 
@@ -1438,7 +1438,7 @@ Return Value:
                                            DeleteOnClose,
                                            OpenRequiringOplock,
                                            FileNameOpenedDos,
-                                           &OplockPostIrp );
+                                           (PBOOLEAN)&OplockPostIrp );
 
                 if (Iosb.Status != STATUS_PENDING) {
 
@@ -1550,10 +1550,10 @@ Return Value:
                 //  name instead.
                 //
 
-                FatEnsureStringBufferEnough( &OemFinalName,
+                FatEnsureStringBufferEnough( (PVOID)&OemFinalName,
                                              FinalName.Length);
 
-                Status = RtlUpcaseUnicodeStringToCountedOemString( &OemFinalName, &FinalName, FALSE );
+                Status = RtlUpcaseUnicodeStringToCountedOemString( (POEM_STRING)&OemFinalName, &FinalName, FALSE );
             }
 
             if (NT_SUCCESS(Status)) {
@@ -1610,10 +1610,10 @@ Return Value:
             DebugTrace(0, Dbg, "FinalName is %wZ\n", &FinalName);
             DebugTrace(0, Dbg, "RemainingPart is %wZ\n", &RemainingPart);
 
-            FatEnsureStringBufferEnough( &UpcasedFinalName,
+            FatEnsureStringBufferEnough( (PVOID)&UpcasedFinalName,
                                          FinalName.Length);
 
-            if (!NT_SUCCESS(Status = RtlUpcaseUnicodeString( &UpcasedFinalName, &FinalName, FALSE))) {
+            if (!NT_SUCCESS(Status = RtlUpcaseUnicodeString( (PUNICODE_STRING)&UpcasedFinalName, &FinalName, FALSE))) {
 
                 try_return( Iosb.Status = Status );
             }
@@ -1630,10 +1630,10 @@ Return Value:
                              0,
                              &MatchFlags,
                              &Dirent,
-                             &DirentBcb,
+                             (PBCB *)&DirentBcb,
                              (PVBO)&DirentByteOffset,
                              &FileNameOpenedDos,
-                             &Lfn,
+                             (PUNICODE_STRING)&Lfn,
                              &OrigLfn);
 
             //
@@ -1690,7 +1690,7 @@ Return Value:
                                       LfnByteOffset,
                                       DirentByteOffset,
                                       Dirent,
-                                      &Lfn );
+                                      (PUNICODE_STRING)&Lfn );
 
             //
             //  Remember we created this Dcb for error recovery.
@@ -1758,7 +1758,7 @@ Return Value:
                                                  Dirent,
                                                  LfnByteOffset,
                                                  DirentByteOffset,
-                                                 &Lfn,
+                                                 (PUNICODE_STRING)&Lfn,
                                                  DesiredAccess,
                                                  ShareAccess,
                                                  CreateDisposition,
@@ -1798,7 +1798,7 @@ Return Value:
                                         Dirent,
                                         LfnByteOffset,
                                         DirentByteOffset,
-                                        &Lfn,
+                                        (PUNICODE_STRING)&Lfn,
                                         &OrigLfn,
                                         DesiredAccess,
                                         ShareAccess,
@@ -1903,7 +1903,7 @@ Return Value:
                                           FileObject,
                                           Vcb,
                                           ParentDcb,
-                                          &OemFinalName,
+                                          (POEM_STRING)&OemFinalName,
                                           &FinalName,
                                           DesiredAccess,
                                           ShareAccess,
@@ -1952,7 +1952,7 @@ Return Value:
                                  FileObject,
                                  Vcb,
                                  ParentDcb,
-                                 &OemFinalName,
+                                 (POEM_STRING)&OemFinalName,
                                  &FinalName,
                                  DesiredAccess,
                                  ShareAccess,

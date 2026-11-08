@@ -1175,7 +1175,7 @@ Return Value:
             FatLocateVolumeLabel( IrpContext,
                                   Vcb,
                                   &Dirent,
-                                  &DirentBcb,
+                                  (PBCB *)&DirentBcb,
                                   (PVBO)&ByteOffset );
 
             //
@@ -1195,7 +1195,7 @@ Return Value:
                                               Vcb->RootDcb,
                                               ByteOffset,
                                               sizeof(DIRENT),
-                                              &DirentBcb,
+                                              (PBCB *)&DirentBcb,
 #ifndef __REACTOS__
                                               &Dirent,
 #else
@@ -1252,7 +1252,7 @@ Return Value:
             FatLocateVolumeLabel( IrpContext,
                                   Vcb,
                                   &Dirent,
-                                  &DirentBcb,
+                                  (PBCB *)&DirentBcb,
                                   (PVBO)&ByteOffset );
 
             //

@@ -2286,7 +2286,7 @@ CdFastIoClientRequest(
     {
         if (PreviousMode != KernelMode)
             ProbeForRead(InputBuffer, sizeof(Header), sizeof(UCHAR));
-        RtlCopyMemory(&Header, InputBuffer, sizeof(Header));
+        RtlCopyMemory((void *)&Header, InputBuffer, sizeof(Header));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

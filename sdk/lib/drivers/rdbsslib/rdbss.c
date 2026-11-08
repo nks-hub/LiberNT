@@ -1956,7 +1956,7 @@ RxCommonCleanup(
     FileObject = Context->CurrentIrpSp->FileObject;
     ASSERT(!BooleanFlagOn(FileObject->Flags, FO_CLEANUP_COMPLETE));
 
-    RxMarkFobxOnCleanup(Fobx, &NeedPurge);
+    RxMarkFobxOnCleanup(Fobx, (PBOOLEAN)&NeedPurge);
 
     Status = RxAcquireExclusiveFcb(Context, Fcb);
     if (!NT_SUCCESS(Status))
@@ -3306,7 +3306,7 @@ RxCommonRead(
             }
 
             ExAcquireResourceSharedLite(Fcb->Header.PagingIoResource, TRUE);
-            CcFlushCache(FileObject->SectionObjectPointer, &ByteOffset, ReadLength, &Irp->IoStatus);
+            CcFlushCache(FileObject->SectionObjectPointer, (PLARGE_INTEGER)&ByteOffset, ReadLength, &Irp->IoStatus);
             RxReleasePagingIoResource(RxContext, Fcb);
 
             if (!NT_SUCCESS(Irp->IoStatus.Status))
@@ -3452,7 +3452,7 @@ RxCommonRead(
                 ASSERT(FALSE);
                 ASSERT(CanWait);
 
-                CcMdlRead(FileObject, &ByteOffset, ReadLength, &Irp->MdlAddress, &Irp->IoStatus);
+                CcMdlRead(FileObject, (PLARGE_INTEGER)&ByteOffset, ReadLength, &Irp->MdlAddress, &Irp->IoStatus);
                 Status = Irp->IoStatus.Status;
                 ASSERT(NT_SUCCESS(Status));
             }
@@ -3471,7 +3471,7 @@ RxCommonRead(
                 RxItsTheSameContext();
 
                 /* Perform the read */
-                if (!CcCopyRead(FileObject, &ByteOffset, ReadLength, CanWait, SystemBuffer, &Irp->IoStatus))
+                if (!CcCopyRead(FileObject, (PLARGE_INTEGER)&ByteOffset, ReadLength, CanWait, SystemBuffer, &Irp->IoStatus))
                 {
                     if (!ReadCachingEnabled)
                     {
@@ -4326,7 +4326,7 @@ RxCommonWrite(
 
         /* Get file sizes */
         ValidDataLength = Fcb->Header.ValidDataLength.QuadPart;
-        RxGetFileSizeWithLock(Fcb, &FileSize);
+        RxGetFileSizeWithLock(Fcb, (PLONGLONG)&FileSize);
         ASSERT(ValidDataLength <= FileSize);
 
         /* If paging IO, we cannot write past file size
@@ -4431,7 +4431,7 @@ RxCommonWrite(
 
             /* Get the sizes again, to be sure they didn't change in the meantime */
             ValidDataLength = Fcb->Header.ValidDataLength.QuadPart;
-            RxGetFileSizeWithLock(Fcb, &FileSize);
+            RxGetFileSizeWithLock(Fcb, (PLONGLONG)&FileSize);
             ASSERT(ValidDataLength <= FileSize);
 
             /* Check we can switch back to async? */
@@ -4521,7 +4521,7 @@ RxCommonWrite(
             }
 
             /* Set the new sizes */
-            RxSetFileSizeWithLock(Fcb, &FileSize);
+            RxSetFileSizeWithLock(Fcb, (PLONGLONG)&FileSize);
             RxAdjustAllocationSizeforCC(Fcb);
 
             /* And inform Cc */
@@ -4701,7 +4701,7 @@ try_exit: NOTHING;
                 ASSERT(Fcb->Header.PagingIoResource != NULL);
 
                 RxAcquirePagingIoResource(RxContext, Fcb);
-                RxSetFileSizeWithLock(Fcb, &InitialFileSize);
+                RxSetFileSizeWithLock(Fcb, (PLONGLONG)&InitialFileSize);
                 RxReleasePagingIoResource(RxContext, Fcb);
 
                 if (FileObject->SectionObjectPointer->SharedCacheMap != NULL)
@@ -4785,7 +4785,7 @@ try_exit: NOTHING;
                 ASSERT(Fcb->Header.PagingIoResource != NULL);
 
                 RxAcquirePagingIoResource(RxContext, Fcb);
-                RxSetFileSizeWithLock(Fcb, &InitialFileSize);
+                RxSetFileSizeWithLock(Fcb, (PLONGLONG)&InitialFileSize);
                 Fcb->Header.ValidDataLength.QuadPart = InitialValidDataLength;
                 RxReleasePagingIoResource(RxContext, Fcb);
 

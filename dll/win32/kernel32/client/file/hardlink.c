@@ -47,7 +47,7 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
     {
         /* Get target UNC path */
         if (!RtlDosPathNameToNtPathName_U(lpExistingFileName,
-                                          &LinkTarget,
+                                          (PUNICODE_STRING)&LinkTarget,
                                           NULL,
                                           NULL))
         {
@@ -58,13 +58,13 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
 
         /* Open target */
         InitializeObjectAttributes(&ObjectAttributes,
-                                   &LinkTarget,
+                                   (PUNICODE_STRING)&LinkTarget,
                                    OBJ_CASE_INSENSITIVE,
                                    NULL,
                                    lpSecurityAttributes ?
                                    lpSecurityAttributes->lpSecurityDescriptor :
                                    NULL);
-        Status = NtOpenFile(&hTarget,
+        Status = NtOpenFile((PHANDLE)&hTarget,
                             SYNCHRONIZE | FILE_WRITE_ATTRIBUTES,
                             &ObjectAttributes,
                             &IoStatusBlock,
@@ -78,7 +78,7 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
         }
 
         /* Get UNC path name for link */
-        if (!RtlDosPathNameToNtPathName_U(lpFileName, &LinkName, NULL, NULL))
+        if (!RtlDosPathNameToNtPathName_U(lpFileName, (PUNICODE_STRING)&LinkName, NULL, NULL))
         {
             /* Set the error and fail */
             SetLastError(ERROR_PATH_NOT_FOUND);

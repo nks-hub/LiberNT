@@ -3854,7 +3854,7 @@ end:
 
     if (set_size) {
         _SEH2_TRY {
-            CcSetFileSizes(FileObject, &ccfs);
+            CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&ccfs);
         } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
             Status = _SEH2_GetExceptionCode();
         } _SEH2_END;

@@ -617,7 +617,7 @@ NtGdiModifyWorldTransform(
         _SEH2_TRY
         {
             ProbeForRead(pxformUnsafe, sizeof(XFORML), 1);
-            RtlCopyMemory(&xformSafe, pxformUnsafe, sizeof(XFORML));
+            RtlCopyMemory((void *)&xformSafe, pxformUnsafe, sizeof(XFORML));
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -627,7 +627,7 @@ NtGdiModifyWorldTransform(
     }
 
     /* Safe to handle kernel mode data. */
-    if (Ret) Ret = GreModifyWorldTransform(pdc, &xformSafe, dwMode);
+    if (Ret) Ret = GreModifyWorldTransform(pdc, (const XFORML *)&xformSafe, dwMode);
     DC_UnlockDc(pdc);
     return Ret;
 }

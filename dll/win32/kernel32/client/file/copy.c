@@ -399,8 +399,8 @@ CopyFileExW(IN LPCWSTR lpExistingFileName,
                                pbCancel,
                                dwCopyFlags,
                                0,
-                               &ExistingHandle,
-                               &NewHandle);
+                               (LPHANDLE)&ExistingHandle,
+                               (LPHANDLE)&NewHandle);
     }
     _SEH2_FINALLY
     {
@@ -471,8 +471,8 @@ PrivCopyFileExW(IN LPCWSTR lpExistingFileName,
                                pbCancel,
                                dwCopyFlags & BASEP_COPY_PUBLIC_MASK,
                                dwCopyFlags & BASEP_COPY_BASEP_MASK,
-                               &ExistingHandle,
-                               &NewHandle);
+                               (LPHANDLE)&ExistingHandle,
+                               (LPHANDLE)&NewHandle);
     }
     _SEH2_FINALLY
     {

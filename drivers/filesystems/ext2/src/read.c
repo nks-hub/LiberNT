@@ -383,7 +383,7 @@ Ext2ReadInode (
                      Offset,
                      RealSize,
                      FALSE,
-                     &Chain
+                     (PEXT2_EXTENT *)&Chain
                  );
 
         if (!NT_SUCCESS(Status)) {

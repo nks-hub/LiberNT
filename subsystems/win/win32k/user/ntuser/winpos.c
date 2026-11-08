@@ -4481,12 +4481,12 @@ NtUserSetInternalWindowPos(
       if (lppt)
       {
          ProbeForRead(lppt, sizeof(POINT), 1);
-         RtlCopyMemory(&pt, lppt, sizeof(POINT));
+         RtlCopyMemory((void *)&pt, lppt, sizeof(POINT));
       }
       if (lprect)
       {
          ProbeForRead(lprect, sizeof(RECT), 1);
-         RtlCopyMemory(&rect, lprect, sizeof(RECT));
+         RtlCopyMemory((void *)&rect, lprect, sizeof(RECT));
       }
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

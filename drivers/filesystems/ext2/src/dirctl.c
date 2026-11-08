@@ -780,7 +780,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                                     EXT3_FEATURE_COMPAT_DIR_INDEX) &&
                 ((EXT3_I(&Mcb->Inode)->i_flags & EXT3_INDEX_FL) ||
                  ((Mcb->Inode.i_size >> BLOCK_BITS) == 1)) ) {
-            int rc = ext3_dx_readdir(&Ccb->filp, Ext2FillEntry, &fc);
+            int rc = ext3_dx_readdir(&Ccb->filp, Ext2FillEntry, (void *)&fc);
             Status = fc.efc_status;
             if (rc != ERR_BAD_DX_DIR) {
                 goto errorout;
@@ -896,7 +896,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
             Unicode.Length = 0;
             RtlZeroMemory(Unicode.Buffer, Unicode.MaximumLength);
 
-            Status = Ext2OEMToUnicode(Vcb, &Unicode, &Oem);
+            Status = Ext2OEMToUnicode(Vcb, (PUNICODE_STRING)&Unicode, &Oem);
             if (!NT_SUCCESS(Status)) {
                 DEBUG(DL_ERR, ( "Ex2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
                 Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -910,12 +910,12 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                         &(Ccb->DirectorySearchPattern)) ?
                     FsRtlIsNameInExpression(
                         &(Ccb->DirectorySearchPattern),
-                        &Unicode,
+                        (PUNICODE_STRING)&Unicode,
                         TRUE,
                         NULL) :
                     !RtlCompareUnicodeString(
                         &(Ccb->DirectorySearchPattern),
-                        &Unicode,
+                        (PCUNICODE_STRING)&Unicode,
                         TRUE)           ) {
 
                 Status = Ext2ProcessEntry(
@@ -928,7 +928,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                              CEILING_ALIGNED(ULONG, fc.efc_start, 8),
                              Length - CEILING_ALIGNED(ULONG, fc.efc_start, 8),
                              ByteOffset,
-                             &Unicode,
+                             (PUNICODE_STRING)&Unicode,
                              &EntrySize,
                              ReturnSingleEntry
                          );

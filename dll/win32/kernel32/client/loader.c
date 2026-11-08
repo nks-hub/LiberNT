@@ -543,7 +543,7 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
             if (!NT_SUCCESS(Status))
             {
                 /* It's not loaded yet - so load it up */
-                Status = BasepLoadLibraryAsDatafile(SearchPath, DllName.Buffer, dwFlags, &hInst);
+                Status = BasepLoadLibraryAsDatafile(SearchPath, DllName.Buffer, dwFlags, (HMODULE *)&hInst);
             }
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

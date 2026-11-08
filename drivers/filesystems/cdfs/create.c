@@ -627,14 +627,14 @@ Return Value:
             //  Go ahead and look this entry up in the path table.
             //
 
-            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
+            CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
             CleanupCompoundPathEntry = TRUE;
 
             FoundEntry = CdFindPathEntry( IrpContext,
                                           CurrentFcb,
                                           &FinalName,
                                           IgnoreCase,
-                                          &CompoundPathEntry );
+                                          (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
             //
             //  If we didn't find the entry then check if the current name
@@ -654,10 +654,10 @@ Return Value:
 
                     if (CleanupFileContext) {
 
-                        CdCleanupFileContext( IrpContext, &FileContext );
+                        CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
                     }
 
-                    CdInitializeFileContext( IrpContext, &FileContext );
+                    CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
                     CleanupFileContext = TRUE;
 
                     FoundEntry = CdFindFileByShortName( IrpContext,
@@ -665,7 +665,7 @@ Return Value:
                                                         &FinalName,
                                                         IgnoreCase,
                                                         ShortNameDirentOffset,
-                                                        &FileContext );
+                                                        (PFILE_ENUM_CONTEXT)&FileContext );
 
                     //
                     //  If we found an entry and it is a directory then look
@@ -680,13 +680,13 @@ Return Value:
                                     CD_ATTRIBUTE_DIRECTORY )) {
 
                             CdCleanupCompoundPathEntry( IrpContext, &CompoundPathEntry );
-                            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
+                            CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
                             FoundEntry = CdFindPathEntry( IrpContext,
                                                           CurrentFcb,
                                                           &FileContext.InitialDirent->Dirent.CdCaseFileName,
                                                           IgnoreCase,
-                                                          &CompoundPathEntry );
+                                                          (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
                             //
                             //  We better find this entry.
@@ -720,7 +720,7 @@ Return Value:
                             //  below.
                             //
 
-                            MatchingName = &FileContext.ShortName;
+                            MatchingName = (PCD_NAME)&FileContext.ShortName;
                             break;
 
                         } else {
@@ -796,7 +796,7 @@ Return Value:
                                                                    &FinalName,
                                                                    IgnoreCase,
                                                                    ShortNameMatch,
-                                                                   &CompoundPathEntry.PathEntry,
+                                                                   (PPATH_ENTRY)&CompoundPathEntry.PathEntry,
                                                                    TRUE,
                                                                    RelatedCcb ));
             }
@@ -812,7 +812,7 @@ Return Value:
                                           &FinalName,
                                           IgnoreCase,
                                           ShortNameMatch,
-                                          &CompoundPathEntry.PathEntry,
+                                          (PPATH_ENTRY)&CompoundPathEntry.PathEntry,
                                           FALSE,
                                           NULL );
 
@@ -829,10 +829,10 @@ Return Value:
 
             if (CleanupFileContext) {
 
-                CdCleanupFileContext( IrpContext, &FileContext );
+                CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
             }
 
-            CdInitializeFileContext( IrpContext, &FileContext );
+            CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
             CleanupFileContext = TRUE;
 
             //

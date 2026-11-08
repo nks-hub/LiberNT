@@ -1683,9 +1683,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1716,9 +1716,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1739,9 +1739,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1772,9 +1772,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1840,9 +1840,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1873,9 +1873,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1903,9 +1903,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1936,9 +1936,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {

@@ -775,7 +775,7 @@ RegisterTargetComponents(VOID)
                                          NULL,
                                          0,
                                          TargetRegistrationCallback,
-                                         &Registration,
+                                         (PVOID)&Registration,
                                          NULL,
                                          NULL))
         {

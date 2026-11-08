@@ -1342,12 +1342,12 @@ RtlpDphReportCorruptedBlock(
     _SEH2_TRY
     {
         PDPH_BLOCK_INFORMATION BlockInfo = (PDPH_BLOCK_INFORMATION)Block - 1;
-        RtlCopyMemory(&SafeInfo, BlockInfo, sizeof(SafeInfo));
+        RtlCopyMemory((PVOID)&SafeInfo, BlockInfo, sizeof(SafeInfo));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
         DPRINT1("ERROR: Could not read DPH_BLOCK_INFORMATION\n");
-        RtlZeroMemory(&SafeInfo, sizeof(SafeInfo));
+        RtlZeroMemory((PVOID)&SafeInfo, sizeof(SafeInfo));
     }
     _SEH2_END;
 

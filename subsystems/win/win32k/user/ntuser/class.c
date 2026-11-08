@@ -2595,7 +2595,7 @@ NtUserRegisterClassExWOW(
         ProbeForRead(lpwcx,
                      sizeof(WNDCLASSEXW),
                      sizeof(ULONG));
-        RtlCopyMemory(&CapturedClassInfo,
+        RtlCopyMemory((void *)&CapturedClassInfo,
                       lpwcx,
                       sizeof(WNDCLASSEXW));
 
@@ -2685,7 +2685,7 @@ InvalidParameter:
     if (!Exception)
     {
         /* Register the class */
-        Ret = UserRegisterClass(&CapturedClassInfo,
+        Ret = UserRegisterClass((const WNDCLASSEXW *)&CapturedClassInfo,
                                 (PUNICODE_STRING)&CapturedName,
                                 (PUNICODE_STRING)&CapturedVersion,
                                 (PUNICODE_STRING)&CapturedMenuName,
@@ -3000,7 +3000,7 @@ NtUserGetClassName (IN HWND hWnd,
     {
         if (Real && Window->fnid && Window->fnid != FNID_MESSAGEWND && !(Window->fnid & FNID_DESTROY))
         {
-           if (LookupFnIdToiCls(Window->fnid, &iCls))
+           if (LookupFnIdToiCls(Window->fnid, (int *)&iCls))
            {
               Atom = gpsi->atomSysClass[iCls];
            }

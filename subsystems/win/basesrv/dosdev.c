@@ -634,7 +634,7 @@ CSR_API(BaseSrvDefineDosDevice)
          */
         if (DriveLetter)
         {
-            Status = GetCallerLuid(&CallerLuid);
+            Status = GetCallerLuid((PLUID)&CallerLuid);
             if (NT_SUCCESS(Status))
             {
                 Broadcast = TRUE;
@@ -713,7 +713,7 @@ CSR_API(BaseSrvDefineDosDevice)
             if (BaseStaticServerData->LUIDDeviceMapsEnabled)
             {
                 /* Check if that's global link */
-                Status = IsGlobalSymbolicLink(LinkHandle, &IsGlobal);
+                Status = IsGlobalSymbolicLink(LinkHandle, (PBOOLEAN)&IsGlobal);
                 if (!NT_SUCCESS(Status))
                 {
                     _SEH2_LEAVE;
@@ -1086,11 +1086,11 @@ CSR_API(BaseSrvDefineDosDevice)
             /* If that's a global drive, broadcast as system */
             if (IsGlobal)
             {
-                RtlCopyLuid(&CallerLuid, &SystemLuid);
+                RtlCopyLuid((PLUID)&CallerLuid, &SystemLuid);
             }
 
             /* Broadcast the event */
-            AddBSMRequest(AbsLetter, RemoveDefinition, &CallerLuid);
+            AddBSMRequest(AbsLetter, RemoveDefinition, (PLUID)&CallerLuid);
 
             /*
              * If we removed drive, and the drive was shadowing a global one
@@ -1100,7 +1100,7 @@ CSR_API(BaseSrvDefineDosDevice)
             {
                 if (CheckForGlobalDriveLetter(AbsLetter))
                 {
-                    AddBSMRequest(AbsLetter, FALSE, &CallerLuid);
+                    AddBSMRequest(AbsLetter, FALSE, (PLUID)&CallerLuid);
                 }
             }
         }

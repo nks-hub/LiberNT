@@ -215,8 +215,8 @@ Return Value:
             //  Initialize the search dirent structures.
             //
 
-            CdInitializeDirContext( IrpContext, &DirContext );
-            CdInitializeDirent( IrpContext, &Dirent );
+            CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
+            CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
 
             //
             //  Otherwise we need to walk the dirents for this file until we find
@@ -245,7 +245,7 @@ Return Value:
             CdLookupDirent( IrpContext,
                             ParentFcb,
                             CdQueryFidDirentOffset( Fcb->FileId ),
-                            &DirContext );
+                            (PDIRENT_ENUM_CONTEXT)&DirContext );
 
             //
             //  If we are adding allocation to the Mcb then add all of it.
@@ -257,7 +257,7 @@ Return Value:
                 //  Update the dirent from the on-disk dirent.
                 //
 
-                CdUpdateDirentFromRawDirent( IrpContext, ParentFcb, &DirContext, &Dirent );
+                CdUpdateDirentFromRawDirent( IrpContext, ParentFcb, (PDIRENT_ENUM_CONTEXT)&DirContext, (PDIRENT)&Dirent );
 
                 //
                 //  Add this dirent to the Mcb if not already present.
@@ -268,7 +268,7 @@ Return Value:
 
                 if (CurrentMcbOffset >= Fcb->Mcb.CurrentEntryCount) {
 
-                    CdAddAllocationFromDirent( IrpContext, Fcb, CurrentMcbOffset, CurrentFileOffset, &Dirent );
+                    CdAddAllocationFromDirent( IrpContext, Fcb, CurrentMcbOffset, CurrentFileOffset, (PDIRENT)&Dirent );
                 }
 
                 CdUnlockFcb( IrpContext, Fcb );
@@ -288,7 +288,7 @@ Return Value:
                 //  the last dirent for a file doesn't exist.
                 //
 
-                if (!CdLookupNextDirent( IrpContext, ParentFcb, &DirContext, &DirContext )) {
+                if (!CdLookupNextDirent( IrpContext, ParentFcb, (PDIRENT_ENUM_CONTEXT)&DirContext, (PDIRENT_ENUM_CONTEXT)&DirContext )) {
 
                     CdRaiseStatus( IrpContext, STATUS_DISK_CORRUPT_ERROR );
                 }

@@ -2198,8 +2198,8 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     uint64_t lockaddr, locklen;
 
-    KeInitializeEvent(&wtc.Event, NotificationEvent, false);
-    InitializeListHead(&wtc.stripes);
+    KeInitializeEvent((PRKEVENT)&wtc.Event, NotificationEvent, false);
+    InitializeListHead((PLIST_ENTRY)&wtc.stripes);
     wtc.stripes_left = 0;
     wtc.parity1 = wtc.parity2 = wtc.scratch = NULL;
     wtc.mdl = wtc.parity1_mdl = wtc.parity2_mdl = NULL;
@@ -2218,7 +2218,7 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
     }
 
     _SEH2_TRY {
-        Status = write_data(Vcb, address, data, length, &wtc, Irp, c, file_write, irp_offset, priority);
+        Status = write_data(Vcb, address, data, length, (write_data_context *)&wtc, Irp, c, file_write, irp_offset, priority);
     } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
         Status = _SEH2_GetExceptionCode();
     } _SEH2_END;
@@ -2229,7 +2229,7 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
         if (c->chunk_item->type & BLOCK_FLAG_RAID5 || c->chunk_item->type & BLOCK_FLAG_RAID6)
             chunk_unlock_range(Vcb, c, lockaddr, locklen);
 
-        free_write_data_stripes(&wtc);
+        free_write_data_stripes((write_data_context *)&wtc);
         return Status;
     }
 
@@ -2250,7 +2250,7 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
         }
 
         if (!no_wait)
-            KeWaitForSingleObject(&wtc.Event, Executive, KernelMode, false, NULL);
+            KeWaitForSingleObject((PVOID)&wtc.Event, Executive, KernelMode, false, NULL);
 
         le = wtc.stripes.Flink;
         while (le != &wtc.stripes) {
@@ -2266,7 +2266,7 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
             le = le->Flink;
         }
 
-        free_write_data_stripes(&wtc);
+        free_write_data_stripes((write_data_context *)&wtc);
     }
 
     if (c->chunk_item->type & BLOCK_FLAG_RAID5 || c->chunk_item->type & BLOCK_FLAG_RAID6)

@@ -469,7 +469,7 @@ co_IntCallDebugHook(PHOOK Hook,
                          sizeof(DEBUGHOOKINFO),
                          1);
 
-            RtlCopyMemory(&Debug,
+            RtlCopyMemory((void *)&Debug,
                           (PVOID)lParam,
                           sizeof(DEBUGHOOKINFO));
         }
@@ -604,7 +604,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                              sizeof(MOUSEHOOKSTRUCTEX),
                              1);
 
-                RtlCopyMemory(&Mouse,
+                RtlCopyMemory((void *)&Mouse,
                               (PVOID)lParam,
                               sizeof(MOUSEHOOKSTRUCTEX));
             }
@@ -680,7 +680,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                  sizeof(KBDLLHOOKSTRUCT),
                                  1);
 
-                    RtlCopyMemory(&Keyboard,
+                    RtlCopyMemory((void *)&Keyboard,
                                   (PVOID)lParam,
                                   sizeof(KBDLLHOOKSTRUCT));
                 }
@@ -720,7 +720,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                  sizeof(MSG),
                                  1);
 
-                    RtlCopyMemory(&Msg,
+                    RtlCopyMemory((void *)&Msg,
                                   (PVOID)lParam,
                                   sizeof(MSG));
                 }
@@ -751,7 +751,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                       1);
 
                         RtlCopyMemory((PVOID)lParam,
-                                      &Msg,
+                                      (const void *)&Msg,
                                       sizeof(MSG));
                     }
                     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -853,7 +853,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                          sizeof(RECT),
                                          1);
 
-                            RtlCopyMemory(&rt,
+                            RtlCopyMemory((void *)&rt,
                                           (PVOID)lParam,
                                           sizeof(RECT));
                         }
@@ -889,7 +889,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                          sizeof(CBTACTIVATESTRUCT),
                                          1);
 
-                            RtlCopyMemory(&CbAs,
+                            RtlCopyMemory((void *)&CbAs,
                                           (PVOID)lParam,
                                           sizeof(CBTACTIVATESTRUCT));
                         }
@@ -937,7 +937,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                  sizeof(EVENTMSG),
                                  1);
 
-                    RtlCopyMemory(&EventMsg,
+                    RtlCopyMemory((void *)&EventMsg,
                                   (PVOID)lParam,
                                   sizeof(EVENTMSG));
                 }
@@ -966,7 +966,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                       1);
 
                         RtlCopyMemory((PVOID)lParam,
-                                      &EventMsg,
+                                      (const void *)&EventMsg,
                                       sizeof(EVENTMSG));
                     }
                     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

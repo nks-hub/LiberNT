@@ -2123,7 +2123,7 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                      FILE_DEVICE_DISK_FILE_SYSTEM,
                      0,
                      FALSE,
-                     &VolumeDeviceObject );
+                     (PDEVICE_OBJECT *)&VolumeDeviceObject );
 
         if (!NT_SUCCESS(Status)) {
             _SEH2_LEAVE;
@@ -2170,7 +2170,7 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
         Vcb->DiskGeometry = DiskGeometry;
         InitializeListHead(&Vcb->Next);
 
-        Status = Ext2LoadSuper(Vcb, FALSE, &Ext2Sb);
+        Status = Ext2LoadSuper(Vcb, FALSE, (PEXT2_SUPER_BLOCK *)&Ext2Sb);
         if (!NT_SUCCESS(Status)) {
             Vcb = NULL;
             Status = STATUS_UNRECOGNIZED_VOLUME;
@@ -2440,7 +2440,7 @@ Ext2VerifyVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         Irp = IrpContext->Irp;
 
-        Status = Ext2LoadSuper(Vcb, TRUE, &ext2_sb);
+        Status = Ext2LoadSuper(Vcb, TRUE, (PEXT2_SUPER_BLOCK *)&ext2_sb);
 
         if (!NT_SUCCESS(Status)) {
             _SEH2_LEAVE;

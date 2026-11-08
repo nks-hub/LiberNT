@@ -1383,7 +1383,7 @@ NtUserSetClipboardData(UINT fmt, HANDLE hData, PSETCLIPBDATA pUnsafeScd)
     _SEH2_TRY
     {
         ProbeForRead(pUnsafeScd, sizeof(*pUnsafeScd), 1);
-        RtlCopyMemory(&scd, pUnsafeScd, sizeof(scd));
+        RtlCopyMemory((void *)&scd, pUnsafeScd, sizeof(scd));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -1395,7 +1395,7 @@ NtUserSetClipboardData(UINT fmt, HANDLE hData, PSETCLIPBDATA pUnsafeScd)
     UserEnterExclusive();
 
     /* Call internal function */
-    hRet = UserSetClipboardData(fmt, hData, &scd);
+    hRet = UserSetClipboardData(fmt, hData, (PSETCLIPBDATA)&scd);
 
     UserLeave();
 

@@ -103,7 +103,7 @@ DxgkpDeliverAcpiEvent(
                         Record->Type,
                         Record->Event,
                         Record->HasArgument ? &Record->Argument : NULL,
-                        &Flags);
+                        (PULONG)&Flags);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

@@ -54,7 +54,7 @@ IntSetClassMenuName(IN PCLS Class,
 
                 /* Create an ANSI copy of the string */
                 AnsiString.Buffer = (PSTR)(strBufW + (MenuName->Length / sizeof(WCHAR)) + 1);
-                Status = RtlUnicodeStringToAnsiString(&AnsiString,
+                Status = RtlUnicodeStringToAnsiString((PANSI_STRING)&AnsiString,
                                                       MenuName,
                                                       FALSE);
                 if (!NT_SUCCESS(Status))

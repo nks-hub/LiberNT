@@ -181,8 +181,8 @@ Return Value:
             //  Initialize the search structures.
             //
 
-            CdInitializeDirContext( IrpContext, &DirContext );
-            CdInitializeDirent( IrpContext, &Dirent );
+            CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
+            CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
             CleanupDirContext = TRUE;
 
             //
@@ -193,9 +193,9 @@ Return Value:
             CdLookupDirent( IrpContext,
                             Fcb,
                             Fcb->StreamOffset,
-                            &DirContext );
+                            (PDIRENT_ENUM_CONTEXT)&DirContext );
 
-            CdUpdateDirentFromRawDirent( IrpContext, Fcb, &DirContext, &Dirent );
+            CdUpdateDirentFromRawDirent( IrpContext, Fcb, (PDIRENT_ENUM_CONTEXT)&DirContext, (PDIRENT)&Dirent );
 
             //
             //  Verify that this really for the self entry.  We do this by
@@ -203,7 +203,7 @@ Return Value:
             //  one of the hard coded names.
             //
 
-            CdUpdateDirentName( IrpContext, &Dirent, FALSE );
+            CdUpdateDirentName( IrpContext, (PDIRENT)&Dirent, FALSE );
 
             if (Dirent.CdFileName.FileName.Buffer != CdUnicodeSelfArray) {
 

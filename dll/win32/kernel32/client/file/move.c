@@ -567,7 +567,7 @@ BasepOpenFileForMove(IN LPCWSTR File,
         RtlInitEmptyUnicodeString(RelativeNtName, NULL, 0);
         *NtName = NULL;
 
-        if (!RtlDosPathNameToRelativeNtPathName_U(File, RelativeNtName, NULL, &RelativeName))
+        if (!RtlDosPathNameToRelativeNtPathName_U(File, RelativeNtName, NULL, (PRTL_RELATIVE_NAME_U)&RelativeName))
         {
             Status = STATUS_OBJECT_PATH_NOT_FOUND;
             _SEH2_LEAVE;
@@ -655,7 +655,7 @@ BasepOpenFileForMove(IN LPCWSTR File,
     {
         if (HasRelative)
         {
-            RtlReleaseRelativeName(&RelativeName);
+            RtlReleaseRelativeName((PRTL_RELATIVE_NAME_U)&RelativeName);
         }
     }
     _SEH2_END;
@@ -750,7 +750,7 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         ReplaceIfExists = !!(dwFlags & MOVEFILE_REPLACE_EXISTING);
 
         /* Get file path */
-        if (!RtlDosPathNameToNtPathName_U(lpExistingFileName, &ExistingPathU, NULL, NULL))
+        if (!RtlDosPathNameToNtPathName_U(lpExistingFileName, (PUNICODE_STRING)&ExistingPathU, NULL, NULL))
         {
             BaseSetLastNTError(STATUS_OBJECT_PATH_NOT_FOUND);
             _SEH2_LEAVE;
@@ -767,7 +767,7 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         /* Unless we manage a proper opening, we'll attempt to reopen without reparse support */
         AttemptReopenWithoutReparse = TRUE;
         InitializeObjectAttributes(&ObjectAttributes,
-                                   &ExistingPathU,
+                                   (PUNICODE_STRING)&ExistingPathU,
                                    OBJ_CASE_INSENSITIVE,
                                    NULL,
                                    NULL);
@@ -851,10 +851,10 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         /* Nullify string if we're to use it */
         if (DelayUntilReboot && !lpNewFileName)
         {
-            RtlInitUnicodeString(&NewPathU, NULL);
+            RtlInitUnicodeString((PUNICODE_STRING)&NewPathU, NULL);
         }
         /* Check whether path exists */
-        else if (!RtlDosPathNameToNtPathName_U(lpNewFileName, &NewPathU, NULL, NULL))
+        else if (!RtlDosPathNameToNtPathName_U(lpNewFileName, (PUNICODE_STRING)&NewPathU, NULL, NULL))
         {
             BaseSetLastNTError(STATUS_OBJECT_PATH_NOT_FOUND);
             _SEH2_LEAVE;
@@ -890,15 +890,15 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
             else
             {
                 /* First, probe 2nd key to see whether it exists - if so, it will be appended there */
-                Status = BasepMoveFileDelayed(&ExistingPathU, &NewPathU, 2, FALSE);
+                Status = BasepMoveFileDelayed((PUNICODE_STRING)&ExistingPathU, (PUNICODE_STRING)&NewPathU, 2, FALSE);
                 if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
                 {
                     /* If doesn't exist, append to first key first, creating it if it doesn't exist */
-                    Status = BasepMoveFileDelayed(&ExistingPathU, &NewPathU, 1, TRUE);
+                    Status = BasepMoveFileDelayed((PUNICODE_STRING)&ExistingPathU, (PUNICODE_STRING)&NewPathU, 1, TRUE);
                     if (Status == STATUS_INSUFFICIENT_RESOURCES)
                     {
                         /* If it failed because it's too big, then create 2nd key and put it there */
-                        Status = BasepMoveFileDelayed(&ExistingPathU, &NewPathU, 2, TRUE);
+                        Status = BasepMoveFileDelayed((PUNICODE_STRING)&ExistingPathU, (PUNICODE_STRING)&NewPathU, 2, TRUE);
                     }
                 }
             }
@@ -1001,7 +1001,7 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
                 Status = BasepNotifyTrackingService((PHANDLE)&ExistingHandle,
                                                     &ObjectAttributes,
                                                     NewHandle,
-                                                    &NewPathU);
+                                                    (PUNICODE_STRING)&NewPathU);
                 if (!NT_SUCCESS(Status))
                 {
                     /* Fail in case it had to succeed */

@@ -2811,7 +2811,7 @@ Return Value:
 
 {
     IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     PDIRENT Dirent;
 
     //
@@ -2898,7 +2898,7 @@ Return Value:
                                       Dcb,
                                       FALSE,
                                       &Dirent,
-                                      &DirentBcb );
+                                      (PBCB *)&DirentBcb );
 
             FatGetNeedEaCount( IrpContext,
                                Vcb,
@@ -3255,7 +3255,7 @@ Return Value:
 {
     IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     PDIRENT Dirent;
 
     ACCESS_MASK AddedAccess = 0;
@@ -3266,7 +3266,7 @@ Return Value:
 
     BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
     PCCB _SEH2_VOLATILE UnwindCcb = NULL;
-    BOOLEAN DecrementFcbOpenCount = FALSE;
+    BOOLEAN _SEH2_VOLATILE DecrementFcbOpenCount = FALSE;
     BOOLEAN _SEH2_VOLATILE FcbAcquired = FALSE;
 
 
@@ -3677,7 +3677,7 @@ Return Value:
                                           Fcb,
                                           FALSE,
                                           &Dirent,
-                                          &DirentBcb );
+                                          (PBCB *)&DirentBcb );
 
                 FatGetNeedEaCount( IrpContext,
                                    Vcb,
@@ -4215,7 +4215,7 @@ Return Value:
     PDCB _SEH2_VOLATILE UnwindDcb = NULL;
     PCCB _SEH2_VOLATILE UnwindCcb = NULL;
 
-    BOOLEAN CountsIncremented = FALSE;
+    BOOLEAN _SEH2_VOLATILE CountsIncremented = FALSE;
 
     UNREFERENCED_PARAMETER( DeleteOnClose );
 #if (NTDDI_VERSION <= NTDDI_WIN7)
@@ -4514,7 +4514,7 @@ Return Value:
 
     PFCB _SEH2_VOLATILE UnwindFcb = NULL;
     PCCB _SEH2_VOLATILE UnwindCcb = NULL;
-    BOOLEAN CountsIncremented = FALSE;
+    BOOLEAN _SEH2_VOLATILE CountsIncremented = FALSE;
 
 
 #if (NTDDI_VERSION < NTDDI_WIN7)
@@ -5697,10 +5697,10 @@ Return Value:
 {
     IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
-    PFCB Fcb = NULL;
+    PFCB _SEH2_VOLATILE Fcb = NULL;
 
-    PDIRENT Dirent = NULL;
-    PBCB DirentBcb = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG DirentsNeeded;
     ULONG DirentByteOffset;
 
@@ -5714,14 +5714,14 @@ Return Value:
     BOOLEAN CreateLfn;
 
     ULONG BytesInFirstPage = 0;
-    ULONG DirentsInFirstPage = 0;
-    PDIRENT FirstPageDirent = NULL;
+    ULONG _SEH2_VOLATILE DirentsInFirstPage = 0;
+    PDIRENT _SEH2_VOLATILE FirstPageDirent = NULL;
 
-    PBCB SecondPageBcb = NULL;
+    PBCB _SEH2_VOLATILE SecondPageBcb = NULL;
     ULONG SecondPageOffset;
-    PDIRENT SecondPageDirent = NULL;
+    PDIRENT _SEH2_VOLATILE SecondPageDirent = NULL;
 
-    BOOLEAN DirentFromPool = FALSE;
+    BOOLEAN _SEH2_VOLATILE DirentFromPool = FALSE;
 
     OEM_STRING ShortName;
     UCHAR ShortNameBuffer[12];
@@ -5745,7 +5745,7 @@ Return Value:
     PDIRENT _SEH2_VOLATILE UnwindDirent = NULL;
     PFCB _SEH2_VOLATILE UnwindFcb = NULL;
     BOOLEAN _SEH2_VOLATILE UnwindAllocation = FALSE;
-    BOOLEAN CountsIncremented = FALSE;
+    BOOLEAN _SEH2_VOLATILE CountsIncremented = FALSE;
     PCCB _SEH2_VOLATILE UnwindCcb = NULL;
 
     ULONG LocalAbnormalTermination = FALSE;
@@ -5879,9 +5879,9 @@ Return Value:
                                       ParentDcb,
                                       DirentByteOffset,
                                       sizeof(DIRENT),
-                                      &DirentBcb,
+                                      (PBCB *)&DirentBcb,
 #ifndef __REACTOS__
-                                      &Dirent,
+                                      (PDIRENT *)&Dirent,
 #else
                                       (PVOID *)&Dirent,
 #endif
@@ -5915,9 +5915,9 @@ Return Value:
                                           ParentDcb,
                                           SecondPageOffset,
                                           sizeof(DIRENT),
-                                          &SecondPageBcb,
+                                          (PBCB *)&SecondPageBcb,
 #ifndef __REACTOS__
-                                          &SecondPageDirent,
+                                          (PDIRENT *)&SecondPageDirent,
 #else
                                           (PVOID *)&SecondPageDirent,
 #endif
@@ -6411,11 +6411,11 @@ Return Value:
     IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     PDIRENT Dirent;
-    PBCB DirentBcb;
+    PBCB _SEH2_VOLATILE DirentBcb;
 
     USHORT EaHandle = 0;
     BOOLEAN EaChange = FALSE;
-    BOOLEAN ReleasePaging = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleasePaging = FALSE;
 
     PCCB Ccb;
 
@@ -6577,7 +6577,7 @@ Return Value:
                                   Fcb,
                                   FALSE,
                                   &Dirent,
-                                  &DirentBcb );
+                                  (PBCB *)&DirentBcb );
         //
         //  We should get the dirent since this Fcb is in good condition, verified as
         //  we crawled down the prefix tree.

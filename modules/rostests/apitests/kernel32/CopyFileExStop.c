@@ -93,7 +93,6 @@ test_Stop(DWORD Flags, DWORD Action)
     ok(DestMissing(), "Flags 0x%lx, action %lu: the stopped copy left its destination (%lu)\n",
        Flags, Action, GetLastError());
 
-    /* On a local disk the copy starts again from the beginning */
     Ret = Copy(Flags, 0, PROGRESS_CONTINUE);
     ok(Ret, "Flags 0x%lx, action %lu: copy after the stop failed (%lu)\n", Flags, Action, GetLastError());
     ok(FirstReport == 0, "Flags 0x%lx, action %lu: first report after the stop at %I64d\n",
@@ -171,7 +170,6 @@ START_TEST(CopyFileExStop)
         return;
     }
 
-    /* COPY_FILE_RESTARTABLE changes nothing when both files are local */
     test_Stop(0, PROGRESS_STOP);
     test_Stop(COPY_FILE_RESTARTABLE, PROGRESS_STOP);
     test_Stop(0, PROGRESS_CANCEL);

@@ -599,7 +599,7 @@ Return Value:
 
                 FatGetUnicodeNameFromFcb( IrpContext,
                                           TmpFcb,
-                                          &Lfn );
+                                          (PUNICODE_STRING)&Lfn );
 
                 TmpBuffer -= Lfn.Length / sizeof(WCHAR);
 
@@ -825,7 +825,7 @@ Return Value:
                                           Parent,
                                           ShortName,
                                           &Dirent,
-                                          &Bcb,
+                                          (PBCB *)&Bcb,
                                           (PVBO)&ByteOffset );
 
                 if (Bcb == NULL) {

@@ -781,10 +781,10 @@ Return Value:
                              CurrentVbo,
                              &MatchFlags,
                              &Dirent,
-                             &Bcb,
+                             (PBCB *)&Bcb,
                              &NextVbo,
                              &FileNameDos,
-                             &LongFileName,
+                             (PUNICODE_STRING)&LongFileName,
                              &OrigFileName );
 
             //
@@ -975,7 +975,7 @@ Return Value:
 
                     Status = RtlOemToUnicodeN( (PWCH)&Buffer[NextEntry + BaseLength],
                                                BytesRemainingInBuffer - BaseLength,
-                                               &BytesConverted,
+                                               (PULONG)&BytesConverted,
                                                Fat8Dot3String.Buffer,
                                                Fat8Dot3String.Length );
 
@@ -1291,7 +1291,7 @@ Return Value:
         //  Free any dynamically allocated string buffer
         //
 
-        FatFreeStringBuffer( &LongFileName);
+        FatFreeStringBuffer( (PVOID)&LongFileName);
 
         //
         //  Perform any cleanup.  If this is the first query, then store

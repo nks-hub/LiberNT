@@ -1195,7 +1195,7 @@ Return Value:
                                Vcb,
                                0,                          // Starting Byte
                                sizeof(PACKED_BOOT_SECTOR),
-                               &BootBcb,
+                               (PBCB *)&BootBcb,
                                (PVOID *)&BootSector );
 
         } _SEH2_EXCEPT( Vpb->RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
@@ -1421,7 +1421,7 @@ Return Value:
         FatLocateVolumeLabel( IrpContext,
                               Vcb,
                               &Dirent,
-                              &DirentBcb,
+                              (PBCB *)&DirentBcb,
                               (PVBO)&ByteOffset );
 
         if (Dirent != NULL) {

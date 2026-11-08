@@ -673,7 +673,7 @@ Return Value:
                                               Fcb,
                                               FALSE,
                                               &Dirent,
-                                              &DirentBcb );
+                                              (PBCB *)&DirentBcb );
 
 
                     CorrectedFileSize = Fcb->Header.FileSize.LowPart;
@@ -898,16 +898,16 @@ Return Value:
             _SEH2_TRY {
 
                 if (CcPinRead( Vcb->VirtualVolumeFile,
-                               &Offset,
+                               (PLARGE_INTEGER)&Offset,
                                PAGE_SIZE,
                                PIN_WAIT | PIN_IF_BCB,
-                               &Bcb,
-                               &DontCare )) {
+                               (PVOID *)&Bcb,
+                               (PVOID *)&DontCare )) {
 
                     CcSetDirtyPinnedData( Bcb, NULL );
                     CcRepinBcb( Bcb );
                     CcUnpinData( Bcb );
-                    CcUnpinRepinnedBcb( Bcb, TRUE, &Iosb );
+                    CcUnpinRepinnedBcb( Bcb, TRUE, (PIO_STATUS_BLOCK)&Iosb );
 
                     if (!NT_SUCCESS(Iosb.Status)) {
 
@@ -933,16 +933,16 @@ Return Value:
         _SEH2_TRY {
 
             if (CcPinRead( Vcb->VirtualVolumeFile,
-                           &Offset,
+                           (PLARGE_INTEGER)&Offset,
                            FatBytesPerFat( &Vcb->Bpb ),
                            PIN_WAIT | PIN_IF_BCB,
-                           &Bcb,
-                           &DontCare )) {
+                           (PVOID *)&Bcb,
+                           (PVOID *)&DontCare )) {
 
                 CcSetDirtyPinnedData( Bcb, NULL );
                 CcRepinBcb( Bcb );
                 CcUnpinData( Bcb );
-                CcUnpinRepinnedBcb( Bcb, TRUE, &Iosb );
+                CcUnpinRepinnedBcb( Bcb, TRUE, (PIO_STATUS_BLOCK)&Iosb );
 
                 if (!NT_SUCCESS(Iosb.Status)) {
 

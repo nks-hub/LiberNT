@@ -2056,7 +2056,7 @@ Return Value:
                                   Fcb,
                                   FALSE,
                                   &Dirent,
-                                  &DirentBcb );
+                                  (PBCB *)&DirentBcb );
         //
         //  Check if the user specified a non-zero creation time
         //
@@ -3340,7 +3340,7 @@ Return Value:
                              0,
                              &Flags,
                              &TargetDirent,
-                             &TargetDirentBcb,
+                             (PBCB *)&TargetDirentBcb,
                              (PVBO)&TargetDirentOffset,
                              NULL,
                              &TargetLfn,
@@ -3527,7 +3527,7 @@ Return Value:
             //  Capture a copy of the source dirent.
             //
 
-            FatGetDirentFromFcbOrDcb( IrpContext, Fcb, FALSE, &OldDirent, &OldDirentBcb );
+            FatGetDirentFromFcbOrDcb( IrpContext, Fcb, FALSE, &OldDirent, (PBCB *)&OldDirentBcb );
 
             Dirent = *OldDirent;
 
@@ -3611,7 +3611,7 @@ Return Value:
                                           TargetDcb,
                                           NewOffset,
                                           sizeof(DIRENT),
-                                          &NewDirentBcb,
+                                          (PBCB *)&NewDirentBcb,
 #ifndef __REACTOS__
                                           &NewDirent,
 #else
@@ -3641,7 +3641,7 @@ Return Value:
                                               TargetDcb,
                                               SecondPageOffset,
                                               sizeof(DIRENT),
-                                              &SecondPageBcb,
+                                              (PBCB *)&SecondPageBcb,
 #ifndef __REACTOS__
                                               &SecondPageDirent,
 #else
@@ -3842,7 +3842,7 @@ Return Value:
                                               Fcb,
                                               sizeof(DIRENT),
                                               sizeof(DIRENT),
-                                              &DotDotBcb,
+                                              (PBCB *)&DotDotBcb,
 #ifndef __REACTOS__
                                               &DotDotDirent,
 #else
@@ -5035,7 +5035,7 @@ FatRenameEAs (
             FatGetEaFile( IrpContext,
                           Vcb,
                           &EaDirent,
-                          &EaBcb,
+                          (PBCB *)&EaBcb,
                           FALSE,
                           FALSE );
 

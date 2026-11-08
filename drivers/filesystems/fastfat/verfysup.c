@@ -924,7 +924,7 @@ Return Value:
                        &Offset,
                        PinLength,
                        TRUE,
-                       &Bcb,
+                       (PVOID *)&Bcb,
                        (PVOID *)&Sector );
 
             DbgDoit( IrpContext->PinCount += 1 )

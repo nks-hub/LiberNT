@@ -163,11 +163,6 @@ KsecRandomSetCounter(
     Input[15] = PerformanceCounter.HighPart;
 }
 
-/*
- * Callable at IRQL <= DISPATCH_LEVEL with a buffer that is resident at that
- * IRQL. The lock only covers taking the key, reserving the block counters and
- * replacing the key; the output is generated afterwards from the old key.
- */
 NTSTATUS
 NTAPI
 KsecGenRandom(

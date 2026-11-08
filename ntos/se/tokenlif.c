@@ -1691,6 +1691,7 @@ NtCreateToken(
     LUID LocalAuthenticationId;
     TOKEN_SOURCE LocalTokenSource;
     SECURITY_QUALITY_OF_SERVICE LocalSecurityQos = {0};
+    PSECURITY_QUALITY_OF_SERVICE CapturedQos;
     PLUID_AND_ATTRIBUTES CapturedPrivileges = NULL;
     PSID_AND_ATTRIBUTES CapturedUser = NULL;
     PSID_AND_ATTRIBUTES CapturedGroups = NULL;
@@ -1715,13 +1716,13 @@ NtCreateToken(
                 ProbeForRead(ObjectAttributes,
                              sizeof(OBJECT_ATTRIBUTES),
                              sizeof(ULONG));
-                /* The quality of service is optional; a primary token does not need it */
-                if (ObjectAttributes->SecurityQualityOfService != NULL)
+                CapturedQos = ObjectAttributes->SecurityQualityOfService;
+                if (CapturedQos != NULL)
                 {
-                    ProbeForRead(ObjectAttributes->SecurityQualityOfService,
+                    ProbeForRead(CapturedQos,
                                  sizeof(SECURITY_QUALITY_OF_SERVICE),
                                  sizeof(ULONG));
-                    LocalSecurityQos = *(SECURITY_QUALITY_OF_SERVICE*)ObjectAttributes->SecurityQualityOfService;
+                    LocalSecurityQos = *CapturedQos;
                 }
             }
 

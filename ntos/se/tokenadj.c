@@ -288,14 +288,13 @@ SepAdjustGroups(
         /* Does the caller want to reset groups to default states? */
         if (ResetToDefaultStates)
         {
-            /* A group is enabled exactly when it is enabled by default */
             NewAttributes = Attributes & ~SE_GROUP_ENABLED;
             if (Attributes & SE_GROUP_ENABLED_BY_DEFAULT)
                 NewAttributes |= SE_GROUP_ENABLED;
         }
         else
         {
-            /* Look for this group in the provided list */
+            /* Loop the provided groups in the list then */
             for (GroupsInList = 0; GroupsInList < NewStateCount; GroupsInList++)
             {
                 if (RtlEqualSid(Token->UserAndGroups[GroupsInToken].Sid,
@@ -305,11 +304,9 @@ SepAdjustGroups(
                 }
             }
 
-            /* The caller does not change this group */
             if (GroupsInList == NewStateCount)
                 continue;
 
-            /* A mandatory group cannot be disabled */
             if ((Attributes & SE_GROUP_MANDATORY) &&
                 (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED) == 0)
             {
@@ -317,7 +314,6 @@ SepAdjustGroups(
                 return STATUS_CANT_DISABLE_MANDATORY;
             }
 
-            /* A group for deny only cannot be enabled */
             if ((Attributes & SE_GROUP_USE_FOR_DENY_ONLY) &&
                 (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED))
             {
@@ -325,11 +321,10 @@ SepAdjustGroups(
                 return STATUS_CANT_ENABLE_DENY_ONLY;
             }
 
-            /* Only the enabled state comes from the caller */
             NewAttributes = (NewState[GroupsInList].Attributes & SE_GROUP_ENABLED) |
                             (Attributes & ~SE_GROUP_ENABLED);
 
-            /* Count the group that we found */
+            /* Count the group that we found it */
             GroupsCount++;
         }
 
@@ -344,7 +339,6 @@ SepAdjustGroups(
             SidLength = RtlLengthSid(Token->UserAndGroups[GroupsInToken].Sid);
             if (PreviousGroupsState != NULL)
             {
-                /* The caller gets its own copy of the SID, placed after the array */
                 RtlCopySid(SidLength, PreviousSids, Token->UserAndGroups[GroupsInToken].Sid);
                 PreviousGroupsState->Groups[ChangeCount].Sid = PreviousSids;
                 PreviousGroupsState->Groups[ChangeCount].Attributes = Attributes;
@@ -370,7 +364,7 @@ SepAdjustGroups(
         PreviousGroupsState->GroupCount = ChangeCount;
     }
 
-    /* Report the number of changed groups and the length of their SIDs */
+    /* Report the number of changed groups */
     *ChangedGroups = ChangeCount;
     *ChangedSidsLength = SidsLength;
 
@@ -825,7 +819,7 @@ NtAdjustGroupsToken(
     /* Does the caller want the previous state of groups? */
     if (PreviousState != NULL)
     {
-        /* Calculate the required length, the SIDs follow the array */
+        /* Calculate the required length */
         RequiredLength = FIELD_OFFSET(TOKEN_GROUPS, Groups[ChangeCount]) + SidsLength;
 
         /* Return the required length to the caller */

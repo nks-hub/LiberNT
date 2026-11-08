@@ -18,7 +18,6 @@ typedef DWORD (WINAPI *PFN_NCI_SET)(const GUID *, PCWSTR);
 static PFN_NCI_GET pNciGetConnectionName;
 static PFN_NCI_SET pNciSetConnectionName;
 
-/* GUIDs and names of up to two connections that are not loopback */
 static ULONG
 GetConnections(GUID *Guids, WCHAR Names[][256])
 {
@@ -91,7 +90,6 @@ START_TEST(NciConnectionName)
     ok(Error == NO_ERROR, "NciGetConnectionName returned %lu\n", Error);
     ok(Error != NO_ERROR || !lstrcmpW(Name, Names[0]), "Name %S, expected %S\n", Name, Names[0]);
 
-    /* The name it already has; nothing changes */
     Error = pNciSetConnectionName(&Guids[0], Names[0]);
     ok(Error == NO_ERROR, "Setting the current name returned %lu\n", Error);
 
@@ -100,7 +98,6 @@ START_TEST(NciConnectionName)
         skip("A second connection is needed to test a duplicate name\n");
         return;
     }
-    /* The name of another connection is refused and nothing changes */
     Error = pNciSetConnectionName(&Guids[0], Names[1]);
     trace("Setting the name of another connection returned %lu\n", Error);
     ok(Error != NO_ERROR, "The name of another connection was accepted\n");

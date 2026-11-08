@@ -8,8 +8,6 @@
 #include <windows.h>
 #include <strsafe.h>
 
-/* The name of a connection is the Connection\Name value of its adapter, which
- * the network folder and the NSI interface alias read as well */
 #define NETWORK_CLASS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}"
 #define MAX_CONNECTION_NAME 256
 
@@ -22,10 +20,6 @@ FormatGuid(_In_ const GUID *Guid, _Out_writes_(39) PWSTR Text)
                                       Guid->Data4[4], Guid->Data4[5], Guid->Data4[6], Guid->Data4[7]));
 }
 
-/*
- * ERROR_DUP_NAME when a connection other than Self already uses Name. A
- * connection whose name cannot be read fails the check, as it may use Name.
- */
 static LSTATUS
 CheckNameIsFree(_In_ HKEY Network, _In_ PCWSTR Self, _In_ PCWSTR Name)
 {

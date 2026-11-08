@@ -356,6 +356,16 @@ START_TEST(DriverPackage)
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, L"No Such Printer", NULL, 0);
     ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
 
+    /* A file that already lies in the driver directory under the renamed name is not the install's to touch */
+    {
+        WCHAR DriverDir[MAX_PATH];
+        DWORD Size = sizeof(DriverDir);
+        static const char Keep[] = "not the package file\r\n";
+
+        if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+            ok(WriteTestFile(DriverDir, L"TESTREN.DAT", Keep, sizeof(Keep) - 1), "Cannot write TESTREN.DAT\n");
+    }
+
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, TEST_DRIVER_NAME, NULL, IPDFP_COPY_ALL_FILES);
     ok(hr == S_OK, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
 
@@ -364,19 +374,37 @@ START_TEST(DriverPackage)
     ok(DriverFileExists(L"TESTPKG.GPD"), "TESTPKG.GPD was not copied\n");
     ok(DriverFileExists(L"TESTPKG.DAT"), "TESTPKG.DAT was not copied\n");
 
-    /* CopyFiles installs TESTPKG.DAT a second time as TESTREN.DAT, and keeps no copy outside 3 */
+    /* CopyFiles installs TESTPKG.DAT a second time as TESTREN.DAT; the staging copy goes away */
     ok(DriverFileExists(L"TESTREN.DAT"), "TESTREN.DAT was not copied\n");
     {
-        WCHAR DriverDir[MAX_PATH], Installed[MAX_PATH], Packaged[MAX_PATH];
-        DWORD Size = sizeof(DriverDir);
+        WCHAR DriverDir[MAX_PATH], Installed[MAX_PATH], Packaged[MAX_PATH], Kept[MAX_PATH];
+        DWORD Size = sizeof(DriverDir), Read = 0;
+        WIN32_FIND_DATAW Find;
+        HANDLE hFind, hKept;
+        char Buffer[64] = "";
 
         if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
         {
             StringCchPrintfW(Installed, ARRAYSIZE(Installed), L"%s\\3\\TESTREN.DAT", DriverDir);
             StringCchPrintfW(Packaged, ARRAYSIZE(Packaged), L"%s\\TESTPKG.DAT", Dir);
             ok(FilesMatch(Installed, Packaged), "TESTREN.DAT is not TESTPKG.DAT\n");
-            StringCchPrintfW(Installed, ARRAYSIZE(Installed), L"%s\\TESTREN.DAT", DriverDir);
-            ok(GetFileAttributesW(Installed) == INVALID_FILE_ATTRIBUTES, "%S was left behind\n", Installed);
+
+            StringCchPrintfW(Kept, ARRAYSIZE(Kept), L"%s\\TESTREN.DAT", DriverDir);
+            hKept = CreateFileW(Kept, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+            ok(hKept != INVALID_HANDLE_VALUE, "%S was deleted (%lu)\n", Kept, GetLastError());
+            if (hKept != INVALID_HANDLE_VALUE)
+            {
+                ReadFile(hKept, Buffer, sizeof(Buffer) - 1, &Read, NULL);
+                CloseHandle(hKept);
+                ok(Read == 22 && !memcmp(Buffer, "not the package file", 20), "%S was overwritten\n", Kept);
+            }
+            DeleteFileW(Kept);
+
+            StringCchPrintfW(Kept, ARRAYSIZE(Kept), L"%s\\pkgstage-*", DriverDir);
+            hFind = FindFirstFileW(Kept, &Find);
+            ok(hFind == INVALID_HANDLE_VALUE, "%S was left behind\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+            if (hFind != INVALID_HANDLE_VALUE)
+                FindClose(hFind);
         }
     }
 

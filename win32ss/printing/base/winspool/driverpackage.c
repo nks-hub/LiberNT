@@ -371,16 +371,17 @@ LocatePackageFile(HINF hInf, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, P
 
 /*
  * Full path of the file that gets installed as Name. A file that CopyFiles
- * renames is copied under its new name into the driver directory, where
- * AddPrinterDriverEx takes it from; Staged lists those copies.
+ * renames is copied under its new name into StagingDir, a directory of this
+ * install that the first rename creates below the driver directory;
+ * AddPrinterDriverEx takes it from there. Staged lists the copies made.
  */
 static BOOL
 ResolvePackageFile(HINF hInf, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name,
-                   PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
+                   PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
 {
     WCHAR Copy[MAX_PATH];
     PCWSTR Source = Name;
-    DWORD i;
+    DWORD i, Attempt;
 
     for (i = 0; i < Files->Count; i++)
     {
@@ -393,15 +394,40 @@ ResolvePackageFile(HINF hInf, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR Dr
     if (Source == Name)
         return TRUE;
 
-    if (FAILED(StringCchPrintfW(Copy, ARRAYSIZE(Copy), L"%s\\%s", DriverDir, Name)) ||
-        !AddPackageFile(Staged, Copy, NULL) ||
-        !CopyFileW(Path, Copy, FALSE) ||
-        FAILED(StringCchCopyW(Path, PathSize, Copy)))
+    /* A new directory only this install uses, so no file of anybody else is overwritten or deleted */
+    for (Attempt = 0; !*StagingDir && Attempt < 100; Attempt++)
     {
-        ERR("Cannot copy %S as %S (%lu)\n", Source, Name, GetLastError());
+        if (FAILED(StringCchPrintfW(StagingDir, MAX_PATH, L"%s\\pkgstage-%lx-%lx", DriverDir,
+                                    GetCurrentProcessId(), GetTickCount() + Attempt)))
+        {
+            *StagingDir = UNICODE_NULL;
+            break;
+        }
+        if (!CreateDirectoryW(StagingDir, NULL))
+            *StagingDir = UNICODE_NULL;
+    }
+    if (!*StagingDir || FAILED(StringCchPrintfW(Copy, ARRAYSIZE(Copy), L"%s\\%s", StagingDir, Name)))
+    {
+        ERR("No staging directory for %S (%lu)\n", Name, GetLastError());
         return FALSE;
     }
-    return TRUE;
+
+    /* The dependent file list resolves each name twice; the first call made the copy */
+    for (i = 0; i < Staged->Count && _wcsicmp(Staged->Names[i], Copy) != 0; i++);
+    if (i == Staged->Count)
+    {
+        if (!CopyFileW(Path, Copy, TRUE))
+        {
+            ERR("Cannot copy %S as %S (%lu)\n", Source, Name, GetLastError());
+            return FALSE;
+        }
+        if (!AddPackageFile(Staged, Copy, NULL))
+        {
+            DeleteFileW(Copy);
+            return FALSE;
+        }
+    }
+    return SUCCEEDED(StringCchCopyW(Path, PathSize, Copy));
 }
 
 HRESULT WINAPI
@@ -415,6 +441,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     PCWSTR Sections[16];
     DWORD SectionCount = 0, Field, FieldCount, Size, i, j, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 };
+    WCHAR StagingDir[MAX_PATH] = L"";
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
@@ -546,11 +573,11 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         }
     }
 
-    if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DriverFile, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
-        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, ConfigFile, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DataFile, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
+    if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DriverFile, StagingDir, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
+        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, ConfigFile, StagingDir, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DataFile, StagingDir, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
         (*HelpFile &&
-         !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, HelpFile, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
+         !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, HelpFile, StagingDir, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         goto Cleanup;
@@ -559,7 +586,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     /* Every other copied file is a dependent file */
     for (i = 0; i < Files.Count; i++)
     {
-        if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], &Staged,
+        if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -584,7 +611,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             continue;
         }
 
-        ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], &Staged,
+        ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
                            Next, DependentLength - (DWORD)(Next - DependentFiles));
         Next += wcslen(Next) + 1;
     }
@@ -617,6 +644,8 @@ Cleanup:
         DllFreeSplMem(DependentFiles);
     for (i = 0; i < Staged.Count; i++)
         DeleteFileW(Staged.Names[i]);
+    if (*StagingDir)
+        RemoveDirectoryW(StagingDir);
     FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
     for (i = 1; i < SectionCount; i++)

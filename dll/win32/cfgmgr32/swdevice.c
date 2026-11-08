@@ -38,9 +38,9 @@ typedef struct _SW_DEVICE
     HANDLE Thread;
     DWORD ThreadId;
     BOOL Reopened;
-    /* One reference for the handle and one for each call that uses it */
-    volatile LONG ActiveCalls;
-    volatile LONG Closing;
+    /* Under SwDeviceListLock: one reference for the handle and one for each call that uses it */
+    LIST_ENTRY OpenEntry;
+    LONG ActiveCalls;
     HANDLE Idle;
     CRITICAL_SECTION LifetimeLock;
 } SW_DEVICE, *PSW_DEVICE;
@@ -146,33 +146,42 @@ CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source
     return S_OK;
 }
 
+/*
+ * The open handles. A handle is looked up here before anything in it is read,
+ * so a call that races with SwDeviceClose never touches a freed device: Close
+ * takes the device off the list under the same lock.
+ */
+static SRWLOCK SwDeviceListLock = SRWLOCK_INIT;
+static LIST_ENTRY SwDeviceList = { &SwDeviceList, &SwDeviceList };
+
 static BOOL
 EnterSwDevice(_In_ PSW_DEVICE Device)
 {
-    LONG Count = Device->ActiveCalls, Previous;
+    PLIST_ENTRY Entry;
+    BOOL Entered = FALSE;
 
-    /* Once SwDeviceClose dropped the handle reference the count never rises again */
-    for (;;)
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    for (Entry = SwDeviceList.Flink; Entry != &SwDeviceList; Entry = Entry->Flink)
     {
-        if (!Count || Device->Closing)
-            return FALSE;
-        Previous = InterlockedCompareExchange(&Device->ActiveCalls, Count + 1, Count);
-        if (Previous == Count)
-            return TRUE;
-        Count = Previous;
+        if (CONTAINING_RECORD(Entry, SW_DEVICE, OpenEntry) == Device)
+        {
+            Device->ActiveCalls++;
+            Entered = TRUE;
+            break;
+        }
     }
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
+    return Entered;
 }
 
-/*
- * Only the call that drops the last reference touches Device afterwards, and
- * SwDeviceClose, which dropped the handle reference before, frees nothing
- * until that call has set Idle.
- */
+/* SwDeviceClose frees nothing before the call that drops the last reference has set Idle */
 static VOID
 LeaveSwDevice(_In_ PSW_DEVICE Device)
 {
-    if (!InterlockedDecrement(&Device->ActiveCalls))
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    if (!--Device->ActiveCalls)
         SetEvent(Device->Idle);
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
 }
 
 static VOID
@@ -744,12 +753,19 @@ SwDeviceCreate(
         return hr;
     }
 
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    InsertTailList(&SwDeviceList, &Device->OpenEntry);
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
+
     *phSwDevice = (HSWDEVICE)Device;
     if (ResumeThread(Device->Thread) == (DWORD)-1)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
         TerminateThread(Device->Thread, 0);
         CloseHandle(Device->Thread);
+        AcquireSRWLockExclusive(&SwDeviceListLock);
+        RemoveEntryList(&Device->OpenEntry);
+        ReleaseSRWLockExclusive(&SwDeviceListLock);
         FreeSwDevice(Device);
         *phSwDevice = NULL;
         return hr;
@@ -762,16 +778,28 @@ WINAPI
 SwDeviceClose(
     _In_ HSWDEVICE hSwDevice)
 {
-    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    PSW_DEVICE Device = NULL;
+    PLIST_ENTRY Entry;
+    BOOL Wait = FALSE;
 
     TRACE("%p\n", hSwDevice);
 
+    /* Calls that already use the handle finish first; later ones fail */
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    for (Entry = SwDeviceList.Flink; Entry != &SwDeviceList; Entry = Entry->Flink)
+    {
+        if (CONTAINING_RECORD(Entry, SW_DEVICE, OpenEntry) == (PSW_DEVICE)hSwDevice)
+        {
+            Device = (PSW_DEVICE)hSwDevice;
+            RemoveEntryList(&Device->OpenEntry);
+            Wait = --Device->ActiveCalls != 0;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
     if (!Device)
         return;
-
-    /* Calls that already use the handle finish first; later ones fail */
-    InterlockedExchange(&Device->Closing, TRUE);
-    if (InterlockedDecrement(&Device->ActiveCalls))
+    if (Wait)
         WaitForSingleObject(Device->Idle, INFINITE);
 
     /* Let a pending creation finish, unless the callback itself closes the handle */

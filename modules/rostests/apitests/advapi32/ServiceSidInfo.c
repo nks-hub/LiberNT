@@ -46,23 +46,19 @@ START_TEST(ServiceSidInfo)
         return;
     }
 
-    /* A new service has no service SID */
     ok(query_sid_type(service) == SERVICE_SID_TYPE_NONE, "default SID type is not NONE\n");
 
-    /* Size query */
     needed = 0;
     SetLastError(0xdeadbeef);
     res = QueryServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, NULL, 0, &needed);
     ok(!res && GetLastError() == ERROR_INSUFFICIENT_BUFFER, "size query: %d error %lu\n", res, GetLastError());
     ok(needed == sizeof(SERVICE_SID_INFO), "needed = %lu\n", needed);
 
-    /* A service installer sets the SID type right after CreateService */
     info.dwServiceSidType = SERVICE_SID_TYPE_UNRESTRICTED;
     res = ChangeServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);
     ok(res, "ChangeServiceConfig2W(UNRESTRICTED) failed: %lu\n", GetLastError());
     ok(query_sid_type(service) == SERVICE_SID_TYPE_UNRESTRICTED, "SID type is not UNRESTRICTED\n");
 
-    /* Windows accepts RESTRICTED; LiberNT refuses it until restricted tokens are enforced */
     info.dwServiceSidType = SERVICE_SID_TYPE_RESTRICTED;
     SetLastError(0xdeadbeef);
     res = ChangeServiceConfig2A(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);
@@ -70,7 +66,6 @@ START_TEST(ServiceSidInfo)
     expected = res ? SERVICE_SID_TYPE_RESTRICTED : SERVICE_SID_TYPE_UNRESTRICTED;
     ok(query_sid_type(service) == expected, "SID type is not %lu\n", expected);
 
-    /* 2 is not a valid SID type */
     info.dwServiceSidType = 2;
     SetLastError(0xdeadbeef);
     res = ChangeServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);

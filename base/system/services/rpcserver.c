@@ -2270,7 +2270,6 @@ RChangeServiceConfigW(
         goto done;
     }
 
-    /* A service SID needs a process of its own, as SERVICE_CONFIG_SERVICE_SID_INFO says */
     if (dwServiceType != SERVICE_NO_CHANGE && (dwServiceType & SERVICE_WIN32_SHARE_PROCESS) &&
         ScmGetServiceDword(lpService, L"ServiceSidType", SERVICE_SID_TYPE_NONE) != SERVICE_SID_TYPE_NONE)
     {
@@ -5265,11 +5264,6 @@ ScmIsSupportedConfigLevel(DWORD dwInfoLevel)
            dwInfoLevel == SERVICE_CONFIG_TRIGGER_INFO;
 }
 
-/*
- * SERVICE_DELAYED_AUTO_START_INFO, SERVICE_SID_INFO and
- * SERVICE_PRESHUTDOWN_INFO each hold one DWORD, stored in the service key
- * under the value names Windows uses.
- */
 static LPCWSTR
 ScmDwordConfigValueName(DWORD dwInfoLevel)
 {
@@ -5298,8 +5292,6 @@ ScmSetDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, const DWORD *lpValue)
         dwValue != SERVICE_SID_TYPE_NONE &&
         dwValue != SERVICE_SID_TYPE_UNRESTRICTED)
     {
-        /* A restricted service token needs restricting SIDs that the access check
-         * does not evaluate yet; storing the type would promise a sandbox */
         return (dwValue == SERVICE_SID_TYPE_RESTRICTED) ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER;
     }
     if (dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO &&
@@ -5861,7 +5853,6 @@ RChangeServiceConfig2W(
     }
     else if (Info.dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO)
     {
-        /* Only a process that runs one service gets its service SID */
         if (Info.pssid && Info.pssid->dwServiceSidType != SERVICE_SID_TYPE_NONE &&
             !(lpService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
         {

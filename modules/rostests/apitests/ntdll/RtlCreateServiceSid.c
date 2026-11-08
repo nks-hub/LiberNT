@@ -45,7 +45,6 @@ START_TEST(RtlCreateServiceSid)
         return;
     }
 
-    /* The well-known SID of the TrustedInstaller service; the name is not case sensitive */
     CheckServiceSid(L"TrustedInstaller", L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
     CheckServiceSid(L"trustedinstaller", L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
 

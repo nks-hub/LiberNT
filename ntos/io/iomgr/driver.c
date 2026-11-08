@@ -1340,8 +1340,7 @@ IopGetDeviceObjectFromDeviceInstance(PUNICODE_STRING DeviceInstance);
 /*
  * IopInitializeBuiltinDriver
  *
- * Initialize a driver that is already loaded in memory. RegistryPath is the
- * service key the loader recorded for it in the boot driver list.
+ * Initialize a driver that is already loaded in memory.
  */
 CODE_SEG("INIT")
 static

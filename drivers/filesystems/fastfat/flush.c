@@ -557,7 +557,7 @@ Return Value:
     PFCB NextFcb;
 
     PDIRENT Dirent;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
 
     NTSTATUS _SEH2_VOLATILE Status;
     NTSTATUS _SEH2_VOLATILE ReturnStatus = STATUS_SUCCESS;
@@ -823,10 +823,10 @@ Return Value:
 --*/
 
 {
-    PBCB Bcb;
-    PVOID DontCare;
-    IO_STATUS_BLOCK Iosb;
-    LARGE_INTEGER Offset;
+    PBCB _SEH2_VOLATILE Bcb;
+    PVOID _SEH2_VOLATILE DontCare;
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
 
     NTSTATUS _SEH2_VOLATILE ReturnStatus = STATUS_SUCCESS;
 

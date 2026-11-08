@@ -818,7 +818,7 @@ Return Value:
 --*/
 
 {
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     PDIRENT Dirent = NULL;
     NTSTATUS DontCare;
     ULONG Offset;
@@ -1028,7 +1028,7 @@ Retrn Value:
 {
     CCB Ccb;
     PDIRENT Dirent;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     VBO DirentByteOffset;
     BOOLEAN Result = FALSE;
     ULONG Flags = 0;
@@ -1135,7 +1135,7 @@ Return Value:
     UCHAR NameBuffer[12];
 
     BOOLEAN UpcasedLfnValid = FALSE;
-    UNICODE_STRING UpcasedLfn = {0};
+    UNICODE_STRING _SEH2_VOLATILE UpcasedLfn = {0};
     WCHAR LocalLfnBuffer[32];
 
 
@@ -2068,7 +2068,7 @@ Return Value:
 --*/
 
 {
-    PBCB Bcb;
+    PBCB _SEH2_VOLATILE Bcb;
     ULONG ByteOffset;
     PDIRENT Dirent = NULL;
 
@@ -2631,7 +2631,7 @@ Return Value:
     BOOLEAN UpdateDirent = FALSE;
 
     PDIRENT Dirent;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG NotifyFilter = 0;
     FAT_TIME_STAMP CurrentFatTime = {0};
 
@@ -3109,7 +3109,7 @@ Return Value:
 --*/
 
 {
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     PDIRENT Dirent = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -3336,11 +3336,11 @@ Return Value:
     ULONG ReturnValue = 0;
     PFCB _SEH2_VOLATILE Fcb;
 
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     PDIRENT Dirent = NULL;
-    UNICODE_STRING Lfn = {0,0,NULL};
+    UNICODE_STRING _SEH2_VOLATILE Lfn = {0,0,NULL};
 
-    LARGE_MCB Mcb;
+    LARGE_MCB _SEH2_VOLATILE Mcb;
     BOOLEAN _SEH2_VOLATILE McbInitialized = FALSE;
     BOOLEAN InvalidateFcbs = FALSE;
 
@@ -3688,8 +3688,8 @@ Return Value:
              Links != &Dcb->Specific.Dcb.ParentDcbQueue;
              Links = Links->Flink) {
 
-            PBCB TmpBcb = NULL;
-            ULONG TmpOffset = 0;
+            PBCB _SEH2_VOLATILE TmpBcb = NULL;
+            ULONG _SEH2_VOLATILE TmpOffset = 0;
             PDIRENT TmpDirent = NULL;
             ULONG PreviousLfnSpread;
 

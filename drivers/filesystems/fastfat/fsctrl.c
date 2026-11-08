@@ -895,10 +895,10 @@ Return Value:
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( IrpContext->OriginatingIrp );
     NTSTATUS _SEH2_VOLATILE Status = STATUS_INVALID_PARAMETER;
 
-    PBCB BootBcb;
-    PPACKED_BOOT_SECTOR BootSector = NULL;
+    PBCB _SEH2_VOLATILE BootBcb;
+    PPACKED_BOOT_SECTOR _SEH2_VOLATILE BootSector = NULL;
 
-    PBCB DirentBcb;
+    PBCB _SEH2_VOLATILE DirentBcb;
     PDIRENT Dirent;
     ULONG ByteOffset;
 

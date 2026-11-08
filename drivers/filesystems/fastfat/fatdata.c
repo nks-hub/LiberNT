@@ -322,7 +322,7 @@ NTSTATUS
 FatProcessException (
     IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp,
-    IN NTSTATUS ExceptionCode
+    IN NTSTATUS _SEH2_VOLATILE ExceptionCode
     )
 
 /*++

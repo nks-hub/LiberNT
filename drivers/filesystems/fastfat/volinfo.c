@@ -261,8 +261,8 @@ Return Value:
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 FatCommonQueryVolumeInfo (
-    IN PIRP_CONTEXT IrpContext,
-    IN PIRP Irp
+    IN PIRP_CONTEXT _SEH2_VOLATILE IrpContext,
+    IN PIRP _SEH2_VOLATILE Irp
     )
 
 /*++
@@ -1023,7 +1023,7 @@ Return Value:
     NTSTATUS Status;
 
     PDIRENT Dirent;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG ByteOffset;
 
     WCHAR TmpBuffer[11];

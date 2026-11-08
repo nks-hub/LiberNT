@@ -391,7 +391,7 @@ Return Value:
 --*/
 
 {
-    PBCB EaBcb;
+    PBCB _SEH2_VOLATILE EaBcb;
     BOOLEAN _SEH2_VOLATILE LockedEaFcb;
 
     PEA_SET_HEADER _SEH2_VOLATILE EaSetHeader = NULL;
@@ -690,7 +690,7 @@ Return Value:
 --*/
 
 {
-    PBCB EaBcb;
+    PBCB _SEH2_VOLATILE EaBcb;
     BOOLEAN _SEH2_VOLATILE LockedEaFcb;
 
     PAGED_CODE();
@@ -1584,11 +1584,11 @@ Return Value:
     ULONG CbList;
     LARGE_INTEGER FileOffset;
 
-    LARGE_MCB DataMcb;
+    LARGE_MCB _SEH2_VOLATILE DataMcb;
     BOOLEAN _SEH2_VOLATILE UnwindInitializeDataMcb = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindSplitData = FALSE;
 
-    LARGE_MCB TailMcb;
+    LARGE_MCB _SEH2_VOLATILE TailMcb;
     BOOLEAN _SEH2_VOLATILE UnwindInitializeTailMcb = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindSplitTail = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindMergeTail = FALSE;
@@ -2093,7 +2093,7 @@ VOID
 FatAddEaSet (
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN ULONG EaSetLength,
+    IN ULONG _SEH2_VOLATILE EaSetLength,
     IN PBCB EaBcb,
     OUT PDIRENT EaDirent,
     OUT PUSHORT EaHandle,
@@ -2158,22 +2158,22 @@ Return Value:
     PFILE_OBJECT VirtualEaFile = Vcb->VirtualEaFile;
     PFCB EaFcb = Vcb->EaFcb;
 
-    LARGE_MCB EaSetMcb;
+    LARGE_MCB _SEH2_VOLATILE EaSetMcb;
     BOOLEAN _SEH2_VOLATILE UnwindInitializedEaSetMcb = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindAllocatedNewAllocation = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindMergedNewEaSet = FALSE;
 
-    LARGE_MCB EaOffsetMcb;
+    LARGE_MCB _SEH2_VOLATILE EaOffsetMcb;
     BOOLEAN _SEH2_VOLATILE UnwindInitializedOffsetMcb = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindSplitNewAllocation = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindMergedNewOffset = FALSE;
 
-    LARGE_MCB EaTailMcb;
+    LARGE_MCB _SEH2_VOLATILE EaTailMcb;
     BOOLEAN _SEH2_VOLATILE UnwindInitializedTailMcb = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindSplitTail = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindMergedTail = FALSE;
 
-    LARGE_MCB EaInitialEaMcb;
+    LARGE_MCB _SEH2_VOLATILE EaInitialEaMcb;
     BOOLEAN _SEH2_VOLATILE UnwindInitializedInitialEaMcb = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindSplitInitialEa = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindMergedInitialEa = FALSE;

@@ -673,7 +673,7 @@ Arguments:
     ULONG BytesPerCluster;
     ULARGE_INTEGER BytesOnVolume;
 
-    FAT_ENUMERATION_CONTEXT Context;
+    FAT_ENUMERATION_CONTEXT _SEH2_VOLATILE Context;
 
     PAGED_CODE();
 
@@ -1113,9 +1113,9 @@ Arguments:
     PVCB Vcb;
     LARGE_MCB NewMcb = {0};
     PLARGE_MCB _SEH2_VOLATILE McbToCleanup = NULL;
-    PDIRENT Dirent = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
     ULONG _SEH2_VOLATILE NewAllocation = 0;
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     BOOLEAN _SEH2_VOLATILE UnwindWeAllocatedDiskSpace = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindAllocationSizeSet = FALSE;
     BOOLEAN _SEH2_VOLATILE UnwindCacheManagerInformed = FALSE;
@@ -1461,10 +1461,10 @@ Return Value:
 
 {
     PVCB Vcb;
-    PBCB Bcb = NULL;
-    LARGE_MCB RemainingMcb = {0};
+    PBCB _SEH2_VOLATILE Bcb = NULL;
+    LARGE_MCB _SEH2_VOLATILE RemainingMcb = {0};
     ULONG BytesPerCluster;
-    PDIRENT Dirent = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
     BOOLEAN _SEH2_VOLATILE UpdatedDirent = FALSE;
 
     ULONG UnwindInitialAllocationSize;
@@ -2132,15 +2132,15 @@ Arguments:
         //
 
         ULONG Index = 0;
-        ULONG Cluster = 0;
-        ULONG CurrentVbo = 0;
+        ULONG _SEH2_VOLATILE Cluster = 0;
+        ULONG _SEH2_VOLATILE CurrentVbo = 0;
         ULONG PriorLastCluster = 0;
-        ULONG BytesFound = 0;
+        ULONG _SEH2_VOLATILE BytesFound = 0;
 
-        ULONG ClustersFound = 0;
+        ULONG _SEH2_VOLATILE ClustersFound = 0;
         ULONG ClustersRemaining = 0;
 
-        BOOLEAN LockedBitMap = FALSE;
+        BOOLEAN _SEH2_VOLATILE LockedBitMap = FALSE;
         BOOLEAN SelectNextContigWindow = FALSE;
 
         //
@@ -2644,10 +2644,10 @@ Return Value:
 
 {
     LBO _SEH2_VOLATILE Lbo;
-    VBO Vbo;
+    VBO _SEH2_VOLATILE Vbo;
 
     ULONG RunsInMcb;
-    ULONG ByteCount;
+    ULONG _SEH2_VOLATILE ByteCount;
     ULONG ClusterCount = 0;
     ULONG ClusterIndex = 0;
     ULONG _SEH2_VOLATILE McbIndex = 0;
@@ -3221,9 +3221,9 @@ Return Value:
     VBO _SEH2_VOLATILE TargetVbo;
     VBO DontCare;
 
-    LBO Lbo;
+    LBO _SEH2_VOLATILE Lbo;
 
-    ULONG ByteCount;
+    ULONG _SEH2_VOLATILE ByteCount;
 
 #if DBG
     ULONG BytesPerCluster;
@@ -3393,7 +3393,7 @@ Return Value:
 --*/
 
 {
-    VBO SpliceVbo = 0;
+    VBO _SEH2_VOLATILE SpliceVbo = 0;
     LBO SpliceLbo;
 
     VBO SourceVbo;
@@ -3796,7 +3796,7 @@ Arguments:
 
 {
     LBO Lbo;
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     ULONG SectorSize;
     ULONG OffsetIntoVolumeFile;
     ULONG WasWait = TRUE;
@@ -4139,9 +4139,9 @@ VOID
 FatSetFatRun (
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN ULONG StartingFatIndex,
+    IN ULONG _SEH2_VOLATILE StartingFatIndex,
     IN ULONG ClusterCount,
-    IN BOOLEAN ChainTogether
+    IN BOOLEAN _SEH2_VOLATILE ChainTogether
     )
 
 /*++
@@ -4776,7 +4776,7 @@ Return Value:
     FAT_ENTRY FirstFatEntry = FAT_CLUSTER_AVAILABLE;
     PUSHORT FatBuffer;
     PVOID pv;
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     ULONG EntriesPerWindow;
 
     ULONG ClustersThisRun;

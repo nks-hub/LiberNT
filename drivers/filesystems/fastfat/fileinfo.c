@@ -1358,7 +1358,7 @@ Return Value:
 --*/
 
 {
-    PBCB Bcb;
+    PBCB _SEH2_VOLATILE Bcb;
 
     PAGED_CODE();
 
@@ -1972,7 +1972,7 @@ Return Value:
     PFILE_BASIC_INFORMATION Buffer;
 
     PDIRENT Dirent;
-    PBCB DirentBcb;
+    PBCB _SEH2_VOLATILE DirentBcb;
 
     FAT_TIME_STAMP CreationTime = {0};
     UCHAR CreationMSec = 0;
@@ -2775,11 +2775,11 @@ Return Value:
     OEM_STRING NewOemName;
     UCHAR OemNameBuffer[24*2];
 
-    PBCB DotDotBcb;
-    PBCB NewDirentBcb;
-    PBCB OldDirentBcb;
-    PBCB SecondPageBcb;
-    PBCB TargetDirentBcb;
+    PBCB _SEH2_VOLATILE DotDotBcb;
+    PBCB _SEH2_VOLATILE NewDirentBcb;
+    PBCB _SEH2_VOLATILE OldDirentBcb;
+    PBCB _SEH2_VOLATILE SecondPageBcb;
+    PBCB _SEH2_VOLATILE TargetDirentBcb;
 
     PDCB TargetDcb = NULL;
     PDCB OldParentDcb;
@@ -5006,7 +5006,7 @@ FatRenameEAs (
 {
     BOOLEAN _SEH2_VOLATILE LockedEaFcb = FALSE;
 
-    PBCB EaBcb = NULL;
+    PBCB _SEH2_VOLATILE EaBcb = NULL;
     PDIRENT EaDirent;
     EA_RANGE EaSetRange;
     PEA_SET_HEADER EaSetHeader;

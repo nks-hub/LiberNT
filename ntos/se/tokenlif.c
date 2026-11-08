@@ -836,7 +836,6 @@ SepDuplicateToken(
             }
         }
 
-        /* The integrity label moves down when groups before it are removed */
         AccessToken->IntegrityLevelIndex = SepFindIntegrityGroupIndex(AccessToken);
 
         /* Begin querying the privileges and search for disabled ones */

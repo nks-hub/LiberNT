@@ -647,11 +647,7 @@ SwDeviceCreate(
         return E_INVALIDARG;
     }
 
-    /*
-     * The root bus reports the capabilities of its devices and has no way to
-     * take them from here. SilentInstall needs nothing: no UI is shown when
-     * the driver of a software device installs.
-     */
+    /* TODO: Removable and NoDisplayInUI need the root bus to report the capabilities of the device */
     if (pCreateInfo->CapabilityFlags & (SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI))
     {
         FIXME("Capabilities 0x%lx are not supported\n", pCreateInfo->CapabilityFlags);
@@ -885,7 +881,7 @@ SwDevicePropertySet(
     return hr;
 }
 
-/* Device interfaces of software devices need a bus driver that registers them; LiberNT has none yet */
+/* TODO: device interfaces of software devices need a bus driver that registers them */
 HRESULT
 WINAPI
 SwDeviceInterfaceRegister(

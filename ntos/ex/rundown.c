@@ -170,11 +170,7 @@ ExfRundownCompleted(IN PEX_RUNDOWN_REF RunRef)
 {
     PAGED_CODE();
 
-    /*
-     * Drivers also call this on a descriptor that was never run down, to make
-     * ExAcquireRundownProtection fail until ExReInitializeRundownProtection;
-     * release builds of Windows accept it.
-     */
+    /* Mark the counter as active */
     ExpSetRundown(RunRef, EX_RUNDOWN_ACTIVE);
 }
 

@@ -36,10 +36,19 @@ static WORK_QUEUE_ITEM MiPagingFileExtendItem;
 static KEVENT MiPagingFileExtendEvent;
 static volatile LONG MiPagingFileExtendQueued;
 static volatile LONG64 MiPagingFileExtendPages;
-static ULONG64 MiPagingFileExtendFailTime;
+static volatile LONG64 MiPagingFileExtendFailTime;
 static PKTHREAD MiPagingFileExtendThread;
 static WORK_QUEUE_ITEM MiCommitReportItem;
 static volatile LONG MiCommitReportQueued;
+
+CODE_SEG("INIT")
+VOID
+MiPageFileCreationInitialize(VOID)
+{
+    ASSERT(!MiPagingFileLockReady);
+    KeInitializeGuardedMutex(&MiPagingFileCreationLock);
+    MiPagingFileLockReady = TRUE;
+}
 
 static
 NTSTATUS
@@ -91,7 +100,7 @@ NTAPI
 MmIsFileObjectAPagingFile(
     _In_ PFILE_OBJECT FileObject)
 {
-    PMI_NT_PAGEFILE PagingFile = MiPagingFile;
+    PMI_NT_PAGEFILE PagingFile = MI_ATOMIC_READ_POINTER(&MiPagingFile);
 
     return (BOOLEAN)(PagingFile != NULL && PagingFile->FileObject != NULL &&
                      PagingFile->FileObject->SectionObjectPointer == FileObject->SectionObjectPointer);
@@ -105,7 +114,7 @@ MmQueryPagingFileUsage(
     _Out_ PULONG64 PeakPagesInUse,
     _Out_ PUNICODE_STRING Name)
 {
-    PMI_NT_PAGEFILE PagingFile = MiPagingFile;
+    PMI_NT_PAGEFILE PagingFile = MI_ATOMIC_READ_POINTER(&MiPagingFile);
     KIRQL OldIrql;
 
     if (PagingFile == NULL)
@@ -128,9 +137,10 @@ MiExtendPagingFileTo(
 {
     FILE_END_OF_FILE_INFORMATION EndOfFile;
     IO_STATUS_BLOCK IoStatus;
-    ULONG64 Current = PagingFile->Core.SlotCount;
+    ULONG64 Current = MiPageFileSlotCount(&PagingFile->Core);
 
-    ASSERT(MiPagingFileExtendThread == KeGetCurrentThread());
+    ASSERT(InterlockedCompareExchangePointer((PVOID volatile *)&MiPagingFileExtendThread, NULL, NULL) ==
+           KeGetCurrentThread());
     ASSERT(Current < Target && Target <= PagingFile->MaximumSlots);
     EndOfFile.EndOfFile.QuadPart = (LONGLONG)(Target << PAGE_SHIFT);
     if (!NT_SUCCESS(ZwSetInformationFile(PagingFile->FileHandle, &IoStatus, &EndOfFile, sizeof(EndOfFile),
@@ -142,7 +152,7 @@ MiExtendPagingFileTo(
     if (!NT_SUCCESS(MiPageFileExtend(&PagingFile->Core, Target)))
         return FALSE;
 
-    ASSERT(PagingFile->Core.SlotCount == Target);
+    ASSERT(MiPageFileSlotCount(&PagingFile->Core) == Target);
     MI_ATOMIC_ADD64(&MiSystem.CommitLimit, (LONG64)(Target - Current));
     MmTotalCommitLimit = (SIZE_T)MI_ATOMIC_READ64(&MiSystem.CommitLimit);
     MiFreeSwapPages += (PFN_COUNT)(Target - Current);
@@ -158,44 +168,54 @@ MiExtendPagingFileWorker(
     _In_ PVOID Context)
 {
     PMI_NT_PAGEFILE PagingFile = Context;
-    ULONG64 Current = PagingFile->Core.SlotCount;
+    ULONG64 Current;
     LONG64 Committed;
     LONG64 Request;
     LONG64 Wanted;
     ULONG64 Target;
     LONG WasQueued;
 
-    ASSERT(MI_ATOMIC_READ32(&MiPagingFileExtendQueued) == 1);
-    ASSERT(MiPagingFileExtendThread == NULL);
-    ASSERT(Current <= PagingFile->MaximumSlots);
-    MiPagingFileExtendThread = KeGetCurrentThread();
-
-    Request = InterlockedExchange64(&MiPagingFileExtendPages, 0);
-    ASSERT(Request >= 0);
-    Committed = MI_ATOMIC_READ64(&MiSystem.CommittedPages) + Request;
-    Wanted = Committed + Committed / 9 - MI_ATOMIC_READ64(&MiSystem.CommitLimit);
-    if (Wanted < (LONG64)MI_PAGEFILE_GROWTH_PAGES)
-        Wanted = (LONG64)MI_PAGEFILE_GROWTH_PAGES;
-
-    Target = Current + (ULONG64)Wanted;
-    if (Target > PagingFile->MaximumSlots)
-        Target = PagingFile->MaximumSlots;
-    ASSERT(Target >= Current && Target <= PagingFile->MaximumSlots);
-
-    if (Target > Current && !MiExtendPagingFileTo(PagingFile, Target))
+    for (;;)
     {
-        if (Request <= 0 || Current + (ULONG64)Request >= Target ||
-            !MiExtendPagingFileTo(PagingFile, Current + (ULONG64)Request))
+        ASSERT(MI_ATOMIC_READ32(&MiPagingFileExtendQueued) == 1);
+        ASSERT(InterlockedCompareExchangePointer((PVOID volatile *)&MiPagingFileExtendThread, NULL, NULL) == NULL);
+        InterlockedExchangePointer((PVOID volatile *)&MiPagingFileExtendThread, KeGetCurrentThread());
+        Current = MiPageFileSlotCount(&PagingFile->Core);
+        ASSERT(Current <= PagingFile->MaximumSlots);
+
+        Request = InterlockedExchange64(&MiPagingFileExtendPages, 0);
+        ASSERT(Request >= 0);
+        Committed = MI_ATOMIC_READ64(&MiSystem.CommittedPages) + Request;
+        Wanted = Committed + Committed / 9 - MI_ATOMIC_READ64(&MiSystem.CommitLimit);
+        if (Wanted < (LONG64)MI_PAGEFILE_GROWTH_PAGES)
+            Wanted = (LONG64)MI_PAGEFILE_GROWTH_PAGES;
+
+        Target = Current + (ULONG64)Wanted;
+        if (Target > PagingFile->MaximumSlots)
+            Target = PagingFile->MaximumSlots;
+        ASSERT(Target >= Current && Target <= PagingFile->MaximumSlots);
+
+        if (Target > Current && !MiExtendPagingFileTo(PagingFile, Target))
         {
-            MiPagingFileExtendFailTime = KeQueryInterruptTime();
+            if (Request <= 0 || Current + (ULONG64)Request >= Target ||
+                !MiExtendPagingFileTo(PagingFile, Current + (ULONG64)Request))
+            {
+                MI_ATOMIC_WRITE64(&MiPagingFileExtendFailTime, (LONG64)KeQueryInterruptTime());
+            }
+        }
+
+        ASSERT(InterlockedCompareExchangePointer((PVOID volatile *)&MiPagingFileExtendThread, NULL, NULL) ==
+               KeGetCurrentThread());
+        InterlockedExchangePointer((PVOID volatile *)&MiPagingFileExtendThread, NULL);
+        WasQueued = InterlockedExchange(&MiPagingFileExtendQueued, 0);
+        ASSERT(WasQueued == 1);
+        UNREFERENCED_PARAMETER(WasQueued);
+        if (MI_ATOMIC_READ64(&MiPagingFileExtendPages) == 0 ||
+            InterlockedCompareExchange(&MiPagingFileExtendQueued, 1, 0) != 0)
+        {
+            break;
         }
     }
-
-    ASSERT(MiPagingFileExtendThread == KeGetCurrentThread());
-    MiPagingFileExtendThread = NULL;
-    WasQueued = InterlockedExchange(&MiPagingFileExtendQueued, 0);
-    ASSERT(WasQueued == 1);
-    UNREFERENCED_PARAMETER(WasQueued);
     KeSetEvent(&MiPagingFileExtendEvent, IO_NO_INCREMENT, FALSE);
 }
 
@@ -318,7 +338,7 @@ MiExpandCommit(
     _In_ LONG64 Limit,
     _In_ BOOLEAN Wait)
 {
-    PMI_NT_PAGEFILE PagingFile = MiPagingFile;
+    PMI_NT_PAGEFILE PagingFile = MI_ATOMIC_READ_POINTER(&MiPagingFile);
     LARGE_INTEGER Timeout;
     ULONG64 Deadline;
     LONG64 Pending;
@@ -329,7 +349,7 @@ MiExpandCommit(
     if (MI_ATOMIC_READ64(&System->CommitLimit) > Limit)
         return TRUE;
 
-    if (PagingFile == NULL || PagingFile->Core.SlotCount >= PagingFile->MaximumSlots)
+    if (PagingFile == NULL || MiPageFileSlotCount(&PagingFile->Core) >= PagingFile->MaximumSlots)
     {
         if (PagingFile != NULL && Pages > 0 && InterlockedCompareExchange(&MiCommitReportQueued, 1, 0) == 0)
         {
@@ -339,10 +359,12 @@ MiExpandCommit(
         return FALSE;
     }
 
-    if (Pages == 0 && MiPagingFileExtendFailTime != 0 &&
-        KeQueryInterruptTime() - MiPagingFileExtendFailTime < MI_PAGEFILE_EXTEND_BACKOFF)
+    if (Pages == 0)
     {
-        return FALSE;
+        ULONG64 LastFailure = (ULONG64)MI_ATOMIC_READ64(&MiPagingFileExtendFailTime);
+
+        if (LastFailure != 0 && KeQueryInterruptTime() - LastFailure < MI_PAGEFILE_EXTEND_BACKOFF)
+            return FALSE;
     }
 
     Pending = MI_ATOMIC_READ64(&MiPagingFileExtendPages);
@@ -363,18 +385,25 @@ MiExpandCommit(
         ExQueueWorkItem(&MiPagingFileExtendItem, CriticalWorkQueue);
     }
 
-    if (!Wait || KeGetCurrentIrql() > APC_LEVEL || MiPagingFileExtendThread == KeGetCurrentThread())
+    if (!Wait || KeGetCurrentIrql() > APC_LEVEL ||
+        InterlockedCompareExchangePointer((PVOID volatile *)&MiPagingFileExtendThread, NULL, NULL) ==
+        KeGetCurrentThread())
+    {
         return FALSE;
+    }
 
     Timeout.QuadPart = -10 * 1000 * 1000;
     Deadline = KeQueryInterruptTime() + MI_PAGEFILE_EXTEND_WAIT;
 
     do
     {
-        KeWaitForSingleObject(&MiPagingFileExtendEvent, Executive, KernelMode, FALSE, &Timeout);
+        KeClearEvent(&MiPagingFileExtendEvent);
         if (MI_ATOMIC_READ64(&System->CommitLimit) > Limit)
             return TRUE;
-    } while (MI_ATOMIC_READ32(&MiPagingFileExtendQueued) != 0 && KeQueryInterruptTime() < Deadline);
+        if (MI_ATOMIC_READ32(&MiPagingFileExtendQueued) == 0)
+            break;
+        KeWaitForSingleObject(&MiPagingFileExtendEvent, Executive, KernelMode, FALSE, &Timeout);
+    } while (KeQueryInterruptTime() < Deadline);
 
     return (BOOLEAN)(MI_ATOMIC_READ64(&System->CommitLimit) > Limit);
 }
@@ -401,11 +430,7 @@ NtCreatePagingFile(
     UNREFERENCED_PARAMETER(Reserved);
     PAGED_CODE();
 
-    if (!MiPagingFileLockReady)
-    {
-        KeInitializeGuardedMutex(&MiPagingFileCreationLock);
-        MiPagingFileLockReady = TRUE;
-    }
+    ASSERT(MiPagingFileLockReady);
 
     if (PreviousMode != KernelMode && !SeSinglePrivilegeCheck(SeCreatePagefilePrivilege, PreviousMode))
         return STATUS_PRIVILEGE_NOT_HELD;
@@ -454,7 +479,7 @@ NtCreatePagingFile(
 
     KeAcquireGuardedMutex(&MiPagingFileCreationLock);
 
-    if (MiPagingFile != NULL)
+    if (MI_ATOMIC_READ_POINTER(&MiPagingFile) != NULL)
     {
         KeReleaseGuardedMutex(&MiPagingFileCreationLock);
         ExFreePoolWithTag(Buffer, 'nPmM');
@@ -529,17 +554,17 @@ NtCreatePagingFile(
     KeInitializeEvent(&MiPagingFileExtendEvent, NotificationEvent, FALSE);
     ExInitializeWorkItem(&MiPagingFileExtendItem, MiExtendPagingFileWorker, PagingFile);
 
-    MiPagingFile = PagingFile;
-    MiSystem.PageFile = &PagingFile->Core;
-    MiSystem.CommitLimit += (LONG64)PagingFile->Core.SlotCount;
-    MmTotalCommitLimit = (SIZE_T)MiSystem.CommitLimit;
+    MmTotalCommitLimit = (SIZE_T)(MI_ATOMIC_ADD64(&MiSystem.CommitLimit, (LONG64)PagingFile->Core.SlotCount) +
+                                     (LONG64)PagingFile->Core.SlotCount);
     MmTotalCommitLimitMaximum = MmTotalCommitLimit + (SIZE_T)(PagingFile->MaximumSlots - PagingFile->Core.SlotCount);
     MmtotalCommitLimitMaximum = MmTotalCommitLimitMaximum;
     MiFreeSwapPages = (PFN_COUNT)PagingFile->Core.SlotCount;
     MmNumberOfPagingFiles = 1;
-    MiSystem.ExpandCommit = MiExpandCommit;
+    MI_ATOMIC_WRITE_POINTER(&MiSystem.PageFile, &PagingFile->Core);
+    MI_ATOMIC_WRITE_POINTER(&MiPagingFile, PagingFile);
+    MI_ATOMIC_WRITE_POINTER(&MiSystem.ExpandCommit, (PVOID)MiExpandCommit);
     DbgPrint("Paging file %wZ created, %I64u MB, maximum %I64u MB\n", &PagingFile->Name,
-             PagingFile->Core.SlotCount >> (20 - PAGE_SHIFT), PagingFile->MaximumSlots >> (20 - PAGE_SHIFT));
+             MiPageFileSlotCount(&PagingFile->Core) >> (20 - PAGE_SHIFT), PagingFile->MaximumSlots >> (20 - PAGE_SHIFT));
 
     KeReleaseGuardedMutex(&MiPagingFileCreationLock);
 

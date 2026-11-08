@@ -944,9 +944,6 @@ ReinstallNetDevice(
     return SetupDiInstallDevice(DeviceInfoSet, DeviceInfoData) ? ERROR_SUCCESS : GetLastError();
 }
 
-/* Software adapters ask for a stable GUID through the
- * SuggestedInstanceId value of their driver key; it is used unless another
- * adapter already has it */
 static
 BOOL
 GetSuggestedInstanceId(
@@ -1177,10 +1174,7 @@ NetClassInstaller(
         }
     }
 
-    /*
-     * InstallNetDevice publishes the GUID as NetCfgInstanceId, so another
-     * install must not check the same suggested GUID before that.
-     */
+    /* Two installs must not pick the same suggested GUID before InstallNetDevice publishes it */
     if (IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET))
     {
         hInstanceIdLock = CreateMutexW(NULL, FALSE, L"Global\\NetCfgxInstanceId");

@@ -793,7 +793,7 @@ Return Value:
     PCHAR Sector;
     PBCB Bcb = NULL;
     KEVENT Event;
-    PIRP Irp = NULL;
+    PIRP _SEH2_VOLATILE Irp = NULL;
     NTSTATUS Status;
     BOOLEAN FsInfoUpdate = FALSE;
     ULONG FsInfoOffset = 0;
@@ -1842,7 +1842,7 @@ Return Value:
 
 {
     PVCB Vcb;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
     PFILE_OBJECT FileObject = IoGetCurrentIrpStackLocation(Irp)->FileObject;
     BOOLEAN AllowRawMount = FALSE;

@@ -94,8 +94,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -559,8 +559,8 @@ Return Value:
     PDIRENT Dirent;
     PBCB DirentBcb = NULL;
 
-    NTSTATUS Status;
-    NTSTATUS ReturnStatus = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS _SEH2_VOLATILE ReturnStatus = STATUS_SUCCESS;
 
     BOOLEAN ClearWriteThroughOnExit = FALSE;
     BOOLEAN ClearWaitOnExit = FALSE;
@@ -828,7 +828,7 @@ Return Value:
     IO_STATUS_BLOCK Iosb;
     LARGE_INTEGER Offset;
 
-    NTSTATUS ReturnStatus = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE ReturnStatus = STATUS_SUCCESS;
 
     PAGED_CODE();
 

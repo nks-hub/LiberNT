@@ -495,9 +495,9 @@ Arguments:
 
 {
     LARGE_INTEGER Vbo;
-    ULONG InitialAllocation = 0;
-    BOOLEAN UnwindWeAllocatedDiskSpace = FALSE;
-    PBCB    LocalBcb = NULL;
+    ULONG _SEH2_VOLATILE InitialAllocation = 0;
+    BOOLEAN _SEH2_VOLATILE UnwindWeAllocatedDiskSpace = FALSE;
+    PBCB    _SEH2_VOLATILE LocalBcb = NULL;
     PVOID   LocalBuffer = NULL;
     ULONG   InitialRequest = ByteCount;
     ULONG   MappingGranularity = PAGE_SIZE;
@@ -617,7 +617,7 @@ Arguments:
                             &Vbo,
                             BytesToPin,
                             BooleanFlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT),
-                            &LocalBcb,
+                            (PVOID *)&LocalBcb,
                             &LocalBuffer )) {
 
                 //
@@ -872,7 +872,7 @@ Return Value:
 
     if (Dcb->Specific.Dcb.DirectoryFile == NULL) {
 
-        PFILE_OBJECT DirectoryFileObject = NULL;
+        PFILE_OBJECT _SEH2_VOLATILE DirectoryFileObject = NULL;
 
         FatAcquireDirectoryFileMutex( Dcb->Vcb );
 

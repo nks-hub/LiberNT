@@ -233,7 +233,7 @@ Return Value:
     VBO DeletedHint;
     ULONG ByteOffset;
 
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     PDIRENT Dirent = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -410,7 +410,7 @@ Return Value:
                                               ParentDirectory,
                                               UnusedVbo,
                                               1,
-                                              &Bcb,
+                                              (PBCB *)&Bcb,
                                               &Buffer,
                                               FALSE,
                                               TRUE,
@@ -443,7 +443,7 @@ Return Value:
             FatReadDirent( IrpContext,
                            ParentDirectory,
                            ByteOffset - sizeof(DIRENT),
-                           &Bcb,
+                           (PBCB *)&Bcb,
                            &Dirent,
                            &Status );
 
@@ -466,7 +466,7 @@ Return Value:
                                   ParentDirectory,
                                   ByteOffset - sizeof(DIRENT),
                                   sizeof(DIRENT),
-                                  &Bcb );
+                                  (PBCB *)&Bcb );
 
                 Dirent->FileName[0] = FAT_DIRENT_DELETED;
 
@@ -503,7 +503,7 @@ Return Value:
             FatReadDirent( IrpContext,
                            ParentDirectory,
                            ByteOffset + i*sizeof(DIRENT),
-                           &Bcb,
+                           (PBCB *)&Bcb,
                            &Dirent,
                            &Status );
 
@@ -3332,27 +3332,27 @@ Return Value:
 
 {
     ULONG SavedIrpContextFlag;
-    PLIST_ENTRY Links;
+    PLIST_ENTRY _SEH2_VOLATILE Links;
     ULONG ReturnValue = 0;
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
 
     PBCB Bcb = NULL;
     PDIRENT Dirent = NULL;
     UNICODE_STRING Lfn = {0,0,NULL};
 
     LARGE_MCB Mcb;
-    BOOLEAN McbInitialized = FALSE;
+    BOOLEAN _SEH2_VOLATILE McbInitialized = FALSE;
     BOOLEAN InvalidateFcbs = FALSE;
 
     PUCHAR Directory = NULL;
     PUCHAR UnusedDirents;
-    PUCHAR UnusedDirentBuffer = NULL;
+    PUCHAR _SEH2_VOLATILE UnusedDirentBuffer = NULL;
     PUCHAR UsedDirents;
-    PUCHAR UsedDirentBuffer = NULL;
+    PUCHAR _SEH2_VOLATILE UsedDirentBuffer = NULL;
 
-    PBCB *Bcbs = NULL;
-    ULONG Page;
-    ULONG PagesPinned = 0;
+    PBCB * _SEH2_VOLATILE Bcbs = NULL;
+    ULONG _SEH2_VOLATILE Page;
+    ULONG _SEH2_VOLATILE PagesPinned = 0;
 
     ULONG DcbSize;
     ULONG TotalBytesAllocated = 0;

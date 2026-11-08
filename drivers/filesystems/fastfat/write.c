@@ -104,11 +104,11 @@ Return Value:
 
 {
     PFCB Fcb;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
-    BOOLEAN ModWriter = FALSE;
-    BOOLEAN TopLevel = FALSE;
+    BOOLEAN _SEH2_VOLATILE ModWriter = FALSE;
+    BOOLEAN _SEH2_VOLATILE TopLevel = FALSE;
 
     DebugTrace(+1, Dbg, "FatFsdWrite\n", 0);
 

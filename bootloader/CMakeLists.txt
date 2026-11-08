@@ -79,7 +79,8 @@ list(APPEND BOOTLIB_SOURCE
     lib/fs.c
     lib/gpt.c
     lib/libsupp.c
-    lib/ntfs.c)
+    lib/ntfs.c
+    lib/sha256.c)
 
 if(ARCH STREQUAL "ppc")
     add_asm_files(bootlib_asm ofw/ofwgate.S)
@@ -296,7 +297,8 @@ if(WINLOAD_ASM_SOURCE)
         winload/resume.c
         winload/smbios.c
         winload/startup.c
-        winload/httpsync.c)
+        winload/httpsync.c
+        winload/install.c)
     if(ARCH STREQUAL "ppc")
         bootloader_ofw_application(winload 0x00400000)
     else()

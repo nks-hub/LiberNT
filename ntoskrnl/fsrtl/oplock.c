@@ -541,7 +541,7 @@ FsRtlOpBatchBreakClosePending(IN PINTERNAL_OPLOCK Oplock,
 PINTERNAL_OPLOCK
 FsRtlAllocateOplock(VOID)
 {
-    PINTERNAL_OPLOCK Oplock = NULL;
+    PINTERNAL_OPLOCK _SEH2_VOLATILE Oplock = NULL;
 
     PAGED_CODE();
 
@@ -632,9 +632,9 @@ FsRtlRequestExclusiveOplock(IN POPLOCK Oplock,
                             IN PIRP Irp,
                             IN ULONG Flags)
 {
-    PINTERNAL_OPLOCK IntOplock;
+    PINTERNAL_OPLOCK _SEH2_VOLATILE IntOplock;
     PIRP ListIrp;
-    BOOLEAN Locked;
+    BOOLEAN _SEH2_VOLATILE Locked;
     NTSTATUS Status;
 
     DPRINT("FsRtlRequestExclusiveOplock(%p, %p, %p, %lu)\n", Oplock, Stack, Irp, Flags);
@@ -735,9 +735,9 @@ FsRtlRequestOplockII(IN POPLOCK Oplock,
                      IN PIO_STACK_LOCATION Stack,
                      IN PIRP Irp)
 {
-    BOOLEAN Locked;
+    BOOLEAN _SEH2_VOLATILE Locked;
     NTSTATUS Status;
-    PINTERNAL_OPLOCK IntOplock;
+    PINTERNAL_OPLOCK _SEH2_VOLATILE IntOplock;
 
     DPRINT("FsRtlRequestOplockII(%p, %p, %p)\n", Oplock, Stack, Irp);
 

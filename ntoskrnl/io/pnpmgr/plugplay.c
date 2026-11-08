@@ -356,7 +356,7 @@ IopGetDeviceObjectFromDeviceInstance(PUNICODE_STRING DeviceInstance)
 static NTSTATUS
 IopCaptureUnicodeString(PUNICODE_STRING DstName, PUNICODE_STRING SrcName)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     volatile UNICODE_STRING Name;
 
     Name.Buffer = NULL;
@@ -1332,7 +1332,7 @@ IopGetDeviceRelations(PPLUGPLAY_CONTROL_DEVICE_RELATIONS_DATA RelationsData)
     ULONG BufferSize = 0, RequiredSize;
     ULONG BufferLeft;
     PWCHAR Buffer = NULL, Ptr;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     DPRINT1("IopGetDeviceRelations() called\n");
     DPRINT1("Device name: %wZ\n", &RelationsData->DeviceInstance);
@@ -1839,7 +1839,7 @@ NtGetPlugPlayEvent(IN ULONG Reserved1,
     PPNP_EVENT_ENTRY Entry;
     ULONG TotalSize;
     KIRQL OldIrql;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     DPRINT("NtGetPlugPlayEvent() called\n");
 

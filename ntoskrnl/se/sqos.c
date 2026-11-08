@@ -58,7 +58,7 @@ SepCaptureSecurityQualityOfService(
     _Out_ PBOOLEAN Present)
 {
     PSECURITY_QUALITY_OF_SERVICE CapturedQos;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PAGED_CODE();
 

@@ -681,7 +681,7 @@ NtCreateTransaction(
     _In_opt_ PUNICODE_STRING Description)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    LARGE_INTEGER SafeTimeout;
+    LARGE_INTEGER _SEH2_VOLATILE SafeTimeout;
     UNICODE_STRING SafeDescription;
     PKTRANSACTION Transaction;
     BOOLEAN UowPresent;

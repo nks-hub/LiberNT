@@ -115,10 +115,10 @@ NtSetInformationVirtualMemory(
 {
     MI_PROCESS_REFERENCE Target;
     PMEMORY_RANGE_ENTRY Ranges;
-    ULONG Flag = 0;
+    ULONG _SEH2_VOLATILE Flag = 0;
     SIZE_T Bytes;
-    ULONG_PTR Index;
-    NTSTATUS Status;
+    ULONG_PTR _SEH2_VOLATILE Index;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -244,7 +244,7 @@ MiIsEcCodeAddress(
     ULONG_PTR AddressValue = (ULONG_PTR)Address;
     ULONG_PTR BitmapAddress;
     ULONG_PTR BitmapOffset;
-    BOOLEAN IsEcCode = FALSE;
+    BOOLEAN _SEH2_VOLATILE IsEcCode = FALSE;
     PVOID BitmapBase;
 
     if (Process != PsGetCurrentProcess() || Process->Peb == NULL ||

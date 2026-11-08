@@ -345,7 +345,7 @@ TmpCaptureDescription(
     _Out_ PUNICODE_STRING Description)
 {
     UNICODE_STRING Local;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     RtlInitEmptyUnicodeString(Description, NULL, 0);
     if (Source == NULL)

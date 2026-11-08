@@ -82,7 +82,7 @@ PsSuspendThread(
     OUT PULONG PreviousCount OPTIONAL)
 {
     NTSTATUS Status;
-    ULONG OldCount = 0;
+    ULONG _SEH2_VOLATILE OldCount = 0;
     PAGED_CODE();
 
     /* Assume success */
@@ -271,8 +271,8 @@ NtAlertMultipleThreadByThreadId(IN PHANDLE ThreadIds,
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     PETHREAD *Threads;
-    NTSTATUS Status = STATUS_SUCCESS;
-    ULONG Index, Referenced = 0;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    ULONG _SEH2_VOLATILE Index, Referenced = 0;
 
     UNREFERENCED_PARAMETER(Reserved1);
     UNREFERENCED_PARAMETER(Reserved2);

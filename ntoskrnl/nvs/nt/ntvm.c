@@ -1430,7 +1430,7 @@ MiCopyChunk(
     _In_ KPROCESSOR_MODE Mode,
     _Out_ PSIZE_T Copied)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     KAPC_STATE ApcState;
     volatile SIZE_T Done = 0;
     BOOLEAN Remote = Process != PsGetCurrentProcess();
@@ -2047,7 +2047,7 @@ NtResetWriteWatch(
 static NTSTATUS
 MiCaptureAweCount(PULONG_PTR NumberOfPages, PULONG Count)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG_PTR Value;
 
     *Count = 0;

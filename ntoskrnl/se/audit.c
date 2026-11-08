@@ -632,7 +632,7 @@ SepAccessCheckAndAuditAlarm(
 {
     SECURITY_SUBJECT_CONTEXT SubjectContext;
     ULONG ResultListLength;
-    GENERIC_MAPPING LocalGenericMapping;
+    GENERIC_MAPPING _SEH2_VOLATILE LocalGenericMapping;
     PTOKEN SubjectContextToken = NULL, ClientToken;
     BOOLEAN AllocatedResultLists;
     BOOLEAN HaveAuditPrivilege;
@@ -877,7 +877,7 @@ SepAccessCheckAndAuditAlarm(
                                                HaveAuditPrivilege,
                                                CapturedObjectTypeList,
                                                ObjectTypeListLength,
-                                               &LocalGenericMapping,
+                                               (PGENERIC_MAPPING)&LocalGenericMapping,
                                                SafeGrantedAccessList,
                                                SafeAccessStatusList,
                                                &LocalGenerateOnClose,
@@ -1639,9 +1639,9 @@ NtOpenObjectAuditAlarm(
     ULONG PrivilegeCount, PrivilegeSetSize;
     volatile PPRIVILEGE_SET CapturedPrivilegeSet;
     BOOLEAN LocalGenerateOnClose;
-    PVOID CapturedHandleId;
+    PVOID _SEH2_VOLATILE CapturedHandleId;
     SECURITY_SUBJECT_CONTEXT SubjectContext;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PAGED_CODE();
 
     /* Only user mode is supported! */
@@ -1895,7 +1895,7 @@ NtPrivilegedServiceAuditAlarm(
     UNICODE_STRING CapturedServiceName;
     ULONG PrivilegeCount, PrivilegesSize;
     SECURITY_SUBJECT_CONTEXT SubjectContext;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PAGED_CODE();
 
     /* Get the previous mode (only user mode is supported!) */

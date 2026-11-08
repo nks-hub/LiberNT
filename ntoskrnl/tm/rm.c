@@ -527,7 +527,7 @@ NtGetNotificationResourceManager(
     PKTMNOTIFICATION_PACKET Packet;
     LARGE_INTEGER SafeTimeout;
     PLIST_ENTRY Entry;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PAGED_CODE();
 
     if (Asynchronous != 0 || AsynchronousContext != 0)

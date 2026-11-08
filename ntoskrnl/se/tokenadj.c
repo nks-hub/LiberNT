@@ -457,7 +457,7 @@ NtAdjustPrivilegesToken(
         PTOKEN_PRIVILEGES PreviousState,
     _When_(PreviousState!=NULL, _Out_) PULONG ReturnLength)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode;
     PTOKEN Token;
     PLUID_AND_ATTRIBUTES CapturedPrivileges = NULL;
@@ -702,7 +702,7 @@ NtAdjustGroupsToken(
     _When_(PreviousState != NULL, _Out_) PULONG ReturnLength)
 {
     PTOKEN Token;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode;
     ULONG ChangeCount, RequiredLength;
     ULONG CapturedCount = 0;

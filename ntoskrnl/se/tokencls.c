@@ -775,10 +775,10 @@ NtQueryInformationToken(
     _In_ ULONG TokenInformationLength,
     _Out_ PULONG ReturnLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     KPROCESSOR_MODE PreviousMode;
     PTOKEN Token;
-    ULONG RequiredLength = 0;
+    ULONG _SEH2_VOLATILE RequiredLength = 0;
     union
     {
         PSID PSid;
@@ -1839,7 +1839,7 @@ NtSetInformationToken(
     _In_reads_bytes_(TokenInformationLength) PVOID TokenInformation,
     _In_ ULONG TokenInformationLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PTOKEN Token;
     KPROCESSOR_MODE PreviousMode;
     ULONG NeededAccess = TOKEN_ADJUST_DEFAULT;
@@ -1881,7 +1881,7 @@ NtSetInformationToken(
                 if (TokenInformationLength >= sizeof(TOKEN_OWNER))
                 {
                     PTOKEN_OWNER to = (PTOKEN_OWNER)TokenInformation;
-                    PSID InputSid = NULL, CapturedSid;
+                    PSID _SEH2_VOLATILE InputSid = NULL, CapturedSid;
                     ULONG DefaultOwnerIndex;
 
                     _SEH2_TRY
@@ -1899,7 +1899,7 @@ NtSetInformationToken(
                                            PreviousMode,
                                            PagedPool,
                                            FALSE,
-                                           &CapturedSid);
+                                           (PSID *)&CapturedSid);
                     if (NT_SUCCESS(Status))
                     {
                         /* Lock the token */

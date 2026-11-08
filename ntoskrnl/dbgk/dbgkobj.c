@@ -555,7 +555,7 @@ DbgkpPostFakeModuleMessages(IN PEPROCESS Process,
     PDBGK_PEB_LDR_DATA32 LdrData32;
     PDBGK_LDR_DATA_TABLE_ENTRY32 LdrEntry32;
     ULONG ListHead32, NextEntry32;
-    ULONG i;
+    ULONG _SEH2_VOLATILE i;
     UNICODE_STRING FullDllName;
     PAGED_CODE();
     DBGKTRACE(DBGK_PROCESS_DEBUG, "Process: %p Thread: %p DebugObject: %p\n",

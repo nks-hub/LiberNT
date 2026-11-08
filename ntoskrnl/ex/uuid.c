@@ -464,7 +464,7 @@ NtAllocateUuids(OUT PULARGE_INTEGER Time,
 {
     ULARGE_INTEGER IntTime;
     ULONG IntRange, IntSequence;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     KPROCESSOR_MODE PreviousMode;
 
     PAGED_CODE();
@@ -546,8 +546,8 @@ NTSTATUS
 NTAPI
 NtSetUuidSeed(IN PUCHAR Seed)
 {
-    NTSTATUS Status;
-    BOOLEAN GotContext;
+    NTSTATUS _SEH2_VOLATILE Status;
+    BOOLEAN _SEH2_VOLATILE GotContext;
     PACCESS_TOKEN Token;
     SECURITY_SUBJECT_CONTEXT SubjectContext;
     LUID CallerLuid, SystemLuid = SYSTEM_LUID;

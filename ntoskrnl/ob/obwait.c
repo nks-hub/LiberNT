@@ -187,13 +187,13 @@ NtWaitForMultipleObjects(IN ULONG ObjectCount,
     ULONG i, ReferencedObjects, j;
     KPROCESSOR_MODE PreviousMode;
     LARGE_INTEGER SafeTimeOut;
-    BOOLEAN LockInUse;
+    BOOLEAN _SEH2_VOLATILE LockInUse;
     PHANDLE_TABLE_ENTRY HandleEntry;
     POBJECT_HEADER ObjectHeader;
     PHANDLE_TABLE HandleTable;
     ACCESS_MASK GrantedAccess;
     PVOID DefaultObject;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PAGED_CODE();
 
     /* Check for valid Object Count */
@@ -503,7 +503,7 @@ NtWaitForSingleObject(IN HANDLE ObjectHandle,
     POBJECT_TYPE ObjectType;
     KPROCESSOR_MODE PreviousMode;
     LARGE_INTEGER SafeTimeOut;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     /* Check if we came with a timeout from user mode */
     PreviousMode = ExGetPreviousMode();
@@ -605,7 +605,7 @@ NtSignalAndWaitForSingleObject(IN HANDLE ObjectHandleToSignal,
     PVOID SignalObj, WaitObj, WaitableObject;
     LARGE_INTEGER SafeTimeOut;
     OBJECT_HANDLE_INFORMATION HandleInfo;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     /* Check if we came with a timeout from user mode */
     PreviousMode = ExGetPreviousMode();

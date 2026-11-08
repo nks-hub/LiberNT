@@ -612,7 +612,7 @@ AlpcpSendWaitReceivePort(
     BOOLEAN Alertable;
     PORT_MESSAGE Header;
     LARGE_INTEGER CapturedTimeout;
-    SIZE_T AvailableLength = MAXULONG_PTR;
+    SIZE_T _SEH2_VOLATILE AvailableLength = MAXULONG_PTR;
     ULONG ReceiveAttributeSize;
     PALPC_MESSAGE_ATTRIBUTES SendAttributes = NULL, ReceiveAttributes = NULL;
     PKALPC_MESSAGE Message = NULL, ReceivedMessage = NULL, ContinueMessage = NULL;

@@ -691,6 +691,51 @@ done:
 }
 
 
+static
+BOOL
+IsCallerAdmin(
+    _In_ handle_t hBinding)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    HANDLE hToken;
+    PSID pAdminsSid = NULL;
+    BOOL bAdmin = FALSE;
+    RPC_STATUS RpcStatus;
+
+    if (!AllocateAndInitializeSid(&NtAuthority,
+                                  2,
+                                  SECURITY_BUILTIN_DOMAIN_RID,
+                                  DOMAIN_ALIAS_RID_ADMINS,
+                                  0, 0, 0, 0, 0, 0,
+                                  &pAdminsSid))
+    {
+        DPRINT1("AllocateAndInitializeSid failed\n");
+        return FALSE;
+    }
+
+    RpcStatus = RpcImpersonateClient(hBinding);
+    if (RpcStatus != RPC_S_OK)
+    {
+        DPRINT1("RpcImpersonateClient failed (Status 0x%08lx)\n", RpcStatus);
+        goto done;
+    }
+
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken))
+    {
+        if (!CheckTokenMembership(hToken, pAdminsSid, &bAdmin))
+            bAdmin = FALSE;
+        CloseHandle(hToken);
+    }
+
+    RpcRevertToSelf();
+
+done:
+    FreeSid(pAdminsSid);
+
+    return bAdmin;
+}
+
+
 VOID
 __RPC_USER
 PNP_NOTIFY_HANDLE_rundown(
@@ -3823,12 +3868,22 @@ PNP_DeviceInstanceAction(
                 ret = CR_INVALID_FLAG;
                 break;
             }
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
             ret = RemoveSoftwareDeviceInstance(pszDeviceInstance1);
             if (ret == CR_SUCCESS)
                 StopSoftwareDeviceWatch(pszDeviceInstance1);
             break;
 
         case PNP_DEVINST_WATCH_SOFTWARE:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
             ret = WatchSoftwareDeviceInstance(pszDeviceInstance1, ulMinorAction);
             break;
 

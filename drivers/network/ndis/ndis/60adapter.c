@@ -262,11 +262,9 @@ Ndis6AllocateInterfaceIdentity(
     UINT32 LuidIndex;
     NTSTATUS Status = STATUS_OBJECT_NAME_COLLISION;
 
-    /* The network class installer stores the NetLuidIndex of the adapter in
-     * its driver key, and user mode builds the adapter LUID from it. Without
-     * one, keep IfIndex and NetLuidIndex identical. NET_LUID reserves 24 bits
-     * for NetLuidIndex and zero is invalid. The index stays reserved until
-     * the adapter goes away, so no other adapter takes it meanwhile. */
+    /* NET_LUID reserves 24 bits for NetLuidIndex and zero is invalid. Keep
+     * IfIndex and NetLuidIndex identical so NdisIfGetInterfaceIndexFromNetLuid
+     * preserves the adapter identity. */
     IfType = Ndis6ReadInterfaceType(Pdo);
     LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
     if (LuidIndex != 0)

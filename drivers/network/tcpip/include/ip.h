@@ -173,8 +173,8 @@ typedef struct _IP_INTERFACE {
     PUCHAR Address;               /* Pointer to interface address */
     UINT  AddressLength;          /* Length of address in bytes */
     UINT  Index;                  /* Index of adapter (used to add ip addr) */
-    UINT  NdisIfIndex;            /* NDIS interface index, the preferred Index; 0 if none */
-    ULONG IfType;                 /* NDIS interface type (IF_TYPE_*); 0 if unknown */
+    UINT  NdisIfIndex;
+    ULONG IfType;
     LL_TRANSMIT_ROUTINE Transmit; /* Pointer to transmit function */
     PVOID TCPContext;             /* TCP Content for this interface */
     SEND_RECV_STATS Stats;        /* Send/Receive statistics */

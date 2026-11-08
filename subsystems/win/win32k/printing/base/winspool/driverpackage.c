@@ -522,7 +522,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!GetDirective(hInf, Sections, SectionCount, L"DataFile", DataFile, ARRAYSIZE(DataFile)))
         StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
 
-    // shortcut: LanguageMonitor and VendorSetup directives are not processed, install the monitor separately.
+    /* TODO: LanguageMonitor and VendorSetup are not processed */
 
     for (i = 0; i < SectionCount; i++)
     {

@@ -411,8 +411,8 @@ static DMA_OPERATIONS HalpDmaOperations = {
 #define WRITE_PORT_UCHAR(Port, Data) \
     do { \
         UNIMPLEMENTED; \
-        (VOID)(Port); \
-        (VOID)(Data); \
+        (Port); \
+        (Data); \
     } while (0)
 
 #define READ_PORT_UCHAR(Port) 0x00

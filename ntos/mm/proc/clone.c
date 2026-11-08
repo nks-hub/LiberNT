@@ -223,7 +223,7 @@ MiCloneDereference(PMI_CLONE_PAGE Page)
         }
         else if (MiSoftKind(Pte) == MiSoftPageFile)
         {
-            MiPageFileReleaseSlot(System->PageFile, MiSoftValue(Pte));
+            MiPageFileReleaseSlot(MiSystemGetPageFile(System), MiSoftValue(Pte));
         }
         break;
     }
@@ -354,10 +354,11 @@ MiCloneMakeResident(PMI_CLONE_PAGE Page)
     }
     if (MiSoftKind(Pte) == MiSoftPageFile)
     {
+        PMI_PAGEFILE PageFile = MiSystemGetPageFile(System);
         PVOID Mapping = MiPfnMapFrame(&System->Pfn, Frame);
 
-        Status = System->PageFile != NULL
-            ? System->PageFile->Ops.Read(System->PageFile->Context, MiSoftValue(Pte), Mapping)
+        Status = PageFile != NULL
+            ? PageFile->Ops.Read(PageFile->Context, MiSoftValue(Pte), Mapping)
             : STATUS_IN_PAGE_ERROR;
         MiPfnUnmapFrame(&System->Pfn, Mapping);
         if (!NT_SUCCESS(Status))
@@ -366,7 +367,7 @@ MiCloneMakeResident(PMI_CLONE_PAGE Page)
             Status = STATUS_IN_PAGE_ERROR;
             goto Done;
         }
-        MI_ATOMIC_ADD64(&System->PageFile->PagesRead, 1);
+        MI_ATOMIC_ADD64(&PageFile->PagesRead, 1);
     }
     if (MI_PROT_LEAF_CACHE(MiSoftProtection(Pte)) != 0)
     {
@@ -899,11 +900,11 @@ MiCloneRollback(PMI_ADDRESS_SPACE Target)
         MiReturnCommit(Target, Vad->CommitCharge);
         if (Vad->Segment != NULL)
         {
-            MI_ATOMIC_ADD32(&Vad->Segment->MappedViews, -1);
+            MiAdjustSegmentCount(&Vad->Segment->MappedViews, -1);
             if (!Vad->CacheView)
-                MI_ATOMIC_ADD32(&Vad->Segment->TruncationViews, -1);
+                MiAdjustSegmentCount(&Vad->Segment->TruncationViews, -1);
             if (Vad->WritableUser)
-                MI_ATOMIC_ADD32(&Vad->Segment->WritableUserViews, -1);
+                MiAdjustSegmentCount(&Vad->Segment->WritableUserViews, -1);
             MiSegmentDereference(Vad->Segment);
         }
         MiVadRemove(&Target->VadRoot, Node);
@@ -974,11 +975,11 @@ MiCloneAddressSpace(PMI_ADDRESS_SPACE Source, PMI_ADDRESS_SPACE Target)
         if (Vad->Segment != NULL)
         {
             MiSegmentReference(Vad->Segment);
-            MI_ATOMIC_ADD32(&Vad->Segment->MappedViews, 1);
+            MiAdjustSegmentCount(&Vad->Segment->MappedViews, 1);
             if (!Vad->CacheView)
-                MI_ATOMIC_ADD32(&Vad->Segment->TruncationViews, 1);
+                MiAdjustSegmentCount(&Vad->Segment->TruncationViews, 1);
             if (Vad->WritableUser)
-                MI_ATOMIC_ADD32(&Vad->Segment->WritableUserViews, 1);
+                MiAdjustSegmentCount(&Vad->Segment->WritableUserViews, 1);
         }
         if (Vad->Type == MiVadLarge)
         {

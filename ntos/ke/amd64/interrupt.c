@@ -94,6 +94,7 @@ KeConnectInterrupt(IN PKINTERRUPT Interrupt)
     PVOID CurrentHandler;
     PKINTERRUPT ConnectedInterrupt;
     KIRQL OldIrql;
+    BOOLEAN Connected;
 
     DPRINT("KeConnectInterrupt vec=0x%x irql=%u shareVector=%d mode=%d\n",
              Interrupt->Vector, Interrupt->Irql,
@@ -115,12 +116,12 @@ KeConnectInterrupt(IN PKINTERRUPT Interrupt)
     ASSERT(Interrupt->SynchronizeIrql >= Interrupt->Irql);
     ASSERT(Interrupt->Irql == (Interrupt->Vector >> 4));
 
-    /* Check if its already connected */
-    if (Interrupt->Connected) return TRUE;
-
     /* Set the system affinity and acquire the dispatcher lock */
     KeSetSystemAffinityThread(1ULL << Interrupt->Number);
     OldIrql = KiAcquireDispatcherLock();
+
+    if (Interrupt->Connected)
+        goto Cleanup;
 
     /* Query the current handler */
     CurrentHandler = KeQueryInterruptHandler(Interrupt->Vector);
@@ -162,6 +163,11 @@ KeConnectInterrupt(IN PKINTERRUPT Interrupt)
 
         /* Get the connected interrupt */
         ConnectedInterrupt = CONTAINING_RECORD(CurrentHandler, KINTERRUPT, DispatchCode);
+        ASSERT(ConnectedInterrupt->Connected);
+        ASSERT(ConnectedInterrupt->Vector == Interrupt->Vector);
+        ASSERT(ConnectedInterrupt->Number == Interrupt->Number);
+        ASSERT(ConnectedInterrupt->InterruptListEntry.Flink->Blink == &ConnectedInterrupt->InterruptListEntry);
+        ASSERT(ConnectedInterrupt->InterruptListEntry.Blink->Flink == &ConnectedInterrupt->InterruptListEntry);
 
         /* Check if sharing is ok */
         if ((Interrupt->ShareVector == 0) ||
@@ -180,10 +186,11 @@ KeConnectInterrupt(IN PKINTERRUPT Interrupt)
     Interrupt->Connected = TRUE;
 
 Cleanup:
+    Connected = Interrupt->Connected;
     /* Release the dispatcher lock and restore the thread affinity */
     KiReleaseDispatcherLock(OldIrql);
     KeRevertToUserAffinityThread();
-    return Interrupt->Connected;
+    return Connected;
 }
 
 BOOLEAN
@@ -213,6 +220,11 @@ KeDisconnectInterrupt(IN PKINTERRUPT Interrupt)
 
         /* The first interrupt list entry is the interrupt list head */
         HandlerHead = &VectorFirstInterrupt->InterruptListEntry;
+        ASSERT(VectorFirstInterrupt->Connected);
+        ASSERT(VectorFirstInterrupt->Vector == Interrupt->Vector);
+        ASSERT(VectorFirstInterrupt->Number == Interrupt->Number);
+        ASSERT(Interrupt->InterruptListEntry.Flink->Blink == &Interrupt->InterruptListEntry);
+        ASSERT(Interrupt->InterruptListEntry.Blink->Flink == &Interrupt->InterruptListEntry);
 
         /* If the list is empty, this is the only interrupt for this vector */
         if (IsListEmpty(HandlerHead))

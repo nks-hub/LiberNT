@@ -611,8 +611,13 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             continue;
         }
 
-        ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
-                           Next, DependentLength - (DWORD)(Next - DependentFiles));
+        if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+                                FilePath, ARRAYSIZE(FilePath)) ||
+            FAILED(StringCchCopyW(Next, DependentLength - (DWORD)(Next - DependentFiles), FilePath)))
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+            goto Cleanup;
+        }
         Next += wcslen(Next) + 1;
     }
     *Next = UNICODE_NULL;

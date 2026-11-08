@@ -11,7 +11,6 @@
 #define REACTOS_STR_ORIGINAL_FILENAME "imageres.dll"
 #include <reactos/version.rc>
 
-/* The IDs are those of Windows; media/graphics/imageres-icons renders the Fluent artwork */
 2 ICON "res/2.ico"          /* blank document */
 3 ICON "res/3.ico"          /* folder */
 31 ICON "res/31.ico"        /* disconnected network drive */

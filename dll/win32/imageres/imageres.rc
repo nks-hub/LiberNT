@@ -11,10 +11,10 @@
 #define REACTOS_STR_ORIGINAL_FILENAME "imageres.dll"
 #include <reactos/version.rc>
 
-2 ICON "res/2.ico"          /* blank document */
-3 ICON "res/3.ico"          /* folder */
-31 ICON "res/31.ico"        /* disconnected network drive */
-106 ICON "res/106.ico"      /* shield with check mark */
-114 ICON "res/114.ico"      /* settings */
-174 ICON "res/174.ico"      /* compressed folder */
-1028 ICON "res/1028.ico"    /* administrator shield */
+2 ICON "res/2.ico"
+3 ICON "res/3.ico"
+31 ICON "res/31.ico"
+106 ICON "res/106.ico"
+114 ICON "res/114.ico"
+174 ICON "res/174.ico"
+1028 ICON "res/1028.ico"

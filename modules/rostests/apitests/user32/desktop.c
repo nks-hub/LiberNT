@@ -59,8 +59,6 @@ void do_InitialDesktop_child(int i)
     DWORD size, session = 0;
     BOOL ret;
 
-    /* "Default" on its own gives SYSTEM the service window station in session 0
-     * only; in a user session it connects to WinSta0, as Windows 11 does */
     ProcessIdToSessionId(GetCurrentProcessId(), &session);
     if (i == 1 && IsLocalSystem() && session == 0)
         TestResults[i].ExpectedWinsta = L"Service-0x0-3e7$";

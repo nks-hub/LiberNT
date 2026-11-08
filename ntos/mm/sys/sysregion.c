@@ -147,12 +147,30 @@ MiSystemMapFrames(
 
             MiPfnInitializePage(&System->Pfn, (ULONG)Frames[i], MiPtSlotAddress(Slot, TableFrame, Va), TableFrame,
                                 MiSoftMake(MiSoftDemandZero, Protection, 0), 0);
-            if (CacheFlags == 0 || !NT_SUCCESS(MiPfnSetCache(&System->Pfn, (ULONG)Frames[i], CacheFlags)))
-                System->Pfn.Pfn[Frames[i]].CacheFlags = CacheFlags;
+            if (CacheFlags != 0)
+            {
+                NTSTATUS Status = MiPfnSetCache(&System->Pfn, (ULONG)Frames[i], CacheFlags);
+
+                if (!NT_SUCCESS(Status))
+                {
+                    MiSystemUnmap(System, VirtualAddress, i, FALSE);
+                    return Status;
+                }
+            }
+            else
+                System->Pfn.Pfn[Frames[i]].CacheFlags = 0;
         }
 
         if (LeafFlags & MI_LEAF_PFN_CACHE)
-            PageFlags = MiPfnMappingFlags(&System->Pfn, Frames[i], LeafFlags);
+        {
+            NTSTATUS Status = MiPfnMappingFlags(&System->Pfn, Frames[i], LeafFlags, &PageFlags);
+
+            if (!NT_SUCCESS(Status))
+            {
+                MiSystemUnmap(System, VirtualAddress, i, FALSE);
+                return Status;
+            }
+        }
         if (MI_PROT_IS_WRITABLE(Protection))
             MiPfnExecCleanClear(&System->Pfn, (ULONG)Frames[i]);
 

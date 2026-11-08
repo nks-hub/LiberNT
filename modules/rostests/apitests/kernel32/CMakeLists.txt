@@ -16,6 +16,7 @@ list(APPEND SOURCE
     ConsoleDbcsCells.c
     ConsoleProcessInheritance.c
     ConsoleVirtualTerminal.c
+    CopyContext.c
     CopyFileExStop.c
     CreateAfterMissingName.c
     CreateDirectoryRoot.c

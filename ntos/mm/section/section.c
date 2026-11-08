@@ -345,8 +345,10 @@ MiSegmentDiscardPage(
 
         if (Kind == MiSoftPageFile)
         {
-            if (System->PageFile != NULL)
-                MiPageFileReleaseSlot(System->PageFile, MiSoftValue(Pte));
+            PMI_PAGEFILE PageFile = MiSystemGetPageFile(System);
+
+            if (PageFile != NULL)
+                MiPageFileReleaseSlot(PageFile, MiSoftValue(Pte));
 
             MiArchPteWrite(Proto, MiSoftMake(MiSoftDemandZero, MiSoftProtection(Pte), 0));
             return;
@@ -844,7 +846,10 @@ VOID
 MiSegmentReference(
     _Inout_ PMI_SEGMENT Segment)
 {
-    MI_ATOMIC_ADD32(&Segment->ReferenceCount, 1);
+    LONG Previous = MI_ATOMIC_ADD32(&Segment->ReferenceCount, 1);
+
+    MI_ASSERT(Previous > 0 && Previous < 0x7fffffff);
+    UNREFERENCED_PARAMETER(Previous);
 }
 
 BOOLEAN
@@ -858,6 +863,7 @@ MiSegmentTryReference(
     {
         LONG Count = MI_ATOMIC_READ32(&Segment->ReferenceCount);
 
+        MI_ASSERT(Count >= 0 && Count < 0x7fffffff);
         if (Count != 0)
         {
             if (MI_ATOMIC_CAS32(&Segment->ReferenceCount, Count + 1, Count) == Count)
@@ -916,6 +922,7 @@ MiSegmentRelease(
     {
         LONG Count = MI_ATOMIC_READ32(&Segment->ReferenceCount);
 
+        MI_ASSERT(Count > 0);
         if (Count <= 1)
             break;
 
@@ -1188,16 +1195,18 @@ MiSegmentMaterialize(
     }
     else if (Kind == MiSoftPageFile)
     {
-        if (System->PageFile == NULL)
+        PMI_PAGEFILE PageFile = MiSystemGetPageFile(System);
+
+        if (PageFile == NULL)
         {
             Status = STATUS_IN_PAGE_ERROR;
         }
         else
         {
             Mapping = MiArchMapFrame(Frame);
-            Status = System->PageFile->Ops.Read(System->PageFile->Context, MiSoftValue(Pte), Mapping);
+            Status = PageFile->Ops.Read(PageFile->Context, MiSoftValue(Pte), Mapping);
             MiArchUnmapFrame(Mapping);
-            MI_ATOMIC_ADD64(&System->PageFile->PagesRead, 1);
+            MI_ATOMIC_ADD64(&PageFile->PagesRead, 1);
         }
     }
 
@@ -2134,11 +2143,11 @@ MiDetachMappedView(
     MiLockRangeRemove(Space, MI_VAD_START(Vad), MI_VAD_END(Vad));
     MiVadRemove(&Space->VadRoot, &Vad->Node);
 
-    MI_ATOMIC_ADD32(&Segment->MappedViews, -1);
+    MiAdjustSegmentCount(&Segment->MappedViews, -1);
     if (!Vad->CacheView)
-        MI_ATOMIC_ADD32(&Segment->TruncationViews, -1);
+        MiAdjustSegmentCount(&Segment->TruncationViews, -1);
     if (Vad->WritableUser)
-        MI_ATOMIC_ADD32(&Segment->WritableUserViews, -1);
+        MiAdjustSegmentCount(&Segment->WritableUserViews, -1);
     return Segment;
 }
 
@@ -2231,7 +2240,7 @@ MiMapViewInternal(
         return STATUS_NO_MEMORY;
     }
 
-    MI_ATOMIC_ADD32(&Segment->MappedViews, 1);
+    MiAdjustSegmentCount(&Segment->MappedViews, 1);
     MiSegmentReference(Segment);
 
     Size = MI_PAGE_ALIGN_UP(Size);
@@ -2260,7 +2269,7 @@ MiMapViewInternal(
         {
             MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
             MI_FREE(Vad);
-            MI_ATOMIC_ADD32(&Segment->MappedViews, -1);
+            MiAdjustSegmentCount(&Segment->MappedViews, -1);
             MiSegmentDereference(Segment);
             return STATUS_CONFLICTING_ADDRESSES;
         }
@@ -2273,7 +2282,7 @@ MiMapViewInternal(
     {
         MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
         MI_FREE(Vad);
-        MI_ATOMIC_ADD32(&Segment->MappedViews, -1);
+        MiAdjustSegmentCount(&Segment->MappedViews, -1);
         MiSegmentDereference(Segment);
         return STATUS_CONFLICTING_ADDRESSES;
     }
@@ -2300,9 +2309,9 @@ MiMapViewInternal(
     }
 
     if (!CacheView)
-        MI_ATOMIC_ADD32(&Segment->TruncationViews, 1);
+        MiAdjustSegmentCount(&Segment->TruncationViews, 1);
     if (Vad->WritableUser)
-        MI_ATOMIC_ADD32(&Segment->WritableUserViews, 1);
+        MiAdjustSegmentCount(&Segment->WritableUserViews, 1);
     MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
 
     if (Placeholder != NULL)
@@ -2314,7 +2323,7 @@ MiMapViewInternal(
 
 Fail:
     MI_FREE(Vad);
-    MI_ATOMIC_ADD32(&Segment->MappedViews, -1);
+    MiAdjustSegmentCount(&Segment->MappedViews, -1);
     MiSegmentDereference(Segment);
     return STATUS_NO_MEMORY;
 }

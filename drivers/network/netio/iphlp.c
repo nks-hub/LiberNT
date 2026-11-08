@@ -893,7 +893,7 @@ GetIfEntry2(
         return STATUS_INVALID_PARAMETER;
     Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
-        return STATUS_INVALID_PARAMETER;
+        return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
 
     Status = NetioQueryInterfaces(&Entries, &Count);
     if (!NT_SUCCESS(Status))
@@ -964,7 +964,7 @@ GetIpInterfaceEntry(
         return STATUS_INVALID_PARAMETER;
     Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
-        return STATUS_INVALID_PARAMETER;
+        return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
 
     Status = NetioQueryIpInterfaces(Row->Family, FALSE, &Rows, &Count);
     if (!NT_SUCCESS(Status))

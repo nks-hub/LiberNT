@@ -12,11 +12,6 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(cfgmgr32);
 
-/*
- * A software device is a root-enumerated device node with the instance ID
- * SWD\<enumerator>\<instance>. Its driver is installed through newdev.dll,
- * which is loaded at run time because setupapi and newdev import cfgmgr32.
- */
 typedef struct _SW_DEVICE
 {
     WCHAR InstanceId[MAX_DEVICE_ID_LEN];
@@ -38,7 +33,6 @@ typedef struct _SW_DEVICE
     HANDLE Thread;
     DWORD ThreadId;
     BOOL Reopened;
-    /* Under SwDeviceListLock: one reference for the handle and one for each call that uses it */
     LIST_ENTRY OpenEntry;
     LONG ActiveCalls;
     HANDLE Idle;
@@ -75,10 +69,6 @@ DupBuffer(_In_opt_ const VOID *Buffer, _In_ SIZE_T Size)
     return Copy;
 }
 
-/*
- * SW_DEVICE_CREATE_INFO takes a self-relative security descriptor; Windows 11
- * refuses one without an owner or a group
- */
 static BOOL
 IsSelfRelativeSecurityDescriptor(_In_ PSECURITY_DESCRIPTOR SecurityDescriptor)
 {
@@ -146,11 +136,6 @@ CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source
     return S_OK;
 }
 
-/*
- * The open handles. A handle is looked up here before anything in it is read,
- * so a call that races with SwDeviceClose never touches a freed device: Close
- * takes the device off the list under the same lock.
- */
 static SRWLOCK SwDeviceListLock = SRWLOCK_INIT;
 static LIST_ENTRY SwDeviceList = { &SwDeviceList, &SwDeviceList };
 
@@ -174,7 +159,6 @@ EnterSwDevice(_In_ PSW_DEVICE Device)
     return Entered;
 }
 
-/* SwDeviceClose frees nothing before the call that drops the last reference has set Idle */
 static VOID
 LeaveSwDevice(_In_ PSW_DEVICE Device)
 {
@@ -230,7 +214,6 @@ ApplyProperties(_In_ DEVINST DevInst, _In_ ULONG Count, _In_reads_opt_(Count) co
     return S_OK;
 }
 
-/* Installs the best driver for the device, or the null driver when none is required */
 static HRESULT
 InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
 {
@@ -246,7 +229,6 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
     HDEVINFO DevInfo;
     HRESULT hr = S_OK;
 
-    /* Nothing can match a device without IDs; SwDeviceCreate requires them with DriverRequired */
     if (!HasIds)
         return S_OK;
 
@@ -283,10 +265,6 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
     {
         DWORD Error = GetLastError();
 
-        /*
-         * The device is created also when no driver installs. A device that
-         * requires one shows a problem, as a device without a needed driver.
-         */
         WARN("No driver installed for %s (error %lu)\n", debugstr_w(Device->InstanceId), Error);
         if (DriverRequired)
             CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
@@ -302,13 +280,6 @@ done:
     return hr;
 }
 
-/*
- * Windows removes a software device when the process holding its handle ends.
- * The PnP manager service watches that process. Every device made here also
- * records its owner in a volatile key; a later SwDeviceCreate of the same
- * instance removes the device when that process is gone and the service
- * missed it, so a crashed client does not block its own restart.
- */
 #define SW_DEVICE_OWNERS L"SYSTEM\\CurrentControlSet\\Control\\SoftwareDevices"
 
 static VOID
@@ -332,7 +303,6 @@ GetProcessStart(_In_ HANDLE Process, _Out_ PULONGLONG Start)
     return TRUE;
 }
 
-/* ProcessId 0 records a device that outlives its closed handle */
 static HRESULT
 RecordOwner(_In_ PCWSTR InstanceId, _In_ DWORD ProcessId, _In_ SW_DEVICE_LIFETIME Lifetime)
 {
@@ -378,10 +348,10 @@ ForgetOwner(_In_ PCWSTR InstanceId)
 
 typedef enum _SW_DEVICE_OWNER
 {
-    SwOwnerUnknown,     /* Not made by SwDeviceCreate during this boot */
-    SwOwnerInUse,       /* A handle is open */
-    SwOwnerEnded,       /* The process holding the handle ended */
-    SwOwnerReleased,    /* No handle is open and the device stays */
+    SwOwnerUnknown,
+    SwOwnerInUse,
+    SwOwnerEnded,
+    SwOwnerReleased,
 } SW_DEVICE_OWNER;
 
 static SW_DEVICE_OWNER
@@ -434,44 +404,78 @@ GetOwner(_In_ PCWSTR InstanceId)
     return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
 }
 
-/*
- * Creates the device node, or takes over one that no handle holds, and
- * records this process as its owner. The lock keeps two SwDeviceCreate
- * calls from taking over the same node.
- */
+static HANDLE
+LockSwDeviceOwners(VOID)
+{
+    HANDLE Lock = CreateMutexW(NULL, FALSE, L"Global\\SoftwareDeviceOwners");
+    DWORD Wait;
+
+    if (!Lock)
+        return NULL;
+    Wait = WaitForSingleObject(Lock, INFINITE);
+    if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
+    {
+        CloseHandle(Lock);
+        SetLastError(ERROR_GEN_FAILURE);
+        return NULL;
+    }
+    return Lock;
+}
+
+static VOID
+UnlockSwDeviceOwners(_In_ HANDLE Lock)
+{
+    ReleaseMutex(Lock);
+    CloseHandle(Lock);
+}
+
+static VOID
+ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
+{
+    HANDLE Lock = LockSwDeviceOwners();
+    CONFIGRET Cr;
+
+    if (Remove)
+    {
+        Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId);
+        if (Cr != CR_SUCCESS)
+            WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
+        ForgetOwner(Device->InstanceId);
+    }
+    else
+    {
+        CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
+        RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
+    }
+    if (Lock)
+        UnlockSwDeviceOwners(Lock);
+}
+
 static HRESULT
 ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
 {
-    DEVINST Root;
+    DEVINST Root, DevInst = 0;
+    SW_DEVICE_LIFETIME Lifetime;
     CONFIGRET Cr;
     HANDLE Lock;
-    DWORD Wait;
     HRESULT hr = S_OK;
 
     Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
     if (Cr != CR_SUCCESS)
         return CrToHresult(Cr);
 
-    Lock = CreateMutexW(NULL, FALSE, L"Global\\SoftwareDeviceOwners");
+    Lock = LockSwDeviceOwners();
     if (!Lock)
         return HRESULT_FROM_WIN32(GetLastError());
-    Wait = WaitForSingleObject(Lock, INFINITE);
-    if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
-    {
-        CloseHandle(Lock);
-        return HRESULT_FROM_WIN32(ERROR_GEN_FAILURE);
-    }
 
-    /* PnP installs the driver later, after the IDs and properties are in place */
-    Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
+    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Root,
                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
     if (Cr == CR_ALREADY_SUCH_DEVINST)
     {
         switch (GetOwner(Device->InstanceId))
         {
             case SwOwnerReleased:
-                /* A device that outlived its handle is opened again as it is */
-                Cr = CM_Locate_DevNodeW(&Device->DevInst, Device->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
+                Cr = CM_Locate_DevNodeW(&DevInst, Device->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
                 Device->Reopened = (Cr == CR_SUCCESS);
                 break;
 
@@ -479,7 +483,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 if (CfgmgrRemoveSoftwareDevice(Device->InstanceId) == CR_SUCCESS)
                 {
                     TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
-                    Cr = CM_Create_DevNodeW(&Device->DevInst, Device->InstanceId, Root,
+                    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Root,
                                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
                 }
                 break;
@@ -488,24 +492,25 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 break;
         }
     }
-    /* The caller removes the node, or releases one it opened again, when the rest fails */
     if (Cr == CR_SUCCESS)
-        hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), SWDeviceLifetimeHandle);
+    {
+        EnterCriticalSection(&Device->LifetimeLock);
+        Device->DevInst = DevInst;
+        Lifetime = Device->Lifetime;
+        hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
+        if (SUCCEEDED(hr))
+        {
+            hr = CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                                       Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0));
+        }
+        LeaveCriticalSection(&Device->LifetimeLock);
+    }
 
-    ReleaseMutex(Lock);
-    CloseHandle(Lock);
+    UnlockSwDeviceOwners(Lock);
 
     if (Cr != CR_SUCCESS)
-    {
-        /* The node may belong to another handle; it is not ours to remove */
-        Device->DevInst = 0;
         return Cr == CR_ALREADY_SUCH_DEVINST ? HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) : CrToHresult(Cr);
-    }
-    if (FAILED(hr))
-        return hr;
-
-    /* A new handle has the handle lifetime */
-    return CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId, GetCurrentProcessId()));
+    return hr;
 }
 
 static HRESULT
@@ -565,7 +570,6 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     if (FAILED(hr))
         return hr;
 
-    /* A device opened again keeps the driver it runs with */
     if (Device->Reopened)
     {
         ULONG Status, Problem;
@@ -593,18 +597,11 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     {
         ERR("Creating software device %s failed (0x%08lx)\n", debugstr_w(Device->InstanceId), hr);
 
-        /* A half-created device would block the next creation with the same instance ID */
-        if (Device->DevInst && Device->Reopened)
-        {
-            CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
-            RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
-        }
-        else if (Device->DevInst)
-        {
-            CfgmgrRemoveSoftwareDevice(Device->InstanceId);
-            ForgetOwner(Device->InstanceId);
-        }
+        if (Device->DevInst)
+            ReleaseSwDeviceNode(Device, !Device->Reopened);
+        EnterCriticalSection(&Device->LifetimeLock);
         Device->DevInst = 0;
+        LeaveCriticalSection(&Device->LifetimeLock);
     }
 
     /* The callback may close the handle; nothing touches Device afterwards */
@@ -650,18 +647,13 @@ SwDeviceCreate(
         return E_INVALIDARG;
     }
 
-    /*
-     * The root bus reports the capabilities of its devices and has no way to
-     * take them from here. SilentInstall needs nothing: no UI is shown when
-     * the driver of a software device installs.
-     */
+    /* TODO: Removable and NoDisplayInUI need the root bus to report the capabilities of the device */
     if (pCreateInfo->CapabilityFlags & (SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI))
     {
         FIXME("Capabilities 0x%lx are not supported\n", pCreateInfo->CapabilityFlags);
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
 
-    /* PnP creates device nodes below the root device only */
     if (CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS ||
         CM_Get_Device_IDW(Root, RootId, ARRAYSIZE(RootId), 0) != CR_SUCCESS ||
         CM_Locate_DevNodeW(&Parent, (DEVINSTID_W)pszParentDeviceInstance, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
@@ -739,12 +731,6 @@ SwDeviceCreate(
     }
     Device->PropertyCount = cPropertyCount;
 
-    /*
-     * As on Windows the creation finishes asynchronously and reports through
-     * the callback, which may close the handle before SwDeviceCreate returns.
-     * The thread starts once Device is complete, and nothing here touches
-     * Device after that.
-     */
     Device->Thread = CreateThread(NULL, 0, SwDeviceCreateThread, Device, CREATE_SUSPENDED, &Device->ThreadId);
     if (!Device->Thread)
     {
@@ -784,7 +770,6 @@ SwDeviceClose(
 
     TRACE("%p\n", hSwDevice);
 
-    /* Calls that already use the handle finish first; later ones fail */
     AcquireSRWLockExclusive(&SwDeviceListLock);
     for (Entry = SwDeviceList.Flink; Entry != &SwDeviceList; Entry = Entry->Flink)
     {
@@ -802,7 +787,6 @@ SwDeviceClose(
     if (Wait)
         WaitForSingleObject(Device->Idle, INFINITE);
 
-    /* Let a pending creation finish, unless the callback itself closes the handle */
     if (Device->Thread)
     {
         if (Device->ThreadId != GetCurrentThreadId())
@@ -810,20 +794,8 @@ SwDeviceClose(
         CloseHandle(Device->Thread);
     }
 
-    /* The device leaves with its handle; its registry keys stay for the next creation */
-    if (Device->Lifetime == SWDeviceLifetimeHandle && Device->DevInst)
-    {
-        CONFIGRET Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId);
-        if (Cr != CR_SUCCESS)
-            WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
-        ForgetOwner(Device->InstanceId);
-    }
-    else if (Device->DevInst)
-    {
-        /* A device that stays can be opened again by the next SwDeviceCreate */
-        CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
-        RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
-    }
+    if (Device->DevInst)
+        ReleaseSwDeviceNode(Device, Device->Lifetime == SWDeviceLifetimeHandle);
 
     FreeSwDevice(Device);
 }
@@ -846,7 +818,6 @@ SwDeviceSetLifetime(
     EnterCriticalSection(&Device->LifetimeLock);
     Previous = Device->Lifetime;
 
-    /* Only a device with the handle lifetime leaves with this process */
     if (Device->DevInst && Lifetime != Previous)
     {
         hr = CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId,
@@ -856,7 +827,6 @@ SwDeviceSetLifetime(
             hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
             if (FAILED(hr))
             {
-                /* Keeps the device leaving as before */
                 CfgmgrWatchSoftwareDevice(Device->InstanceId,
                                           Previous == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0);
             }
@@ -911,7 +881,7 @@ SwDevicePropertySet(
     return hr;
 }
 
-/* Device interfaces of software devices need a bus driver that registers them; LiberNT has none yet */
+/* TODO: device interfaces of software devices need a bus driver that registers them */
 HRESULT
 WINAPI
 SwDeviceInterfaceRegister(

@@ -62,7 +62,6 @@ IsPresent(PCWSTR InstanceId)
     return CM_Locate_DevNodeW(&DevInst, (DEVINSTID_W)InstanceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS;
 }
 
-/* Removal finishes in the background on Windows */
 static BOOL
 WaitGone(PCWSTR InstanceId)
 {
@@ -88,7 +87,6 @@ test_Lifetime(CREATED *State)
     lstrcpyW(InstanceId, State->InstanceId);
     ok(IsPresent(InstanceId), "%S is not present\n", InstanceId);
 
-    /* A device that outlives its handle is opened again by the next creation */
     hr = SwDeviceSetLifetime(Device, SWDeviceLifetimeParentPresent);
     ok(hr == S_OK, "SwDeviceSetLifetime returned 0x%08lx\n", hr);
     SwDeviceClose(Device);
@@ -100,7 +98,6 @@ test_Lifetime(CREATED *State)
         return;
     ok(State->Result == S_OK, "Opening the persistent device reported 0x%08lx\n", State->Result);
 
-    /* Back to the handle lifetime, the device leaves with the handle */
     hr = SwDeviceSetLifetime(Device, SWDeviceLifetimeHandle);
     ok(hr == S_OK, "SwDeviceSetLifetime returned 0x%08lx\n", hr);
     SwDeviceClose(Device);
@@ -136,7 +133,6 @@ test_DriverRequired(CREATED *State)
     WaitGone(State->InstanceId);
 }
 
-/* Windows 11 takes a self-relative descriptor with an owner and a group, and refuses one without */
 static void
 test_SecurityDescriptor(CREATED *State)
 {
@@ -174,7 +170,6 @@ test_SecurityDescriptor(CREATED *State)
     LocalFree(Security);
 }
 
-/* The child creates a device and ends without closing its handle */
 static void
 RunChild(void)
 {

@@ -2414,11 +2414,6 @@ CM_Enable_DevNode_Ex(
 }
 
 
-/*
- * PNP_DEVINST_REMOVE_SOFTWARE takes a software device out of the device tree
- * and keeps its registry keys (SwDeviceClose). PNP_DEVINST_WATCH_SOFTWARE
- * removes it when the process ulMinorAction ends, or stops that for 0.
- */
 static CONFIGRET
 SoftwareDeviceAction(
     _In_ ULONG ulMajorAction,

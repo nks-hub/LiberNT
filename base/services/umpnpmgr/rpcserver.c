@@ -691,6 +691,51 @@ done:
 }
 
 
+static
+BOOL
+IsCallerAdmin(
+    _In_ handle_t hBinding)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    HANDLE hToken;
+    PSID pAdminsSid = NULL;
+    BOOL bAdmin = FALSE;
+    RPC_STATUS RpcStatus;
+
+    if (!AllocateAndInitializeSid(&NtAuthority,
+                                  2,
+                                  SECURITY_BUILTIN_DOMAIN_RID,
+                                  DOMAIN_ALIAS_RID_ADMINS,
+                                  0, 0, 0, 0, 0, 0,
+                                  &pAdminsSid))
+    {
+        DPRINT1("AllocateAndInitializeSid failed\n");
+        return FALSE;
+    }
+
+    RpcStatus = RpcImpersonateClient(hBinding);
+    if (RpcStatus != RPC_S_OK)
+    {
+        DPRINT1("RpcImpersonateClient failed (Status 0x%08lx)\n", RpcStatus);
+        goto done;
+    }
+
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken))
+    {
+        if (!CheckTokenMembership(hToken, pAdminsSid, &bAdmin))
+            bAdmin = FALSE;
+        CloseHandle(hToken);
+    }
+
+    RpcRevertToSelf();
+
+done:
+    FreeSid(pAdminsSid);
+
+    return bAdmin;
+}
+
+
 VOID
 __RPC_USER
 PNP_NOTIFY_HANDLE_rundown(
@@ -3611,11 +3656,6 @@ ReenumerateDeviceInstance(
 }
 
 
-/*
- * Takes a software device (SWD\...) out of the device tree when its last
- * SwDevice handle closes. Its registry keys stay, so the next SwDeviceCreate
- * of the same instance finds its settings again.
- */
 static CONFIGRET
 RemoveSoftwareDeviceInstance(
     _In_ LPWSTR pszDeviceInstance)
@@ -3637,7 +3677,6 @@ RemoveSoftwareDeviceInstance(
     if (!NT_SUCCESS(Status))
         return NtStatusToCrError(Status);
 
-    /* The root bus no longer reports the device; enumerating it deletes the device node */
     RtlInitUnicodeString(&EnumerateData.DeviceInstance, szRootDeviceInstanceID);
     EnumerateData.Flags = 0;
     Status = NtPlugPlayControl(PlugPlayControlEnumerateDevice, &EnumerateData, sizeof(EnumerateData));
@@ -3645,10 +3684,6 @@ RemoveSoftwareDeviceInstance(
 }
 
 
-/*
- * A software device with a handle lifetime leaves when the process that
- * holds its handle ends, also when that process never closes the handle.
- */
 typedef struct _SOFTWARE_DEVICE_WATCH
 {
     LIST_ENTRY ListEntry;
@@ -3694,17 +3729,11 @@ StopSoftwareDeviceWatch(
     if (!Watch)
         return;
 
-    /* Waits for a callback that already runs; that callback finds no watch and returns */
     UnregisterWaitEx(Watch->Wait, INVALID_HANDLE_VALUE);
     CloseHandle(Watch->Process);
     HeapFree(GetProcessHeap(), 0, Watch);
 }
 
-/*
- * The watch stays listed while the device is removed, so that a
- * StopSoftwareDeviceWatch for the same instance, which the next owner calls
- * before it creates the device again, waits for this callback to return.
- */
 static VOID
 CALLBACK
 SoftwareDeviceOwnerEnded(
@@ -3723,7 +3752,6 @@ SoftwareDeviceOwnerEnded(
         Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
     ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
 
-    /* A StopSoftwareDeviceWatch that took the watch frees it after this returns */
     if (!Listed)
         return;
 
@@ -3766,7 +3794,6 @@ WatchSoftwareDeviceInstance(
         return CR_FAILURE;
     }
 
-    /* The lock holds back a callback for an ended process until the watch is listed */
     AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
     if (!RegisterWaitForSingleObject(&Watch->Wait, Watch->Process, SoftwareDeviceOwnerEnded, Watch,
                                      INFINITE, WT_EXECUTEONLYONCE))
@@ -3823,12 +3850,22 @@ PNP_DeviceInstanceAction(
                 ret = CR_INVALID_FLAG;
                 break;
             }
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
             ret = RemoveSoftwareDeviceInstance(pszDeviceInstance1);
             if (ret == CR_SUCCESS)
                 StopSoftwareDeviceWatch(pszDeviceInstance1);
             break;
 
         case PNP_DEVINST_WATCH_SOFTWARE:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
             ret = WatchSoftwareDeviceInstance(pszDeviceInstance1, ulMinorAction);
             break;
 

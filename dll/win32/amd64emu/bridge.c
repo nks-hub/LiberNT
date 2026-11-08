@@ -659,9 +659,9 @@ EmuServiceEntry(
         EMU_HOST_TYPE_UINT8
     };
     CHAR Signature[EMU_HOST_MAX_ARGUMENTS + 2];
-    ULONG _SEH2_VOLATILE Entry, Service, Index, Count, Argument;
+    ULONG Entry, Service, Index, Count, Argument;
     ULONG64 Kinds;
-    BOOLEAN _SEH2_VOLATILE Decoded = FALSE;
+    BOOLEAN Decoded = FALSE;
 
     for (Entry = 0; Entry < EmuServiceEntryCount; Entry++)
     {

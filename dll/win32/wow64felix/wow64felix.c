@@ -363,7 +363,7 @@ FelixDebugService(
     _Inout_ PULONG64 Registers,
     _In_ ULONG Next)
 {
-    UCHAR _SEH2_VOLATILE Instruction = 0;
+    UCHAR Instruction = 0;
     ULONG Length;
 
     _SEH2_TRY

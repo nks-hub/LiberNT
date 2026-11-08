@@ -2561,7 +2561,7 @@ NtUserRegisterClassExWOW(
  *   Atom identifying the new class
  */
 {
-    WNDCLASSEXW CapturedClassInfo = {0};
+    WNDCLASSEXW _SEH2_VOLATILE CapturedClassInfo = {0};
     UNICODE_STRING _SEH2_VOLATILE CapturedName = {0}, CapturedMenuName = {0}, CapturedVersion = {0};
     RTL_ATOM Ret = (RTL_ATOM)0;
     PPROCESSINFO ppi = GetW32ProcessInfo();
@@ -2990,7 +2990,7 @@ NtUserGetClassName (IN HWND hWnd,
 {
     PWND Window;
     UNICODE_STRING CapturedClassName;
-    INT iCls, Ret = 0;
+    INT _SEH2_VOLATILE iCls, Ret = 0;
     RTL_ATOM Atom = 0;
 
     UserEnterShared();

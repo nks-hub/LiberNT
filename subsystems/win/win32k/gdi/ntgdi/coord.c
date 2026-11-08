@@ -593,7 +593,7 @@ NtGdiModifyWorldTransform(
     DWORD dwMode)
 {
     PDC pdc;
-    XFORML xformSafe;
+    XFORML _SEH2_VOLATILE xformSafe;
     BOOL Ret = TRUE;
 
     pdc = DC_LockDc(hdc);

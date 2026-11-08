@@ -1222,9 +1222,9 @@ NtUserSBGetParms(
   LPSCROLLINFO lpsi)
 {
    PWND Window;
-   SCROLLINFO psi;
+   SCROLLINFO _SEH2_VOLATILE psi;
    BOOL Ret = FALSE;
-   SBDATA SBDataSafe;
+   SBDATA _SEH2_VOLATILE SBDataSafe;
    USER_REFERENCE_ENTRY Ref;
 
    TRACE("Enter NtUserGetScrollInfo\n");

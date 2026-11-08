@@ -376,7 +376,7 @@ NtUserTranslateAccelerator(
     PWND Window = NULL;
     PACCELERATOR_TABLE Accel = NULL;
     ULONG i;
-    MSG Message;
+    MSG _SEH2_VOLATILE Message;
     USER_REFERENCE_ENTRY AccelRef, WindowRef;
     int Ret = 0;
 

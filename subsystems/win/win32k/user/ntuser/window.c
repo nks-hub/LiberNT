@@ -3433,9 +3433,9 @@ NtUserFindWindowEx(HWND hwndParent,
 {
    PWND Parent, ChildAfter;
    UNICODE_STRING _SEH2_VOLATILE ClassName = {0}, WindowName = {0};
-   HWND Desktop, Ret = NULL;
+   HWND _SEH2_VOLATILE Desktop, Ret = NULL;
    BOOL DoMessageWnd = FALSE;
-   RTL_ATOM ClassAtom = (RTL_ATOM)0;
+   RTL_ATOM _SEH2_VOLATILE ClassAtom = (RTL_ATOM)0;
 
    TRACE("Enter NtUserFindWindowEx\n");
    UserEnterShared();

@@ -1710,7 +1710,7 @@ NtUserEndPaint(HWND hWnd, CONST PAINTSTRUCT* pUnsafePs)
 {
    NTSTATUS Status = STATUS_SUCCESS;
    PWND Window;
-   PAINTSTRUCT Ps;
+   PAINTSTRUCT _SEH2_VOLATILE Ps;
    USER_REFERENCE_ENTRY Ref;
    BOOL Ret = FALSE;
 
@@ -1800,7 +1800,7 @@ BOOL APIENTRY
 NtUserFlashWindowEx(IN PFLASHWINFO pfwi)
 {
    PWND pWnd;
-   FLASHWINFO finfo = {0};
+   FLASHWINFO _SEH2_VOLATILE finfo = {0};
    BOOL Ret = FALSE;
 
    UserEnterExclusive();
@@ -2054,7 +2054,7 @@ NtUserRedrawWindow(
    HRGN hrgnUpdate,
    UINT flags)
 {
-   RECTL SafeUpdateRect;
+   RECTL _SEH2_VOLATILE SafeUpdateRect;
    PWND Wnd;
    BOOL Ret = FALSE;
    USER_REFERENCE_ENTRY Ref;
@@ -2434,7 +2434,7 @@ NtUserDrawCaptionTemp(
    PWND pWnd = NULL;
    UNICODE_STRING _SEH2_VOLATILE SafeStr = {0};
    NTSTATUS Status = STATUS_SUCCESS;
-   RECTL SafeRect;
+   RECTL _SEH2_VOLATILE SafeRect;
    BOOL Ret;
 
    UserEnterExclusive();

@@ -4462,8 +4462,8 @@ NtUserSetInternalWindowPos(
    WINDOWPLACEMENT wndpl;
    UINT flags;
    PWND Wnd;
-   RECT rect = {0};
-   POINT pt = {0};
+   RECT _SEH2_VOLATILE rect = {0};
+   POINT _SEH2_VOLATILE pt = {0};
    BOOL Ret = FALSE;
    USER_REFERENCE_ENTRY Ref;
 

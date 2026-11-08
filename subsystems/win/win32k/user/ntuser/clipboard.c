@@ -1058,7 +1058,7 @@ cleanup:
 INT APIENTRY
 NtUserGetPriorityClipboardFormat(UINT *paFormatPriorityList, INT cFormats)
 {
-    INT i, iRet = 0;
+    INT _SEH2_VOLATILE i, iRet = 0;
     PWINSTATION_OBJECT pWinStaObj;
 
     UserEnterShared();
@@ -1369,7 +1369,7 @@ cleanup:
 HANDLE APIENTRY
 NtUserSetClipboardData(UINT fmt, HANDLE hData, PSETCLIPBDATA pUnsafeScd)
 {
-    SETCLIPBDATA scd;
+    SETCLIPBDATA _SEH2_VOLATILE scd;
     HANDLE hRet;
 
     TRACE("NtUserSetClipboardData(%x %p %p)\n", fmt, hData, pUnsafeScd);

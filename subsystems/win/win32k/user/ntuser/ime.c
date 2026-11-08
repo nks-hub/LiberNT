@@ -2263,7 +2263,7 @@ IntCheckImeShowStatus(
     BOOL ret = FALSE, bDifferent;
     PWINDOWLIST pwl;
     HWND *phwnd;
-    PWND pwndNode, pwndIMC = NULL;
+    PWND _SEH2_VOLATILE pwndNode, pwndIMC = NULL;
     PTHREADINFO ptiCurrent = GetW32ThreadInfo();
     PIMEUI pimeui;
     IMEUI SafeImeUI;

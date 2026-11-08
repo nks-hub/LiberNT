@@ -771,7 +771,7 @@ IntDefWindowProc(
                 if (Ansi)
                 {
                     PCHAR outbuf = (PCHAR)lParam;
-                    ULONG Length = 0;
+                    ULONG _SEH2_VOLATILE Length = 0;
 
                     _SEH2_TRY
                     {
@@ -813,9 +813,9 @@ IntDefWindowProc(
 
       case WM_SETTEXT:
       {
-            UNICODE_STRING UnicodeString = {0};
+            UNICODE_STRING _SEH2_VOLATILE UnicodeString = {0};
             ANSI_STRING AnsiString;
-            NTSTATUS Status = STATUS_SUCCESS;
+            NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
             PCWSTR Text = (PCWSTR)lParam;
 
             if (Ansi)
@@ -1559,7 +1559,7 @@ IntDefWindowProc(
          {
             case HCBT_MOVESIZE:
             {
-               RECTL rt;
+               RECTL _SEH2_VOLATILE rt;
 
                if (lParam)
                {

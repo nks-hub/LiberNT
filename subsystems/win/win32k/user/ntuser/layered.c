@@ -486,7 +486,7 @@ NtUserUpdateLayeredWindow(
    RECT *prcDirty)
 {
    UPDATELAYEREDWINDOWINFO info;
-   POINT _SEH2_VOLATILE Dst, Src; 
+   POINT _SEH2_VOLATILE Dst, Src;
    SIZE _SEH2_VOLATILE Size;
    RECT _SEH2_VOLATILE Dirty;
    BLENDFUNCTION _SEH2_VOLATILE blend = { AC_SRC_OVER, 0, 255, 0 };

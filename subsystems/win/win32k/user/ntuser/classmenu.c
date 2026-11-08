@@ -33,7 +33,7 @@ IntSetClassMenuName(IN PCLS Class,
 
     if (MenuName->Length != 0)
     {
-        ANSI_STRING AnsiString;
+        ANSI_STRING _SEH2_VOLATILE AnsiString;
         PWSTR strBufW;
 
         AnsiString.MaximumLength = (USHORT)RtlUnicodeStringToAnsiSize(MenuName);

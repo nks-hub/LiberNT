@@ -1160,7 +1160,7 @@ NtUserFindExistingCursorIcon(
     PCURICON_OBJECT CurIcon;
     HICON Ret = NULL;
     UNICODE_STRING ustrModuleSafe, ustrRsrcSafe;
-    FINDEXISTINGCURICONPARAM paramSafe;
+    FINDEXISTINGCURICONPARAM _SEH2_VOLATILE paramSafe;
     NTSTATUS Status;
     PPROCESSINFO pProcInfo = PsGetCurrentProcessWin32Process();
     RTL_ATOM atomModName;

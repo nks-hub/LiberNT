@@ -1443,7 +1443,6 @@ SoftwareSasCallback(
     }
 }
 
-/* Lets SendSAS (sas.dll), mostly called from services in session 0, reach this session */
 static
 VOID
 InitializeSoftwareSas(
@@ -1477,8 +1476,6 @@ InitializeSoftwareSas(
         return;
     }
 
-    /* An event someone created first has their security and reset mode, so
-     * anyone they allow could raise the SAS; software SAS stays off then */
     if (dwError == ERROR_ALREADY_EXISTS)
     {
         ERR("WL: The software SAS event already exists, software SAS is disabled\n");

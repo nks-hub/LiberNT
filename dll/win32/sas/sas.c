@@ -15,7 +15,6 @@
 #define NDEBUG
 #include <reactos/debug.h>
 
-/* Values of the SoftwareSASGeneration policy */
 #define SAS_GENERATION_SERVICES       0x1
 #define SAS_GENERATION_EASE_OF_ACCESS 0x2
 
@@ -37,9 +36,7 @@ IsSasGenerationAllowed(
     if (Status != ERROR_SUCCESS)
         return FALSE;
 
-    /* shortcut: the Winlogon event admits SYSTEM only, so Ease of Access callers (uiAccess
-     * processes) cannot signal it; honour SAS_GENERATION_EASE_OF_ACCESS once the event
-     * grants them access */
+    /* TODO: SAS_GENERATION_EASE_OF_ACCESS needs a Winlogon event that uiAccess callers may signal */
     if (AsUser)
     {
         DPRINT1("SendSAS for Ease of Access applications is not supported\n");
@@ -49,17 +46,6 @@ IsSasGenerationAllowed(
     return (Policy & SAS_GENERATION_SERVICES) != 0;
 }
 
-/*
- * Simulates Ctrl+Alt+Del in the session of the caller, or in the console
- * session when the caller is a service in session 0. Winlogon handles the
- * request like the keyboard sequence. The SoftwareSASGeneration policy must
- * allow it, and only SYSTEM may signal Winlogon.
- *
- * The session comes from the effective token, the impersonated user's when
- * there is one. The policy and the event are then read and opened as the
- * process, which a service that acts for a user is; the impersonation is
- * restored afterwards.
- */
 VOID
 WINAPI
 SendSAS(

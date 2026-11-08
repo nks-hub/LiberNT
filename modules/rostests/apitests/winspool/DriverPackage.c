@@ -15,7 +15,6 @@
 #include <winspool.h>
 #include <strsafe.h>
 
-/* From setupapi.h, which needs winuser.h */
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
 
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"
@@ -129,7 +128,6 @@ CreateTestPackage(PWSTR Dir, PWSTR InfPath)
     CreateDirectoryW(Dir, NULL);
     StringCchPrintfW(InfPath, MAX_PATH, L"%s\\lntprnpkg.inf", Dir);
 
-    /* Any loadable DLL works as driver and UI file, the spooler only looks for DrvDriverEvent */
     GetSystemDirectoryW(System, ARRAYSIZE(System));
     StringCchPrintfW(Source, ARRAYSIZE(Source), L"%s\\version.dll", System);
     StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTDRV.DLL", Dir);
@@ -207,7 +205,6 @@ FilesMatch(PCWSTR First, PCWSTR Second)
     return ReadA != 0 && ReadA == ReadB && memcmp(A, B, ReadA) == 0;
 }
 
-/* Removes the test drivers without DeletePrinterDriver, which the local spooler does not implement yet */
 static VOID
 DeleteTestDriver(VOID)
 {
@@ -241,7 +238,6 @@ START_TEST(DriverPackage)
     HRESULT hr;
     BOOL DatFound = FALSE;
 
-    /* Parameter validation */
     Length = ARRAYSIZE(StoreInf);
     hr = UploadPrinterDriverPackageW(NULL, NULL, NULL, 0, NULL, StoreInf, &Length);
     ok(hr == E_INVALIDARG, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
@@ -260,12 +256,10 @@ START_TEST(DriverPackage)
         return;
     }
 
-    /* A missing package fails */
     Length = ARRAYSIZE(StoreInf);
     hr = UploadPrinterDriverPackageW(NULL, L"C:\\does-not-exist\\none.inf", NULL, 0, NULL, StoreInf, &Length);
     ok(FAILED(hr), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
 
-    /* Too small buffer reports the size */
     Length = 1;
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
     ok(hr == HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
@@ -285,7 +279,6 @@ START_TEST(DriverPackage)
     ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S does not exist\n", StoreInf);
     trace("Store INF: %S\n", StoreInf);
 
-    /* Uploading again returns the same package */
     {
         WCHAR Again[MAX_PATH];
         Length = ARRAYSIZE(Again);
@@ -295,7 +288,6 @@ START_TEST(DriverPackage)
             ok(_wcsicmp(Again, StoreInf) == 0, "Second upload returned %S\n", Again);
     }
 
-    /* UPDP_UPLOAD_ALWAYS copies the files of a package that is in the store already */
     {
         WCHAR StoreDir[MAX_PATH], StoreFile[MAX_PATH], SourceFile[MAX_PATH], Again[MAX_PATH];
         static const char Changed[] = "changed in the store\r\n";
@@ -320,7 +312,6 @@ START_TEST(DriverPackage)
         ok(FilesMatch(StoreFile, SourceFile), "%S was not copied again\n", StoreFile);
     }
 
-    /* A needed section that the INF does not have fails before anything is registered */
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, BROKEN_DRIVER_NAME, NULL, 0);
     ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     {
@@ -330,7 +321,6 @@ START_TEST(DriverPackage)
             RegCloseKey(hBroken);
     }
 
-    /* Needed sections that need each other are read once, their files are dependent files */
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, NEEDS_DRIVER_NAME, NULL, IPDFP_COPY_ALL_FILES);
     ok(hr == S_OK, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     {
@@ -356,7 +346,6 @@ START_TEST(DriverPackage)
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, L"No Such Printer", NULL, 0);
     ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
 
-    /* A file that already lies in the driver directory under the renamed name is not the install's to touch */
     {
         WCHAR DriverDir[MAX_PATH];
         DWORD Size = sizeof(DriverDir);
@@ -374,7 +363,6 @@ START_TEST(DriverPackage)
     ok(DriverFileExists(L"TESTPKG.GPD"), "TESTPKG.GPD was not copied\n");
     ok(DriverFileExists(L"TESTPKG.DAT"), "TESTPKG.DAT was not copied\n");
 
-    /* CopyFiles installs TESTPKG.DAT a second time as TESTREN.DAT; the staging copy goes away */
     ok(DriverFileExists(L"TESTREN.DAT"), "TESTREN.DAT was not copied\n");
     {
         WCHAR DriverDir[MAX_PATH], Installed[MAX_PATH], Packaged[MAX_PATH], Kept[MAX_PATH];
@@ -408,10 +396,6 @@ START_TEST(DriverPackage)
         }
     }
 
-    /*
-     * The driver is registered with the files from the INF. Checked in the
-     * registry because LocalEnumPrinterDrivers only lists drivers of printers.
-     */
     {
         WCHAR Key[MAX_PATH], Value[MAX_PATH * 2];
         DWORD Size;
@@ -458,7 +442,6 @@ START_TEST(DriverPackage)
         RegCloseKey(hKey);
     }
 
-    /* The installed driver uses the package */
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
     ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE), "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 

@@ -180,7 +180,7 @@ typedef struct _IP_INTERFACE {
     BOOLEAN HalfDuplex;
     ULONG PhysicalMedium;
     ULONG64 TransmitLinkSpeed;
-    ULONG64 NetLuid;              /* NET_LUID of the NDIS interface; 0 if none */
+    ULONG64 NetLuid;
     BOOLEAN ManualMetric;
     UINT  InterfaceMetric;
     BOOLEAN Forwarding;

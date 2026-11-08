@@ -112,7 +112,7 @@ typedef struct _IP4_INTERFACE_INFO
     BOOLEAN DhcpRouterDiscovery;
     BOOLEAN Reserved;
     ULONG PhysicalMedium;
-    ULONG64 NetLuid; /* NET_LUID of the NDIS interface; 0 if none */
+    ULONG64 NetLuid;
 } IP4_INTERFACE_INFO, *PIP4_INTERFACE_INFO;
 
 typedef struct _IP_BEST_SOURCE

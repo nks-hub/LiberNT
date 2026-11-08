@@ -48,9 +48,9 @@ typedef struct _NOTIFY_HANDLE
     HANDLE hEvent;
     DWORD dwNotifyMask;
     PSC_RPC_NOTIFY_PARAMS_LIST pParamsList;
-    LIST_ENTRY ListEntry;           /* in ScmManagerNotifyList or the NotifyList of a service handle while pending */
-    PVOID Owner;                    /* the manager handle of a pending database request */
-    BOOL bSubscription;             /* SERVICE_NOTIFY_SUBSCRIPTION: does not take part in bStatusNotified */
+    LIST_ENTRY ListEntry;
+    PVOID Owner;
+    BOOL bSubscription;
 } NOTIFY_HANDLE, *PNOTIFY_HANDLE;
 
 
@@ -60,7 +60,7 @@ typedef struct _SERVICE_HANDLE
     PSERVICE ServiceEntry;
     LIST_ENTRY HandleListEntry;
     BOOL bStatusNotified;
-    LIST_ENTRY NotifyList;          /* pending status requests; a handle may have several */
+    LIST_ENTRY NotifyList;
 } SERVICE_HANDLE, *PSERVICE_HANDLE;
 
 
@@ -119,7 +119,7 @@ ScmServiceMapping = {SERVICE_READ,
 DWORD g_dwServiceBits = 0;
 
 static CRITICAL_SECTION ScmNotifyLock;
-static LIST_ENTRY ScmManagerNotifyList;  /* pending database requests of every manager handle */
+static LIST_ENTRY ScmManagerNotifyList;
 
 /* FUNCTIONS ***************************************************************/
 
@@ -267,7 +267,6 @@ ScmReleaseNotify(PNOTIFY_HANDLE pNotify)
     CloseHandle(pNotify->hEvent);
     if (pNotify->pParamsList != NULL)
     {
-        /* A result that nobody took, for example after the request was abandoned */
         if (pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->pszServiceNames != NULL)
             HeapFree(GetProcessHeap(), 0, pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->pszServiceNames);
         HeapFree(GetProcessHeap(), 0, pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2);
@@ -279,10 +278,6 @@ ScmReleaseNotify(PNOTIFY_HANDLE pNotify)
 }
 
 
-/*
- * lpService is NULL for a notification of the service database, which names
- * the created or deleted service in lpServiceName instead
- */
 static VOID
 ScmFillNotify(PNOTIFY_HANDLE pNotify,
               PSERVICE lpService,
@@ -335,7 +330,6 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
 }
 
 
-/* Completes the pending requests of hSvc that wait for dwTrigger; returns whether there was one */
 static BOOL
 ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
                          PSERVICE lpService,
@@ -380,7 +374,6 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
 
-        /* A handle that missed this state gets it with its next request */
         hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask);
     }
 
@@ -388,7 +381,6 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 }
 
 
-/* Completes the requests that wait for SERVICE_NOTIFY_DELETE_PENDING of lpService */
 static VOID
 ScmNotifyServiceDeletePending(PSERVICE lpService)
 {
@@ -409,8 +401,6 @@ ScmNotifyServiceDeletePending(PSERVICE lpService)
 }
 
 
-/* Completes the pending database notifications that wait for dwTrigger
- * (SERVICE_NOTIFY_CREATED or SERVICE_NOTIFY_DELETED) of lpServiceName */
 VOID
 ScmNotifyServiceDatabase(DWORD dwTrigger,
                          LPCWSTR lpServiceName)
@@ -1228,7 +1218,6 @@ RCloseServiceHandle(
             if (pNotify->Owner != hManager)
                 continue;
 
-            /* Ends the request without a result */
             RemoveEntryList(Entry);
             InitializeListHead(Entry);
             SetEvent(pNotify->hEvent);
@@ -1265,7 +1254,6 @@ RCloseServiceHandle(
                                                        NOTIFY_HANDLE, ListEntry);
 
             InitializeListHead(&pNotify->ListEntry);
-            /* Ends the request without a result */
             SetEvent(pNotify->hEvent);
             ScmReleaseNotify(pNotify);
         }
@@ -7012,7 +7000,6 @@ RNotifyServiceStatusChange(
     hManager = ScmGetServiceManagerFromHandle(hService);
     if (hManager != NULL)
     {
-        /* A manager handle reports services that are created or deleted */
         if (!RtlAreAllAccessesGranted(hManager->Handle.DesiredAccess,
                                       SC_MANAGER_ENUMERATE_SERVICE))
             return ERROR_ACCESS_DENIED;
@@ -7020,7 +7007,6 @@ RNotifyServiceStatusChange(
         if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
             return ERROR_INVALID_LEVEL;
 
-        /* As on Windows 11: a mixed mask is invalid, a mask of the other kind of handle is the wrong handle */
         dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
         if ((dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) && (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
             return ERROR_INVALID_PARAMETER;
@@ -7031,7 +7017,6 @@ RNotifyServiceStatusChange(
         if (pNotify == NULL)
             return ERROR_NOT_ENOUGH_MEMORY;
 
-        /* A handle can have several pending requests */
         pNotify->Owner = hManager;
         EnterCriticalSection(&ScmNotifyLock);
         InterlockedIncrement(&pNotify->RefCount);
@@ -7121,12 +7106,6 @@ RGetNotifyResults(
 
     InterlockedIncrement(&pNotify->RefCount);
 
-    /*
-     * The RPC runtime serializes the calls on a notify handle, so a client
-     * cannot close one while it waits here. A subscription request returns
-     * ERROR_TIMEOUT from time to time instead, and stays pending, so that its
-     * client can close it once the subscription has ended.
-     */
     switch (WaitForSingleObject(pNotify->hEvent, pNotify->bSubscription ? SCM_SUBSCRIPTION_WAIT : INFINITE))
     {
         case WAIT_OBJECT_0:
@@ -7172,7 +7151,6 @@ RCloseNotifyHandle(
     *pfApcFired = FALSE;
     *phNotify = NULL;
 
-    /* A request that is still pending leaves its list with the reference of the list */
     EnterCriticalSection(&ScmNotifyLock);
     if (!IsListEmpty(&pNotify->ListEntry))
     {

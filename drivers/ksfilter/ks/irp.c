@@ -1117,7 +1117,7 @@ KsAllocateExtraData(
 {
     PIO_STACK_LOCATION IoStack;
     ULONG Count, Index;
-    PUCHAR _SEH2_VOLATILE Buffer, BufferOrg;
+    PUCHAR Buffer, BufferOrg;
     PKSSTREAM_HEADER Header;
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -1160,7 +1160,7 @@ KsAllocateExtraData(
     if (!NT_SUCCESS(Status))
     {
         /* free buffer on exception */
-        FreeItem(Buffer);
+        FreeItem(BufferOrg);
         return Status;
     }
 

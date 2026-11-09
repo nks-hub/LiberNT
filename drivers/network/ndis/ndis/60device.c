@@ -270,6 +270,30 @@ NdisRegisterDeviceEx(
     }
 
     if (DriverObject == NULL)
+    {
+        KeAcquireSpinLock(&AdapterListLock, &OldIrql);
+        for (PLIST_ENTRY Entry = AdapterListHead.Flink;
+             Entry != &AdapterListHead;
+             Entry = Entry->Flink)
+        {
+            PLOGICAL_ADAPTER Adapter =
+                CONTAINING_RECORD(Entry, LOGICAL_ADAPTER, ListEntry);
+            if ((NDIS_HANDLE)Adapter == NdisHandle)
+            {
+                if (Adapter->IsNdis6 && NDIS6_EXT(Adapter) != NULL &&
+                    NDIS6_EXT(Adapter)->DriverBlock != NULL)
+                {
+                    ASSERT(NDIS6_EXT(Adapter)->Adapter == Adapter);
+                    DriverObject = NDIS6_EXT(Adapter)->DriverBlock->DriverObject;
+                    ASSERT(DriverObject != NULL);
+                }
+                break;
+            }
+        }
+        KeReleaseSpinLock(&AdapterListLock, OldIrql);
+    }
+
+    if (DriverObject == NULL)
         return NDIS_STATUS_NOT_SUPPORTED;
 
     /* Keep the NDIS control block in the device extension so its lifetime is

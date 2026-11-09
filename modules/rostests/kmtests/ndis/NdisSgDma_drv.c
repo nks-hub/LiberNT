@@ -50,6 +50,67 @@ NdisSgProcessList(
 }
 
 static
+NTSTATUS
+NTAPI
+NdisSgControlDispatch(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Inout_ PIRP Irp)
+{
+    UNREFERENCED_PARAMETER(DeviceObject);
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return STATUS_SUCCESS;
+}
+
+static
+NDIS_STATUS
+NdisSgRegisterControlDevice(
+    _In_ NDIS_HANDLE MiniportAdapterHandle,
+    _Out_ PDEVICE_OBJECT *DeviceObject,
+    _Out_ PNDIS_HANDLE DeviceHandle)
+{
+    static UNICODE_STRING DeviceName = RTL_CONSTANT_STRING(L"\\Device\\NdisSgControl");
+    static UNICODE_STRING SymbolicName = RTL_CONSTANT_STRING(L"\\DosDevices\\NdisSgControl");
+    PDRIVER_DISPATCH MajorFunctions[IRP_MJ_MAXIMUM_FUNCTION + 1];
+    NDIS_DEVICE_OBJECT_ATTRIBUTES Attributes;
+
+    RtlZeroMemory(MajorFunctions, sizeof(MajorFunctions));
+    MajorFunctions[IRP_MJ_CREATE] = NdisSgControlDispatch;
+    MajorFunctions[IRP_MJ_CLOSE] = NdisSgControlDispatch;
+    RtlZeroMemory(&Attributes, sizeof(Attributes));
+    Attributes.Header.Type = NDIS_OBJECT_TYPE_DEVICE_OBJECT_ATTRIBUTES;
+    Attributes.Header.Revision = NDIS_DEVICE_OBJECT_ATTRIBUTES_REVISION_1;
+    Attributes.Header.Size = NDIS_SIZEOF_DEVICE_OBJECT_ATTRIBUTES_REVISION_1;
+    Attributes.DeviceName = &DeviceName;
+    Attributes.SymbolicName = &SymbolicName;
+    Attributes.MajorFunctions = MajorFunctions;
+    return NdisRegisterDeviceEx(MiniportAdapterHandle, &Attributes, DeviceObject, DeviceHandle);
+}
+
+static
+VOID
+NdisSgTestControlDevice(
+    _In_ NDIS_HANDLE MiniportAdapterHandle)
+{
+    PDEVICE_OBJECT DeviceObject = NULL;
+    NDIS_HANDLE DeviceHandle = NULL;
+    NDIS_STATUS Status;
+
+    Status = NdisSgRegisterControlDevice(MiniportAdapterHandle, &DeviceObject, &DeviceHandle);
+    NdisSgWrite(L"Device", Status);
+    NdisSgWrite(L"DeviceObject", DeviceObject != NULL && DeviceHandle != NULL);
+    if (Status != NDIS_STATUS_SUCCESS)
+        return;
+    NdisDeregisterDeviceEx(DeviceHandle);
+
+    Status = NdisSgRegisterControlDevice(MiniportAdapterHandle, &DeviceObject, &DeviceHandle);
+    NdisSgWrite(L"DeviceAgain", Status);
+    if (Status == NDIS_STATUS_SUCCESS)
+        NdisDeregisterDeviceEx(DeviceHandle);
+}
+
+static
 NDIS_STATUS
 NTAPI
 NdisSgInitialize(
@@ -78,6 +139,8 @@ NdisSgInitialize(
     NdisSgWrite(L"Registration", Status);
     if (Status != NDIS_STATUS_SUCCESS)
         return Status;
+
+    NdisSgTestControlDevice(MiniportAdapterHandle);
 
     for (i = 0; i < NDISSG_MAPPING_COUNT; ++i)
     {

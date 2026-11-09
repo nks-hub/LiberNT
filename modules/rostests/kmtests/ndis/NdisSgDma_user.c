@@ -90,6 +90,14 @@ START_TEST(NdisSgDma)
     }
 
     ok(NdisSgRead(Key, L"Registration", &Value) && Value == STATUS_SUCCESS, "Registration attributes: %#lx\n", Value);
+    Value = 0;
+    ok(NdisSgRead(Key, L"Device", &Value) && Value == STATUS_SUCCESS,
+       "NdisRegisterDeviceEx with the adapter handle returned %#lx\n", Value);
+    Value = 0;
+    ok(NdisSgRead(Key, L"DeviceObject", &Value) && Value == 1, "NdisRegisterDeviceEx returned no device object or handle\n");
+    Value = 0;
+    ok(NdisSgRead(Key, L"DeviceAgain", &Value) && Value == STATUS_SUCCESS,
+       "NdisRegisterDeviceEx after NdisDeregisterDeviceEx returned %#lx\n", Value);
     for (i = 0; i < NDISSG_MAPPING_COUNT; ++i)
     {
         Value = Size = Required = 0;

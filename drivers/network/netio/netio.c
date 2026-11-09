@@ -43,6 +43,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #include <ws2def.h>
 #include <wsk.h>
 #include <ndis.h>
+#include <wdmsec.h>
 
 /* If you want to see the DPRINT() output in your debugger,
  * remove the following line (or comment it out):
@@ -345,12 +346,72 @@ NTSTATUS
 WfpCreateDevice(
     _In_ PDRIVER_OBJECT DriverObject);
 
+static PDEVICE_OBJECT NetioNsiDevice;
+static PDRIVER_DISPATCH NetioWfpDispatch[IRP_MJ_MAXIMUM_FUNCTION + 1];
+
+static NTSTATUS NTAPI
+NetioDispatch(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp)
+{
+    PIO_STACK_LOCATION Stack = IoGetCurrentIrpStackLocation(Irp);
+    NTSTATUS Status;
+
+    if (DeviceObject != NetioNsiDevice)
+    {
+        ASSERT(NetioWfpDispatch[Stack->MajorFunction] != NULL);
+        ASSERT(NetioWfpDispatch[Stack->MajorFunction] != NetioDispatch);
+        return NetioWfpDispatch[Stack->MajorFunction](DeviceObject, Irp);
+    }
+
+    switch (Stack->MajorFunction)
+    {
+        case IRP_MJ_CREATE:
+        case IRP_MJ_CLEANUP:
+        case IRP_MJ_CLOSE:
+            Status = STATUS_SUCCESS;
+            break;
+        default:
+            Status = STATUS_INVALID_DEVICE_REQUEST;
+            break;
+    }
+    Irp->IoStatus.Status = Status;
+    Irp->IoStatus.Information = 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return Status;
+}
+
+static NTSTATUS
+NetioCreateNsiDevice(_In_ PDRIVER_OBJECT DriverObject)
+{
+    UNICODE_STRING Name = RTL_CONSTANT_STRING(L"\\Device\\Nsi");
+    NTSTATUS Status;
+    ULONG i;
+
+    Status = IoCreateDeviceSecure(DriverObject, 0, &Name, FILE_DEVICE_NETWORK, FILE_DEVICE_SECURE_OPEN, FALSE,
+                                  &SDDL_DEVOBJ_SYS_ALL_ADM_ALL, NULL, &NetioNsiDevice);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
+    {
+        NetioWfpDispatch[i] = DriverObject->MajorFunction[i];
+        DriverObject->MajorFunction[i] = NetioDispatch;
+    }
+    NetioNsiDevice->Flags |= DO_BUFFERED_IO;
+    NetioNsiDevice->Flags &= ~DO_DEVICE_INITIALIZING;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS NTAPI
 DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 {
+    NTSTATUS Status;
+
     FUNCTION_TRACE;
 
-    return WfpCreateDevice(DriverObject);
+    Status = WfpCreateDevice(DriverObject);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    return NetioCreateNsiDevice(DriverObject);
 }
 
 static NTSTATUS WSKAPI

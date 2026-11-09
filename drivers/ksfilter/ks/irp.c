@@ -1160,7 +1160,7 @@ KsAllocateExtraData(
     if (!NT_SUCCESS(Status))
     {
         /* free buffer on exception */
-        FreeItem(Buffer);
+        FreeItem(BufferOrg);
         return Status;
     }
 

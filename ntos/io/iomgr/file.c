@@ -4664,13 +4664,17 @@ IopCancelMatchingIrpsInCurrentThread(
     _In_opt_ PFILE_OBJECT FileObject,
     _In_opt_ PIO_STATUS_BLOCK IoRequestToCancel,
     _In_ BOOLEAN SynchronousOnly,
-    _In_ BOOLEAN PortOnly)
+    _In_ BOOLEAN PortOnly,
+    _Out_opt_ PIRP *NotCancelled)
 {
     PETHREAD Thread;
     PLIST_ENTRY ListHead, NextEntry;
     PIRP Irp;
     KIRQL OldIrql;
     BOOLEAN Found = FALSE;
+
+    if (NotCancelled)
+        *NotCancelled = NULL;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4687,7 +4691,8 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            IoCancelIrp(Irp);
+            if (!IoCancelIrp(Irp) && NotCancelled)
+                *NotCancelled = Irp;
             Found = TRUE;
         }
     }
@@ -4740,13 +4745,27 @@ IopCancelIoFileExKernelApc(
     _Inout_ PVOID *SystemArgument2)
 {
     PIOP_CANCEL_IO_APC_CONTEXT Context = *SystemArgument1;
+    PKTHREAD Thread = KeGetCurrentThread();
+    PIRP NotCancelled;
 
     UNREFERENCED_PARAMETER(Apc);
     UNREFERENCED_PARAMETER(NormalRoutine);
     UNREFERENCED_PARAMETER(NormalContext);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
-    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel, Context->SynchronousOnly, Context->PortOnly);
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+    ASSERT(Apc == &Context->Apc);
+    ASSERT(Context->Status == STATUS_PENDING);
+
+    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel,
+                                                          Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
+    ASSERT(!NotCancelled || Context->Found);
+
+    if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
+    {
+        /* FIXME: the alert outlives a request the driver completes before the wait takes it */
+        KeAlertThread(Thread, UserMode);
+    }
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);
 }
@@ -4782,7 +4801,7 @@ IopCancelIoFileExInThread(
 
     if (Thread == PsGetCurrentThread())
     {
-        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly);
+        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly, NULL);
         return STATUS_SUCCESS;
     }
 

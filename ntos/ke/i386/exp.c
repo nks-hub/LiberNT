@@ -795,7 +795,7 @@ KiDispatchException(IN PEXCEPTION_RECORD ExceptionRecord,
                     IN BOOLEAN FirstChance)
 {
     CONTEXT Context;
-    EXCEPTION_RECORD LocalExceptRecord;
+    EXCEPTION_RECORD _SEH2_VOLATILE LocalExceptRecord;
 
     /* Increase number of Exception Dispatches */
     KeGetCurrentPrcb()->KeExceptionDispatchCount++;
@@ -942,7 +942,7 @@ DispatchToUser:
                     LocalExceptRecord.ExceptionCode = STATUS_ACCESS_VIOLATION;
                     LocalExceptRecord.ExceptionFlags = 0;
                     LocalExceptRecord.NumberParameters = 0;
-                    RtlRaiseException(&LocalExceptRecord);
+                    RtlRaiseException((PEXCEPTION_RECORD)&LocalExceptRecord);
                 }
 
                 /* Align context size and get stack pointer */
@@ -995,7 +995,7 @@ DispatchToUser:
                 /* Dispatch exception to user-mode */
                 _SEH2_YIELD(return);
             }
-            _SEH2_EXCEPT((RtlCopyMemory(&LocalExceptRecord, _SEH2_GetExceptionInformation()->ExceptionRecord, sizeof(EXCEPTION_RECORD)), EXCEPTION_EXECUTE_HANDLER))
+            _SEH2_EXCEPT((RtlCopyMemory((void *)&LocalExceptRecord, _SEH2_GetExceptionInformation()->ExceptionRecord, sizeof(EXCEPTION_RECORD)), EXCEPTION_EXECUTE_HANDLER))
             {
                 /* Check if we got a stack overflow and raise that instead */
                 if ((NTSTATUS)LocalExceptRecord.ExceptionCode ==

@@ -29,8 +29,8 @@ Abstract:
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 CdPerformVerify (
-    _Inout_ PIRP_CONTEXT IrpContext,
-    _Inout_ PIRP Irp,
+    _Inout_ PIRP_CONTEXT _SEH2_VOLATILE IrpContext,
+    _Inout_ PIRP _SEH2_VOLATILE Irp,
     _In_ PDEVICE_OBJECT DeviceToVerify
     )
 
@@ -58,7 +58,7 @@ Return Value:
 
 {
     PVCB Vcb;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
 
     ASSERT_IRP_CONTEXT( IrpContext );

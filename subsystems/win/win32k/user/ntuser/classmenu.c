@@ -26,14 +26,14 @@ BOOL
 IntSetClassMenuName(IN PCLS Class,
                     IN PUNICODE_STRING MenuName)
 {
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     /* Change the base class first */
     Class = Class->pclsBase;
 
     if (MenuName->Length != 0)
     {
-        ANSI_STRING AnsiString;
+        ANSI_STRING _SEH2_VOLATILE AnsiString;
         PWSTR strBufW;
 
         AnsiString.MaximumLength = (USHORT)RtlUnicodeStringToAnsiSize(MenuName);
@@ -54,7 +54,7 @@ IntSetClassMenuName(IN PCLS Class,
 
                 /* Create an ANSI copy of the string */
                 AnsiString.Buffer = (PSTR)(strBufW + (MenuName->Length / sizeof(WCHAR)) + 1);
-                Status = RtlUnicodeStringToAnsiString(&AnsiString,
+                Status = RtlUnicodeStringToAnsiString((PANSI_STRING)&AnsiString,
                                                       MenuName,
                                                       FALSE);
                 if (!NT_SUCCESS(Status))

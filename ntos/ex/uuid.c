@@ -464,7 +464,7 @@ NtAllocateUuids(OUT PULARGE_INTEGER Time,
 {
     ULARGE_INTEGER IntTime;
     ULONG IntRange, IntSequence;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     KPROCESSOR_MODE PreviousMode;
 
     PAGED_CODE();
@@ -546,10 +546,10 @@ NTSTATUS
 NTAPI
 NtSetUuidSeed(IN PUCHAR Seed)
 {
-    NTSTATUS Status;
-    BOOLEAN GotContext;
+    NTSTATUS _SEH2_VOLATILE Status;
+    BOOLEAN _SEH2_VOLATILE GotContext;
     PACCESS_TOKEN Token;
-    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    SECURITY_SUBJECT_CONTEXT _SEH2_VOLATILE SubjectContext;
     LUID CallerLuid, SystemLuid = SYSTEM_LUID;
 
     PAGED_CODE();
@@ -562,7 +562,7 @@ NtSetUuidSeed(IN PUCHAR Seed)
     _SEH2_TRY
     {
         /* Get our caller context and remember to release it */
-        SeCaptureSubjectContext(&SubjectContext);
+        SeCaptureSubjectContext((PSECURITY_SUBJECT_CONTEXT)&SubjectContext);
         GotContext = TRUE;
 
         /* Get caller access token and its associated ID */
@@ -602,7 +602,7 @@ NtSetUuidSeed(IN PUCHAR Seed)
     /* Release context if required */
     if (GotContext)
     {
-        SeReleaseSubjectContext(&SubjectContext);
+        SeReleaseSubjectContext((PSECURITY_SUBJECT_CONTEXT)&SubjectContext);
     }
 
     return Status;

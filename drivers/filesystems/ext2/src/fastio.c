@@ -72,7 +72,7 @@ Ext2FastIoCheckIfPossible (
     IN PDEVICE_OBJECT       DeviceObject
 )
 {
-    BOOLEAN          bPossible = FastIoIsNotPossible;
+    BOOLEAN          _SEH2_VOLATILE bPossible = FastIoIsNotPossible;
     PEXT2_FCB        Fcb;
     PEXT2_CCB        Ccb;
     LARGE_INTEGER    lLength;
@@ -216,7 +216,7 @@ Ext2FastIoWrite (
 {
     PEXT2_FCB   Fcb = NULL;
     BOOLEAN     Status = FALSE;
-    BOOLEAN     Locked = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Locked = FALSE;
 
     Fcb = (PEXT2_FCB) FileObject->FsContext;
     if (Fcb == NULL)
@@ -284,11 +284,11 @@ Ext2FastIoQueryBasicInfo (
     OUT PIO_STATUS_BLOCK        IoStatus,
     IN PDEVICE_OBJECT           DeviceObject)
 {
-    PEXT2_FCB   Fcb = NULL;
+    PEXT2_FCB   _SEH2_VOLATILE Fcb = NULL;
     PEXT2_CCB   Ccb = NULL;
     PEXT2_MCB   Mcb = NULL;
-    BOOLEAN     Status = FALSE;
-    BOOLEAN     FcbMainResourceAcquired = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Status = FALSE;
+    BOOLEAN     _SEH2_VOLATILE FcbMainResourceAcquired = FALSE;
 
     _SEH2_TRY {
 
@@ -402,10 +402,10 @@ Ext2FastIoQueryStandardInfo (
 )
 {
 
-    BOOLEAN     Status = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Status = FALSE;
     PEXT2_VCB   Vcb = NULL;
-    PEXT2_FCB   Fcb = NULL;
-    BOOLEAN     FcbMainResourceAcquired = FALSE;
+    PEXT2_FCB   _SEH2_VOLATILE Fcb = NULL;
+    BOOLEAN     _SEH2_VOLATILE FcbMainResourceAcquired = FALSE;
 
     _SEH2_TRY {
 
@@ -526,7 +526,7 @@ Ext2FastIoLock (
     IN PDEVICE_OBJECT       DeviceObject
 )
 {
-    BOOLEAN     Status = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Status = FALSE;
     PEXT2_FCB   Fcb;
 
     _SEH2_TRY {
@@ -636,7 +636,7 @@ Ext2FastIoUnlockSingle (
     IN PDEVICE_OBJECT       DeviceObject
 )
 {
-    BOOLEAN     Status = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Status = FALSE;
     PEXT2_FCB   Fcb;
 
     _SEH2_TRY {
@@ -739,7 +739,7 @@ Ext2FastIoUnlockAll (
     OUT PIO_STATUS_BLOCK    IoStatus,
     IN PDEVICE_OBJECT       DeviceObject)
 {
-    BOOLEAN     Status = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Status = FALSE;
     PEXT2_FCB   Fcb;
 
     _SEH2_TRY {
@@ -840,7 +840,7 @@ Ext2FastIoUnlockAllByKey (
     IN PDEVICE_OBJECT       DeviceObject
 )
 {
-    BOOLEAN     Status = FALSE;
+    BOOLEAN     _SEH2_VOLATILE Status = FALSE;
     PEXT2_FCB   Fcb;
 
     _SEH2_TRY {
@@ -947,12 +947,12 @@ Ext2FastIoQueryNetworkOpenInfo (
     IN PDEVICE_OBJECT       DeviceObject
 )
 {
-    PEXT2_FCB   Fcb = NULL;
+    PEXT2_FCB   _SEH2_VOLATILE Fcb = NULL;
     PEXT2_CCB   Ccb = NULL;
     PEXT2_MCB   Mcb = NULL;
 
     BOOLEAN     bResult = FALSE;
-    BOOLEAN FcbResourceAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE FcbResourceAcquired = FALSE;
 
     _SEH2_TRY {
 

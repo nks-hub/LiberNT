@@ -379,7 +379,7 @@ NtQueryInformationAtom(RTL_ATOM Atom,
     PRTL_ATOM_TABLE AtomTable = ExpGetGlobalAtomTable();
     PATOM_BASIC_INFORMATION BasicInformation = AtomInformation;
     PATOM_TABLE_INFORMATION TableInformation = AtomInformation;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG Flags, UsageCount, NameLength, RequiredLength = 0;
     KPROCESSOR_MODE PreviousMode;
 

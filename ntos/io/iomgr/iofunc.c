@@ -2847,7 +2847,7 @@ NtQueryInformationFile(IN HANDLE FileHandle,
 {
     OBJECT_HANDLE_INFORMATION HandleInformation;
     PFILE_OBJECT FileObject;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PIRP Irp;
     PDEVICE_OBJECT DeviceObject;
     PIO_STACK_LOCATION StackPtr;
@@ -4158,7 +4158,7 @@ NtSetInformationFile(IN HANDLE FileHandle,
                      IN FILE_INFORMATION_CLASS FileInformationClass)
 {
     PFILE_OBJECT FileObject;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PIRP Irp;
     PDEVICE_OBJECT DeviceObject;
     PIO_STACK_LOCATION StackPtr;
@@ -4656,7 +4656,7 @@ NtUnlockFile(IN HANDLE FileHandle,
              IN ULONG Key OPTIONAL)
 {
     PFILE_OBJECT FileObject;
-    PLARGE_INTEGER LocalLength = NULL;
+    PLARGE_INTEGER _SEH2_VOLATILE LocalLength = NULL;
     PIRP Irp;
     PIO_STACK_LOCATION StackPtr;
     PDEVICE_OBJECT DeviceObject;
@@ -5270,7 +5270,7 @@ NtQueryVolumeInformationFile(IN HANDLE FileHandle,
     PKEVENT Event = NULL;
     BOOLEAN LocalEvent = FALSE;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     IO_STATUS_BLOCK KernelIosb;
     PAGED_CODE();
     IOTRACE(IO_API_DEBUG, "FileHandle: %p\n", FileHandle);

@@ -85,7 +85,7 @@ FsRtlCancelNotify(IN PDEVICE_OBJECT DeviceObject,
     PIO_STACK_LOCATION Stack;
     PNOTIFY_CHANGE NotifyChange;
     PREAL_NOTIFY_SYNC RealNotifySync;
-    BOOLEAN PoolQuotaCharged;
+    BOOLEAN _SEH2_VOLATILE PoolQuotaCharged;
     PSECURITY_SUBJECT_CONTEXT _SEH2_VOLATILE SubjectContext = NULL;
 
     /* Get the NOTIFY_CHANGE struct and reset it */
@@ -785,7 +785,7 @@ FsRtlNotifyFilterChangeDirectory(IN PNOTIFY_SYNC NotifySync,
 {
     ULONG SavedLength;
     PIO_STACK_LOCATION Stack;
-    PNOTIFY_CHANGE NotifyChange = NULL;
+    PNOTIFY_CHANGE _SEH2_VOLATILE NotifyChange = NULL;
     PREAL_NOTIFY_SYNC RealNotifySync;
 
     PAGED_CODE();
@@ -1007,14 +1007,14 @@ FsRtlNotifyFilterReportChange(IN PNOTIFY_SYNC NotifySync,
                               IN PVOID FilterContext)
 {
     PIRP Irp;
-    PVOID OutputBuffer;
+    PVOID _SEH2_VOLATILE OutputBuffer;
     USHORT FullPosition;
     PLIST_ENTRY NextEntry;
     PIO_STACK_LOCATION Stack;
     PNOTIFY_CHANGE NotifyChange;
     PREAL_NOTIFY_SYNC RealNotifySync;
     PFILE_NOTIFY_INFORMATION FileNotifyInfo;
-    BOOLEAN IsStream, IsParent, PoolQuotaCharged;
+    BOOLEAN _SEH2_VOLATILE IsStream, IsParent, PoolQuotaCharged;
     STRING TargetDirectory, TargetName, ParentName, IntNormalizedParentName;
     ULONG NumberOfBytes, TargetNumberOfParts, FullNumberOfParts, LastPartOffset = 0, ParentNameOffset, ParentNameLength;
     ULONG DataLength, AlignedDataLength;

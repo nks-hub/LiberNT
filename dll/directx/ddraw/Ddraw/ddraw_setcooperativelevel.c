@@ -12,7 +12,7 @@
 HRESULT WINAPI
 Main_DirectDraw_SetCooperativeLevel (LPDDRAWI_DIRECTDRAW_INT This, HWND hwnd, DWORD cooplevel)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
 
 
     DX_WINDBG_trace();

@@ -550,9 +550,9 @@ AVrfpLoadAndInitializeProvider(PVERIFIER_PROVIDER Provider)
 {
     WCHAR StringBuffer[MAX_PATH + 11];
     UNICODE_STRING DllPath;
-    PRTL_VERIFIER_PROVIDER_DESCRIPTOR Descriptor = NULL;
+    PRTL_VERIFIER_PROVIDER_DESCRIPTOR _SEH2_VOLATILE Descriptor = NULL;
     PIMAGE_NT_HEADERS ImageNtHeader;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     RtlInitEmptyUnicodeString(&DllPath, StringBuffer, sizeof(StringBuffer));
     RtlAppendUnicodeToString(&DllPath, SharedUserData->NtSystemRoot);
@@ -593,7 +593,7 @@ AVrfpLoadAndInitializeProvider(PVERIFIER_PROVIDER Provider)
         if (LdrpCallInitRoutine(Provider->EntryPoint,
                                 Provider->BaseAddress,
                                 DLL_PROCESS_VERIFIER,
-                                &Descriptor))
+                                (PVOID)&Descriptor))
         {
             if (Descriptor && Descriptor->Length == sizeof(RTL_VERIFIER_PROVIDER_DESCRIPTOR))
             {

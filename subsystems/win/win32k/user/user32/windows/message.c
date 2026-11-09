@@ -1638,9 +1638,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
   MSG UnicodeMsg;
   BOOL Hook = FALSE, MsgOverride = FALSE, Dialog, DlgOverride = FALSE;
   BOOL DpiContextChanged;
-  LRESULT Result = 0, PreResult = 0;
+  LRESULT _SEH2_VOLATILE Result = 0, PreResult = 0;
   ULONG PreviousDpiContext;
-  DWORD Data = 0;
+  DWORD _SEH2_VOLATILE Data = 0;
 
   if (WndProc == NULL)
   {
@@ -1683,9 +1683,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1716,9 +1716,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(AnsiMsg.hwnd, AnsiMsg.message, AnsiMsg.wParam, AnsiMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1727,7 +1727,7 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_END;
       }
 
-      if (! MsgiUnicodeToAnsiReply(&AnsiMsg, &UnicodeMsg, &Result))
+      if (! MsgiUnicodeToAnsiReply(&AnsiMsg, &UnicodeMsg, (LRESULT *)&Result))
       {
           goto Exit;
       }
@@ -1739,9 +1739,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1772,9 +1772,9 @@ IntCallWindowProcW(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1804,9 +1804,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
   MSG UnicodeMsg;
   BOOL Hook = FALSE, MsgOverride = FALSE, Dialog, DlgOverride = FALSE;
   BOOL DpiContextChanged;
-  LRESULT Result = 0, PreResult = 0;
+  LRESULT _SEH2_VOLATILE Result = 0, PreResult = 0;
   ULONG PreviousDpiContext;
-  DWORD Data = 0;
+  DWORD _SEH2_VOLATILE Data = 0;
 
   TRACE("IntCallWindowProcA: IsAnsiProc : %s, WndProc %p, pWnd %p, hWnd %p, Msg %u, wParam %Iu, lParam %Iu.\n",
       IsAnsiProc ? "TRUE" : "FALSE", WndProc, pWnd, hWnd, Msg, wParam, lParam);
@@ -1840,9 +1840,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1873,9 +1873,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(hWnd, Msg, wParam, lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1903,9 +1903,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               PreResult = guah.PreWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               PreResult = guah.PreDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               PreResult = guah.PreDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1936,9 +1936,9 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_TRY
          {
             if (!DlgOverride)
-               guah.PostWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostWndProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
             else
-               guah.PostDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, &Data );
+               guah.PostDefDlgProc(UnicodeMsg.hwnd, UnicodeMsg.message, UnicodeMsg.wParam, UnicodeMsg.lParam, (ULONG_PTR)&Result, (PDWORD)&Data );
          }
          _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
          {
@@ -1947,7 +1947,7 @@ IntCallWindowProcA(BOOL IsAnsiProc,
          _SEH2_END;
       }
 
-      if (! MsgiAnsiToUnicodeReply(&UnicodeMsg, &AnsiMsg, &Result))
+      if (! MsgiAnsiToUnicodeReply(&UnicodeMsg, &AnsiMsg, (LRESULT *)&Result))
       {
          goto Exit;
       }
@@ -2183,7 +2183,7 @@ WINAPI
 DECLSPEC_HOTPATCH
 DispatchMessageA(CONST MSG *lpmsg)
 {
-    LRESULT Ret = 0;
+    LRESULT _SEH2_VOLATILE Ret = 0;
     MSG UnicodeMsg;
 #ifndef WOW64_I386_RUNTIME
     PWND Wnd;
@@ -2246,7 +2246,7 @@ DispatchMessageA(CONST MSG *lpmsg)
 #ifdef WOW64_I386_RUNTIME
        if (!MsgiAnsiToUnicodeMessage(lpmsg->hwnd, &UnicodeMsg, (LPMSG)lpmsg)) return FALSE;
        Ret = NtUserDispatchMessage(&UnicodeMsg);
-       if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, &Ret)) return FALSE;
+       if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, (LRESULT *)&Ret)) return FALSE;
 #else
        if ( (lpmsg->message != WM_PAINT) && !(Wnd->state & WNDS_SERVERSIDEWINDOWPROC) )
        {
@@ -2266,7 +2266,7 @@ DispatchMessageA(CONST MSG *lpmsg)
 
           Ret = NtUserDispatchMessage(&UnicodeMsg);
 
-          if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, &Ret))
+          if (!MsgiAnsiToUnicodeReply(&UnicodeMsg, (LPMSG)lpmsg, (LRESULT *)&Ret))
           {
              return FALSE;
           }
@@ -2286,7 +2286,7 @@ WINAPI
 DECLSPEC_HOTPATCH
 DispatchMessageW(CONST MSG *lpmsg)
 {
-    LRESULT Ret = 0;
+    LRESULT _SEH2_VOLATILE Ret = 0;
 #ifndef WOW64_I386_RUNTIME
     PWND Wnd;
 #endif

@@ -528,7 +528,7 @@ PlaySoundRoutine(
     WAVEOUTGETNUMDEVS waveOutGetNumDevs;
     UINT NumDevs;
     HMODULE hLibrary;
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     hLibrary = hWinmm;
     if (!hLibrary)

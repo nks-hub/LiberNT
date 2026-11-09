@@ -385,7 +385,7 @@ CopyFileExW(IN LPCWSTR lpExistingFileName,
             IN DWORD dwCopyFlags)
 {
     BOOL Ret = FALSE;
-    HANDLE ExistingHandle, NewHandle;
+    HANDLE _SEH2_VOLATILE ExistingHandle, NewHandle;
 
     ExistingHandle = INVALID_HANDLE_VALUE;
     NewHandle = INVALID_HANDLE_VALUE;
@@ -399,8 +399,8 @@ CopyFileExW(IN LPCWSTR lpExistingFileName,
                                pbCancel,
                                dwCopyFlags,
                                0,
-                               &ExistingHandle,
-                               &NewHandle);
+                               (LPHANDLE)&ExistingHandle,
+                               (LPHANDLE)&NewHandle);
     }
     _SEH2_FINALLY
     {
@@ -450,7 +450,7 @@ PrivCopyFileExW(IN LPCWSTR lpExistingFileName,
                 IN DWORD dwCopyFlags)
 {
     BOOL Ret = FALSE;
-    HANDLE ExistingHandle, NewHandle;
+    HANDLE _SEH2_VOLATILE ExistingHandle, NewHandle;
 
     ExistingHandle = INVALID_HANDLE_VALUE;
     NewHandle = INVALID_HANDLE_VALUE;
@@ -471,8 +471,8 @@ PrivCopyFileExW(IN LPCWSTR lpExistingFileName,
                                pbCancel,
                                dwCopyFlags & BASEP_COPY_PUBLIC_MASK,
                                dwCopyFlags & BASEP_COPY_BASEP_MASK,
-                               &ExistingHandle,
-                               &NewHandle);
+                               (LPHANDLE)&ExistingHandle,
+                               (LPHANDLE)&NewHandle);
     }
     _SEH2_FINALLY
     {

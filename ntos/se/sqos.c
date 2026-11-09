@@ -58,7 +58,7 @@ SepCaptureSecurityQualityOfService(
     _Out_ PBOOLEAN Present)
 {
     PSECURITY_QUALITY_OF_SERVICE CapturedQos;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PAGED_CODE();
 
@@ -69,7 +69,7 @@ SepCaptureSecurityQualityOfService(
     {
         if (AccessMode != KernelMode)
         {
-            SECURITY_QUALITY_OF_SERVICE SafeQos;
+            SECURITY_QUALITY_OF_SERVICE _SEH2_VOLATILE SafeQos;
 
             _SEH2_TRY
             {
@@ -92,7 +92,7 @@ SepCaptureSecurityQualityOfService(
                              * the system if it's buggy, SEH would catch that! So make a local
                              * copy of the qos structure.
                              */
-                            RtlCopyMemory(&SafeQos,
+                            RtlCopyMemory((void *)&SafeQos,
                                           ObjectAttributes->SecurityQualityOfService,
                                           sizeof(SECURITY_QUALITY_OF_SERVICE));
                             *Present = TRUE;
@@ -129,7 +129,7 @@ SepCaptureSecurityQualityOfService(
                     if (CapturedQos != NULL)
                     {
                         RtlCopyMemory(CapturedQos,
-                                      &SafeQos,
+                                      (const void *)&SafeQos,
                                       sizeof(SECURITY_QUALITY_OF_SERVICE));
                         *CapturedSecurityQualityOfService = CapturedQos;
                     }

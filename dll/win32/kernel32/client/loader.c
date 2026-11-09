@@ -439,8 +439,8 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
                DWORD dwFlags)
 {
     UNICODE_STRING DllName;
-    HINSTANCE hInst;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    HINSTANCE _SEH2_VOLATILE hInst;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PWSTR SearchPath;
     ULONG DllCharacteristics = 0;
     DWORD SearchFlags;
@@ -543,7 +543,7 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
             if (!NT_SUCCESS(Status))
             {
                 /* It's not loaded yet - so load it up */
-                Status = BasepLoadLibraryAsDatafile(SearchPath, DllName.Buffer, dwFlags, &hInst);
+                Status = BasepLoadLibraryAsDatafile(SearchPath, DllName.Buffer, dwFlags, (HMODULE *)&hInst);
             }
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -848,7 +848,7 @@ HMODULE
 WINAPI
 GetModuleHandleForUnicodeString(PUNICODE_STRING ModuleName)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PVOID Module;
     LPWSTR DllPath;
 

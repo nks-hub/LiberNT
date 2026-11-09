@@ -813,13 +813,13 @@ SeCaptureSidAndAttributesArray(
     _Out_ PSID_AND_ATTRIBUTES *CapturedSidAndAttributes,
     _Out_ PULONG ResultLength)
 {
-    ULONG ArraySize, RequiredLength, SidLength, i;
+    ULONG _SEH2_VOLATILE ArraySize, RequiredLength, SidLength, i;
     ULONG TempArrayValidate, TempLengthValidate;
     PSID_AND_ATTRIBUTES SidAndAttributes;
     _SEH2_VOLATILE PSID_VALIDATE ValidateArray;
-    PUCHAR CurrentDest;
-    PISID Sid;
-    NTSTATUS Status;
+    PUCHAR _SEH2_VOLATILE CurrentDest;
+    PISID _SEH2_VOLATILE Sid;
+    NTSTATUS _SEH2_VOLATILE Status;
     PAGED_CODE();
 
     ValidateArray = NULL;

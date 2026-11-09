@@ -812,7 +812,7 @@ NtGdiSetBoundsRect(
 {
     DWORD ret;
     PDC pdc;
-    RECTL rcl;
+    RECTL _SEH2_VOLATILE rcl;
 
     /* Verify arguments */
     if ((flags & DCB_ENABLE) && (flags & DCB_DISABLE)) return 0;
@@ -855,16 +855,16 @@ NtGdiSetBoundsRect(
         }
         _SEH2_END;
 
-        RECTL_vMakeWellOrdered(&rcl);
+        RECTL_vMakeWellOrdered((RECTL *)&rcl);
 
         if (!(flags & DCB_WINDOWMGR))
         {
            IntLPtoDP( pdc, (POINT *)&rcl, 2 );
-           RECTL_vMakeWellOrdered(&rcl);
-           RECTL_bUnionRect(&pdc->erclBoundsApp, &pdc->erclBoundsApp, &rcl);
+           RECTL_vMakeWellOrdered((RECTL *)&rcl);
+           RECTL_bUnionRect(&pdc->erclBoundsApp, &pdc->erclBoundsApp, (const RECTL *)&rcl);
         }
         else
-           RECTL_bUnionRect(&pdc->erclBounds, &pdc->erclBounds, &rcl);
+           RECTL_bUnionRect(&pdc->erclBounds, &pdc->erclBounds, (const RECTL *)&rcl);
     }
 
     if (flags & DCB_ENABLE)

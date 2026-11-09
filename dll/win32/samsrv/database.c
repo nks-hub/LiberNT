@@ -372,7 +372,7 @@ SampValidateDbObject(SAMPR_HANDLE Handle,
                      PSAM_DB_OBJECT *DbObject)
 {
     PSAM_DB_OBJECT LocalObject = (PSAM_DB_OBJECT)Handle;
-    BOOLEAN bValid = FALSE;
+    BOOLEAN _SEH2_VOLATILE bValid = FALSE;
 
     _SEH2_TRY
     {

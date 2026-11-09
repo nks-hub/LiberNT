@@ -56,7 +56,7 @@ IntGetImeHotKeyLanguageScore(
     _In_ HKL hKL,
     _In_ LANGID HotKeyLangId)
 {
-    LCID lcid = MAKELCID(LANGID_NEUTRAL, SORT_DEFAULT);
+    LCID _SEH2_VOLATILE lcid = MAKELCID(LANGID_NEUTRAL, SORT_DEFAULT);
 
     if (HotKeyLangId == LANGID_NEUTRAL || HotKeyLangId == LOWORD(hKL))
         return 3;
@@ -1074,7 +1074,7 @@ NtUserGetImeInfoEx(
     _Inout_ PIMEINFOEX pImeInfoEx,
     _In_ IMEINFOEXCLASS SearchType)
 {
-    IMEINFOEX ImeInfoEx;
+    IMEINFOEX _SEH2_VOLATILE ImeInfoEx;
     BOOL ret = FALSE;
     PWINSTATION_OBJECT pWinSta;
 
@@ -1100,7 +1100,7 @@ NtUserGetImeInfoEx(
     _SEH2_END;
 
     pWinSta = IntGetProcessWindowStation(NULL);
-    ret = UserGetImeInfoEx(pWinSta, &ImeInfoEx, SearchType);
+    ret = UserGetImeInfoEx(pWinSta, (PIMEINFOEX)&ImeInfoEx, SearchType);
     if (!ret)
         goto Quit;
 
@@ -1214,7 +1214,7 @@ NTAPI
 NtUserSetImeInfoEx(_In_ const IMEINFOEX *pImeInfoEx)
 {
     BOOL ret = FALSE;
-    IMEINFOEX ImeInfoEx;
+    IMEINFOEX _SEH2_VOLATILE ImeInfoEx;
     PWINSTATION_OBJECT pWinSta;
 
     UserEnterExclusive();
@@ -1238,7 +1238,7 @@ NtUserSetImeInfoEx(_In_ const IMEINFOEX *pImeInfoEx)
     _SEH2_END;
 
     pWinSta = IntGetProcessWindowStation(NULL);
-    ret = UserSetImeInfoEx(pWinSta, &ImeInfoEx);
+    ret = UserSetImeInfoEx(pWinSta, (PIMEINFOEX)&ImeInfoEx);
 
 Quit:
     UserLeave();
@@ -2263,7 +2263,7 @@ IntCheckImeShowStatus(
     BOOL ret = FALSE, bDifferent;
     PWINDOWLIST pwl;
     HWND *phwnd;
-    PWND pwndNode, pwndIMC = NULL;
+    PWND _SEH2_VOLATILE pwndNode, pwndIMC = NULL;
     PTHREADINFO ptiCurrent = GetW32ThreadInfo();
     PIMEUI pimeui;
     IMEUI SafeImeUI;
@@ -2361,7 +2361,7 @@ IntSendMessageToUI(
     _In_ WPARAM wParam,
     _In_ LPARAM lParam)
 {
-    PWND pwndUI = NULL;
+    PWND _SEH2_VOLATILE pwndUI = NULL;
     LRESULT ret = 0;
     IMEUI SafeImeUI;
     BOOL bDifferent = FALSE;
@@ -2466,7 +2466,7 @@ IntNotifyImeShowStatus(_In_ PWND pImeWnd)
     PWND pWnd;
     PTHREADINFO pti, ptiIME;
     BOOL bShow, bSendNotify = FALSE;
-    IMEUI SafeImeUI;
+    IMEUI _SEH2_VOLATILE SafeImeUI;
 
     if (!IS_IMM_MODE() || (pImeWnd->state2 & WNDS2_INDESTROY))
         return;
@@ -2520,7 +2520,7 @@ IntNotifyImeShowStatus(_In_ PWND pImeWnd)
         KeDetachProcess();
 
     if (bSendNotify)
-        IntSendOpenStatusNotify(ptiIME, &SafeImeUI, pWnd, bShow);
+        IntSendOpenStatusNotify(ptiIME, (PIMEUI)&SafeImeUI, pWnd, bShow);
 
     if (!(pImeWnd->state2 & WNDS2_INDESTROY))
         IntCheckImeShowStatus(pImeWnd, NULL);

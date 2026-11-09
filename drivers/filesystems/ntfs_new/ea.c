@@ -545,8 +545,8 @@ NtfsFsdQueryEa(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     PFileContextBlock FileCB;
     PVolumeContextBlock VolCB;
     PUCHAR Output;
-    ULONG BytesWritten = 0;
-    NTSTATUS Status;
+    ULONG _SEH2_VOLATILE BytesWritten = 0;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -593,7 +593,7 @@ NtfsFsdQueryEa(_In_ PDEVICE_OBJECT VolumeDeviceObject,
             Status = NtfsQueryEa(FileCB,
                                  IrpSp,
                                  Output,
-                                 &BytesWritten);
+                                 (PULONG)&BytesWritten);
         }
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

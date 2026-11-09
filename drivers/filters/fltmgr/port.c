@@ -990,7 +990,7 @@ FltpPortGetMessage(
     _In_ PIO_STACK_LOCATION Stack)
 {
     ULONG OutputLength = Stack->Parameters.DeviceIoControl.OutputBufferLength;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PMDL Mdl;
 
     if (Irp->UserBuffer == NULL || OutputLength < sizeof(FILTER_MESSAGE_HEADER))

@@ -569,7 +569,7 @@ IntVideoPortResetDisplayParametersEx(
     _In_ ULONG Rows,
     _In_ BOOLEAN CalledByInbv)
 {
-    BOOLEAN Success = TRUE; // Suppose we don't need to perform a full reset.
+    BOOLEAN _SEH2_VOLATILE Success = TRUE; // Suppose we don't need to perform a full reset.
     KIRQL OldIrql;
     PLIST_ENTRY PrevEntry, Entry;
     PVIDEO_PORT_DEVICE_EXTENSION DeviceExtension;

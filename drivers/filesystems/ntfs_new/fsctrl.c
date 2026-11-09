@@ -594,7 +594,7 @@ NtfsQueryAllocatedRanges(
     _Inout_ PIRP Irp,
     _In_ PIO_STACK_LOCATION IrpSp)
 {
-    FILE_ALLOCATED_RANGE_BUFFER Query;
+    FILE_ALLOCATED_RANGE_BUFFER _SEH2_VOLATILE Query;
     PFILE_ALLOCATED_RANGE_BUFFER Output;
     PNtfsAllocatedRange Ranges = NULL;
     PFILE_OBJECT FileObject;
@@ -603,7 +603,7 @@ NtfsQueryAllocatedRanges(
     ULONG OutputLength;
     ULONG Capacity;
     ULONG Count;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     Irp->IoStatus.Information = 0;
     FileObject = IrpSp->FileObject;
@@ -659,7 +659,7 @@ NtfsQueryAllocatedRanges(
         if (NT_SUCCESS(Status))
         {
             RtlCopyMemory(
-                &Query,
+                (void *)&Query,
                 IrpSp->Parameters.FileSystemControl.
                     Type3InputBuffer,
                 sizeof(Query));
@@ -757,7 +757,7 @@ NtfsGetRetrievalPointers(
     _Inout_ PIRP Irp,
     _In_ PIO_STACK_LOCATION IrpSp)
 {
-    STARTING_VCN_INPUT_BUFFER Input = {0};
+    STARTING_VCN_INPUT_BUFFER _SEH2_VOLATILE Input = {0};
     PRETRIEVAL_POINTERS_BUFFER Output;
     PNtfsRetrievalExtent Extents = NULL;
     PFILE_OBJECT FileObject;
@@ -771,7 +771,7 @@ NtfsGetRetrievalPointers(
     ULONG HeaderLength;
     ULONG Capacity;
     ULONG Count;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     Irp->IoStatus.Information = 0;
     FileObject = IrpSp->FileObject;
@@ -822,7 +822,7 @@ NtfsGetRetrievalPointers(
         if (NT_SUCCESS(Status))
         {
             RtlCopyMemory(
-                &Input,
+                (void *)&Input,
                 IrpSp->Parameters.FileSystemControl.
                     Type3InputBuffer,
                 sizeof(Input));
@@ -952,7 +952,7 @@ NtfsGetVolumeBitmap(
     _Inout_ PIRP Irp,
     _In_ PIO_STACK_LOCATION IrpSp)
 {
-    STARTING_LCN_INPUT_BUFFER Input = {0};
+    STARTING_LCN_INPUT_BUFFER _SEH2_VOLATILE Input = {0};
     PVOLUME_BITMAP_BUFFER Output;
     PVolumeContextBlock VolCB;
     PUCHAR Bitmap = NULL;
@@ -963,7 +963,7 @@ NtfsGetVolumeBitmap(
     ULONG HeaderLength;
     ULONG Capacity;
     ULONG Length;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     Irp->IoStatus.Information = 0;
     VolCB = VolumeDeviceObject
@@ -1016,7 +1016,7 @@ NtfsGetVolumeBitmap(
         if (NT_SUCCESS(Status))
         {
             RtlCopyMemory(
-                &Input,
+                (void *)&Input,
                 IrpSp->Parameters.FileSystemControl.
                     Type3InputBuffer,
                 sizeof(Input));

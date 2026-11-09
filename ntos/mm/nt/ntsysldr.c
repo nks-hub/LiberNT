@@ -44,7 +44,7 @@ NTAPI
 MiCacheImageSymbols(IN PVOID BaseAddress)
 {
     ULONG DebugSize;
-    PVOID DebugDirectory = NULL;
+    PVOID _SEH2_VOLATILE DebugDirectory = NULL;
     PAGED_CODE();
 
     _SEH2_TRY

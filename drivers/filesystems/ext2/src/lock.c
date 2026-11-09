@@ -26,13 +26,13 @@ Ext2LockControl (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT  DeviceObject = NULL;
     PFILE_OBJECT    FileObject = NULL;
-    PEXT2_FCB       Fcb = NULL;
+    PEXT2_FCB       _SEH2_VOLATILE Fcb = NULL;
     PIRP            Irp = NULL;
 
-    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
-    BOOLEAN         CompleteContext = TRUE;
-    BOOLEAN         CompleteIrp = TRUE;
-    BOOLEAN         bFcbAcquired = FALSE;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN         _SEH2_VOLATILE CompleteContext = TRUE;
+    BOOLEAN         _SEH2_VOLATILE CompleteIrp = TRUE;
+    BOOLEAN         _SEH2_VOLATILE bFcbAcquired = FALSE;
 
     _SEH2_TRY {
 

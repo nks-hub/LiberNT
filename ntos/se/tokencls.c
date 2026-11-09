@@ -775,10 +775,10 @@ NtQueryInformationToken(
     _In_ ULONG TokenInformationLength,
     _Out_ PULONG ReturnLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     KPROCESSOR_MODE PreviousMode;
     PTOKEN Token;
-    ULONG RequiredLength = 0;
+    ULONG _SEH2_VOLATILE RequiredLength = 0;
     union
     {
         PSID PSid;
@@ -1241,8 +1241,8 @@ NtQueryInformationToken(
 
             case TokenGroupsAndPrivileges:
             {
-                PSID Sid, RestrictedSid;
-                ULONG SidLen, RestrictedSidLen;
+                PSID _SEH2_VOLATILE Sid, RestrictedSid;
+                ULONG _SEH2_VOLATILE SidLen, RestrictedSidLen;
                 ULONG UserGroupLength, RestrictedSidLength, PrivilegeLength;
                 PTOKEN_GROUPS_AND_PRIVILEGES GroupsAndPrivs = (PTOKEN_GROUPS_AND_PRIVILEGES)TokenInformation;
 
@@ -1704,7 +1704,7 @@ NtQueryInformationToken(
                 PTOKEN_GROUPS tg = (PTOKEN_GROUPS)TokenInformation;
                 PSEP_LOWBOX_INFO LowBox = Token->LowBoxInfo;
                 ULONG Count = LowBox ? LowBox->CapabilityCount : 0;
-                ULONG SidLen;
+                ULONG _SEH2_VOLATILE SidLen;
                 PSID Sid;
 
                 DPRINT("NtQueryInformationToken(TokenCapabilities)\n");
@@ -1839,7 +1839,7 @@ NtSetInformationToken(
     _In_reads_bytes_(TokenInformationLength) PVOID TokenInformation,
     _In_ ULONG TokenInformationLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PTOKEN Token;
     KPROCESSOR_MODE PreviousMode;
     ULONG NeededAccess = TOKEN_ADJUST_DEFAULT;
@@ -1881,7 +1881,7 @@ NtSetInformationToken(
                 if (TokenInformationLength >= sizeof(TOKEN_OWNER))
                 {
                     PTOKEN_OWNER to = (PTOKEN_OWNER)TokenInformation;
-                    PSID InputSid = NULL, CapturedSid;
+                    PSID _SEH2_VOLATILE InputSid = NULL, CapturedSid;
                     ULONG DefaultOwnerIndex;
 
                     _SEH2_TRY
@@ -1899,7 +1899,7 @@ NtSetInformationToken(
                                            PreviousMode,
                                            PagedPool,
                                            FALSE,
-                                           &CapturedSid);
+                                           (PSID *)&CapturedSid);
                     if (NT_SUCCESS(Status))
                     {
                         /* Lock the token */
@@ -1940,7 +1940,7 @@ NtSetInformationToken(
                     PTOKEN_PRIMARY_GROUP tpg = (PTOKEN_PRIMARY_GROUP)TokenInformation;
                     ULONG AclSize;
                     ULONG_PTR PrimaryGroup;
-                    PSID InputSid = NULL, CapturedSid;
+                    PSID _SEH2_VOLATILE InputSid = NULL, CapturedSid;
                     ULONG PrimaryGroupIndex, NewDynamicLength;
 
                     _SEH2_TRY
@@ -1958,7 +1958,7 @@ NtSetInformationToken(
                                            PreviousMode,
                                            PagedPool,
                                            FALSE,
-                                           &CapturedSid);
+                                           (PSID *)&CapturedSid);
                     if (NT_SUCCESS(Status))
                     {
                         /* Lock the token */
@@ -2058,7 +2058,7 @@ NtSetInformationToken(
                 if (TokenInformationLength >= sizeof(TOKEN_DEFAULT_DACL))
                 {
                     PTOKEN_DEFAULT_DACL tdd = (PTOKEN_DEFAULT_DACL)TokenInformation;
-                    PACL InputAcl = NULL;
+                    PACL _SEH2_VOLATILE InputAcl = NULL;
 
                     _SEH2_TRY
                     {
@@ -2183,7 +2183,7 @@ NtSetInformationToken(
 
             case TokenSessionId:
             {
-                ULONG SessionId = 0;
+                ULONG _SEH2_VOLATILE SessionId = 0;
 
                 _SEH2_TRY
                 {
@@ -2225,7 +2225,7 @@ NtSetInformationToken(
 
             case TokenSessionReference:
             {
-                ULONG SessionReference = 0;
+                ULONG _SEH2_VOLATILE SessionReference = 0;
 
                 _SEH2_TRY
                 {
@@ -2369,7 +2369,7 @@ NtSetInformationToken(
 
             case TokenOrigin:
             {
-                TOKEN_ORIGIN TokenOrigin;
+                TOKEN_ORIGIN _SEH2_VOLATILE TokenOrigin;
 
                 _SEH2_TRY
                 {
@@ -2414,7 +2414,7 @@ NtSetInformationToken(
                 TOKEN_MANDATORY_LABEL CapturedLabel;
                 PSID_AND_ATTRIBUTES Integrity;
                 PSID NewSid = NULL;
-                ULONG NewRid = 0, OldRid;
+                ULONG _SEH2_VOLATILE NewRid = 0, OldRid;
                 BOOLEAN HasTcbPrivilege;
 
                 _SEH2_TRY
@@ -2483,7 +2483,7 @@ NtSetInformationToken(
 
             case TokenMandatoryPolicy:
             {
-                ULONG Policy = 0;
+                ULONG _SEH2_VOLATILE Policy = 0;
 
                 _SEH2_TRY
                 {

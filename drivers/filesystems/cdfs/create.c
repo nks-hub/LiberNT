@@ -165,16 +165,16 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );
 
     PFILE_OBJECT FileObject;
 
-    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
-    BOOLEAN CleanupCompoundPathEntry = FALSE;
+    COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    BOOLEAN _SEH2_VOLATILE CleanupCompoundPathEntry = FALSE;
 
-    FILE_ENUM_CONTEXT FileContext = {0};
-    BOOLEAN CleanupFileContext = FALSE;
+    FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext = {0};
+    BOOLEAN _SEH2_VOLATILE CleanupFileContext = FALSE;
     BOOLEAN FoundEntry;
 
     PVCB Vcb;
@@ -205,7 +205,7 @@ Return Value:
     PCCB RelatedCcb = NULL;
 
     PFCB NextFcb;
-    PFCB CurrentFcb = NULL;
+    PFCB _SEH2_VOLATILE CurrentFcb = NULL;
 
     //
     //  During the open we need to combine the related file object name
@@ -441,7 +441,7 @@ Return Value:
             try_return( Status = CdOpenByFileId( IrpContext,
                                                  IrpSp,
                                                  Vcb,
-                                                 &CurrentFcb ));
+                                                 (PFCB *)&CurrentFcb ));
         }
 
         //
@@ -479,7 +479,7 @@ Return Value:
 
             try_return( Status = CdOpenExistingFcb( IrpContext,
                                                     IrpSp,
-                                                    &CurrentFcb,
+                                                    (PFCB *)&CurrentFcb,
                                                     UserVolumeOpen,
                                                     FALSE,
                                                     NULL ));
@@ -505,7 +505,7 @@ Return Value:
             //
 
             CdFindPrefix( IrpContext,
-                          &CurrentFcb,
+                          (PFCB *)&CurrentFcb,
                           &RemainingName.FileName,
                           IgnoreCase );
         }
@@ -542,7 +542,7 @@ Return Value:
 
                 try_return( Status = CdOpenExistingFcb( IrpContext,
                                                         IrpSp,
-                                                        &CurrentFcb,
+                                                        (PFCB *)&CurrentFcb,
                                                         UserFileOpen,
                                                         IgnoreCase,
                                                         RelatedCcb ));
@@ -574,7 +574,7 @@ Return Value:
 
                 try_return( Status = CdOpenExistingFcb( IrpContext,
                                                         IrpSp,
-                                                        &CurrentFcb,
+                                                        (PFCB *)&CurrentFcb,
                                                         UserDirectoryOpen,
                                                         IgnoreCase,
                                                         RelatedCcb ));
@@ -627,14 +627,14 @@ Return Value:
             //  Go ahead and look this entry up in the path table.
             //
 
-            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
+            CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
             CleanupCompoundPathEntry = TRUE;
 
             FoundEntry = CdFindPathEntry( IrpContext,
                                           CurrentFcb,
                                           &FinalName,
                                           IgnoreCase,
-                                          &CompoundPathEntry );
+                                          (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
             //
             //  If we didn't find the entry then check if the current name
@@ -654,10 +654,10 @@ Return Value:
 
                     if (CleanupFileContext) {
 
-                        CdCleanupFileContext( IrpContext, &FileContext );
+                        CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
                     }
 
-                    CdInitializeFileContext( IrpContext, &FileContext );
+                    CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
                     CleanupFileContext = TRUE;
 
                     FoundEntry = CdFindFileByShortName( IrpContext,
@@ -665,7 +665,7 @@ Return Value:
                                                         &FinalName,
                                                         IgnoreCase,
                                                         ShortNameDirentOffset,
-                                                        &FileContext );
+                                                        (PFILE_ENUM_CONTEXT)&FileContext );
 
                     //
                     //  If we found an entry and it is a directory then look
@@ -680,13 +680,13 @@ Return Value:
                                     CD_ATTRIBUTE_DIRECTORY )) {
 
                             CdCleanupCompoundPathEntry( IrpContext, &CompoundPathEntry );
-                            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
+                            CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
                             FoundEntry = CdFindPathEntry( IrpContext,
                                                           CurrentFcb,
                                                           &FileContext.InitialDirent->Dirent.CdCaseFileName,
                                                           IgnoreCase,
-                                                          &CompoundPathEntry );
+                                                          (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
                             //
                             //  We better find this entry.
@@ -720,7 +720,7 @@ Return Value:
                             //  below.
                             //
 
-                            MatchingName = &FileContext.ShortName;
+                            MatchingName = (PCD_NAME)&FileContext.ShortName;
                             break;
 
                         } else {
@@ -792,11 +792,11 @@ Return Value:
                 try_return( Status = CdOpenDirectoryFromPathEntry( IrpContext,
                                                                    IrpSp,
                                                                    Vcb,
-                                                                   &CurrentFcb,
+                                                                   (PFCB *)&CurrentFcb,
                                                                    &FinalName,
                                                                    IgnoreCase,
                                                                    ShortNameMatch,
-                                                                   &CompoundPathEntry.PathEntry,
+                                                                   (PPATH_ENTRY)&CompoundPathEntry.PathEntry,
                                                                    TRUE,
                                                                    RelatedCcb ));
             }
@@ -808,11 +808,11 @@ Return Value:
             CdOpenDirectoryFromPathEntry( IrpContext,
                                           IrpSp,
                                           Vcb,
-                                          &CurrentFcb,
+                                          (PFCB *)&CurrentFcb,
                                           &FinalName,
                                           IgnoreCase,
                                           ShortNameMatch,
-                                          &CompoundPathEntry.PathEntry,
+                                          (PPATH_ENTRY)&CompoundPathEntry.PathEntry,
                                           FALSE,
                                           NULL );
 
@@ -829,10 +829,10 @@ Return Value:
 
             if (CleanupFileContext) {
 
-                CdCleanupFileContext( IrpContext, &FileContext );
+                CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
             }
 
-            CdInitializeFileContext( IrpContext, &FileContext );
+            CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
             CleanupFileContext = TRUE;
 
             //
@@ -845,7 +845,7 @@ Return Value:
                                      CurrentFcb,
                                      &FinalName,
                                      IgnoreCase,
-                                     &FileContext,
+                                     (PFILE_ENUM_CONTEXT)&FileContext,
                                      &MatchingName );
         }
 
@@ -920,11 +920,11 @@ Return Value:
         try_return( Status = CdOpenFileFromFileContext( IrpContext,
                                                         IrpSp,
                                                         Vcb,
-                                                        &CurrentFcb,
+                                                        (PFCB *)&CurrentFcb,
                                                         &FinalName,
                                                         IgnoreCase,
                                                         (BOOLEAN) (MatchingName == &FileContext.ShortName),
-                                                        &FileContext,
+                                                        (PFILE_ENUM_CONTEXT)&FileContext,
                                                         RelatedCcb ));
 
     try_exit:  NOTHING;
@@ -945,7 +945,7 @@ Return Value:
 
         if (CleanupFileContext) {
 
-            CdCleanupFileContext( IrpContext, &FileContext );
+            CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
         }
 
         //
@@ -1527,7 +1527,7 @@ Return Value:
 {
     NTSTATUS Status = STATUS_ACCESS_DENIED;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
     BOOLEAN Found;
 
     ULONG StreamOffset;
@@ -1535,11 +1535,11 @@ Return Value:
     NODE_TYPE_CODE NodeTypeCode;
     TYPE_OF_OPEN TypeOfOpen;
 
-    FILE_ENUM_CONTEXT FileContext;
-    BOOLEAN CleanupFileContext = FALSE;
+    FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext;
+    BOOLEAN _SEH2_VOLATILE CleanupFileContext = FALSE;
 
-    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
-    BOOLEAN CleanupCompoundPathEntry = FALSE;
+    COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    BOOLEAN _SEH2_VOLATILE CleanupCompoundPathEntry = FALSE;
 
     FILE_ID FileId;
     FILE_ID ParentFileId;
@@ -1635,7 +1635,7 @@ Return Value:
                     try_return( Status = STATUS_INVALID_PARAMETER );
                 }
 
-                CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
+                CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
                 CleanupCompoundPathEntry = TRUE;
 
                 //
@@ -1646,7 +1646,7 @@ Return Value:
                                    Vcb->PathTableFcb->StreamOffset,
                                    1,
                                    TRUE,
-                                   &CompoundPathEntry );
+                                   (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
                 //
                 //  Continue looking until we have passed our target offset.
@@ -1659,8 +1659,8 @@ Return Value:
                     //
 
                     Found = CdLookupNextPathEntry( IrpContext,
-                                                   &CompoundPathEntry.PathContext,
-                                                   &CompoundPathEntry.PathEntry );
+                                                   (PPATH_ENUM_CONTEXT)&CompoundPathEntry.PathContext,
+                                                   (PPATH_ENTRY)&CompoundPathEntry.PathEntry );
 
                     //
                     //  If we didn't find the entry or are beyond it then the
@@ -1703,7 +1703,7 @@ Return Value:
                     CdInitializeFcbFromPathEntry( IrpContext,
                                                   NextFcb,
                                                   NULL,
-                                                  &CompoundPathEntry.PathEntry );
+                                                  (PPATH_ENTRY)&CompoundPathEntry.PathEntry );
                 }
 
                 //
@@ -1785,7 +1785,7 @@ Return Value:
                 //  through dirent by dirent until this location is found.
                 //
 
-                CdInitializeFileContext( IrpContext, &FileContext );
+                CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
                 CdLookupInitialFileDirent( IrpContext,
                                            NextFcb,
                                            &FileContext,
@@ -1801,7 +1801,7 @@ Return Value:
 
                     Found = CdLookupNextInitialFileDirent( IrpContext,
                                                            NextFcb,
-                                                           &FileContext );
+                                                           (PFILE_ENUM_CONTEXT)&FileContext );
 
                     //
                     //  If we didn't find the entry or are beyond it then the
@@ -1840,7 +1840,7 @@ Return Value:
                 //  and create an Fcb with this.
                 //
 
-                CdLookupLastFileDirent( IrpContext, NextFcb, &FileContext );
+                CdLookupLastFileDirent( IrpContext, NextFcb, (PFILE_ENUM_CONTEXT)&FileContext );
 
                 CdLockVcb( IrpContext, Vcb );
                 UnlockVcb = TRUE;
@@ -1859,7 +1859,7 @@ Return Value:
                     CdInitializeFcbFromFileContext( IrpContext,
                                                     NextFcb,
                                                     *CurrentFcb,
-                                                    &FileContext );
+                                                    (PFILE_ENUM_CONTEXT)&FileContext );
                 }
             }
 
@@ -1961,7 +1961,7 @@ Return Value:
 
         if (CleanupFileContext) {
 
-            CdCleanupFileContext( IrpContext, &FileContext );
+            CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
         }
 
         if (CleanupCompoundPathEntry) {
@@ -2150,11 +2150,11 @@ Return Value:
     ULONG CcbFlags = 0;
     FILE_ID FileId;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
     BOOLEAN FcbExisted;
 
     PFCB NextFcb;
-    PFCB ParentFcb = NULL;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
 
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -2428,11 +2428,11 @@ Return Value:
     ULONG CcbFlags = 0;
     FILE_ID FileId;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
     BOOLEAN FcbExisted;
 
     PFCB NextFcb;
-    PFCB ParentFcb = NULL;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
 
     NTSTATUS Status = STATUS_SUCCESS;
 

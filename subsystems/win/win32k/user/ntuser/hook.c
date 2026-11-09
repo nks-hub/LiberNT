@@ -457,7 +457,7 @@ co_IntCallDebugHook(PHOOK Hook,
 {
     LRESULT lResult = 0;
     ULONG Size;
-    DEBUGHOOKINFO Debug;
+    DEBUGHOOKINFO _SEH2_VOLATILE Debug;
     PVOID HooklParam = NULL;
     BOOL BadChk = FALSE;
 
@@ -469,7 +469,7 @@ co_IntCallDebugHook(PHOOK Hook,
                          sizeof(DEBUGHOOKINFO),
                          1);
 
-            RtlCopyMemory(&Debug,
+            RtlCopyMemory((void *)&Debug,
                           (PVOID)lParam,
                           sizeof(DEBUGHOOKINFO));
         }
@@ -595,7 +595,7 @@ co_UserCallNextHookEx(PHOOK Hook,
     if ((Hook->HookId == WH_MOUSE) ||
         (Hook->HookId == WH_CBT && Code == HCBT_CLICKSKIPPED))
     {
-        MOUSEHOOKSTRUCTEX Mouse;
+        MOUSEHOOKSTRUCTEX _SEH2_VOLATILE Mouse;
         if (lParam)
         {
             _SEH2_TRY
@@ -604,7 +604,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                              sizeof(MOUSEHOOKSTRUCTEX),
                              1);
 
-                RtlCopyMemory(&Mouse,
+                RtlCopyMemory((void *)&Mouse,
                               (PVOID)lParam,
                               sizeof(MOUSEHOOKSTRUCTEX));
             }
@@ -670,7 +670,7 @@ co_UserCallNextHookEx(PHOOK Hook,
 
         case WH_KEYBOARD_LL:
         {
-            KBDLLHOOKSTRUCT Keyboard;
+            KBDLLHOOKSTRUCT _SEH2_VOLATILE Keyboard;
 
             if (lParam)
             {
@@ -680,7 +680,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                  sizeof(KBDLLHOOKSTRUCT),
                                  1);
 
-                    RtlCopyMemory(&Keyboard,
+                    RtlCopyMemory((void *)&Keyboard,
                                   (PVOID)lParam,
                                   sizeof(KBDLLHOOKSTRUCT));
                 }
@@ -710,7 +710,7 @@ co_UserCallNextHookEx(PHOOK Hook,
         case WH_SYSMSGFILTER:
         case WH_GETMESSAGE:
         {
-            MSG Msg;
+            MSG _SEH2_VOLATILE Msg;
 
             if (lParam)
             {
@@ -720,7 +720,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                  sizeof(MSG),
                                  1);
 
-                    RtlCopyMemory(&Msg,
+                    RtlCopyMemory((void *)&Msg,
                                   (PVOID)lParam,
                                   sizeof(MSG));
                 }
@@ -751,7 +751,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                       1);
 
                         RtlCopyMemory((PVOID)lParam,
-                                      &Msg,
+                                      (const void *)&Msg,
                                       sizeof(MSG));
                     }
                     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -841,7 +841,7 @@ co_UserCallNextHookEx(PHOOK Hook,
 
                 case HCBT_MOVESIZE:
                 {
-                    RECTL rt;
+                    RECTL _SEH2_VOLATILE rt;
 
                     TRACE("HOOK HCBT_MOVESIZE\n");
 
@@ -853,7 +853,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                          sizeof(RECT),
                                          1);
 
-                            RtlCopyMemory(&rt,
+                            RtlCopyMemory((void *)&rt,
                                           (PVOID)lParam,
                                           sizeof(RECT));
                         }
@@ -878,7 +878,7 @@ co_UserCallNextHookEx(PHOOK Hook,
 
                 case HCBT_ACTIVATE:
                 {
-                    CBTACTIVATESTRUCT CbAs;
+                    CBTACTIVATESTRUCT _SEH2_VOLATILE CbAs;
 
                     TRACE("HOOK HCBT_ACTIVATE\n");
                     if (lParam)
@@ -889,7 +889,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                          sizeof(CBTACTIVATESTRUCT),
                                          1);
 
-                            RtlCopyMemory(&CbAs,
+                            RtlCopyMemory((void *)&CbAs,
                                           (PVOID)lParam,
                                           sizeof(CBTACTIVATESTRUCT));
                         }
@@ -927,7 +927,7 @@ co_UserCallNextHookEx(PHOOK Hook,
         case WH_JOURNALPLAYBACK:
         case WH_JOURNALRECORD:
         {
-            EVENTMSG EventMsg;
+            EVENTMSG _SEH2_VOLATILE EventMsg;
 
             if (lParam)
             {
@@ -937,7 +937,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                  sizeof(EVENTMSG),
                                  1);
 
-                    RtlCopyMemory(&EventMsg,
+                    RtlCopyMemory((void *)&EventMsg,
                                   (PVOID)lParam,
                                   sizeof(EVENTMSG));
                 }
@@ -966,7 +966,7 @@ co_UserCallNextHookEx(PHOOK Hook,
                                       1);
 
                         RtlCopyMemory((PVOID)lParam,
-                                      &EventMsg,
+                                      (const void *)&EventMsg,
                                       sizeof(EVENTMSG));
                     }
                     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

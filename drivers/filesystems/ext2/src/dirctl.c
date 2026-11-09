@@ -525,16 +525,16 @@ NTSTATUS
 Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
-    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PEXT2_VCB               Vcb = NULL;
     PFILE_OBJECT            FileObject = NULL;
-    PEXT2_FCB               Fcb = NULL;
+    PEXT2_FCB               _SEH2_VOLATILE Fcb = NULL;
     PEXT2_MCB               Mcb = NULL;
     PEXT2_CCB               Ccb = NULL;
     PIRP                    Irp = NULL;
     PIO_STACK_LOCATION      IoStackLocation = NULL;
 
-    ULONG                   Length = 0;
+    ULONG                   _SEH2_VOLATILE Length = 0;
     ULONG                   FileIndex;
     PUNICODE_STRING         FileName;
     PUCHAR                  Buffer;
@@ -543,20 +543,20 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
     BOOLEAN                 ReturnSingleEntry;
     BOOLEAN                 IndexSpecified;
     BOOLEAN                 FirstQuery;
-    BOOLEAN                 FcbResourceAcquired = FALSE;
+    BOOLEAN                 _SEH2_VOLATILE FcbResourceAcquired = FALSE;
 
     USHORT                  NameLen;
     FILE_INFORMATION_CLASS  fi;
 
     OEM_STRING              Oem = { 0 };
-    UNICODE_STRING          Unicode = { 0 };
-    PEXT2_DIR_ENTRY2        pDir = NULL;
+    UNICODE_STRING          _SEH2_VOLATILE Unicode = { 0 };
+    PEXT2_DIR_ENTRY2        _SEH2_VOLATILE pDir = NULL;
 
     ULONG                   ByteOffset;
     ULONG                   RecLen = 0;
     ULONG                   EntrySize = 0;
 
-    EXT2_FILLDIR_CONTEXT    fc = { 0 };
+    EXT2_FILLDIR_CONTEXT    _SEH2_VOLATILE fc = { 0 };
 
     _SEH2_TRY {
 
@@ -780,7 +780,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                                     EXT3_FEATURE_COMPAT_DIR_INDEX) &&
                 ((EXT3_I(&Mcb->Inode)->i_flags & EXT3_INDEX_FL) ||
                  ((Mcb->Inode.i_size >> BLOCK_BITS) == 1)) ) {
-            int rc = ext3_dx_readdir(&Ccb->filp, Ext2FillEntry, &fc);
+            int rc = ext3_dx_readdir(&Ccb->filp, Ext2FillEntry, (void *)&fc);
             Status = fc.efc_status;
             if (rc != ERR_BAD_DX_DIR) {
                 goto errorout;
@@ -896,7 +896,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
             Unicode.Length = 0;
             RtlZeroMemory(Unicode.Buffer, Unicode.MaximumLength);
 
-            Status = Ext2OEMToUnicode(Vcb, &Unicode, &Oem);
+            Status = Ext2OEMToUnicode(Vcb, (PUNICODE_STRING)&Unicode, &Oem);
             if (!NT_SUCCESS(Status)) {
                 DEBUG(DL_ERR, ( "Ex2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
                 Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -910,12 +910,12 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                         &(Ccb->DirectorySearchPattern)) ?
                     FsRtlIsNameInExpression(
                         &(Ccb->DirectorySearchPattern),
-                        &Unicode,
+                        (PUNICODE_STRING)&Unicode,
                         TRUE,
                         NULL) :
                     !RtlCompareUnicodeString(
                         &(Ccb->DirectorySearchPattern),
-                        &Unicode,
+                        (PCUNICODE_STRING)&Unicode,
                         TRUE)           ) {
 
                 Status = Ext2ProcessEntry(
@@ -928,7 +928,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                              CEILING_ALIGNED(ULONG, fc.efc_start, 8),
                              Length - CEILING_ALIGNED(ULONG, fc.efc_start, 8),
                              ByteOffset,
-                             &Unicode,
+                             (PUNICODE_STRING)&Unicode,
                              &EntrySize,
                              ReturnSingleEntry
                          );
@@ -1030,10 +1030,10 @@ Ext2NotifyChangeDirectory (
 )
 {
     PDEVICE_OBJECT      DeviceObject;
-    BOOLEAN             CompleteRequest = TRUE;
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN             _SEH2_VOLATILE CompleteRequest = TRUE;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PEXT2_VCB           Vcb = NULL;
-    PEXT2_FCB           Fcb = NULL;
+    PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
     PEXT2_CCB           Ccb = NULL;
     PIRP                Irp = NULL;
     PIO_STACK_LOCATION  IrpSp;
@@ -1041,7 +1041,7 @@ Ext2NotifyChangeDirectory (
     ULONG               CompletionFilter;
     BOOLEAN             WatchTree;
 
-    BOOLEAN             bFcbAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bFcbAcquired = FALSE;
 
     _SEH2_TRY {
 

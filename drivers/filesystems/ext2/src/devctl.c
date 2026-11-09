@@ -65,8 +65,8 @@ NTSTATUS
 Ext2DeviceControlNormal (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT  DeviceObject;
-    BOOLEAN         CompleteRequest = TRUE;
-    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN         _SEH2_VOLATILE CompleteRequest = TRUE;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PEXT2_VCB       Vcb;
 
@@ -147,8 +147,8 @@ NTSTATUS
 Ext2PrepareToUnload (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT  DeviceObject;
-    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
-    BOOLEAN         GlobalDataResourceAcquired = FALSE;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN         _SEH2_VOLATILE GlobalDataResourceAcquired = FALSE;
 
     _SEH2_TRY {
 
@@ -248,7 +248,7 @@ Ext2ProcessGlobalProperty(
     struct nls_table * PageTable = NULL;
 
     NTSTATUS        Status = STATUS_SUCCESS;
-    BOOLEAN         GlobalDataResourceAcquired = FALSE;
+    BOOLEAN         _SEH2_VOLATILE GlobalDataResourceAcquired = FALSE;
 
     _SEH2_TRY {
 

@@ -681,7 +681,7 @@ NtCreateTransaction(
     _In_opt_ PUNICODE_STRING Description)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    LARGE_INTEGER SafeTimeout;
+    LARGE_INTEGER _SEH2_VOLATILE SafeTimeout;
     UNICODE_STRING SafeDescription;
     PKTRANSACTION Transaction;
     BOOLEAN UowPresent;
@@ -1074,7 +1074,7 @@ NtSetInformationTransaction(
     _In_ ULONG TransactionInformationLength)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    TRANSACTION_PROPERTIES_INFORMATION Properties;
+    TRANSACTION_PROPERTIES_INFORMATION _SEH2_VOLATILE Properties;
     PKTRANSACTION Transaction;
     NTSTATUS Status;
     PAGED_CODE();
@@ -1095,7 +1095,7 @@ NtSetInformationTransaction(
         {
             ProbeForRead(TransactionInformation, TransactionInformationLength, sizeof(ULONG));
         }
-        RtlCopyMemory(&Properties,
+        RtlCopyMemory((void *)&Properties,
                       TransactionInformation,
                       FIELD_OFFSET(TRANSACTION_PROPERTIES_INFORMATION, Description));
     }

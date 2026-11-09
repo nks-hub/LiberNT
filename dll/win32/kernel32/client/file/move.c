@@ -554,12 +554,12 @@ BasepOpenFileForMove(IN LPCWSTR File,
                      IN ULONG ShareAccess,
                      IN ULONG OpenOptions)
 {
-    RTL_RELATIVE_NAME_U RelativeName;
+    RTL_RELATIVE_NAME_U _SEH2_VOLATILE RelativeName;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     IO_STATUS_BLOCK IoStatusBlock;
     FILE_ATTRIBUTE_TAG_INFORMATION TagInfo;
     ULONG IntShareAccess;
-    BOOLEAN HasRelative = FALSE;
+    BOOLEAN _SEH2_VOLATILE HasRelative = FALSE;
 
     _SEH2_TRY
     {
@@ -567,7 +567,7 @@ BasepOpenFileForMove(IN LPCWSTR File,
         RtlInitEmptyUnicodeString(RelativeNtName, NULL, 0);
         *NtName = NULL;
 
-        if (!RtlDosPathNameToRelativeNtPathName_U(File, RelativeNtName, NULL, &RelativeName))
+        if (!RtlDosPathNameToRelativeNtPathName_U(File, RelativeNtName, NULL, (PRTL_RELATIVE_NAME_U)&RelativeName))
         {
             Status = STATUS_OBJECT_PATH_NOT_FOUND;
             _SEH2_LEAVE;
@@ -655,7 +655,7 @@ BasepOpenFileForMove(IN LPCWSTR File,
     {
         if (HasRelative)
         {
-            RtlReleaseRelativeName(&RelativeName);
+            RtlReleaseRelativeName((PRTL_RELATIVE_NAME_U)&RelativeName);
         }
     }
     _SEH2_END;
@@ -727,9 +727,9 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
     COPY_PROGRESS_CONTEXT CopyContext;
     OBJECT_ATTRIBUTES ObjectAttributes;
     PFILE_RENAME_INFORMATION RenameInfo;
-    UNICODE_STRING NewPathU, ExistingPathU;
+    UNICODE_STRING _SEH2_VOLATILE NewPathU, ExistingPathU;
     FILE_ATTRIBUTE_TAG_INFORMATION TagInfo;
-    HANDLE SourceHandle = INVALID_HANDLE_VALUE, NewHandle, ExistingHandle;
+    HANDLE _SEH2_VOLATILE SourceHandle = INVALID_HANDLE_VALUE, NewHandle, ExistingHandle;
     BOOL Ret = FALSE, ReplaceIfExists, DelayUntilReboot, AttemptReopenWithoutReparse;
 
     DPRINT("MoveFileWithProgressW(%S, %S, %p, %p, %x)\n",
@@ -750,7 +750,7 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         ReplaceIfExists = !!(dwFlags & MOVEFILE_REPLACE_EXISTING);
 
         /* Get file path */
-        if (!RtlDosPathNameToNtPathName_U(lpExistingFileName, &ExistingPathU, NULL, NULL))
+        if (!RtlDosPathNameToNtPathName_U(lpExistingFileName, (PUNICODE_STRING)&ExistingPathU, NULL, NULL))
         {
             BaseSetLastNTError(STATUS_OBJECT_PATH_NOT_FOUND);
             _SEH2_LEAVE;
@@ -767,12 +767,12 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         /* Unless we manage a proper opening, we'll attempt to reopen without reparse support */
         AttemptReopenWithoutReparse = TRUE;
         InitializeObjectAttributes(&ObjectAttributes,
-                                   &ExistingPathU,
+                                   (PUNICODE_STRING)&ExistingPathU,
                                    OBJ_CASE_INSENSITIVE,
                                    NULL,
                                    NULL);
         /* Attempt to open source file */
-        Status = NtOpenFile(&SourceHandle,
+        Status = NtOpenFile((PHANDLE)&SourceHandle,
                             FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
                             &ObjectAttributes,
                             &IoStatusBlock,
@@ -835,7 +835,7 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         /* Simply reopen if required */
         if (AttemptReopenWithoutReparse)
         {
-            Status = NtOpenFile(&SourceHandle,
+            Status = NtOpenFile((PHANDLE)&SourceHandle,
                                 DELETE | SYNCHRONIZE,
                                 &ObjectAttributes,
                                 &IoStatusBlock,
@@ -851,10 +851,10 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
         /* Nullify string if we're to use it */
         if (DelayUntilReboot && !lpNewFileName)
         {
-            RtlInitUnicodeString(&NewPathU, NULL);
+            RtlInitUnicodeString((PUNICODE_STRING)&NewPathU, NULL);
         }
         /* Check whether path exists */
-        else if (!RtlDosPathNameToNtPathName_U(lpNewFileName, &NewPathU, NULL, NULL))
+        else if (!RtlDosPathNameToNtPathName_U(lpNewFileName, (PUNICODE_STRING)&NewPathU, NULL, NULL))
         {
             BaseSetLastNTError(STATUS_OBJECT_PATH_NOT_FOUND);
             _SEH2_LEAVE;
@@ -890,15 +890,15 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
             else
             {
                 /* First, probe 2nd key to see whether it exists - if so, it will be appended there */
-                Status = BasepMoveFileDelayed(&ExistingPathU, &NewPathU, 2, FALSE);
+                Status = BasepMoveFileDelayed((PUNICODE_STRING)&ExistingPathU, (PUNICODE_STRING)&NewPathU, 2, FALSE);
                 if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
                 {
                     /* If doesn't exist, append to first key first, creating it if it doesn't exist */
-                    Status = BasepMoveFileDelayed(&ExistingPathU, &NewPathU, 1, TRUE);
+                    Status = BasepMoveFileDelayed((PUNICODE_STRING)&ExistingPathU, (PUNICODE_STRING)&NewPathU, 1, TRUE);
                     if (Status == STATUS_INSUFFICIENT_RESOURCES)
                     {
                         /* If it failed because it's too big, then create 2nd key and put it there */
-                        Status = BasepMoveFileDelayed(&ExistingPathU, &NewPathU, 2, TRUE);
+                        Status = BasepMoveFileDelayed((PUNICODE_STRING)&ExistingPathU, (PUNICODE_STRING)&NewPathU, 2, TRUE);
                     }
                 }
             }
@@ -982,8 +982,8 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
                                (!ReplaceIfExists ? COPY_FILE_FAIL_IF_EXISTS : 0)
                                     | COPY_FILE_OPEN_SOURCE_FOR_WRITE,
                                0,
-                               &ExistingHandle,
-                               &NewHandle);
+                               (LPHANDLE)&ExistingHandle,
+                               (LPHANDLE)&NewHandle);
         if (!Ret)
         {
             /* If it failed, don't leak any handle */
@@ -998,10 +998,10 @@ MoveFileWithProgressW(IN LPCWSTR lpExistingFileName,
             if (NewHandle != INVALID_HANDLE_VALUE)
             {
                 /* If copying succeed, notify */
-                Status = BasepNotifyTrackingService(&ExistingHandle,
+                Status = BasepNotifyTrackingService((PHANDLE)&ExistingHandle,
                                                     &ObjectAttributes,
                                                     NewHandle,
-                                                    &NewPathU);
+                                                    (PUNICODE_STRING)&NewPathU);
                 if (!NT_SUCCESS(Status))
                 {
                     /* Fail in case it had to succeed */
@@ -1201,7 +1201,7 @@ PrivMoveFileIdentityW(IN LPCWSTR lpSource, IN LPCWSTR lpDestination, IN DWORD dw
 {
     ACCESS_MASK SourceAccess;
     UNICODE_STRING NtSource, NtDestination;
-    LPWSTR RelativeSource, RelativeDestination;
+    LPWSTR _SEH2_VOLATILE RelativeSource, RelativeDestination;
     HANDLE SourceHandle, DestinationHandle;
     OBJECT_ATTRIBUTES ObjectAttributesSource, ObjectAttributesDestination;
     NTSTATUS Status = STATUS_UNSUCCESSFUL, OldStatus = STATUS_SUCCESS;
@@ -1238,7 +1238,7 @@ PrivMoveFileIdentityW(IN LPCWSTR lpSource, IN LPCWSTR lpDestination, IN DWORD dw
         {
             Status = BasepOpenFileForMove(lpSource,
                                           &NtSource,
-                                          &RelativeSource,
+                                          (LPWSTR *)&RelativeSource,
                                           &SourceHandle,
                                           &ObjectAttributesSource,
                                           SourceAccess,
@@ -1291,7 +1291,7 @@ PrivMoveFileIdentityW(IN LPCWSTR lpSource, IN LPCWSTR lpDestination, IN DWORD dw
         {
             Status = BasepOpenFileForMove(lpDestination,
                                           &NtDestination,
-                                          &RelativeDestination,
+                                          (LPWSTR *)&RelativeDestination,
                                           &DestinationHandle,
                                           &ObjectAttributesDestination,
                                           DestAccess,

@@ -27,14 +27,14 @@ NTSTATUS
 Ext2QueryVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
-    PEXT2_VCB               Vcb = NULL;
+    PEXT2_VCB               _SEH2_VOLATILE Vcb = NULL;
     PIRP                    Irp = NULL;
     PIO_STACK_LOCATION      IoStackLocation = NULL;
     PVOID                   Buffer;
     ULONG                   Length;
-    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     FS_INFORMATION_CLASS    FsInformationClass;
-    BOOLEAN                 VcbResourceAcquired = FALSE;
+    BOOLEAN                 _SEH2_VOLATILE VcbResourceAcquired = FALSE;
 
     _SEH2_TRY {
 
@@ -292,12 +292,12 @@ NTSTATUS
 Ext2SetVolumeInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
-    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
-    PEXT2_VCB               Vcb = NULL;
+    NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PEXT2_VCB               _SEH2_VOLATILE Vcb = NULL;
     PIRP                    Irp;
     PIO_STACK_LOCATION      IoStackLocation;
     FS_INFORMATION_CLASS    FsInformationClass;
-    BOOLEAN                 VcbResourceAcquired = FALSE;
+    BOOLEAN                 _SEH2_VOLATILE VcbResourceAcquired = FALSE;
 
     _SEH2_TRY {
 

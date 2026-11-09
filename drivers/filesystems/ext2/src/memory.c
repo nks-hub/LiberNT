@@ -444,8 +444,8 @@ VOID Ext2FreeEntry (IN struct dentry *de)
 struct dentry *Ext2BuildEntry(PEXT2_VCB Vcb, PEXT2_MCB Dcb, PUNICODE_STRING FileName)
 {
     OEM_STRING      Oem = { 0 };
-    struct dentry  *de = NULL;
-    NTSTATUS        Status = STATUS_INSUFFICIENT_RESOURCES;
+    struct dentry  * _SEH2_VOLATILE de = NULL;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_INSUFFICIENT_RESOURCES;
 
     _SEH2_TRY {
 
@@ -654,7 +654,7 @@ Ext2AddVcbExtent (
     ULONG       TriedTimes = 0;
 
     LONGLONG    Offset = 0;
-    BOOLEAN     rc = FALSE;
+    BOOLEAN     _SEH2_VOLATILE rc = FALSE;
 
     Offset = Vbn & (~(Vcb->IoUnitSize - 1));
     Length = (Vbn - Offset + Length + Vcb->IoUnitSize - 1) &
@@ -798,7 +798,7 @@ Ext2AddMcbExtent (
     ULONG       TriedTimes = 0;
     LONGLONG    Base = 0;
     UCHAR       Bits = 0;
-    BOOLEAN     rc = FALSE;
+    BOOLEAN     _SEH2_VOLATILE rc = FALSE;
 
     Base = (LONGLONG)BLOCK_SIZE;
     Bits = (UCHAR)BLOCK_BITS;
@@ -947,7 +947,7 @@ Ext2AddMcbMetaExts (
 {
     ULONG       TriedTimes = 0;
     LONGLONG    Lbn = Block + 1;
-    BOOLEAN     rc = TRUE;
+    BOOLEAN     _SEH2_VOLATILE rc = TRUE;
 
 Again:
 
@@ -1601,7 +1601,7 @@ Ext2SearchMcb(
     PUNICODE_STRING     FileName
 )
 {
-    BOOLEAN   LockAcquired = FALSE;
+    BOOLEAN   _SEH2_VOLATILE LockAcquired = FALSE;
     PEXT2_MCB Mcb = NULL;
 
     _SEH2_TRY {
@@ -1689,7 +1689,7 @@ Ext2InsertMcb (
     PEXT2_MCB Child
 )
 {
-    BOOLEAN     LockAcquired = FALSE;
+    BOOLEAN     _SEH2_VOLATILE LockAcquired = FALSE;
     PEXT2_MCB   Mcb = NULL;
 
     _SEH2_TRY {
@@ -1749,7 +1749,7 @@ Ext2RemoveMcb (
 )
 {
     PEXT2_MCB   TmpMcb = NULL;
-    BOOLEAN     LockAcquired = FALSE;
+    BOOLEAN     _SEH2_VOLATILE LockAcquired = FALSE;
     BOOLEAN     bLinked = FALSE;
 
     _SEH2_TRY {

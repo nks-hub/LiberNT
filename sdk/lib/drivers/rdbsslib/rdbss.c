@@ -1916,7 +1916,7 @@ RxCommonCleanup(
     PRX_CONTEXT Context)
 {
 #define BugCheckFileId RDBSS_BUG_CHECK_CLEANUP
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
     PFOBX Fobx;
     ULONG OpenCount;
     NTSTATUS Status;
@@ -1924,7 +1924,7 @@ RxCommonCleanup(
     PFILE_OBJECT FileObject;
     LARGE_INTEGER TruncateSize;
     PLARGE_INTEGER TruncateSizePtr;
-    BOOLEAN NeedPurge, FcbTableAcquired, OneLeft, IsFile, FcbAcquired, LeftForDelete;
+    BOOLEAN _SEH2_VOLATILE NeedPurge, FcbTableAcquired, OneLeft, IsFile, FcbAcquired, LeftForDelete;
 
     PAGED_CODE();
 
@@ -1956,7 +1956,7 @@ RxCommonCleanup(
     FileObject = Context->CurrentIrpSp->FileObject;
     ASSERT(!BooleanFlagOn(FileObject->Flags, FO_CLEANUP_COMPLETE));
 
-    RxMarkFobxOnCleanup(Fobx, &NeedPurge);
+    RxMarkFobxOnCleanup(Fobx, (PBOOLEAN)&NeedPurge);
 
     Status = RxAcquireExclusiveFcb(Context, Fcb);
     if (!NT_SUCCESS(Status))
@@ -2289,7 +2289,7 @@ RxCommonClose(
     PFOBX Fobx;
     NTSTATUS Status;
     PFILE_OBJECT FileObject;
-    BOOLEAN DereferenceFobx, AcquiredFcb;
+    BOOLEAN _SEH2_VOLATILE DereferenceFobx, AcquiredFcb;
 
     PAGED_CODE();
 
@@ -2921,7 +2921,7 @@ RxCommonQueryInformation(
     PFCB Fcb;
     PIRP Irp;
     PFOBX Fobx;
-    BOOLEAN Locked;
+    BOOLEAN _SEH2_VOLATILE Locked;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION Stack;
     FILE_INFORMATION_CLASS FileInfoClass;
@@ -3187,16 +3187,16 @@ RxCommonRead(
     PFCB Fcb;
     PIRP Irp;
     PFOBX Fobx;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PNET_ROOT NetRoot;
     PVOID SystemBuffer;
     PFILE_OBJECT FileObject;
-    LARGE_INTEGER ByteOffset;
+    LARGE_INTEGER _SEH2_VOLATILE ByteOffset;
     PIO_STACK_LOCATION Stack;
     PLOWIO_CONTEXT LowIoContext;
     PRDBSS_DEVICE_OBJECT RxDeviceObject;
     ULONG ReadLength, CapturedRxContextSerialNumber = RxContext->SerialNumber;
-    BOOLEAN CanWait, PagingIo, NoCache, Sync, PostRequest, IsPipe, ReadCachingEnabled, ReadCachingDisabled, InFsp, OwnerSet;
+    BOOLEAN _SEH2_VOLATILE CanWait, PagingIo, NoCache, Sync, PostRequest, IsPipe, ReadCachingEnabled, ReadCachingDisabled, InFsp, OwnerSet;
 
     PAGED_CODE();
 
@@ -3306,7 +3306,7 @@ RxCommonRead(
             }
 
             ExAcquireResourceSharedLite(Fcb->Header.PagingIoResource, TRUE);
-            CcFlushCache(FileObject->SectionObjectPointer, &ByteOffset, ReadLength, &Irp->IoStatus);
+            CcFlushCache(FileObject->SectionObjectPointer, (PLARGE_INTEGER)&ByteOffset, ReadLength, &Irp->IoStatus);
             RxReleasePagingIoResource(RxContext, Fcb);
 
             if (!NT_SUCCESS(Irp->IoStatus.Status))
@@ -3452,7 +3452,7 @@ RxCommonRead(
                 ASSERT(FALSE);
                 ASSERT(CanWait);
 
-                CcMdlRead(FileObject, &ByteOffset, ReadLength, &Irp->MdlAddress, &Irp->IoStatus);
+                CcMdlRead(FileObject, (PLARGE_INTEGER)&ByteOffset, ReadLength, &Irp->MdlAddress, &Irp->IoStatus);
                 Status = Irp->IoStatus.Status;
                 ASSERT(NT_SUCCESS(Status));
             }
@@ -3471,7 +3471,7 @@ RxCommonRead(
                 RxItsTheSameContext();
 
                 /* Perform the read */
-                if (!CcCopyRead(FileObject, &ByteOffset, ReadLength, CanWait, SystemBuffer, &Irp->IoStatus))
+                if (!CcCopyRead(FileObject, (PLARGE_INTEGER)&ByteOffset, ReadLength, CanWait, SystemBuffer, &Irp->IoStatus))
                 {
                     if (!ReadCachingEnabled)
                     {
@@ -3659,7 +3659,7 @@ RxCommonSetInformation(
     PNET_ROOT NetRoot;
     PIO_STACK_LOCATION Stack;
     FILE_INFORMATION_CLASS Class;
-    BOOLEAN CanWait, FcbTableAcquired, FcbAcquired;
+    BOOLEAN _SEH2_VOLATILE CanWait, FcbTableAcquired, FcbAcquired;
 
     PAGED_CODE();
 
@@ -3932,8 +3932,8 @@ RxCommonWrite(
 {
     PIRP Irp;
     PFCB Fcb;
-    PFOBX Fobx;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PFOBX _SEH2_VOLATILE Fobx;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PNET_ROOT NetRoot;
     PSRV_OPEN SrvOpen;
     PFILE_OBJECT FileObject;
@@ -3943,8 +3943,8 @@ RxCommonWrite(
     PLOWIO_CONTEXT LowIoContext;
     PRDBSS_DEVICE_OBJECT RxDeviceObject;
     ULONG WriteLength, CapturedRxContextSerialNumber = RxContext->SerialNumber;
-    LONGLONG FileSize, ValidDataLength, InitialFileSize, InitialValidDataLength = 0;
-    BOOLEAN CanWait, PagingIo, NoCache, Sync, NormalFile, WriteToEof, IsPipe, NoPreposting, InFsp, RecursiveWriteThrough, CalledByLazyWriter, SwitchBackToAsync, ExtendingFile, ExtendingValidData, UnwindOutstandingAsync, ResourceOwnerSet, PostIrp, ContextReferenced;
+    LONGLONG _SEH2_VOLATILE FileSize, ValidDataLength, InitialFileSize, InitialValidDataLength = 0;
+    BOOLEAN _SEH2_VOLATILE CanWait, PagingIo, NoCache, Sync, NormalFile, WriteToEof, IsPipe, NoPreposting, InFsp, RecursiveWriteThrough, CalledByLazyWriter, SwitchBackToAsync, ExtendingFile, ExtendingValidData, UnwindOutstandingAsync, ResourceOwnerSet, PostIrp, ContextReferenced;
 
     PAGED_CODE();
 
@@ -4326,7 +4326,7 @@ RxCommonWrite(
 
         /* Get file sizes */
         ValidDataLength = Fcb->Header.ValidDataLength.QuadPart;
-        RxGetFileSizeWithLock(Fcb, &FileSize);
+        RxGetFileSizeWithLock(Fcb, (PLONGLONG)&FileSize);
         ASSERT(ValidDataLength <= FileSize);
 
         /* If paging IO, we cannot write past file size
@@ -4431,7 +4431,7 @@ RxCommonWrite(
 
             /* Get the sizes again, to be sure they didn't change in the meantime */
             ValidDataLength = Fcb->Header.ValidDataLength.QuadPart;
-            RxGetFileSizeWithLock(Fcb, &FileSize);
+            RxGetFileSizeWithLock(Fcb, (PLONGLONG)&FileSize);
             ASSERT(ValidDataLength <= FileSize);
 
             /* Check we can switch back to async? */
@@ -4521,7 +4521,7 @@ RxCommonWrite(
             }
 
             /* Set the new sizes */
-            RxSetFileSizeWithLock(Fcb, &FileSize);
+            RxSetFileSizeWithLock(Fcb, (PLONGLONG)&FileSize);
             RxAdjustAllocationSizeforCC(Fcb);
 
             /* And inform Cc */
@@ -4701,7 +4701,7 @@ try_exit: NOTHING;
                 ASSERT(Fcb->Header.PagingIoResource != NULL);
 
                 RxAcquirePagingIoResource(RxContext, Fcb);
-                RxSetFileSizeWithLock(Fcb, &InitialFileSize);
+                RxSetFileSizeWithLock(Fcb, (PLONGLONG)&InitialFileSize);
                 RxReleasePagingIoResource(RxContext, Fcb);
 
                 if (FileObject->SectionObjectPointer->SharedCacheMap != NULL)
@@ -4785,7 +4785,7 @@ try_exit: NOTHING;
                 ASSERT(Fcb->Header.PagingIoResource != NULL);
 
                 RxAcquirePagingIoResource(RxContext, Fcb);
-                RxSetFileSizeWithLock(Fcb, &InitialFileSize);
+                RxSetFileSizeWithLock(Fcb, (PLONGLONG)&InitialFileSize);
                 Fcb->Header.ValidDataLength.QuadPart = InitialValidDataLength;
                 RxReleasePagingIoResource(RxContext, Fcb);
 
@@ -5115,7 +5115,7 @@ RxCreateFromNetRoot(
     PRX_CONTEXT Context,
     PUNICODE_STRING NetRootName)
 {
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
     NTSTATUS Status;
     PNET_ROOT NetRoot;
     PFILE_OBJECT FileObject;
@@ -5505,8 +5505,8 @@ RxDriverEntry(
     IN PDRIVER_OBJECT DriverObject,
     IN PUNICODE_STRING RegistryPath)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    USHORT i, State = 0;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    USHORT _SEH2_VOLATILE i, State = 0;
 
     DPRINT("RxDriverEntry(%p, %p)\n", DriverObject, RegistryPath);
 
@@ -5870,7 +5870,7 @@ RxFindOrCreateFcb(
     PRX_CONTEXT RxContext,
     PUNICODE_STRING NetRootName)
 {
-    PFCB Fcb;
+    PFCB _SEH2_VOLATILE Fcb;
     ULONG Version;
     NTSTATUS Status;
     PNET_ROOT NetRoot;
@@ -9231,9 +9231,9 @@ RxStartMinirdr(
     IN PRX_CONTEXT RxContext,
     OUT PBOOLEAN PostToFsp)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    BOOLEAN Wait, AlreadyStarted;
-    PRDBSS_DEVICE_OBJECT DeviceObject;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN _SEH2_VOLATILE Wait, AlreadyStarted;
+    PRDBSS_DEVICE_OBJECT _SEH2_VOLATILE DeviceObject;
 
     /* If we've not been post, then, do it */
     if (!BooleanFlagOn(RxContext->Flags, RX_CONTEXT_FLAG_IN_FSP))

@@ -418,7 +418,7 @@ ULONG
 FASTCALL
 GdiFlushUserBatch(PDC dc, PGDIBATCHHDR pHdr)
 {
-  ULONG Cmd = 0, Size = 0;
+  ULONG _SEH2_VOLATILE Cmd = 0, Size = 0;
   PDC_ATTR pdcattr = NULL;
 
   if (dc)

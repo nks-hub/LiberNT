@@ -724,7 +724,7 @@ KiChpeRingSuspendDoorbell(IN PKTHREAD Thread)
 {
     PCHPE_V2_CPU_AREA_INFO CpuArea;
     CHPE_V2_CPU_AREA_INFO CapturedCpuArea;
-    BOOLEAN Rung = FALSE;
+    BOOLEAN _SEH2_VOLATILE Rung = FALSE;
 
     if (Thread->Teb == NULL) return FALSE;
 

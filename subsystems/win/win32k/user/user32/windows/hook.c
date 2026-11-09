@@ -593,7 +593,7 @@ User32CallHookProcFromKernel(PVOID Arguments, ULONG ArgumentLength)
   HOOKPROC Proc;
   WPARAM wParam = 0;
   LPARAM lParam = 0;
-  LRESULT Result = 0;
+  LRESULT _SEH2_VOLATILE Result = 0;
   BOOL Hit = FALSE, Loaded = FALSE;
   HMODULE mod = NULL;
   NTSTATUS Status = STATUS_SUCCESS;

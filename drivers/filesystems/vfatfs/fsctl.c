@@ -349,11 +349,11 @@ ReadVolumeLabel(
 {
     PDEVICE_EXTENSION DeviceExt = NULL;
     PDEVICE_OBJECT DeviceObject = NULL;
-    PVOID Context = NULL;
+    PVOID _SEH2_VOLATILE Context = NULL;
     ULONG DirIndex = 0;
-    PDIR_ENTRY Entry;
+    PDIR_ENTRY _SEH2_VOLATILE Entry;
     PVFATFCB pFcb = NULL;
-    LARGE_INTEGER FileOffset;
+    LARGE_INTEGER _SEH2_VOLATILE FileOffset;
     ULONG SizeDirEntry;
     ULONG EntriesPerPage;
     OEM_STRING StringO;
@@ -387,7 +387,7 @@ ReadVolumeLabel(
 
         _SEH2_TRY
         {
-            CcMapData(pFcb->FileObject, &FileOffset, SizeDirEntry, MAP_WAIT, &Context, (PVOID*)&Entry);
+            CcMapData(pFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, MAP_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -404,7 +404,7 @@ ReadVolumeLabel(
         Buffer = ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE, TAG_DIRENT);
         if (Buffer != NULL)
         {
-            Status = VfatReadDisk(DeviceObject, &FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
+            Status = VfatReadDisk(DeviceObject, (PLARGE_INTEGER)&FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
             if (!NT_SUCCESS(Status))
             {
                 ExFreePoolWithTag(Buffer, TAG_DIRENT);
@@ -456,7 +456,7 @@ ReadVolumeLabel(
 
                     _SEH2_TRY
                     {
-                        CcMapData(pFcb->FileObject, &FileOffset, SizeDirEntry, MAP_WAIT, &Context, (PVOID*)&Entry);
+                        CcMapData(pFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, MAP_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
                     }
                     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                     {
@@ -471,7 +471,7 @@ ReadVolumeLabel(
                 }
                 else
                 {
-                    Status = VfatReadDisk(DeviceObject, &FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
+                    Status = VfatReadDisk(DeviceObject, (PLARGE_INTEGER)&FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
                     if (!NT_SUCCESS(Status))
                     {
                         break;

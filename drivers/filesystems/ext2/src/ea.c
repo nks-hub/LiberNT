@@ -95,15 +95,15 @@ Ext2QueryEa (
 	IN PEXT2_IRP_CONTEXT    IrpContext
 )
 {
-	PIRP                Irp = NULL;
+	PIRP                _SEH2_VOLATILE Irp = NULL;
 	PIO_STACK_LOCATION  IrpSp;
 
 	PDEVICE_OBJECT      DeviceObject;
 
-	PEXT2_VCB           Vcb = NULL;
-	PEXT2_FCB           Fcb = NULL;
+	PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
+	PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
 	PEXT2_CCB           Ccb = NULL;
-	PEXT2_MCB           Mcb = NULL;
+	PEXT2_MCB           _SEH2_VOLATILE Mcb = NULL;
 
 	PUCHAR  UserEaList;
 	ULONG   UserEaListLength;
@@ -113,16 +113,16 @@ Ext2QueryEa (
 	BOOLEAN ReturnSingleEntry;
 	BOOLEAN IndexSpecified;
 
-	BOOLEAN             MainResourceAcquired = FALSE;
-	BOOLEAN             XattrRefAcquired = FALSE;
+	BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
+	BOOLEAN             _SEH2_VOLATILE XattrRefAcquired = FALSE;
 
-	NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+	NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
-	struct ext4_xattr_ref xattr_ref;
+	struct ext4_xattr_ref _SEH2_VOLATILE xattr_ref;
 	PCHAR UserBuffer;
 
-	ULONG UserBufferLength = 0;
-	ULONG RemainingUserBufferLength = 0;
+	ULONG _SEH2_VOLATILE UserBufferLength = 0;
+	ULONG _SEH2_VOLATILE RemainingUserBufferLength = 0;
 
 	PFILE_FULL_EA_INFORMATION FullEa, LastFullEa = NULL;
 
@@ -172,7 +172,7 @@ Ext2QueryEa (
 		}
 		MainResourceAcquired = TRUE;
 
-		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, (struct ext4_xattr_ref *)&xattr_ref));
 		if (!NT_SUCCESS(Status)) {
 			DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
 			_SEH2_LEAVE;
@@ -208,7 +208,7 @@ Ext2QueryEa (
 				// At the moment we only need to know whether the item exists
 				// and its size.
 				//
-				Status = Ext2WinntError(ext4_fs_get_xattr(&xattr_ref,
+				Status = Ext2WinntError(ext4_fs_get_xattr((struct ext4_xattr_ref *)&xattr_ref,
 					EXT4_XATTR_INDEX_USER,
 					Str.Buffer,
 					Str.Length,
@@ -250,7 +250,7 @@ Ext2QueryEa (
 				// the xattr_ref without acquiring Inode lock.
 				//
 				ASSERT(NT_SUCCESS(Ext2WinntError(
-					ext4_fs_get_xattr(&xattr_ref,
+					ext4_fs_get_xattr((struct ext4_xattr_ref *)&xattr_ref,
 						EXT4_XATTR_INDEX_USER,
 						Str.Buffer,
 						Str.Length,
@@ -290,7 +290,7 @@ Ext2QueryEa (
 			EaIterator.EaIndexCounter = 1;
 
 			xattr_ref.iter_arg = &EaIterator;
-			ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
+			ext4_fs_xattr_iterate((struct ext4_xattr_ref *)&xattr_ref, Ext2IterateAllEa);
 
 			RemainingUserBufferLength = EaIterator.RemainingUserBufferLength;
 
@@ -329,7 +329,7 @@ Ext2QueryEa (
 			EaIterator.EaIndexCounter = 1;
 
 			xattr_ref.iter_arg = &EaIterator;
-			ext4_fs_xattr_iterate(&xattr_ref, Ext2IterateAllEa);
+			ext4_fs_xattr_iterate((struct ext4_xattr_ref *)&xattr_ref, Ext2IterateAllEa);
 
 			RemainingUserBufferLength = EaIterator.RemainingUserBufferLength;
 
@@ -352,10 +352,10 @@ Ext2QueryEa (
 		if (XattrRefAcquired) {
 			if (!NT_SUCCESS(Status)) {
 				xattr_ref.dirty = FALSE;
-				ext4_fs_put_xattr_ref(&xattr_ref);
+				ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref);
 			}
 			else
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+				Status = Ext2WinntError(ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref));
 		}
 
 		if (MainResourceAcquired) {
@@ -442,18 +442,18 @@ Ext2SetEa (
 
 	PDEVICE_OBJECT      DeviceObject;
 
-	PEXT2_VCB           Vcb = NULL;
-	PEXT2_FCB           Fcb = NULL;
+	PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
+	PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
 	PEXT2_CCB           Ccb = NULL;
-	PEXT2_MCB           Mcb = NULL;
+	PEXT2_MCB           _SEH2_VOLATILE Mcb = NULL;
 
-	BOOLEAN             MainResourceAcquired = FALSE;
-	BOOLEAN             FcbLockAcquired = FALSE;
-	BOOLEAN             XattrRefAcquired = FALSE;
+	BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
+	BOOLEAN             _SEH2_VOLATILE FcbLockAcquired = FALSE;
+	BOOLEAN             _SEH2_VOLATILE XattrRefAcquired = FALSE;
 
-	NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+	NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
-	struct ext4_xattr_ref xattr_ref;
+	struct ext4_xattr_ref _SEH2_VOLATILE xattr_ref;
 	PCHAR UserBuffer;
 	ULONG UserBufferLength;
 
@@ -504,7 +504,7 @@ Ext2SetEa (
 		}
 		MainResourceAcquired = TRUE;
 
-		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+		Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, (struct ext4_xattr_ref *)&xattr_ref));
 		if (!NT_SUCCESS(Status)) {
 			DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
 			_SEH2_LEAVE;
@@ -515,7 +515,7 @@ Ext2SetEa (
 		//
 		// Remove all existing EA entries.
 		//
-		ext4_xattr_purge_items(&xattr_ref);
+		ext4_xattr_purge_items((struct ext4_xattr_ref *)&xattr_ref);
 		xattr_ref.dirty = TRUE;
 		Status = STATUS_SUCCESS;
 
@@ -553,7 +553,7 @@ Ext2SetEa (
 				EaName.Buffer = &FullEa->EaName[0];
 
 				Status = Ext2WinntError(ret =
-					ext4_fs_set_xattr_ordered(&xattr_ref,
+					ext4_fs_set_xattr_ordered((struct ext4_xattr_ref *)&xattr_ref,
 						EXT4_XATTR_INDEX_USER,
 						EaName.Buffer,
 						EaName.Length,
@@ -568,9 +568,9 @@ Ext2SetEa (
 		if (XattrRefAcquired) {
 			if (!NT_SUCCESS(Status)) {
 				xattr_ref.dirty = FALSE;
-				ext4_fs_put_xattr_ref(&xattr_ref);
+				ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref);
 			} else
-				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+				Status = Ext2WinntError(ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref));
 		}
 
 		if (FcbLockAcquired) {

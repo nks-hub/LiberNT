@@ -271,6 +271,9 @@ SepAdjustGroups(
 
     /* Ensure that the token we get is valid */
     ASSERT(Token);
+    ASSERT(ExIsResourceAcquiredExclusiveLite(Token->TokenLock));
+    ASSERT(ResetToDefaultStates || NewState != NULL || NewStateCount == 0);
+    ASSERT(PreviousGroupsState == NULL || PreviousSids != NULL);
 
     /* Initialize the counters and begin the work */
     *ChangesMade = FALSE;
@@ -357,6 +360,8 @@ SepAdjustGroups(
             ChangeCount++;
         }
     }
+
+    ASSERT(ChangeCount <= Token->UserAndGroupCount);
 
     /* Report the number of previous saved groups */
     if (PreviousGroupsState != NULL)

@@ -1074,15 +1074,15 @@ EtwpTraceClassicEvent(
     _In_ KPROCESSOR_MODE PreviousMode)
 {
     MOF_FIELD MofFields[MAX_MOF_FIELDS];
-    EVENT_TRACE_HEADER Header;
+    EVENT_TRACE_HEADER _SEH2_VOLATILE Header;
     PEVENT_TRACE_HEADER Record;
-    PWMI_BUFFER_HEADER Buffer;
+    PWMI_BUFFER_HEADER Buffer = NULL;
     PETWP_LOGGER Logger;
     PETHREAD Thread = PsGetCurrentThread();
-    ULONG FieldCount = 0, Total = FieldSize, Reserved, i;
+    ULONG _SEH2_VOLATILE FieldCount = 0, Total = FieldSize, Reserved, i;
     BOOLEAN Narrow;
     PUCHAR Data;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (!Fields || FieldSize < sizeof(EVENT_TRACE_HEADER) || FieldSize > MAXUSHORT)
         return STATUS_INVALID_PARAMETER;
@@ -1095,13 +1095,13 @@ EtwpTraceClassicEvent(
     {
         if (PreviousMode != KernelMode)
             ProbeForRead(Fields, FieldSize, sizeof(UCHAR));
-        RtlCopyMemory(&Header, Fields, sizeof(Header));
+        RtlCopyMemory((void *)&Header, Fields, sizeof(Header));
 
         if (Header.Flags & WNODE_FLAG_USE_GUID_PTR)
         {
             if (PreviousMode != KernelMode)
                 ProbeForRead((PVOID)(ULONG_PTR)Header.GuidPtr, sizeof(GUID), sizeof(UCHAR));
-            RtlCopyMemory(&Header.Guid, (PVOID)(ULONG_PTR)Header.GuidPtr, sizeof(GUID));
+            RtlCopyMemory((void *)&Header.Guid, (PVOID)(ULONG_PTR)Header.GuidPtr, sizeof(GUID));
         }
 
         if (Header.Flags & WNODE_FLAG_USE_MOF_PTR)

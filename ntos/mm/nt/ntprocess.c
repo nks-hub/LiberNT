@@ -483,7 +483,7 @@ MmCreatePeb(
     LARGE_INTEGER SectionOffset;
     SIZE_T ViewSize = 0;
     PVOID TableBase = NULL;
-    PIMAGE_NT_HEADERS32 NtHeaders = NULL;
+    PIMAGE_NT_HEADERS32 _SEH2_VOLATILE NtHeaders = NULL;
     NTSTATUS Status;
 
     SectionOffset.QuadPart = 0;

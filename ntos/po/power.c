@@ -1728,7 +1728,7 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
                    OUT PVOID OutputBuffer  OPTIONAL,
                    IN ULONG OutputBufferLength)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
 
     PAGED_CODE();
@@ -1793,13 +1793,13 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
         case PowerRequestCreate:
         {
             COUNTED_REASON_CONTEXT Context;
-            HANDLE Handle = NULL;
+            HANDLE _SEH2_VOLATILE Handle = NULL;
 
             if (!InputBuffer || InputBufferLength != sizeof(Context) || !OutputBuffer || OutputBufferLength != sizeof(Handle)) return STATUS_INVALID_PARAMETER;
             _SEH2_TRY
             {
                 RtlCopyMemory(&Context, InputBuffer, sizeof(Context));
-                Status = PopCreatePowerRequest(&Context, PreviousMode, &Handle);
+                Status = PopCreatePowerRequest(&Context, PreviousMode, (PHANDLE)&Handle);
                 if (NT_SUCCESS(Status)) *(PHANDLE)OutputBuffer = Handle;
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -1953,7 +1953,7 @@ NtPowerInformation(IN POWER_INFORMATION_LEVEL PowerInformationLevel,
 
         case SystemReserveHiberFile:
         {
-            BOOLEAN Enable = FALSE;
+            BOOLEAN _SEH2_VOLATILE Enable = FALSE;
 
             if (InputBuffer == NULL || InputBufferLength != sizeof(BOOLEAN) ||
                 OutputBuffer != NULL || OutputBufferLength != 0)
@@ -2170,7 +2170,7 @@ NtGetDevicePowerState(IN HANDLE Device,
     PFILE_OBJECT FileObject;
     DEVICE_POWER_STATE CurrentState;
     KIRQL OldIrql;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PAGED_CODE();
 
     if (PreviousMode != KernelMode)

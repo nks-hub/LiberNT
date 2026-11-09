@@ -644,7 +644,7 @@ CmSetValueKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
     HCELL_INDEX CurrentChild, Cell;
     NTSTATUS Status;
     BOOLEAN Found, Result;
-    ULONG Count, ChildIndex, SmallData, Storage;
+    ULONG _SEH2_VOLATILE Count, ChildIndex, SmallData, Storage;
     VALUE_SEARCH_RETURN_TYPE SearchResult;
     BOOLEAN FirstTry = TRUE, FlusherLocked = FALSE;
     HCELL_INDEX ParentCell = HCELL_NIL, ChildCell = HCELL_NIL;
@@ -735,7 +735,7 @@ DoAgain:
             Result = CmpFindNameInList(Hive,
                                        &Parent->ValueList,
                                        ValueName,
-                                       &ChildIndex,
+                                       (PULONG)&ChildIndex,
                                        &CurrentChild);
             if (!Result)
             {
@@ -800,7 +800,7 @@ DoAgain:
         _SEH2_TRY
         {
             /* Copy it */
-            RtlCopyMemory(&SmallData, Data, DataLength);
+            RtlCopyMemory((void *)&SmallData, Data, DataLength);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -1070,12 +1070,12 @@ CmQueryValueKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
                 IN ULONG Length,
                 IN PULONG ResultLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PCM_KEY_VALUE ValueData;
     ULONG Index;
     BOOLEAN ValueCached = FALSE;
     PCM_CACHED_VALUE *CachedValue;
-    HCELL_INDEX CellToRelease;
+    HCELL_INDEX _SEH2_VOLATILE CellToRelease;
     VALUE_SEARCH_RETURN_TYPE Result;
     PHHIVE Hive;
     PAGED_CODE();
@@ -1113,7 +1113,7 @@ DoAgain:
                                          &Index,
                                          &ValueData,
                                          &ValueCached,
-                                         &CellToRelease);
+                                         (PHCELL_INDEX)&CellToRelease);
     if (Result == SearchNeedExclusiveLock)
     {
         /* Check if we need an exclusive lock */
@@ -1142,7 +1142,7 @@ DoAgain:
                                           KeyValueInformation,
                                           Length,
                                           ResultLength,
-                                          &Status);
+                                          (PNTSTATUS)&Status);
             if (Result == SearchNeedExclusiveLock)
             {
                 /* Release the value cell */
@@ -1187,7 +1187,7 @@ CmEnumerateValueKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
                     IN ULONG Length,
                     IN PULONG ResultLength)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PHHIVE Hive;
     PCM_KEY_NODE Parent;
     HCELL_INDEX CellToRelease = HCELL_NIL, CellToRelease2 = HCELL_NIL;
@@ -1313,7 +1313,7 @@ DoAgain:
                                       KeyValueInformation,
                                       Length,
                                       ResultLength,
-                                      &Status);
+                                      (PNTSTATUS)&Status);
         if (Result == SearchNeedExclusiveLock)
         {
             /* Cleanup state */
@@ -1517,7 +1517,7 @@ CmpQueryNameInformation(
 {
     PUNICODE_STRING KeyName;
     ULONG NeededLength;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     KeyName = CmpConstructName(Kcb);
     if (!KeyName) return STATUS_INSUFFICIENT_RESOURCES;
@@ -1561,10 +1561,10 @@ CmQueryKey(_In_ PCM_KEY_CONTROL_BLOCK Kcb,
            _In_ ULONG Length,
            _Out_ PULONG ResultLength)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PHHIVE Hive;
     PCM_KEY_NODE Parent;
-    HV_TRACK_CELL_REF CellReferences = {0};
+    HV_TRACK_CELL_REF _SEH2_VOLATILE CellReferences = {0};
     PKEY_CACHED_INFORMATION CachedInformation = KeyInformation;
     PKEY_FULL_INFORMATION FullInformation = KeyInformation;
 
@@ -1599,7 +1599,7 @@ CmQueryKey(_In_ PCM_KEY_CONTROL_BLOCK Kcb,
                 ASSERT(Parent);
 
                 /* Track cell references */
-                if (!HvTrackCellRef(&CellReferences, Hive, Kcb->KeyCell))
+                if (!HvTrackCellRef((PHV_TRACK_CELL_REF)&CellReferences, Hive, Kcb->KeyCell))
                 {
                     /* Not enough memory to track references */
                     Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -1685,7 +1685,7 @@ CmQueryKey(_In_ PCM_KEY_CONTROL_BLOCK Kcb,
 
 Quickie:
     /* Release references */
-    HvReleaseFreeCellRefArray(&CellReferences);
+    HvReleaseFreeCellRefArray((PHV_TRACK_CELL_REF)&CellReferences);
 
     /* Release locks */
     CmpReleaseKcbLock(Kcb);
@@ -1703,7 +1703,7 @@ CmEnumerateKey(IN PCM_KEY_CONTROL_BLOCK Kcb,
                IN ULONG Length,
                IN PULONG ResultLength)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PHHIVE Hive;
     PCM_KEY_NODE Parent, Child;
     HCELL_INDEX ChildCell;

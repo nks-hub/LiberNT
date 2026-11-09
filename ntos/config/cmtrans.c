@@ -1788,7 +1788,7 @@ CmpTransEnumerateValueKey(
     PKEY_VALUE_BASIC_INFORMATION Information;
     ULONG Real, Visible = 0, Needed;
     UoWActionType ActionType;
-    NTSTATUS Status, FormatStatus;
+    NTSTATUS _SEH2_VOLATILE Status, FormatStatus;
     UNICODE_STRING Name;
     PLIST_ENTRY Entry;
     PCM_TRANS Trans;
@@ -1842,7 +1842,7 @@ CmpTransEnumerateValueKey(
                                          KeyValueInformation,
                                          Length,
                                          ResultLength,
-                                         &FormatStatus);
+                                         (PNTSTATUS)&FormatStatus);
         if (ActionType == UoWDeleteValue)
         {
             continue;

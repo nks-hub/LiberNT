@@ -883,7 +883,7 @@ NtPrivilegeCheck(
     ULONG Length;
     BOOLEAN CheckResult;
     KPROCESSOR_MODE PreviousMode;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 

@@ -629,7 +629,7 @@ NtQuerySystemEnvironmentValue(IN PUNICODE_STRING VariableName,
     ANSI_STRING AValue;
     UNICODE_STRING WValue;
     KPROCESSOR_MODE PreviousMode;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     PAGED_CODE();
 
     /* Check if the call came from user mode */
@@ -1298,21 +1298,21 @@ ExpQuerySystemProcessInformation(
     PSYSTEM_PROCESS_INFORMATION SpiCurrent, SpiLast = NULL;
     PSYSTEM_THREAD_INFORMATION ThreadInfo;
     PSYSTEM_EXTENDED_THREAD_INFORMATION ThreadInfoEx;
-    PEPROCESS Process = NULL, SystemProcess;
+    PEPROCESS _SEH2_VOLATILE Process = NULL, SystemProcess;
     PETHREAD CurrentThread;
     ANSI_STRING ImageName;
     ULONG CurrentSize;
     USHORT ImageNameMaximumLength; // image name length in bytes
     USHORT ImageNameLength;
     PLIST_ENTRY CurrentEntry;
-    ULONG TotalSize = 0, ThreadsCount;
+    ULONG _SEH2_VOLATILE TotalSize = 0, ThreadsCount;
     ULONG TotalUser, TotalKernel;
     PUCHAR Current;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PUNICODE_STRING TempProcessImageName;
     _SEH2_VOLATILE PUNICODE_STRING ProcessImageName = NULL;
     PWCHAR szSrc;
-    BOOLEAN Overflow = FALSE;
+    BOOLEAN _SEH2_VOLATILE Overflow = FALSE;
 
     _SEH2_TRY
     {
@@ -3793,7 +3793,7 @@ ExpQueryProcessIdInformation(
     HANDLE ProcessId;
     PEPROCESS Process;
     USHORT Required;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (Size != sizeof(*IdInfo))
     {
@@ -3992,7 +3992,7 @@ NtQuerySystemInformation(
     _In_ ULONG SystemInformationLength,
     _Out_opt_ PULONG ReturnLength)
 {
-    NTSTATUS Status = STATUS_NOT_IMPLEMENTED;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_NOT_IMPLEMENTED;
     ULONG CapturedResultLength = 0;
     ULONG Alignment = TYPE_ALIGNMENT(ULONG);
     KPROCESSOR_MODE PreviousMode;
@@ -4351,7 +4351,7 @@ NtQuerySystemInformationEx(
     _In_ ULONG SystemInformationLength,
     _Out_opt_ PULONG ReturnLength)
 {
-    NTSTATUS Status = STATUS_INVALID_INFO_CLASS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_INVALID_INFO_CLASS;
     ULONG CapturedResultLength = 0;
     LOGICAL_PROCESSOR_RELATIONSHIP Relationship;
     KPROCESSOR_MODE PreviousMode;
@@ -4533,7 +4533,7 @@ NtSetSystemInformation(
     _In_reads_bytes_(SystemInformationLength) PVOID SystemInformation,
     _In_ ULONG SystemInformationLength)
 {
-    NTSTATUS Status = STATUS_INVALID_INFO_CLASS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_INVALID_INFO_CLASS;
     KPROCESSOR_MODE PreviousMode;
 
     PAGED_CODE();

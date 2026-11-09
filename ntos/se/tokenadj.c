@@ -457,10 +457,10 @@ NtAdjustPrivilegesToken(
         PTOKEN_PRIVILEGES PreviousState,
     _When_(PreviousState!=NULL, _Out_) PULONG ReturnLength)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode;
     PTOKEN Token;
-    PLUID_AND_ATTRIBUTES CapturedPrivileges = NULL;
+    PLUID_AND_ATTRIBUTES _SEH2_VOLATILE CapturedPrivileges = NULL;
     ULONG CapturedCount = 0;
     ULONG CapturedLength = 0;
     ULONG NewStateSize = 0;
@@ -527,7 +527,7 @@ NtAdjustPrivilegesToken(
                                                      0,
                                                      PagedPool,
                                                      TRUE,
-                                                     &CapturedPrivileges,
+                                                     (PLUID_AND_ATTRIBUTES *)&CapturedPrivileges,
                                                      &CapturedLength);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -702,13 +702,13 @@ NtAdjustGroupsToken(
     _When_(PreviousState != NULL, _Out_) PULONG ReturnLength)
 {
     PTOKEN Token;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     KPROCESSOR_MODE PreviousMode;
     ULONG ChangeCount, RequiredLength;
     ULONG CapturedCount = 0;
     ULONG CapturedLength = 0;
     ULONG NewStateSize = 0;
-    PSID_AND_ATTRIBUTES CapturedGroups = NULL;
+    PSID_AND_ATTRIBUTES _SEH2_VOLATILE CapturedGroups = NULL;
     BOOLEAN ChangesMade = FALSE;
 
     PAGED_CODE();
@@ -781,7 +781,7 @@ NtAdjustGroupsToken(
                                                     0,
                                                     PagedPool,
                                                     TRUE,
-                                                    &CapturedGroups,
+                                                    (PSID_AND_ATTRIBUTES *)&CapturedGroups,
                                                     &CapturedLength);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

@@ -2602,7 +2602,7 @@ NtCreateLowBoxToken(
     PTOKEN Token = NULL, NewToken = NULL;
     PSID CapturedPackageSid = NULL;
     PSID_AND_ATTRIBUTES CapturedCapabilities = NULL;
-    HANDLE *CapturedHandles = NULL;
+    HANDLE * _SEH2_VOLATILE CapturedHandles = NULL;
     PSEP_LOWBOX_INFO LowBox = NULL;
     PSECURITY_QUALITY_OF_SERVICE CapturedQos = NULL;
     BOOLEAN QosPresent = FALSE;

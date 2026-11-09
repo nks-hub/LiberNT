@@ -109,7 +109,7 @@ ExpRaiseHardError(IN NTSTATUS ErrorStatus,
     UCHAR Buffer[PORT_MAXIMUM_MESSAGE_LENGTH];
     PHARDERROR_MSG Message = (PHARDERROR_MSG)Buffer;
     SIZE_T BufferLength = sizeof(Buffer);
-    HANDLE PortHandle;
+    HANDLE _SEH2_VOLATILE PortHandle;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
 
     PAGED_CODE();

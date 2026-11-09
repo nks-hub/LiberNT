@@ -2936,7 +2936,7 @@ IopCreateFile(OUT PHANDLE FileHandle,
     KPROCESSOR_MODE AccessMode;
     HANDLE LocalHandle = 0;
     LARGE_INTEGER SafeAllocationSize = {0};
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PNAMED_PIPE_CREATE_PARAMETERS NamedPipeCreateParameters;
     POPEN_PACKET OpenPacket;
     ULONG EaErrorOffset;

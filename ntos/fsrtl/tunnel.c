@@ -771,7 +771,7 @@ FsRtlFindInTunnelCache(IN PTUNNEL Cache,
                        IN OUT PULONG DataLength,
                        OUT PVOID Data)
 {
-    BOOLEAN Ret = FALSE;
+    BOOLEAN _SEH2_VOLATILE Ret = FALSE;
     PTUNNEL_NODE_ENTRY CurEntry;
     LIST_ENTRY PoolList;
     //NTSTATUS Status;

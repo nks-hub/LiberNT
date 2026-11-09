@@ -1452,7 +1452,7 @@ NtLoadKeyEx(IN POBJECT_ATTRIBUTES TargetKey,
     PCM_KEY_BODY KeyBody = NULL;
     PCM_KEY_BODY AppRoot = NULL;
     PCMHIVE AppHive = NULL;
-    HANDLE AppHandle = NULL;
+    HANDLE _SEH2_VOLATILE AppHandle = NULL;
     ULONG HandleAttributes;
     KPROCESSOR_MODE AppAccessMode;
 
@@ -1599,7 +1599,7 @@ NtLoadKeyEx(IN POBJECT_ATTRIBUTES TargetKey,
                                                DesiredAccess,
                                                CmpKeyObjectType,
                                                AppAccessMode,
-                                               &AppHandle);
+                                               (PHANDLE)&AppHandle);
             }
         }
         CmpUnlockRegistry();
@@ -1841,7 +1841,7 @@ NtNotifyChangeMultipleKeys(IN HANDLE MasterKeyHandle,
     BOOLEAN IoStatus32 = FALSE;
     CM_PARSE_CONTEXT ParseContext = {0};
     HANDLE SlaveHandle;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 

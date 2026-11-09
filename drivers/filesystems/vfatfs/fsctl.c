@@ -387,7 +387,7 @@ ReadVolumeLabel(
 
         _SEH2_TRY
         {
-            CcMapData(pFcb->FileObject, &FileOffset, SizeDirEntry, MAP_WAIT, &Context, (PVOID*)&Entry);
+            CcMapData(pFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, MAP_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -404,7 +404,7 @@ ReadVolumeLabel(
         Buffer = ExAllocatePoolWithTag(NonPagedPool, PAGE_SIZE, TAG_DIRENT);
         if (Buffer != NULL)
         {
-            Status = VfatReadDisk(DeviceObject, &FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
+            Status = VfatReadDisk(DeviceObject, (PLARGE_INTEGER)&FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
             if (!NT_SUCCESS(Status))
             {
                 ExFreePoolWithTag(Buffer, TAG_DIRENT);
@@ -456,7 +456,7 @@ ReadVolumeLabel(
 
                     _SEH2_TRY
                     {
-                        CcMapData(pFcb->FileObject, &FileOffset, SizeDirEntry, MAP_WAIT, &Context, (PVOID*)&Entry);
+                        CcMapData(pFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, MAP_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
                     }
                     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                     {
@@ -471,7 +471,7 @@ ReadVolumeLabel(
                 }
                 else
                 {
-                    Status = VfatReadDisk(DeviceObject, &FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
+                    Status = VfatReadDisk(DeviceObject, (PLARGE_INTEGER)&FileOffset, PAGE_SIZE, (PUCHAR)Buffer, TRUE);
                     if (!NT_SUCCESS(Status))
                     {
                         break;

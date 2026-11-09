@@ -430,8 +430,8 @@ EmuSystemService(
     ULONG Index = Service & 0xFFF;
     ULONG Count, Argument;
     ULONG64 Signature = 0;
-    ULONG_PTR _SEH2_VOLATILE Result;
-    BOOLEAN _SEH2_VOLATILE Resumed = FALSE;
+    ULONG_PTR Result;
+    BOOLEAN Resumed = FALSE;
     ULONG64 ServiceRip = Registers->Rip;
     ULONG64 ReturnRip = Registers->Gpr[EmuRcx];
 

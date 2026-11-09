@@ -22,7 +22,7 @@ EmuStartGuest(
     _In_ const AMD64_CONTEXT *Start)
 {
     PAMD64_APC_FRAME Frame = (PVOID)((Start->Rsp - sizeof(*Frame)) & ~(ULONG64)15);
-    PULONG64 _SEH2_VOLATILE ReturnAddress = (PULONG64)&Frame->Context - 1;
+    PULONG64 ReturnAddress = (PULONG64)&Frame->Context - 1;
     AMD64_CONTEXT Context;
     NTSTATUS Status = STATUS_SUCCESS;
 

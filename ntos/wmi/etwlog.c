@@ -1076,7 +1076,7 @@ EtwpTraceClassicEvent(
     MOF_FIELD MofFields[MAX_MOF_FIELDS];
     EVENT_TRACE_HEADER _SEH2_VOLATILE Header;
     PEVENT_TRACE_HEADER Record;
-    PWMI_BUFFER_HEADER Buffer;
+    PWMI_BUFFER_HEADER Buffer = NULL;
     PETWP_LOGGER Logger;
     PETHREAD Thread = PsGetCurrentThread();
     ULONG _SEH2_VOLATILE FieldCount = 0, Total = FieldSize, Reserved, i;

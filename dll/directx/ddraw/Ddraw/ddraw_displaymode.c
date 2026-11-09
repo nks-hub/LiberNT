@@ -14,7 +14,7 @@ HRESULT WINAPI
 Main_DirectDraw_EnumDisplayModes(LPDDRAWI_DIRECTDRAW_INT This, DWORD dwFlags,
                                   LPDDSURFACEDESC pDDSD, LPVOID pContext, LPDDENUMMODESCALLBACK pCallback)
 {
-    HRESULT ret = DD_OK;
+    HRESULT _SEH2_VOLATILE ret = DD_OK;
     INT iMode = 0;
     DEVMODE DevMode;
 
@@ -112,7 +112,7 @@ HRESULT WINAPI
 Main_DirectDraw_EnumDisplayModes4(LPDDRAWI_DIRECTDRAW_INT This, DWORD dwFlags,
                                   LPDDSURFACEDESC2 pDDSD, LPVOID pContext, LPDDENUMMODESCALLBACK2 pCallback)
 {
-    HRESULT ret = DD_OK;
+    HRESULT _SEH2_VOLATILE ret = DD_OK;
     INT iMode = 0;
     DEVMODE DevMode;
 
@@ -218,7 +218,7 @@ HRESULT WINAPI
 Main_DirectDraw_SetDisplayMode2 (LPDDRAWI_DIRECTDRAW_INT This, DWORD dwWidth, DWORD dwHeight,
                                  DWORD dwBPP, DWORD dwRefreshRate, DWORD dwFlags)
 {
-    HRESULT ret = DD_OK;
+    HRESULT _SEH2_VOLATILE ret = DD_OK;
     DX_WINDBG_trace();
 
     _SEH2_TRY
@@ -332,7 +332,7 @@ Main_DirectDraw_RestoreDisplayMode (LPDDRAWI_DIRECTDRAW_INT This)
 HRESULT WINAPI
 Main_DirectDraw_GetMonitorFrequency (LPDDRAWI_DIRECTDRAW_INT This, LPDWORD lpFreq)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
     DX_WINDBG_trace();
 
     _SEH2_TRY
@@ -365,7 +365,7 @@ Main_DirectDraw_GetMonitorFrequency (LPDDRAWI_DIRECTDRAW_INT This, LPDWORD lpFre
 HRESULT WINAPI
 Main_DirectDraw_GetDisplayMode (LPDDRAWI_DIRECTDRAW_INT This, LPDDSURFACEDESC pDDSD)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
     DX_WINDBG_trace();
 
     _SEH2_TRY
@@ -401,7 +401,7 @@ Main_DirectDraw_GetDisplayMode (LPDDRAWI_DIRECTDRAW_INT This, LPDDSURFACEDESC pD
 HRESULT WINAPI
 Main_DirectDraw_GetDisplayMode4 (LPDDRAWI_DIRECTDRAW_INT This, LPDDSURFACEDESC2 pDDSD)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
     DX_WINDBG_trace();
 
     _SEH2_TRY

@@ -29,9 +29,9 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
     ULONG NeededSize;
     IO_STATUS_BLOCK IoStatusBlock;
     OBJECT_ATTRIBUTES ObjectAttributes;
-    HANDLE hTarget = INVALID_HANDLE_VALUE;
-    PFILE_LINK_INFORMATION LinkInformation = NULL;
-    UNICODE_STRING LinkTarget, LinkName;
+    HANDLE _SEH2_VOLATILE hTarget = INVALID_HANDLE_VALUE;
+    PFILE_LINK_INFORMATION _SEH2_VOLATILE LinkInformation = NULL;
+    UNICODE_STRING _SEH2_VOLATILE LinkTarget, LinkName;
 
     /* Initialize */
     LinkTarget.Buffer = LinkName.Buffer = NULL;
@@ -47,7 +47,7 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
     {
         /* Get target UNC path */
         if (!RtlDosPathNameToNtPathName_U(lpExistingFileName,
-                                          &LinkTarget,
+                                          (PUNICODE_STRING)&LinkTarget,
                                           NULL,
                                           NULL))
         {
@@ -58,13 +58,13 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
 
         /* Open target */
         InitializeObjectAttributes(&ObjectAttributes,
-                                   &LinkTarget,
+                                   (PUNICODE_STRING)&LinkTarget,
                                    OBJ_CASE_INSENSITIVE,
                                    NULL,
                                    lpSecurityAttributes ?
                                    lpSecurityAttributes->lpSecurityDescriptor :
                                    NULL);
-        Status = NtOpenFile(&hTarget,
+        Status = NtOpenFile((PHANDLE)&hTarget,
                             SYNCHRONIZE | FILE_WRITE_ATTRIBUTES,
                             &ObjectAttributes,
                             &IoStatusBlock,
@@ -78,7 +78,7 @@ CreateHardLinkW(IN LPCWSTR lpFileName,
         }
 
         /* Get UNC path name for link */
-        if (!RtlDosPathNameToNtPathName_U(lpFileName, &LinkName, NULL, NULL))
+        if (!RtlDosPathNameToNtPathName_U(lpFileName, (PUNICODE_STRING)&LinkName, NULL, NULL))
         {
             /* Set the error and fail */
             SetLastError(ERROR_PATH_NOT_FOUND);

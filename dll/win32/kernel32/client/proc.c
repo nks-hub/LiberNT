@@ -1777,7 +1777,7 @@ GetProcessVersion(IN DWORD ProcessId)
     PROCESS_BASIC_INFORMATION ProcessBasicInfo;
     PVOID BaseAddress;
     ULONG e_lfanew;
-    HANDLE ProcessHandle = NULL;
+    HANDLE _SEH2_VOLATILE ProcessHandle = NULL;
     NTSTATUS Status;
     USHORT VersionData[2];
     BOOLEAN Result;

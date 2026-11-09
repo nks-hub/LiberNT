@@ -1335,19 +1335,19 @@ RtlpDphReportCorruptedBlock(
     _In_ ULONG ValidationInfo)
 {
     PVOID Size = (PVOID)(ULONG_PTR)RtlpDphGetBlockSizeFromCorruptedBlock(Block);
-    DPH_BLOCK_INFORMATION SafeInfo = {0};
+    DPH_BLOCK_INFORMATION _SEH2_VOLATILE SafeInfo = {0};
 
     DPRINT1("Corrupted heap block %p\n", Block);
 
     _SEH2_TRY
     {
         PDPH_BLOCK_INFORMATION BlockInfo = (PDPH_BLOCK_INFORMATION)Block - 1;
-        RtlCopyMemory(&SafeInfo, BlockInfo, sizeof(SafeInfo));
+        RtlCopyMemory((PVOID)&SafeInfo, BlockInfo, sizeof(SafeInfo));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
         DPRINT1("ERROR: Could not read DPH_BLOCK_INFORMATION\n");
-        RtlZeroMemory(&SafeInfo, sizeof(SafeInfo));
+        RtlZeroMemory((PVOID)&SafeInfo, sizeof(SafeInfo));
     }
     _SEH2_END;
 

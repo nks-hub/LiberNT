@@ -68,7 +68,7 @@ lstrcpynA(LPSTR lpString1, LPCSTR lpString2, int iMaxLength)
     LPSTR d = lpString1;
     LPCSTR s = lpString2;
     UINT count = iMaxLength;
-    LPSTR Ret = NULL;
+    LPSTR _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -99,7 +99,7 @@ LPSTR
 WINAPI
 lstrcpyA(LPSTR lpString1, LPCSTR lpString2)
 {
-    LPSTR Ret = NULL;
+    LPSTR _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -122,7 +122,7 @@ LPSTR
 WINAPI
 lstrcatA(LPSTR lpString1, LPCSTR lpString2)
 {
-    LPSTR Ret = NULL;
+    LPSTR _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -144,7 +144,7 @@ int
 WINAPI
 lstrlenA(LPCSTR lpString)
 {
-    INT Ret = 0;
+    INT _SEH2_VOLATILE Ret = 0;
 
     if (lpString == NULL)
         return 0;
@@ -220,7 +220,7 @@ lstrcpynW(LPWSTR lpString1, LPCWSTR lpString2, int iMaxLength)
     LPWSTR d = lpString1;
     LPCWSTR s = lpString2;
     UINT count = iMaxLength;
-    LPWSTR Ret = NULL;
+    LPWSTR _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -251,7 +251,7 @@ LPWSTR
 WINAPI
 lstrcpyW(LPWSTR lpString1, LPCWSTR lpString2)
 {
-    LPWSTR Ret = NULL;
+    LPWSTR _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -273,7 +273,7 @@ LPWSTR
 WINAPI
 lstrcatW(LPWSTR lpString1, LPCWSTR lpString2)
 {
-    LPWSTR Ret = NULL;
+    LPWSTR _SEH2_VOLATILE Ret = NULL;
 
     _SEH2_TRY
     {
@@ -295,7 +295,7 @@ int
 WINAPI
 lstrlenW(LPCWSTR lpString)
 {
-    INT Ret = 0;
+    INT _SEH2_VOLATILE Ret = 0;
 
     if (lpString == NULL)
         return 0;

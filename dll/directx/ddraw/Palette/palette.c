@@ -55,7 +55,7 @@ static ULONG WINAPI
 DirectDrawPalette_AddRef(IDirectDrawPalette *iface)
 {
     LPDDRAWI_DDRAWPALETTE_INT This = (LPDDRAWI_DDRAWPALETTE_INT)iface;
-    ULONG ref = 0;
+    ULONG _SEH2_VOLATILE ref = 0;
 
     _SEH2_TRY
     {
@@ -82,7 +82,7 @@ static ULONG WINAPI
 DirectDrawPalette_Release(IDirectDrawPalette *iface)
 {
     LPDDRAWI_DDRAWPALETTE_INT This = (LPDDRAWI_DDRAWPALETTE_INT)iface;
-    ULONG ref = 0;
+    ULONG _SEH2_VOLATILE ref = 0;
 
     _SEH2_TRY
     {

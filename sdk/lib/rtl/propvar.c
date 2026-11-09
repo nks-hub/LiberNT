@@ -68,13 +68,13 @@ PropertyLengthAsVariant(IN PSERIALIZEDPROPERTYVALUE pProp,
                         IN BYTE bReserved)
 {
     ULONG Length = 0;
-    PVOID BaseAddress = NULL;
+    PVOID _SEH2_VOLATILE BaseAddress = NULL;
     ULONG (*ProcedureAddress)(PSERIALIZEDPROPERTYVALUE, ULONG, USHORT, BYTE);
 
     _SEH2_TRY
     {
         /*  Simply call the appropriate Ole32 export */
-        ProcedureAddress = LoadOle32Export(&BaseAddress,
+        ProcedureAddress = LoadOle32Export((PVOID *)&BaseAddress,
                                            "StgPropertyLengthAsVariant");
 
         Length = ProcedureAddress(pProp, cbProp, CodePage, bReserved);
@@ -102,13 +102,13 @@ RtlConvertPropertyToVariant(IN PSERIALIZEDPROPERTYVALUE prop,
                             IN PPMemoryAllocator pma)
 {
     BOOLEAN Success = FALSE;
-    PVOID BaseAddress = NULL;
+    PVOID _SEH2_VOLATILE BaseAddress = NULL;
     BOOLEAN (*ProcedureAddress)(PSERIALIZEDPROPERTYVALUE, USHORT, PROPVARIANT*, PPMemoryAllocator);
 
     _SEH2_TRY
     {
         /*  Simply call the appropriate Ole32 export */
-        ProcedureAddress = LoadOle32Export(&BaseAddress,
+        ProcedureAddress = LoadOle32Export((PVOID *)&BaseAddress,
                                            "StgConvertPropertyToVariant");
 
         Success = ProcedureAddress(prop, CodePage, pvar, pma);
@@ -139,14 +139,14 @@ RtlConvertVariantToProperty(IN const PROPVARIANT * pvar,
                             IN OUT PULONG pcIndirect OPTIONAL)
 {
     PSERIALIZEDPROPERTYVALUE Serialized = NULL;
-    PVOID BaseAddress = NULL;
+    PVOID _SEH2_VOLATILE BaseAddress = NULL;
     PSERIALIZEDPROPERTYVALUE (*ProcedureAddress)(const PROPVARIANT*, USHORT, PSERIALIZEDPROPERTYVALUE,
                                                  PULONG, PROPID, BOOLEAN, PULONG);
 
     _SEH2_TRY
     {
         /*  Simply call the appropriate Ole32 export */
-        ProcedureAddress = LoadOle32Export(&BaseAddress,
+        ProcedureAddress = LoadOle32Export((PVOID *)&BaseAddress,
                                            "StgConvertVariantToProperty");
 
         Serialized = ProcedureAddress(pvar, CodePage, pprop, pcb, pid, fReserved, pcIndirect);

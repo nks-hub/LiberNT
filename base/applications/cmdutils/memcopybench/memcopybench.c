@@ -218,7 +218,7 @@ int main(int argc, char **argv)
     static const ULONG Sizes[] = {64, 1024, 8192, 65536, 262144, 1048576, 8294400, 16777216};
     static const ULONG Alignments[][2] = {{0,0}, {1,1}, {0,4}, {1,3}};
     METHOD Methods[20];
-    ULONG MethodCount = 0, M, S, A, Mode, Index, Failures = 0;
+    ULONG _SEH2_VOLATILE MethodCount = 0, M, S, A, Mode, Index, Failures = 0;
     HMODULE Ucrt = NULL;
     ULONG SpecialError[2] = {0}, SpecialProtect[2] = {0};
     DWORD_PTR ProcessMask = 0, SystemMask = 0, Pin = 0, PreviousAffinity = 0;

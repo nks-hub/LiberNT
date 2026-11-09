@@ -213,27 +213,121 @@ Ndis6AllocateInterfaceIndex(VOID)
     return (NET_IFINDEX)Next;
 }
 
-static VOID
+static
+UINT32
+Ndis6ReadNetLuidIndex(
+    _In_opt_ PDEVICE_OBJECT Pdo)
+{
+    HANDLE DriverKey;
+    ULONG Value;
+
+    if (Pdo == NULL || KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return 0;
+
+    if (!NT_SUCCESS(IoOpenDeviceRegistryKey(Pdo, PLUGPLAY_REGKEY_DRIVER, KEY_QUERY_VALUE, &DriverKey)))
+        return 0;
+
+    if (!Ndis6ReadAdapterKeyword(DriverKey, L"NetLuidIndex", &Value) || Value > 0x00ffffff)
+        Value = 0;
+    ZwClose(DriverKey);
+
+    return Value;
+}
+
+static NTSTATUS
+Ndis6ReserveNextNetLuidIndex(
+    _In_ NET_IFTYPE IfType,
+    _Out_ PLONG Next)
+{
+    NTSTATUS Status;
+    ULONG Tries;
+
+    for (Tries = 0; Tries < 0x10000; Tries++)
+    {
+        *Next = (LONG)Ndis6AllocateInterfaceIndex();
+        Status = Ndis6ReserveNetLuidIndex(IfType, (UINT32)*Next);
+        if (Status != STATUS_OBJECT_NAME_COLLISION)
+            return Status;
+    }
+    return STATUS_INSUFFICIENT_RESOURCES;
+}
+
+static NTSTATUS
 Ndis6AllocateInterfaceIdentity(
     _In_opt_ PDEVICE_OBJECT Pdo,
     _Out_ PNDIS6_ADAPTER_EXT Ext)
 {
     LONG Next;
     NET_IFTYPE IfType;
+    UINT32 LuidIndex;
+    NTSTATUS Status = STATUS_OBJECT_NAME_COLLISION;
 
-    /* NET_LUID reserves 24 bits for NetLuidIndex and zero is invalid. Keep
-     * IfIndex and NetLuidIndex identical so NdisIfGetInterfaceIndexFromNetLuid
-     * preserves the adapter identity. */
+    /* NET_LUID reserves 24 bits for NetLuidIndex and zero is invalid. */
+    ASSERT(!Ext->NetLuidIndexReserved);
     IfType = Ndis6ReadInterfaceType(Pdo);
-    do
+    LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
+    if (LuidIndex != 0)
+        Status = Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    if (Status == STATUS_INSUFFICIENT_RESOURCES)
+        return Status;
+    if (Status == STATUS_OBJECT_NAME_COLLISION)
+    {
+        Status = Ndis6ReserveNextNetLuidIndex(IfType, &Next);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        LuidIndex = (UINT32)Next;
+    }
+    else
     {
         Next = (LONG)Ndis6AllocateInterfaceIndex();
-    } while (Ndis6IsNetLuidIndexAllocated(IfType, (UINT32)Next));
+    }
 
+    Ext->NetLuidIndexReserved = TRUE;
     Ext->IfIndex = (NET_IFINDEX)Next;
     Ext->NetLuid.Value = 0;
     Ext->NetLuid.Info.IfType = IfType;
-    Ext->NetLuid.Info.NetLuidIndex = (ULONG64)(ULONG)Next;
+    Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+Ndis6RetypeInterfaceIdentity(
+    _Inout_ PNDIS6_ADAPTER_EXT Ext,
+    _In_ NET_IFTYPE IfType)
+{
+    UINT32 LuidIndex = (UINT32)Ext->NetLuid.Info.NetLuidIndex;
+    LONG Next;
+    NTSTATUS Status;
+
+    ASSERT(Ext->NetLuidIndexReserved);
+
+    if (Ext->NetLuid.Info.IfType == IfType)
+        return STATUS_SUCCESS;
+
+    Status = Ndis6ReserveNetLuidIndex(IfType, LuidIndex);
+    if (Status == STATUS_OBJECT_NAME_COLLISION)
+    {
+        Status = Ndis6ReserveNextNetLuidIndex(IfType, &Next);
+        LuidIndex = (UINT32)Next;
+    }
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    NdisIfFreeNetLuidIndex((NET_IFTYPE)Ext->NetLuid.Info.IfType, (UINT32)Ext->NetLuid.Info.NetLuidIndex);
+    Ext->NetLuid.Info.IfType = IfType;
+    Ext->NetLuid.Info.NetLuidIndex = LuidIndex;
+    return STATUS_SUCCESS;
+}
+
+static VOID
+Ndis6FreeInterfaceIdentity(
+    _Inout_ PNDIS6_ADAPTER_EXT Ext)
+{
+    if (Ext->NetLuidIndexReserved)
+    {
+        NdisIfFreeNetLuidIndex((NET_IFTYPE)Ext->NetLuid.Info.IfType, (UINT32)Ext->NetLuid.Info.NetLuidIndex);
+        Ext->NetLuidIndexReserved = FALSE;
+    }
 }
 
 typedef struct _NDIS6_IF_STACK_ENTRY
@@ -654,7 +748,11 @@ Ndis6InitializeLogicalAdapter(
 
     RtlZeroMemory(Ext, sizeof(*Ext));
     Ext->Adapter                = Adapter;
-    Ndis6AllocateInterfaceIdentity(Pdo, Ext);
+    if (!NT_SUCCESS(Ndis6AllocateInterfaceIdentity(Pdo, Ext)))
+    {
+        ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+        return NDIS_STATUS_RESOURCES;
+    }
     ExInitializeRundownProtection(&Ext->LifecycleRundown);
     ExInitializeRundownProtection(&Ext->LegacyRequestRundown);
     Ext->DriverBlock            = DriverBlock;
@@ -813,6 +911,7 @@ Ndis6InitializeLogicalAdapter(
                 NdisFreePacketPool(Ext->RxLegacyPacketPool);
             if (Ext->RxLegacyBufferPool)
                 NdisFreeBufferPool(Ext->RxLegacyBufferPool);
+            Ndis6FreeInterfaceIdentity(Ext);
             ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
             Adapter->Ndis6Context = NULL;
             Adapter->IsNdis6 = FALSE;
@@ -1680,7 +1779,10 @@ Ndis6DestroyLogicalAdapter(
     Adapter->IsNdis6 = FALSE;
 
     if (Ext)
+    {
+        Ndis6FreeInterfaceIdentity(Ext);
         ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+    }
 
     /* Finally delete the FDO. After this Adapter (which lives inside
      * Fdo->DeviceExtension) is gone — do NOT touch it again. */
@@ -1747,7 +1849,13 @@ Ndis6CreateImInstance(
 
     RtlZeroMemory(Ext, sizeof(*Ext));
     Ext->Adapter                = Adapter;
-    Ndis6AllocateInterfaceIdentity(Fdo, Ext);
+    if (!NT_SUCCESS(Ndis6AllocateInterfaceIdentity(Fdo, Ext)))
+    {
+        ExFreePoolWithTag(Ext, NDIS6_ADAPTER_TAG);
+        IoDeleteDevice(Fdo);
+        Ndis6FreeAdapterName(&AdapterName);
+        return NDIS_STATUS_RESOURCES;
+    }
     ExInitializeRundownProtection(&Ext->LifecycleRundown);
     ExInitializeRundownProtection(&Ext->LegacyRequestRundown);
     Ext->DriverBlock            = DriverBlock;
@@ -2028,8 +2136,14 @@ Ndis6CreateLwmInstance(
     }
 
     Ext = NDIS6_EXT(Adapter);
+    Status = Ndis6RetypeInterfaceIdentity(Ext, IfType);
+    if (!NT_SUCCESS(Status))
+    {
+        RtlFreeUnicodeString(&ConfigurationPath);
+        Ndis6DestroyLogicalAdapter(Adapter);
+        return NDIS_STATUS_RESOURCES;
+    }
     Ext->MiniportAdapterContext = MiniportAdapterContext;
-    Ext->NetLuid.Info.IfType = IfType;
     Ext->LwmConfigurationPath = ConfigurationPath;
     KeInitializeEvent(&Ext->LwmStartDoneEvent, NotificationEvent, TRUE);
     Ndis6ImSeedTcpipRegistry(&Name);

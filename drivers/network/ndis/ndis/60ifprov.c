@@ -125,19 +125,41 @@ Ndis6LuidIndexAllocatedLocked(
     return FALSE;
 }
 
+static
 BOOLEAN
-Ndis6IsNetLuidIndexAllocated(
+Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
+    _In_ NET_IFTYPE IfType,
+    _In_ UINT32 NetLuidIndex);
+
+NTSTATUS
+Ndis6ReserveNetLuidIndex(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex)
 {
+    PNDIS6_LUID_INDEX Index;
     KIRQL OldIrql;
-    BOOLEAN Allocated;
+    BOOLEAN Reserved = FALSE;
+
+    ASSERT(NetLuidIndex != 0 && NetLuidIndex <= 0x00ffffff);
+
+    Index = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Index), NDIS6_IF_PROVIDER_TAG);
+    if (Index == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    Index->IfType = IfType;
+    Index->NetLuidIndex = NetLuidIndex;
 
     KeAcquireSpinLock(&Ndis6IfLock, &OldIrql);
-    Allocated = Ndis6LuidIndexAllocatedLocked(IfType, NetLuidIndex);
+    if (!Ndis6LuidIndexAllocatedLocked(IfType, NetLuidIndex) &&
+        !Ndis6AdapterUsesNetLuidIndexAtDpcLevel(IfType, NetLuidIndex))
+    {
+        InsertTailList(&Ndis6LuidIndices, &Index->Link);
+        Reserved = TRUE;
+    }
     KeReleaseSpinLock(&Ndis6IfLock, OldIrql);
 
-    return Allocated;
+    if (!Reserved)
+        ExFreePoolWithTag(Index, NDIS6_IF_PROVIDER_TAG);
+    return Reserved ? STATUS_SUCCESS : STATUS_OBJECT_NAME_COLLISION;
 }
 
 static
@@ -148,6 +170,8 @@ Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
 {
     PLIST_ENTRY Link;
     BOOLEAN Found = FALSE;
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     KeAcquireSpinLockAtDpcLevel(&AdapterListLock);
     for (Link = AdapterListHead.Flink; Link != &AdapterListHead; Link = Link->Flink)

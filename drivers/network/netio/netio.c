@@ -356,7 +356,11 @@ NetioDispatch(_In_ PDEVICE_OBJECT DeviceObject, _Inout_ PIRP Irp)
     NTSTATUS Status;
 
     if (DeviceObject != NetioNsiDevice)
+    {
+        ASSERT(NetioWfpDispatch[Stack->MajorFunction] != NULL);
+        ASSERT(NetioWfpDispatch[Stack->MajorFunction] != NetioDispatch);
         return NetioWfpDispatch[Stack->MajorFunction](DeviceObject, Irp);
+    }
 
     switch (Stack->MajorFunction)
     {

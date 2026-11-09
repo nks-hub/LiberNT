@@ -6,6 +6,7 @@
  */
 
 #include "precomp.h"
+#include <tlhelp32.h>
 
 static
 HANDLE
@@ -298,7 +299,7 @@ DuplicateCreatedTokenAsEffective(
     _In_ PSID Owner,
     _In_ PSID ExpectedOwner)
 {
-    static PSID const Kept[] = { &WorldSid, &MediumSid, &AuthenticatedSid, &ServiceSid };
+    static PSID const Kept[] = { &WorldSid, &ServiceSid, &AuthenticatedSid, &MediumSid };
     NTSTATUS Status;
     HANDLE Token, EffectiveToken;
     OBJECT_ATTRIBUTES ObjectAttributes;
@@ -360,7 +361,13 @@ DuplicateCreatedTokenAsEffective(
         ok(EffectiveGroups->GroupCount == ARRAYSIZE(Kept), "The copy has %lu groups, expected %u\n",
            EffectiveGroups->GroupCount, (UINT)ARRAYSIZE(Kept));
         for (Index = 0; Index < EffectiveGroups->GroupCount && Index < ARRAYSIZE(Kept); Index++)
-            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is not the expected SID\n", Index);
+        {
+            WCHAR Text[64];
+            UNICODE_STRING SidText = { 0, sizeof(Text), Text };
+
+            RtlConvertSidToUnicodeString(&SidText, EffectiveGroups->Groups[Index].Sid, FALSE);
+            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is %wZ\n", Index, &SidText);
+        }
     }
     if (EffectiveLabel)
         ok(EqualSid(EffectiveLabel->Label.Sid, &MediumSid), "The integrity level is not the label of the token\n");
@@ -373,23 +380,70 @@ DuplicateCreatedTokenAsEffective(
     CloseHandle(EffectiveToken);
 }
 
+static
+BOOL
+ImpersonateLsass(VOID)
+{
+    PROCESSENTRY32W Entry = { sizeof(Entry) };
+    HANDLE Snapshot, Process, Token, Duplicate;
+    BOOL Found, Done = FALSE;
+
+    Snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (Snapshot == INVALID_HANDLE_VALUE)
+        return FALSE;
+    for (Found = Process32FirstW(Snapshot, &Entry); Found; Found = Process32NextW(Snapshot, &Entry))
+    {
+        if (!_wcsicmp(Entry.szExeFile, L"lsass.exe"))
+            break;
+    }
+    CloseHandle(Snapshot);
+    if (!Found)
+        return FALSE;
+
+    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, Entry.th32ProcessID);
+    if (!Process)
+        return FALSE;
+    if (OpenProcessToken(Process, TOKEN_DUPLICATE | TOKEN_QUERY, &Token))
+    {
+        if (DuplicateTokenEx(Token, TOKEN_ALL_ACCESS, NULL, SecurityImpersonation, TokenImpersonation, &Duplicate))
+        {
+            Done = SetThreadToken(NULL, Duplicate);
+            CloseHandle(Duplicate);
+        }
+        CloseHandle(Token);
+    }
+    CloseHandle(Process);
+    return Done;
+}
+
 START_TEST(NtDuplicateToken)
 {
     NTSTATUS Status;
-    BOOLEAN WasEnabled;
+    BOOLEAN WasEnabled, Impersonating = FALSE;
 
     DuplicateTokenAsEffective();
     DuplicateTokenAsEffectiveKeepsLabel();
 
+    /* Windows 11 grants SeCreateTokenPrivilege to lsass.exe only */
     Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, FALSE, &WasEnabled);
+    if (!NT_SUCCESS(Status) && ImpersonateLsass())
+    {
+        Impersonating = TRUE;
+        Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, TRUE, &WasEnabled);
+    }
     if (!NT_SUCCESS(Status))
     {
         skip("Cannot create tokens (Status 0x%lx)\n", Status);
+        if (Impersonating)
+            RevertToSelf();
         return;
     }
     /* An owner after removed groups moves down with them */
     DuplicateCreatedTokenAsEffective(&AuthenticatedSid, &AuthenticatedSid);
     /* An owner that the copy removes falls back to the user */
     DuplicateCreatedTokenAsEffective(&NetworkSid, &SystemSid);
-    RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, WasEnabled, FALSE, &WasEnabled);
+    if (Impersonating)
+        RevertToSelf();
+    else
+        RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, WasEnabled, FALSE, &WasEnabled);
 }

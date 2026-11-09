@@ -33,6 +33,10 @@
 #define KSEC_KEY_PRIVATE         0x00000008
 
 #define KSEC_AES_BLOCK_SIZE      16
+#define KSEC_AEAD_NONCE_SIZE     12
+#define KSEC_AEAD_MAX_TAG_SIZE   16
+#define KSEC_GCM_MIN_TAG_SIZE    12
+#define KSEC_CHACHA20_POLY1305_KEY_SIZE 32
 
 static const WCHAR KsecAesCmacAlgorithm[] = L"AES-CMAC";
 static const WCHAR KsecSp800108Algorithm[] = L"SP800_108_CTR_HMAC";
@@ -50,13 +54,16 @@ typedef enum _KSEC_BCRYPT_ALGORITHM_ID
     KsecAlgRsaSign,
     KsecAlgEcdsaP256,
     KsecAlgPbkdf2,
-    KsecAlgSp800108
+    KsecAlgSp800108,
+    KsecAlgHkdf,
+    KsecAlgChaCha20Poly1305
 } KSEC_BCRYPT_ALGORITHM_ID;
 
 typedef enum _KSEC_BCRYPT_CHAIN_MODE
 {
     KsecChainCbc,
-    KsecChainEcb
+    KsecChainEcb,
+    KsecChainGcm
 } KSEC_BCRYPT_CHAIN_MODE;
 
 typedef struct _KSEC_BCRYPT_OBJECT
@@ -107,12 +114,20 @@ typedef struct _KSEC_BCRYPT_KEY
         {
             SYMCRYPT_AES_EXPANDED_KEY ExpandedKey;
             UCHAR Vector[KSEC_AES_BLOCK_SIZE];
+            SYMCRYPT_GCM_EXPANDED_KEY GcmKey;
         } Aes;
         struct
         {
             PUCHAR Secret;
             ULONG SecretLength;
+            PCSYMCRYPT_MAC HkdfMac;
+            BOOLEAN HkdfFinalized;
+            SYMCRYPT_HKDF_EXPANDED_KEY HkdfKey;
         } Kdf;
+        struct
+        {
+            UCHAR Key[KSEC_CHACHA20_POLY1305_KEY_SIZE];
+        } ChaCha;
         struct
         {
             PSYMCRYPT_RSAKEY Key;
@@ -425,6 +440,8 @@ KsecAlgorithmName(
         case KsecAlgEcdsaP256: return BCRYPT_ECDSA_P256_ALGORITHM;
         case KsecAlgPbkdf2: return BCRYPT_PBKDF2_ALGORITHM;
         case KsecAlgSp800108: return KsecSp800108Algorithm;
+        case KsecAlgHkdf: return BCRYPT_HKDF_ALGORITHM;
+        case KsecAlgChaCha20Poly1305: return BCRYPT_CHACHA20_POLY1305_ALGORITHM;
         default: return NULL;
     }
 }
@@ -435,7 +452,7 @@ KsecAlgorithmIdFromName(
 {
     KSEC_BCRYPT_ALGORITHM_ID Id;
 
-    for (Id = KsecAlgSha256; Id <= KsecAlgSp800108; ++Id)
+    for (Id = KsecAlgSha256; Id <= KsecAlgChaCha20Poly1305; ++Id)
     {
         if (KsecEqualWideString(Name, KsecAlgorithmName(Id)))
             return Id;
@@ -659,6 +676,42 @@ KsecWriteStringProperty(
     return STATUS_SUCCESS;
 }
 
+static PCWSTR
+KsecChainModeName(
+    _In_ KSEC_BCRYPT_CHAIN_MODE Mode)
+{
+    switch (Mode)
+    {
+        case KsecChainEcb: return BCRYPT_CHAIN_MODE_ECB;
+        case KsecChainGcm: return BCRYPT_CHAIN_MODE_GCM;
+        default:
+            ASSERT(Mode == KsecChainCbc);
+            return BCRYPT_CHAIN_MODE_CBC;
+    }
+}
+
+static NTSTATUS
+KsecWriteAuthTagLengths(
+    _Out_writes_bytes_opt_(OutputSize) PUCHAR Output,
+    _In_ ULONG OutputSize,
+    _Out_ PULONG ResultSize,
+    _In_ KSEC_BCRYPT_ALGORITHM_ID Id)
+{
+    BCRYPT_AUTH_TAG_LENGTHS_STRUCT Lengths;
+
+    ASSERT(Id == KsecAlgAes || Id == KsecAlgChaCha20Poly1305);
+    Lengths.dwMinLength = Id == KsecAlgAes ? KSEC_GCM_MIN_TAG_SIZE : KSEC_AEAD_MAX_TAG_SIZE;
+    Lengths.dwMaxLength = KSEC_AEAD_MAX_TAG_SIZE;
+    Lengths.dwIncrement = Id == KsecAlgAes ? 1 : 0;
+
+    *ResultSize = sizeof(Lengths);
+    if (OutputSize < sizeof(Lengths))
+        return STATUS_BUFFER_TOO_SMALL;
+    if (Output != NULL)
+        RtlCopyMemory(Output, &Lengths, sizeof(Lengths));
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 WINAPI
 BCryptOpenAlgorithmProvider(
@@ -675,7 +728,8 @@ BCryptOpenAlgorithmProvider(
     if (Implementation != NULL &&
         !KsecEqualWideString(Implementation, MS_PRIMITIVE_PROVIDER))
         return STATUS_NOT_SUPPORTED;
-    if (Flags & ~(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_HASH_REUSABLE_FLAG))
+    if (Flags & ~(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_HASH_REUSABLE_FLAG |
+                  BCRYPT_PROV_DISPATCH))
         return STATUS_NOT_SUPPORTED;
 
     Id = KsecAlgorithmIdFromName(AlgorithmId);
@@ -690,7 +744,8 @@ BCryptOpenAlgorithmProvider(
     if (Algorithm == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
     Algorithm->Header.Magic = KSEC_MAGIC_ALGORITHM;
-    Algorithm->Header.Flags = Flags;
+    Algorithm->Header.Flags = Flags & ~BCRYPT_PROV_DISPATCH;
+    ASSERT(!(Algorithm->Header.Flags & KSEC_OBJECT_EXTERNAL));
     Algorithm->Id = Id;
     Algorithm->ChainMode = KsecChainCbc;
     *Handle = Algorithm;
@@ -940,7 +995,8 @@ static VOID
 KsecDestroyKeyObject(
     _In_ KSEC_BCRYPT_KEY *Key)
 {
-    if (Key->Id == KsecAlgPbkdf2 || Key->Id == KsecAlgSp800108)
+    if (Key->Id == KsecAlgPbkdf2 || Key->Id == KsecAlgSp800108 ||
+        Key->Id == KsecAlgHkdf)
         KsecBcryptFree(Key->Data.Kdf.Secret);
     else if (Key->Id == KsecAlgRsa || Key->Id == KsecAlgRsaSign)
     {
@@ -981,7 +1037,9 @@ BCryptGenerateSymmetricKey(
         return STATUS_NOT_SUPPORTED;
     if (Algorithm->Id != KsecAlgAes &&
         Algorithm->Id != KsecAlgPbkdf2 &&
-        Algorithm->Id != KsecAlgSp800108)
+        Algorithm->Id != KsecAlgSp800108 &&
+        Algorithm->Id != KsecAlgHkdf &&
+        Algorithm->Id != KsecAlgChaCha20Poly1305)
         return STATUS_NOT_SUPPORTED;
 
     Key = KsecCreateObject(sizeof(*Key), Object, ObjectSize, &ObjectFlags);
@@ -1003,11 +1061,26 @@ BCryptGenerateSymmetricKey(
         Error = SymCryptAesExpandKey(&Key->Data.Aes.ExpandedKey,
                                      Secret,
                                      SecretSize);
+        if (Error == SYMCRYPT_NO_ERROR)
+            Error = SymCryptGcmExpandKey(&Key->Data.Aes.GcmKey,
+                                         SymCryptAesBlockCipher,
+                                         Secret,
+                                         SecretSize);
         if (Error != SYMCRYPT_NO_ERROR)
         {
             KsecDestroyKeyObject(Key);
             return STATUS_INVALID_PARAMETER;
         }
+        Key->BitLength = SecretSize * 8;
+    }
+    else if (Algorithm->Id == KsecAlgChaCha20Poly1305)
+    {
+        if (SecretSize != KSEC_CHACHA20_POLY1305_KEY_SIZE)
+        {
+            KsecDestroyKeyObject(Key);
+            return STATUS_INVALID_PARAMETER;
+        }
+        RtlCopyMemory(Key->Data.ChaCha.Key, Secret, SecretSize);
         Key->BitLength = SecretSize * 8;
     }
     else
@@ -1176,6 +1249,108 @@ KsecEncryptAes(
     return STATUS_SUCCESS;
 }
 
+static BOOLEAN
+KsecIsAeadKey(
+    _In_ const KSEC_BCRYPT_KEY *Key)
+{
+    return Key->Id == KsecAlgChaCha20Poly1305 ||
+           (Key->Id == KsecAlgAes && Key->ChainMode == KsecChainGcm);
+}
+
+static NTSTATUS
+KsecCryptAead(
+    _In_ const KSEC_BCRYPT_KEY *Key,
+    _In_ BOOLEAN Encrypt,
+    _In_reads_bytes_opt_(InputSize) PUCHAR Input,
+    _In_ ULONG InputSize,
+    _In_opt_ PVOID Padding,
+    _Out_writes_bytes_opt_(OutputSize) PUCHAR Output,
+    _In_ ULONG OutputSize,
+    _Out_ PULONG ResultSize,
+    _In_ ULONG Flags)
+{
+    BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO *Info = Padding;
+    ULONG MinimumTagSize;
+    SYMCRYPT_ERROR Error;
+
+    ASSERT(KsecIsAeadKey(Key));
+
+    if (ResultSize == NULL || Info == NULL || (Input == NULL && InputSize != 0))
+        return STATUS_INVALID_PARAMETER;
+    if (Info->cbSize < sizeof(*Info) ||
+        Info->dwInfoVersion != BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION)
+        return STATUS_INVALID_PARAMETER;
+    /* TODO: chained AEAD calls (BCRYPT_AUTH_MODE_CHAIN_CALLS_FLAG) */
+    if (Info->dwFlags & BCRYPT_AUTH_MODE_CHAIN_CALLS_FLAG)
+        return STATUS_NOT_SUPPORTED;
+    if (Flags != 0)
+        return STATUS_INVALID_PARAMETER;
+
+    MinimumTagSize = Key->Id == KsecAlgAes ? KSEC_GCM_MIN_TAG_SIZE : KSEC_AEAD_MAX_TAG_SIZE;
+    if (Info->pbNonce == NULL || Info->cbNonce != KSEC_AEAD_NONCE_SIZE ||
+        Info->pbTag == NULL || Info->cbTag < MinimumTagSize ||
+        Info->cbTag > KSEC_AEAD_MAX_TAG_SIZE ||
+        (Info->pbAuthData == NULL && Info->cbAuthData != 0))
+        return STATUS_INVALID_PARAMETER;
+
+    *ResultSize = InputSize;
+    if (Input != NULL && Output == NULL)
+        return STATUS_SUCCESS;
+    if (OutputSize < InputSize)
+        return STATUS_BUFFER_TOO_SMALL;
+
+    if (Key->Id == KsecAlgAes)
+    {
+        ASSERT(SymCryptGcmValidateParameters(SymCryptAesBlockCipher,
+                                             Info->cbNonce,
+                                             Info->cbAuthData,
+                                             InputSize,
+                                             Info->cbTag) == SYMCRYPT_NO_ERROR);
+        if (Encrypt)
+        {
+            SymCryptGcmEncrypt(&Key->Data.Aes.GcmKey,
+                               Info->pbNonce, Info->cbNonce,
+                               Info->pbAuthData, Info->cbAuthData,
+                               Input, Output, InputSize,
+                               Info->pbTag, Info->cbTag);
+            Error = SYMCRYPT_NO_ERROR;
+        }
+        else
+        {
+            Error = SymCryptGcmDecrypt(&Key->Data.Aes.GcmKey,
+                                       Info->pbNonce, Info->cbNonce,
+                                       Info->pbAuthData, Info->cbAuthData,
+                                       Input, Output, InputSize,
+                                       Info->pbTag, Info->cbTag);
+        }
+    }
+    else if (Encrypt)
+    {
+        Error = SymCryptChaCha20Poly1305Encrypt(Key->Data.ChaCha.Key,
+                                                sizeof(Key->Data.ChaCha.Key),
+                                                Info->pbNonce, Info->cbNonce,
+                                                Info->pbAuthData, Info->cbAuthData,
+                                                Input, Output, InputSize,
+                                                Info->pbTag, Info->cbTag);
+    }
+    else
+    {
+        Error = SymCryptChaCha20Poly1305Decrypt(Key->Data.ChaCha.Key,
+                                                sizeof(Key->Data.ChaCha.Key),
+                                                Info->pbNonce, Info->cbNonce,
+                                                Info->pbAuthData, Info->cbAuthData,
+                                                Input, Output, InputSize,
+                                                Info->pbTag, Info->cbTag);
+    }
+
+    if (Error == SYMCRYPT_AUTHENTICATION_FAILURE)
+    {
+        ASSERT(!Encrypt);
+        return STATUS_AUTH_TAG_MISMATCH;
+    }
+    return Error == SYMCRYPT_NO_ERROR ? STATUS_SUCCESS : STATUS_INTERNAL_ERROR;
+}
+
 NTSTATUS
 WINAPI
 BCryptEncrypt(
@@ -1192,10 +1367,11 @@ BCryptEncrypt(
 {
     KSEC_BCRYPT_KEY *Key = KsecGetKey(Handle);
 
-    UNREFERENCED_PARAMETER(Padding);
-
     if (Key == NULL)
         return STATUS_INVALID_HANDLE;
+    if (KsecIsAeadKey(Key))
+        return KsecCryptAead(Key, TRUE, Input, InputSize, Padding,
+                             Output, OutputSize, ResultSize, Flags);
     if (Key->Id == KsecAlgAes)
         return KsecEncryptAes(Key, Input, InputSize, Iv, IvSize,
                               Output, OutputSize, ResultSize, Flags);
@@ -1430,6 +1606,9 @@ BCryptDecrypt(
 
     if (Key == NULL)
         return STATUS_INVALID_HANDLE;
+    if (KsecIsAeadKey(Key))
+        return KsecCryptAead(Key, FALSE, Input, InputSize, Padding,
+                             Output, OutputSize, ResultSize, Flags);
     if (Key->Id == KsecAlgAes)
         return KsecDecryptAes(Key, Input, InputSize, Iv, IvSize,
                               Output, OutputSize, ResultSize, Flags);
@@ -1771,6 +1950,118 @@ BCryptDestroyKey(
     return STATUS_SUCCESS;
 }
 
+static NTSTATUS
+KsecSetHkdfProperty(
+    _Inout_ KSEC_BCRYPT_KEY *Key,
+    _In_ PCWSTR Property,
+    _In_reads_bytes_opt_(InputSize) PUCHAR Input,
+    _In_ ULONG InputSize)
+{
+    PCSYMCRYPT_MAC Mac;
+    SYMCRYPT_ERROR Error;
+
+    ASSERT(Key->Id == KsecAlgHkdf);
+    ASSERT(Key->Data.Kdf.Secret != NULL && Key->Data.Kdf.SecretLength != 0);
+
+    if (Input == NULL && InputSize != 0)
+        return STATUS_INVALID_PARAMETER;
+
+    if (KsecEqualWideString(Property, BCRYPT_HKDF_HASH_ALGORITHM))
+    {
+        if (Input == NULL || Key->Data.Kdf.HkdfFinalized)
+            return STATUS_INVALID_PARAMETER;
+        Mac = KsecSymCryptMacFromName((PCWSTR)Input, InputSize);
+        if (Mac == NULL)
+            return STATUS_NOT_SUPPORTED;
+        Key->Data.Kdf.HkdfMac = Mac;
+        return STATUS_SUCCESS;
+    }
+
+    if (KsecEqualWideString(Property, BCRYPT_HKDF_SALT_AND_FINALIZE))
+    {
+        if (Key->Data.Kdf.HkdfMac == NULL || Key->Data.Kdf.HkdfFinalized)
+            return STATUS_INVALID_PARAMETER;
+        Error = SymCryptHkdfExpandKey(&Key->Data.Kdf.HkdfKey,
+                                      Key->Data.Kdf.HkdfMac,
+                                      Key->Data.Kdf.Secret,
+                                      Key->Data.Kdf.SecretLength,
+                                      Input,
+                                      InputSize);
+    }
+    else if (KsecEqualWideString(Property, BCRYPT_HKDF_PRK_AND_FINALIZE))
+    {
+        if (Input != NULL || Key->Data.Kdf.HkdfMac == NULL ||
+            Key->Data.Kdf.HkdfFinalized)
+            return STATUS_INVALID_PARAMETER;
+        Error = SymCryptHkdfPrkExpandKey(&Key->Data.Kdf.HkdfKey,
+                                         Key->Data.Kdf.HkdfMac,
+                                         Key->Data.Kdf.Secret,
+                                         Key->Data.Kdf.SecretLength);
+    }
+    else
+    {
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    if (Error != SYMCRYPT_NO_ERROR)
+        return STATUS_INVALID_PARAMETER;
+    Key->Data.Kdf.HkdfFinalized = TRUE;
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+KsecDeriveHkdf(
+    _In_ KSEC_BCRYPT_KEY *Key,
+    _In_opt_ BCryptBufferDesc *Description,
+    _Out_writes_bytes_(OutputSize) PUCHAR Output,
+    _In_ ULONG OutputSize,
+    _Out_ PULONG ResultSize,
+    _In_ ULONG Flags)
+{
+    PUCHAR Info = NULL;
+    ULONG InfoSize = 0;
+    ULONG Index;
+    SYMCRYPT_ERROR Error;
+
+    ASSERT(Key->Id == KsecAlgHkdf);
+
+    if (ResultSize == NULL || Output == NULL || OutputSize == 0)
+        return STATUS_INVALID_PARAMETER;
+    if (Flags != 0)
+        return STATUS_NOT_SUPPORTED;
+    if (!Key->Data.Kdf.HkdfFinalized)
+        return STATUS_INVALID_PARAMETER;
+    ASSERT(Key->Data.Kdf.HkdfMac != NULL);
+
+    if (Description != NULL)
+    {
+        if (Description->ulVersion != BCRYPTBUFFER_VERSION ||
+            (Description->cBuffers != 0 && Description->pBuffers == NULL))
+            return STATUS_INVALID_PARAMETER;
+        for (Index = 0; Index < Description->cBuffers; ++Index)
+        {
+            BCryptBuffer *Buffer = &Description->pBuffers[Index];
+
+            if (Buffer->cbBuffer != 0 && Buffer->pvBuffer == NULL)
+                return STATUS_INVALID_PARAMETER;
+            if (Buffer->BufferType != KDF_HKDF_INFO)
+                return STATUS_NOT_SUPPORTED;
+            Info = Buffer->pvBuffer;
+            InfoSize = Buffer->cbBuffer;
+        }
+    }
+
+    Error = SymCryptHkdfDerive(&Key->Data.Kdf.HkdfKey,
+                               Info,
+                               InfoSize,
+                               Output,
+                               OutputSize);
+    if (Error != SYMCRYPT_NO_ERROR)
+        return STATUS_INVALID_PARAMETER;
+    *ResultSize = OutputSize;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 WINAPI
 BCryptKeyDerivation(
@@ -1795,6 +2086,9 @@ BCryptKeyDerivation(
 
     if (Key == NULL)
         return STATUS_INVALID_HANDLE;
+    if (Key->Id == KsecAlgHkdf)
+        return KsecDeriveHkdf(Key, Description, Output, OutputSize,
+                              ResultSize, Flags);
     if (Description == NULL || ResultSize == NULL ||
         Description->ulVersion != BCRYPTBUFFER_VERSION ||
         (Description->cBuffers != 0 && Description->pBuffers == NULL) ||
@@ -1937,8 +2231,11 @@ BCryptGetProperty(
         if (Id == KsecAlgAes &&
             KsecEqualWideString(Property, BCRYPT_CHAINING_MODE))
             return KsecWriteStringProperty(Output, OutputSize, ResultSize,
-                                           Algorithm->ChainMode == KsecChainEcb ?
-                                           BCRYPT_CHAIN_MODE_ECB : BCRYPT_CHAIN_MODE_CBC);
+                                           KsecChainModeName(Algorithm->ChainMode));
+        if ((Id == KsecAlgChaCha20Poly1305 ||
+             (Id == KsecAlgAes && Algorithm->ChainMode == KsecChainGcm)) &&
+            KsecEqualWideString(Property, BCRYPT_AUTH_TAG_LENGTH))
+            return KsecWriteAuthTagLengths(Output, OutputSize, ResultSize, Id);
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -1974,8 +2271,10 @@ BCryptGetProperty(
         if (Key->Id == KsecAlgAes &&
             KsecEqualWideString(Property, BCRYPT_CHAINING_MODE))
             return KsecWriteStringProperty(Output, OutputSize, ResultSize,
-                                           Key->ChainMode == KsecChainEcb ?
-                                           BCRYPT_CHAIN_MODE_ECB : BCRYPT_CHAIN_MODE_CBC);
+                                           KsecChainModeName(Key->ChainMode));
+        if (KsecIsAeadKey(Key) &&
+            KsecEqualWideString(Property, BCRYPT_AUTH_TAG_LENGTH))
+            return KsecWriteAuthTagLengths(Output, OutputSize, ResultSize, Key->Id);
         return STATUS_NOT_SUPPORTED;
     }
 
@@ -1997,10 +2296,21 @@ BCryptSetProperty(
 
     if (Handle == NULL)
         return STATUS_INVALID_HANDLE;
-    if (Property == NULL || Input == NULL)
+    if (Property == NULL)
         return STATUS_INVALID_PARAMETER;
     if (Flags != 0)
         return STATUS_NOT_SUPPORTED;
+
+    Algorithm = KsecGetAlgorithm(Handle);
+    if (Algorithm == NULL)
+    {
+        Key = KsecGetKey(Handle);
+        if (Key != NULL && Key->Id == KsecAlgHkdf)
+            return KsecSetHkdfProperty(Key, Property, Input, InputSize);
+    }
+
+    if (Input == NULL)
+        return STATUS_INVALID_PARAMETER;
     if (!KsecEqualWideString(Property, BCRYPT_CHAINING_MODE))
         return STATUS_NOT_SUPPORTED;
 
@@ -2008,10 +2318,11 @@ BCryptSetProperty(
         Mode = KsecChainCbc;
     else if (KsecEqualWideBuffer((PCWSTR)Input, InputSize, BCRYPT_CHAIN_MODE_ECB))
         Mode = KsecChainEcb;
+    else if (KsecEqualWideBuffer((PCWSTR)Input, InputSize, BCRYPT_CHAIN_MODE_GCM))
+        Mode = KsecChainGcm;
     else
         return STATUS_NOT_SUPPORTED;
 
-    Algorithm = KsecGetAlgorithm(Handle);
     if (Algorithm != NULL)
     {
         if (KsecGetPseudoAlgorithm(Handle) != NULL)

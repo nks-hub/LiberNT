@@ -74,6 +74,10 @@ extern "C" {
 #define BCRYPT_SIGNATURE_LENGTH     L"SignatureLength"
 #define BCRYPT_PUBLIC_KEY_LENGTH    L"PublicKeyLength"
 
+#define BCRYPT_HKDF_HASH_ALGORITHM    L"HkdfHashAlgorithm"
+#define BCRYPT_HKDF_SALT_AND_FINALIZE L"HkdfSaltAndFinalize"
+#define BCRYPT_HKDF_PRK_AND_FINALIZE  L"HkdfPrkAndFinalize"
+
 #define BCRYPT_OPAQUE_KEY_BLOB      L"OpaqueKeyBlob"
 #define BCRYPT_KEY_DATA_BLOB        L"KeyDataBlob"
 #define BCRYPT_AES_WRAP_KEY_BLOB    L"Rfc3565KeyWrapBlob"
@@ -117,6 +121,7 @@ extern "C" {
 #define BCRYPT_ECDSA_P256_ALGORITHM L"ECDSA_P256"
 #define BCRYPT_ECDSA_P384_ALGORITHM L"ECDSA_P384"
 #define BCRYPT_ECDSA_P521_ALGORITHM L"ECDSA_P521"
+#define BCRYPT_HKDF_ALGORITHM       L"HKDF"
 #define BCRYPT_MD2_ALGORITHM        L"MD2"
 #define BCRYPT_MD4_ALGORITHM        L"MD4"
 #define BCRYPT_MD5_ALGORITHM        L"MD5"
@@ -175,6 +180,10 @@ static const WCHAR BCRYPT_PROVIDER_HANDLE[] = {'P','r','o','v','i','d','e','r','
 static const WCHAR BCRYPT_SIGNATURE_LENGTH[] = {'S','i','g','n','a','t','u','r','e','L','e','n','g','t','h',0};
 static const WCHAR BCRYPT_PUBLIC_KEY_LENGTH[] = {'P','u','b','l','i','c','K','e','y','L','e','n','g','t','h',0};
 
+static const WCHAR BCRYPT_HKDF_HASH_ALGORITHM[] = {'H','k','d','f','H','a','s','h','A','l','g','o','r','i','t','h','m',0};
+static const WCHAR BCRYPT_HKDF_SALT_AND_FINALIZE[] = {'H','k','d','f','S','a','l','t','A','n','d','F','i','n','a','l','i','z','e',0};
+static const WCHAR BCRYPT_HKDF_PRK_AND_FINALIZE[] = {'H','k','d','f','P','r','k','A','n','d','F','i','n','a','l','i','z','e',0};
+
 static const WCHAR BCRYPT_OPAQUE_KEY_BLOB[] = {'O','p','a','q','u','e','K','e','y','B','l','o','b',0};
 static const WCHAR BCRYPT_KEY_DATA_BLOB[] = {'K','e','y','D','a','t','a','B','l','o','b',0};
 static const WCHAR BCRYPT_AES_WRAP_KEY_BLOB[] = {'R','f','c','3','5','6','5','K','e','y','W','r','a','p','B','l','o','b',0};
@@ -216,6 +225,7 @@ static const WCHAR BCRYPT_ECDSA_ALGORITHM[] = {'E','C','D','S','A',0};
 static const WCHAR BCRYPT_ECDSA_P256_ALGORITHM[] = {'E','C','D','S','A','_','P','2','5','6',0};
 static const WCHAR BCRYPT_ECDSA_P384_ALGORITHM[] = {'E','C','D','S','A','_','P','3','8','4',0};
 static const WCHAR BCRYPT_ECDSA_P521_ALGORITHM[] = {'E','C','D','S','A','_','P','5','2','1',0};
+static const WCHAR BCRYPT_HKDF_ALGORITHM[] = {'H','K','D','F',0};
 static const WCHAR BCRYPT_MD2_ALGORITHM[] = {'M','D','2',0};
 static const WCHAR BCRYPT_MD4_ALGORITHM[] = {'M','D','4',0};
 static const WCHAR BCRYPT_MD5_ALGORITHM[] = {'M','D','5',0};
@@ -439,6 +449,11 @@ typedef struct _BCRYPT_DH_PARAMETER_HEADER
 #define BCRYPT_AUTH_MODE_CHAIN_CALLS_FLAG 0x00000001
 #define BCRYPT_AUTH_MODE_IN_PROGRESS_FLAG 0x00000002
 
+#define BCRYPT_INIT_AUTH_MODE_INFO(_AUTH_INFO_STRUCT_) \
+    RtlZeroMemory((&_AUTH_INFO_STRUCT_), sizeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO)); \
+    (_AUTH_INFO_STRUCT_).cbSize = sizeof(BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO); \
+    (_AUTH_INFO_STRUCT_).dwInfoVersion = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO_VERSION;
+
 typedef struct _CRYPT_INTERFACE_REG
 {
     ULONG dwInterface;
@@ -486,6 +501,10 @@ typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER
 #define KDF_CONTEXT             0x0e
 #define KDF_SALT                0x0f
 #define KDF_ITERATION_COUNT     0x10
+#define KDF_GENERIC_PARAMETER   0x11
+#define KDF_KEYBITLENGTH        0x12
+#define KDF_HKDF_SALT           0x13
+#define KDF_HKDF_INFO           0x14
 
 typedef struct _BCryptBuffer
 {
@@ -578,6 +597,7 @@ typedef PVOID BCRYPT_SECRET_HANDLE;
 #define BCRYPT_USE_SYSTEM_PREFERRED_RNG  0x00000002
 
 /* Flags for BCryptOpenAlgorithmProvider */
+#define BCRYPT_PROV_DISPATCH        0x00000001
 #define BCRYPT_ALG_HANDLE_HMAC_FLAG 0x00000008
 
 /* Flags for BCryptEncrypt/BCryptDecrypt */

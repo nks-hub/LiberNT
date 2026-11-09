@@ -252,8 +252,11 @@ BOOLEAN SignalSocket(PAFD_ACTIVE_POLL Poll OPTIONAL, PIRP _Irp OPTIONAL, PAFD_PO
         Irp = _Irp;
     }
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     ASSERT(Irp != NULL);
     ASSERT(PollReq != NULL);
+    ASSERT(PollReq == Irp->AssociatedIrp.SystemBuffer);
+    ASSERT(AFD_HANDLES(Irp) != NULL);
 
     if ((Status == STATUS_TIMEOUT) || (Status == STATUS_CANCELLED))
         ZeroEvents(PollReq->Handles, PollReq->HandleCount);
@@ -334,6 +337,7 @@ VOID KillSelectsForFCB( PAFD_DEVICE_EXTENSION DeviceExt,
         Irp = Poll->Irp;
         PollReq = Irp->AssociatedIrp.SystemBuffer;
         HandleArray = AFD_HANDLES(Irp);
+        ASSERT(HandleArray != NULL);
 
         for( i = 0; i < PollReq->HandleCount; i++ ) {
             AFD_DbgPrint(MAX_TRACE,("Req: %u, This %p\n",
@@ -607,6 +611,7 @@ static BOOLEAN UpdatePollWithFCB( PAFD_ACTIVE_POLL Poll, PFILE_OBJECT FileObject
     PAFD_POLL_INFO PollReq = Poll->Irp->AssociatedIrp.SystemBuffer;
 
     ASSERT( KeGetCurrentIrql() == DISPATCH_LEVEL );
+    ASSERT(AFD_HANDLES(Poll->Irp) != NULL);
 
     for( i = 0; i < PollReq->HandleCount; i++ ) {
         if( !AFD_HANDLES(Poll->Irp)[i].Handle ) continue;

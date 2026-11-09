@@ -284,14 +284,14 @@ Cleanup:
     CloseHandle(ProcessToken);
 }
 
-static SID SystemSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LOCAL_SYSTEM_RID } };
-static SID WorldSid = { SID_REVISION, 1, SECURITY_WORLD_SID_AUTHORITY, { SECURITY_WORLD_RID } };
-static SID LocalSid = { SID_REVISION, 1, SECURITY_LOCAL_SID_AUTHORITY, { SECURITY_LOCAL_RID } };
-static SID InteractiveSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_INTERACTIVE_RID } };
-static SID MediumSid = { SID_REVISION, 1, SECURITY_MANDATORY_LABEL_AUTHORITY, { SECURITY_MANDATORY_MEDIUM_RID } };
-static SID AuthenticatedSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_AUTHENTICATED_USER_RID } };
-static SID NetworkSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_NETWORK_RID } };
-static SID ServiceSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_SERVICE_RID } };
+static SID SystemSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_LOCAL_SYSTEM_RID } };
+static SID WorldSid = { SID_REVISION, 1, { SECURITY_WORLD_SID_AUTHORITY }, { SECURITY_WORLD_RID } };
+static SID LocalSid = { SID_REVISION, 1, { SECURITY_LOCAL_SID_AUTHORITY }, { SECURITY_LOCAL_RID } };
+static SID InteractiveSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_INTERACTIVE_RID } };
+static SID MediumSid = { SID_REVISION, 1, { SECURITY_MANDATORY_LABEL_AUTHORITY }, { SECURITY_MANDATORY_MEDIUM_RID } };
+static SID AuthenticatedSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_AUTHENTICATED_USER_RID } };
+static SID NetworkSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_NETWORK_RID } };
+static SID ServiceSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_SERVICE_RID } };
 
 static
 VOID
@@ -366,7 +366,8 @@ DuplicateCreatedTokenAsEffective(
             UNICODE_STRING SidText = { 0, sizeof(Text), Text };
 
             RtlConvertSidToUnicodeString(&SidText, EffectiveGroups->Groups[Index].Sid, FALSE);
-            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is %wZ\n", Index, &SidText);
+            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is %s\n", Index,
+               wine_dbgstr_wn(SidText.Buffer, SidText.Length / sizeof(WCHAR)));
         }
     }
     if (EffectiveLabel)

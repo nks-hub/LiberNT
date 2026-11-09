@@ -184,7 +184,7 @@ vfatRenameEntry(
     OEM_STRING NameA;
     ULONG StartIndex;
     PVOID Context = NULL;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PFATX_DIR_ENTRY pDirEntry;
     NTSTATUS Status;
 
@@ -206,7 +206,7 @@ vfatRenameEntry(
         Offset.u.LowPart = (StartIndex * sizeof(FATX_DIR_ENTRY) / PAGE_SIZE) * PAGE_SIZE;
         _SEH2_TRY
         {
-            CcPinRead(pFcb->parentFcb->FileObject, &Offset, PAGE_SIZE, PIN_WAIT, &Context, (PVOID*)&pDirEntry);
+            CcPinRead(pFcb->parentFcb->FileObject, (PLARGE_INTEGER)&Offset, PAGE_SIZE, PIN_WAIT, &Context, (PVOID*)&pDirEntry);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -1055,7 +1055,7 @@ FATXDelEntry(
 {
     ULONG CurrentCluster = 0, NextCluster;
     PVOID Context = NULL;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PFATX_DIR_ENTRY pDirEntry;
     ULONG StartIndex;
     NTSTATUS Status;
@@ -1078,7 +1078,7 @@ FATXDelEntry(
     Offset.u.LowPart = (StartIndex * sizeof(FATX_DIR_ENTRY) / PAGE_SIZE) * PAGE_SIZE;
     _SEH2_TRY
     {
-        CcPinRead(pFcb->parentFcb->FileObject, &Offset, PAGE_SIZE, PIN_WAIT, &Context, (PVOID*)&pDirEntry);
+        CcPinRead(pFcb->parentFcb->FileObject, (PLARGE_INTEGER)&Offset, PAGE_SIZE, PIN_WAIT, &Context, (PVOID*)&pDirEntry);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

@@ -2416,7 +2416,7 @@ DxgkpRefreshHotPlugEdid(
 {
     PDXGKDDI_QUERY_DEVICE_DESCRIPTOR QueryDeviceDescriptor;
     DXGK_DEVICE_DESCRIPTOR Descriptor;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     if (!Snapshot->Connected || Snapshot->EdidValid)
         return STATUS_SUCCESS;
@@ -2468,7 +2468,7 @@ DxgkVidPnRefreshConnectedChildEdids(
     ULONG Count = 0;
     ULONG Index;
     KIRQL OldIrql;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     QueryDeviceDescriptor = DXGK_CB(Adapter, DxgkDdiQueryDeviceDescriptor);
     if (QueryDeviceDescriptor == NULL)
@@ -2563,7 +2563,7 @@ DxgkpDrainConnectionChanges(
     BOOLEAN AnyChanged = FALSE;
     BOOLEAN RearmVsync = FALSE;
     ULONG Count;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PAGED_CODE();
     QueryConnectionChange = DXGK_CB_FULL(Adapter, DxgkDdiQueryConnectionChange);
@@ -3251,7 +3251,7 @@ DxgkpNotifyActivePathChanged(
     PDXGKDDI_UPDATE_ACTIVE_VIDPN_PRESENT_PATH UpdatePath =
         DXGK_CB_FULL(Adapter, DxgkDdiUpdateActiveVidPnPresentPath);
     DXGKARG_UPDATEACTIVEVIDPNPRESENTPATH UpdateArgs;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     if (UpdatePath == NULL)
         return;
@@ -3305,7 +3305,7 @@ DxgkpRecommendTopologyFallback(
     PDXGKDDI_RECOMMEND_VIDPN_TOPOLOGY RecommendTopology =
         DXGK_CB_FULL(Adapter, DxgkDdiRecommendVidPnTopology);
     DXGKARG_RECOMMENDVIDPNTOPOLOGY TopologyArgs;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     if (RecommendTopology == NULL || !Snapshot->Connected)
         return STATUS_SUCCESS;
@@ -3359,7 +3359,7 @@ DxgkpRecommendHotPlugCandidate(
     D3DDDI_VIDEO_PRESENT_TARGET_ID Targets[DXGKP_MAX_PATHS];
     ULONG TargetCount = 0;
     ULONG Extra;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     /* The desktop output first, then the others in connection order. */
     if (Snapshot->Connected)
@@ -3461,7 +3461,7 @@ DxgkVidPnQueryFirmwareTiming(
     PDXGKP_VIDPN_TARGET_MODESET TargetSet;
     D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId;
     ULONG TargetIndex;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     SIZE_T i;
 
     PAGED_CODE();

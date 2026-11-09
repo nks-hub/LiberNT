@@ -358,12 +358,12 @@ NtfsFsdRead(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     PFILE_OBJECT FileObject;
     PVolumeContextBlock VolCB;
     PNtfsVolume DiskVolume;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     NTSTATUS TimestampStatus;
     PUCHAR Buffer;
     LARGE_INTEGER ReadOffset;
     ULONG OriginalLength;
-    ULONG RequestedLength;
+    ULONG _SEH2_VOLATILE RequestedLength;
     ULONG BytesRead;
     PFileContextBlock FileCB;
     BOOLEAN ResourceAcquired = FALSE;
@@ -387,7 +387,7 @@ NtfsFsdRead(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     if (FileCB && FileCB->IsVolumeOpen)
         return NtfsForwardVolumeIo(VolCB, FileCB, Irp, FALSE);
 
-    if (FileCB && BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) && NtfsPagingFileIo(VolCB, FileCB, Irp, FALSE, &Status))
+    if (FileCB && BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) && NtfsPagingFileIo(VolCB, FileCB, Irp, FALSE, (PNTSTATUS)&Status))
         return Status;
 
     if (!FileCB || !FileCB->FileRec || !DiskVolume)
@@ -604,7 +604,7 @@ NtfsFsdRead(_In_ PDEVICE_OBJECT VolumeDeviceObject,
                                             FileCB->RequestedType,
                                             FileCB->RequestedStream,
                                             Bounce ? (PUCHAR)Bounce : Buffer,
-                                            &RequestedLength,
+                                            (PULONG)&RequestedLength,
                                             ReadOffset.QuadPart);
         NtfsReleaseMetadata(VolCB);
         if (Bounce)

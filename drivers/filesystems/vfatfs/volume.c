@@ -234,11 +234,11 @@ FsdSetFsLabelInformation(
     PFILE_FS_LABEL_INFORMATION FsLabelInfo)
 {
     PDEVICE_EXTENSION DeviceExt;
-    PVOID Context = NULL;
+    PVOID _SEH2_VOLATILE Context = NULL;
     ULONG DirIndex = 0;
-    PDIR_ENTRY Entry;
+    PDIR_ENTRY _SEH2_VOLATILE Entry;
     PVFATFCB pRootFcb;
-    LARGE_INTEGER FileOffset;
+    LARGE_INTEGER _SEH2_VOLATILE FileOffset;
     BOOLEAN LabelFound = FALSE;
     DIR_ENTRY VolumeLabelDirEntry;
     ULONG VolumeLabelDirIndex;
@@ -322,7 +322,7 @@ FsdSetFsLabelInformation(
     FileOffset.QuadPart = 0;
     _SEH2_TRY
     {
-        CcPinRead(pRootFcb->FileObject, &FileOffset, SizeDirEntry, PIN_WAIT, &Context, (PVOID*)&Entry);
+        CcPinRead(pRootFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, PIN_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -357,7 +357,7 @@ FsdSetFsLabelInformation(
                 FileOffset.u.LowPart += PAGE_SIZE;
                 _SEH2_TRY
                 {
-                    CcPinRead(pRootFcb->FileObject, &FileOffset, SizeDirEntry, PIN_WAIT, &Context, (PVOID*)&Entry);
+                    CcPinRead(pRootFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, PIN_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {
@@ -392,7 +392,7 @@ FsdSetFsLabelInformation(
             Status = STATUS_SUCCESS;
             _SEH2_TRY
             {
-                CcPinRead(pRootFcb->FileObject, &FileOffset, SizeDirEntry, PIN_WAIT, &Context, (PVOID*)&Entry);
+                CcPinRead(pRootFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, PIN_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {

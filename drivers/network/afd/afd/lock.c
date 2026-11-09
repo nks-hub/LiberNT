@@ -491,7 +491,7 @@ VOID UnlockRequest( PIRP Irp, PIO_STACK_LOCATION IrpSp )
  * for datagrams. */
 
 PAFD_WSABUF LockBuffers( PAFD_WSABUF Buf, UINT Count,
-                         PVOID AddressBuf, PINT AddressLen,
+                         PVOID AddressBuf, PINT _SEH2_VOLATILE AddressLen,
                          BOOLEAN Write, BOOLEAN LockAddress,
                          KPROCESSOR_MODE LockMode, BOOLEAN Is32Bit) {
     UINT i;

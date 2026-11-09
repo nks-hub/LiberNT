@@ -73,8 +73,8 @@ DxgkpDeliverAcpiEvent(
     _In_ PDXGKP_ACPI_EVENT_RECORD Record)
 {
     PDXGKDDI_NOTIFY_ACPI_EVENT Notify;
-    NTSTATUS Status;
-    ULONG    Flags = 0;
+    NTSTATUS _SEH2_VOLATILE Status;
+    ULONG    _SEH2_VOLATILE Flags = 0;
 
     PAGED_CODE();
 
@@ -103,7 +103,7 @@ DxgkpDeliverAcpiEvent(
                         Record->Type,
                         Record->Event,
                         Record->HasArgument ? &Record->Argument : NULL,
-                        &Flags);
+                        (PULONG)&Flags);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

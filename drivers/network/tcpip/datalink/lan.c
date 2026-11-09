@@ -139,6 +139,23 @@ GetPacketTypeFromHeaderBuffer(PLAN_ADAPTER Adapter,
             *PacketType = EthHeader->EType;
             break;
 
+        case NdisMediumIP:
+            /* A raw IP frame has no link header; the IP version tells the protocol */
+            ASSERT(Adapter->HeaderSize == 0);
+            ASSERT(HeaderBufferSize >= 1);
+            switch (*(PUCHAR)HeaderBuffer >> 4)
+            {
+                case 4:
+                    *PacketType = ETYPE_IPv4;
+                    break;
+                case 6:
+                    *PacketType = ETYPE_IPv6;
+                    break;
+                default:
+                    return NDIS_STATUS_NOT_ACCEPTED;
+            }
+            break;
+
         default:
             TI_DbgPrint(MIN_TRACE, ("Unsupported media.\n"));
 
@@ -528,13 +545,13 @@ VOID NTAPI ProtocolReceive(
                 continue;
             }
 
-            HeaderBuffer = NdisGetDataBuffer(NetBuffer, Adapter->HeaderSize, &HeaderStorage, 1, 0);
+            HeaderBuffer = NdisGetDataBuffer(NetBuffer, max(Adapter->HeaderSize, 1), &HeaderStorage, 1, 0);
             if (!HeaderBuffer)
                 continue;
 
             NdisStatus = GetPacketTypeFromHeaderBuffer(Adapter,
                                                        HeaderBuffer,
-                                                       Adapter->HeaderSize,
+                                                       max(Adapter->HeaderSize, 1),
                                                        &PacketType);
             if (NdisStatus != NDIS_STATUS_SUCCESS)
                 continue;
@@ -1076,6 +1093,12 @@ VOID LANTransmit(
         return;
     }
 
+    if (Adapter->Media == NdisMediumIP && Type == LAN_PROTO_ARP) {
+        LanSendDone(Adapter);
+        (*PC(NdisPacket)->DLComplete)(PC(NdisPacket)->Context, NdisPacket, NDIS_STATUS_NOT_SUPPORTED);
+        return;
+    }
+
     if (LinkAddress && Adapter->Media == NdisMedium802_3 &&
         (Type == LAN_PROTO_IPv4 || Type == LAN_PROTO_IPv6) &&
         RtlEqualMemory(LinkAddress, Adapter->HWAddress, IEEE_802_ADDR_LENGTH))
@@ -1148,6 +1171,13 @@ VOID LANTransmit(
                     LanSendDone(Adapter);
                     return;
             }
+            break;
+
+        case NdisMediumIP:
+            ASSERT(Adapter->HeaderSize == 0);
+            ASSERT(Type == LAN_PROTO_IPv4 || Type == LAN_PROTO_IPv6);
+            NET_BUFFER_LIST_INFO(Nbl, NetBufferListFrameType) =
+                (PVOID)(ULONG_PTR)(Type == LAN_PROTO_IPv4 ? ETYPE_IPv4 : ETYPE_IPv6);
             break;
 
         default:
@@ -1589,8 +1619,9 @@ NDIS_STATUS LANRegisterAdapter(
 
     TI_DbgPrint(DEBUG_DATALINK, ("Called.\n"));
 
-    if (BindParameters->MediaType != NdisMedium802_3 ||
-        BindParameters->MacAddressLength != IEEE_802_ADDR_LENGTH)
+    if ((BindParameters->MediaType != NdisMedium802_3 ||
+         BindParameters->MacAddressLength != IEEE_802_ADDR_LENGTH) &&
+        BindParameters->MediaType != NdisMediumIP)
         return NDIS_STATUS_UNSUPPORTED_MEDIA;
 
     IF = ExAllocatePoolWithTag(NonPagedPool, sizeof(LAN_ADAPTER), LAN_ADAPTER_TAG);
@@ -1630,6 +1661,7 @@ NDIS_STATUS LANRegisterAdapter(
 
     /* Initialize array with media IDs we support */
     MediaArray[MEDIA_ETH] = NdisMedium802_3;
+    MediaArray[MEDIA_IP] = NdisMediumIP;
 
     RtlZeroMemory(&OpenParameters, sizeof(OpenParameters));
     OpenParameters.Header.Type = NDIS_OBJECT_TYPE_OPEN_PARAMETERS;
@@ -1675,6 +1707,17 @@ NDIS_STATUS LANRegisterAdapter(
             NDIS_PACKET_TYPE_BROADCAST |
             NDIS_PACKET_TYPE_DIRECTED  |
             NDIS_PACKET_TYPE_MULTICAST;
+        break;
+
+    case NdisMediumIP:
+        /* Tunnel adapters: raw IP packets, no link addresses and no ARP */
+        IF->HWAddressLength = 0;
+        IF->BCastMask       = 0;
+        IF->BCastCheck      = 0;
+        IF->BCastOffset     = 0;
+        IF->HeaderSize      = 0;
+        IF->MinFrameSize    = 0;
+        IF->PacketFilter    = NDIS_PACKET_TYPE_DIRECTED;
         break;
 
     default:

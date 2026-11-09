@@ -647,8 +647,10 @@ PNEIGHBOR_CACHE_ENTRY NBFindOrCreateNeighbor(
   if (NCE == NULL)
     {
         TI_DbgPrint(MID_TRACE,("BCAST: %s\n", A2S(&Interface->Broadcast)));
+        /* An interface without link addresses (raw IP) has nothing to resolve */
         if( IsInterfaceBroadcast(Interface, Address) ||
-            AddrIsUnspecified(Address) ) {
+            AddrIsUnspecified(Address) ||
+            Interface->AddressLength == 0 ) {
             TI_DbgPrint(MID_TRACE,("Packet targeted at broadcast addr\n"));
             NCE = NBAddNeighbor(Interface, Address, NULL,
                                 Interface->AddressLength, NUD_PERMANENT, 0);

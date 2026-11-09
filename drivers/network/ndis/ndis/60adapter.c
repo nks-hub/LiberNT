@@ -211,6 +211,7 @@ Ndis6AllocateInterfaceIndex(VOID)
         Next = (Current <= 1 || Current >= 0x00ffffff) ? 2 : Current + 1;
     } while (InterlockedCompareExchange(&Ndis6NextInterfaceIndex, Next, Current) != Current);
 
+    ASSERT(Next >= 2 && Next <= 0x00ffffff);
     return (NET_IFINDEX)Next;
 }
 

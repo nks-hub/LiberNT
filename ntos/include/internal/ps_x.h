@@ -91,6 +91,9 @@ PspRunCreateProcessNotifyRoutines(IN PEPROCESS CurrentProcess,
         pCreateInfo = &CreateInfo;
     }
 
+    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
+    KeEnterCriticalRegion();
+
     /* Loop callbacks */
     for (i = 0; i < PSP_MAX_CREATE_PROCESS_NOTIFY; i++)
     {
@@ -114,6 +117,8 @@ PspRunCreateProcessNotifyRoutines(IN PEPROCESS CurrentProcess,
 
         ExDereferenceCallBackBlock(&PspProcessNotifyRoutine[i], CallBack);
     }
+
+    KeLeaveCriticalRegion();
 }
 
 FORCEINLINE

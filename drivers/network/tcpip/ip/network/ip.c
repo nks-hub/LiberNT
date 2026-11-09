@@ -318,6 +318,7 @@ BOOLEAN IPRegisterInterface(
     TI_DbgPrint(MID_TRACE, ("Called. IF (0x%X).\n", IF));
 
     TcpipAcquireSpinLock(&InterfaceListLock, &OldIrql);
+    ASSERT(!IF->Registered);
 
     if (IF->NdisIfIndex != 0)
     {
@@ -339,6 +340,7 @@ BOOLEAN IPRegisterInterface(
         } EndFor(Interface);
     } while( !IndexHasBeenChosen );
 
+    ASSERT(ChosenIndex != 0);
     IF->Index = ChosenIndex;
 
     /* Add interface to the global interface list */

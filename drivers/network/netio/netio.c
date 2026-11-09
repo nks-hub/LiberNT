@@ -41,6 +41,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 #include <ntifs.h>
 #include <netiodef.h>
 #include <ws2def.h>
+#include <ws2ipdef.h>
 #include <wsk.h>
 #include <ndis.h>
 #include <wdmsec.h>
@@ -73,6 +74,35 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 /* Function trace */
 // #define FUNCTION_TRACE DPRINT1("%s() ...\n", __FUNCTION__)
 #define FUNCTION_TRACE do { } while (0)
+
+#define NETIO_RECEIVE_COUNT 4
+#define NETIO_RECEIVE_SIZE 65536
+
+struct _WSK_SOCKET_INTERNAL;
+
+typedef struct _NETIO_RECEIVE
+{
+    WSK_DATAGRAM_INDICATION Indication;
+    struct _WSK_SOCKET_INTERNAL *Socket;
+    PIRP Irp;
+    PMDL Mdl;
+    volatile BOOLEAN InFlight;
+    BOOLEAN Held;
+    SIZE_T Length;
+    SOCKADDR_IN Remote;
+    ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
+    DECLSPEC_ALIGN(8) UCHAR Control[64];
+    UCHAR Data[NETIO_RECEIVE_SIZE];
+} NETIO_RECEIVE, *PNETIO_RECEIVE;
+
+typedef struct _NETIO_WSK_CLIENT
+{
+    ULONG EventMask;
+    KSPIN_LOCK Lock;
+    BOOLEAN Deregistering;
+    LONG Users;
+    KEVENT Idle;
+} NETIO_WSK_CLIENT, *PNETIO_WSK_CLIENT;
 
 typedef struct _WSK_SOCKET_INTERNAL
 {
@@ -124,6 +154,21 @@ typedef struct _WSK_SOCKET_INTERNAL
      */
     struct _WSK_SOCKET_INTERNAL *NextSocketToDereference;
     ULONG NumSocketDereferences;
+
+    PNETIO_WSK_CLIENT Client;
+
+    const WSK_CLIENT_DATAGRAM_DISPATCH *DatagramDispatch;
+    BOOLEAN ReceiveEvents;
+    BOOLEAN ReceiveEventsStatic;
+    LONG ReceiveCallbacks;
+    PIRP DisableIrp;
+    BOOLEAN PktInfo;
+    BOOLEAN ReceiveStarted;
+    volatile BOOLEAN ReceiveClosing;
+    LONG ReceivesBusy;
+    KEVENT ReceivesIdle;
+    KSPIN_LOCK ReceiveLock;
+    PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
 
 typedef struct _NETIO_CONTEXT
@@ -150,12 +195,82 @@ DereferenceSocket(_In_ PWSK_SOCKET_INTERNAL Socket);
    DereferenceSocket() of the socket.
  */
 
+static VOID
+NetioStopReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioStartReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static VOID
+NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp);
+static VOID
+NetioReceivesReleased(_In_ PWSK_SOCKET_INTERNAL Socket);
+static VOID
+NetioResumeReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioEnableReceiveEvent(_In_ PWSK_SOCKET_INTERNAL Socket);
+static NTSTATUS
+NetioDisableReceiveEvent(_In_ PWSK_SOCKET_INTERNAL Socket, _In_opt_ PIRP Irp);
+static NTSTATUS WSKAPI
+WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _Inout_ PIRP Irp);
+static NTSTATUS WSKAPI
+WskControlSocket(_In_ PWSK_SOCKET SocketParam, _In_ WSK_CONTROL_SOCKET_TYPE RequestType, _In_ ULONG ControlCode,
+                 _In_ ULONG Level, _In_ SIZE_T InputSize, _In_reads_bytes_opt_(InputSize) PVOID InputBuffer,
+                 _In_ SIZE_T OutputSize, _Out_writes_bytes_opt_(OutputSize) PVOID OutputBuffer,
+                 _Out_opt_ SIZE_T *OutputSizeReturned, _Inout_opt_ PIRP Irp);
+
+typedef enum _NETIO_PASSIVE_KIND
+{
+    NetioPassiveLocalAddress,
+    NetioPassivePktInfo,
+    NetioPassiveResumeReceives,
+    NetioPassiveClose,
+} NETIO_PASSIVE_KIND;
+
+typedef struct _NETIO_PASSIVE_REQUEST
+{
+    WORK_QUEUE_ITEM WorkItem;
+    NETIO_PASSIVE_KIND Kind;
+    struct _WSK_SOCKET_INTERNAL *Socket;
+    PIRP Irp;
+    PSOCKADDR LocalAddress;
+    ULONG PktInfo;
+} NETIO_PASSIVE_REQUEST, *PNETIO_PASSIVE_REQUEST;
+static NTSTATUS
+NetioSetAddressOption(_In_ PFILE_OBJECT AddressFile, _In_ ULONG Option, _In_ ULONG Value);
+
+static BOOLEAN
+NetioAddClientUser(_In_ PNETIO_WSK_CLIENT Client)
+{
+    BOOLEAN Added;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    Added = !Client->Deregistering;
+    if (Added && Client->Users++ == 0)
+        KeClearEvent(&Client->Idle);
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
+    return Added;
+}
+
+static VOID
+NetioRemoveClientUser(_In_ PNETIO_WSK_CLIENT Client)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    ASSERT(Client->Users > 0);
+    if (--Client->Users == 0)
+        KeSetEvent(&Client->Idle, IO_NO_INCREMENT, FALSE);
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
+}
+
 static
 void SocketShutdown(_In_ PWSK_SOCKET_INTERNAL Socket)
 {
     NTSTATUS status;
 
     FUNCTION_TRACE;
+
+    NetioStopReceives(Socket);
 
     if (Socket->ListenSocket != NULL)
     {
@@ -206,6 +321,8 @@ void SocketShutdown(_In_ PWSK_SOCKET_INTERNAL Socket)
 static void
 SocketDestroy(_In_ PWSK_SOCKET_INTERNAL Socket)
 {
+    PNETIO_WSK_CLIENT Client = Socket->Client;
+
     SocketShutdown(Socket);
 
     /* Especially listen sockets must keep the LocalAddressFile
@@ -227,6 +344,8 @@ SocketDestroy(_In_ PWSK_SOCKET_INTERNAL Socket)
         Socket->LocalAddressHandle = NULL;
     }
     ExFreePoolWithTag(Socket, TAG_NETIO);
+    if (Client)
+        NetioRemoveClientUser(Client);
 }
 
 static void
@@ -284,28 +403,58 @@ static VOID NTAPI DereferenceSocketsThread(_In_opt_ void *p)
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
+static KMUTEX DereferenceSocketsThreadLock;
+static ULONG DereferenceSocketsThreadUsers;
+static volatile LONG DereferenceSocketsThreadLockState;
+
 static NTSTATUS StartSocketDereferenceThread(void)
 {
-    NTSTATUS status;
+    OBJECT_ATTRIBUTES Attributes;
+    NTSTATUS status = STATUS_SUCCESS;
 
-    KeInitializeSpinLock(&SocketsToDereferenceListLock);
-    KeInitializeEvent(&DereferenceSocketsEvent, SynchronizationEvent, FALSE);
-    DereferenceSocketsThreadShouldRun = TRUE;
-
-    status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, NULL, NULL, NULL, DereferenceSocketsThread, NULL);
-    if (!NT_SUCCESS(status))
+    if (InterlockedCompareExchange(&DereferenceSocketsThreadLockState, 1, 0) == 0)
     {
-        DPRINT1("Could not start put sockets thread, status is %x\n", status);
+        KeInitializeMutex(&DereferenceSocketsThreadLock, 0);
+        KeInitializeSpinLock(&SocketsToDereferenceListLock);
+        KeInitializeEvent(&DereferenceSocketsEvent, SynchronizationEvent, FALSE);
+        InterlockedExchange(&DereferenceSocketsThreadLockState, 2);
     }
+    while (DereferenceSocketsThreadLockState != 2)
+        YieldProcessor();
+
+    KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
+    if (DereferenceSocketsThreadUsers == 0)
+    {
+        DereferenceSocketsThreadShouldRun = TRUE;
+        InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+        status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, &Attributes, NULL, NULL,
+                                      DereferenceSocketsThread, NULL);
+        if (!NT_SUCCESS(status))
+        {
+            DPRINT1("Could not start put sockets thread, status is %x\n", status);
+        }
+    }
+    if (NT_SUCCESS(status))
+        DereferenceSocketsThreadUsers++;
+    KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
     return status;
 }
 
 static void StopSocketDereferenceThread(void)
 {
-    DereferenceSocketsThreadShouldRun = FALSE;
-    KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
+    ASSERT(DereferenceSocketsThreadLockState == 2);
+    KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
+    ASSERT(DereferenceSocketsThreadUsers > 0);
+    if (--DereferenceSocketsThreadUsers == 0)
+    {
+        DereferenceSocketsThreadShouldRun = FALSE;
+        KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
 
-    /* eventually it will terminate, no need to wait for that. */
+        /* eventually it will terminate, no need to wait for that. */
+        ZwClose(DereferenceSocketsThreadHandle);
+        DereferenceSocketsThreadHandle = NULL;
+    }
+    KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
 }
 
 static void
@@ -340,6 +489,75 @@ DereferenceSocket(_In_ PWSK_SOCKET_INTERNAL Socket)
         return;
     }
     DereferenceSocketSynchronous(Socket);
+}
+
+static VOID NTAPI
+NetioPassiveWorker(
+    _In_ PVOID Context)
+{
+    PNETIO_PASSIVE_REQUEST Request = Context;
+    PWSK_SOCKET_INTERNAL Socket = Request->Socket;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(Socket->RefCount > 0);
+
+    switch (Request->Kind)
+    {
+        case NetioPassiveLocalAddress:
+            WskGetLocalAddress(&Socket->Socket, Request->LocalAddress, Request->Irp);
+            break;
+
+        case NetioPassivePktInfo:
+            WskControlSocket(&Socket->Socket, WskSetOption, IP_PKTINFO, IPPROTO_IP, sizeof(Request->PktInfo),
+                             &Request->PktInfo, 0, NULL, NULL, Request->Irp);
+            break;
+
+        case NetioPassiveResumeReceives:
+            NetioResumeReceives(Socket);
+            NetioReceivesReleased(Socket);
+            break;
+
+        case NetioPassiveClose:
+            NetioCloseSocket(Socket, Request->Irp);
+            break;
+    }
+
+    DereferenceSocket(Socket);
+    ExFreePoolWithTag(Request, TAG_NETIO);
+}
+
+static NTSTATUS
+NetioQueuePassive(
+    _In_ PWSK_SOCKET_INTERNAL Socket,
+    _In_ NETIO_PASSIVE_KIND Kind,
+    _In_opt_ PIRP Irp,
+    _In_opt_ PSOCKADDR LocalAddress,
+    _In_ ULONG PktInfo)
+{
+    PNETIO_PASSIVE_REQUEST Request = ExAllocatePoolZero(NonPagedPool, sizeof(*Request), TAG_NETIO);
+
+    if (Request == NULL)
+    {
+        if (Irp == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        IoSetNextIrpStackLocation(Irp);
+        Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+        IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+        return STATUS_PENDING;
+    }
+
+    ASSERT(Kind == NetioPassiveResumeReceives || Irp != NULL);
+    ASSERT(Socket->RefCount > 0);
+
+    Request->Kind = Kind;
+    Request->Socket = Socket;
+    Request->Irp = Irp;
+    Request->LocalAddress = LocalAddress;
+    Request->PktInfo = PktInfo;
+    ReferenceSocket(Socket);
+    ExInitializeWorkItem(&Request->WorkItem, NetioPassiveWorker, Request);
+    ExQueueWorkItem(&Request->WorkItem, CriticalWorkQueue);
+    return STATUS_PENDING;
 }
 
 NTSTATUS
@@ -747,12 +965,21 @@ WskControlSocket(
 
     FUNCTION_TRACE;
 
+    if (Socket != NULL && RequestType == WskSetOption && Level == IPPROTO_IP && ControlCode == IP_PKTINFO &&
+        Socket->type == SOCK_DGRAM && Socket->LocalAddressFile != NULL && Irp != NULL &&
+        InputBuffer != NULL && InputSize >= sizeof(ULONG) && KeGetCurrentIrql() > PASSIVE_LEVEL)
+    {
+        return NetioQueuePassive(Socket, NetioPassivePktInfo, Irp, NULL, *(PULONG)InputBuffer);
+    }
+
+    if (Irp != NULL)
+        IoSetNextIrpStackLocation(Irp);
+
     if (Socket == NULL)
     {
         status = STATUS_INVALID_PARAMETER;
         goto err_out;
     }
-    IoSetNextIrpStackLocation(Irp);
 
     switch (RequestType)
     {
@@ -815,11 +1042,43 @@ WskControlSocket(
                             }
 
                             status = STATUS_SUCCESS;
+                            if (Socket->type == SOCK_DGRAM && (Control->EventMask & WSK_EVENT_RECEIVE_FROM))
+                            {
+                                if (Socket->ReceiveEventsStatic)
+                                    status = STATUS_INVALID_PARAMETER;
+                                else if (Control->EventMask & WSK_EVENT_DISABLE)
+                                {
+                                    status = NetioDisableReceiveEvent(Socket, Irp);
+                                    if (status == STATUS_PENDING)
+                                        return STATUS_PENDING;
+                                }
+                                else
+                                {
+                                    status = NetioEnableReceiveEvent(Socket);
+                                }
+                            }
                             break;
 
                         default:
                             DPRINT1("WskControlSocket: ControlCode %d Not implemented\n", ControlCode);
                     }
+                    break;
+                case IPPROTO_IP:
+                    if (ControlCode != IP_PKTINFO || Socket->type != SOCK_DGRAM)
+                    {
+                        DPRINT1("WskControlSocket: IPPROTO_IP option %d Not implemented\n", ControlCode);
+                        break;
+                    }
+                    if (InputBuffer == NULL || InputSize < sizeof(ULONG) ||
+                        (Socket->LocalAddressFile && KeGetCurrentIrql() > PASSIVE_LEVEL))
+                    {
+                        status = STATUS_INVALID_PARAMETER;
+                        break;
+                    }
+                    Socket->PktInfo = *(PULONG)InputBuffer != 0;
+                    status = Socket->LocalAddressFile ?
+                             NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, Socket->PktInfo) :
+                             STATUS_SUCCESS;
                     break;
                 default:
                     DPRINT1("WskControlSocket: Level %d Not implemented\n", Level);
@@ -833,17 +1092,20 @@ WskControlSocket(
     }
 
 err_out:
+    if (Irp == NULL)
+        return status;
     Irp->IoStatus.Status = status;
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
 
     return STATUS_PENDING;
 }
 
-static NTSTATUS WSKAPI
-WskCloseSocket(_In_ PWSK_SOCKET SocketParam, _Inout_ PIRP Irp)
+static VOID
+NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp)
 {
     NTSTATUS status = STATUS_SUCCESS;
-    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     IoSetNextIrpStackLocation(Irp);
 
@@ -857,7 +1119,18 @@ WskCloseSocket(_In_ PWSK_SOCKET SocketParam, _Inout_ PIRP Irp)
 
     Irp->IoStatus.Status = status;
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+}
 
+static NTSTATUS WSKAPI
+WskCloseSocket(_In_ PWSK_SOCKET SocketParam, _Inout_ PIRP Irp)
+{
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+
+    /* The close completes once the client has released the datagrams it retains */
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL || Socket->ReceiveStarted)
+        return NetioQueuePassive(Socket, NetioPassiveClose, Irp, NULL, 0);
+
+    NetioCloseSocket(Socket, Irp);
     return STATUS_PENDING;
 }
 
@@ -939,6 +1212,14 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
 
     ExFreePoolWithTag(ta, TAG_NETIO);
 
+    if (NT_SUCCESS(status) && Socket->type == SOCK_DGRAM)
+    {
+        if (Socket->PktInfo)
+            status = NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, TRUE);
+        if (NT_SUCCESS(status) && Socket->ReceiveEvents)
+            status = NetioStartReceives(Socket);
+    }
+
 err_out:
     Irp->IoStatus.Status = status;
     IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
@@ -951,6 +1232,17 @@ enum direction
     DIR_SEND,
     DIR_RECEIVE
 };
+
+static NTSTATUS
+NetioDeferSend(
+    _In_ PWSK_SOCKET SocketParam,
+    _In_opt_ PWSK_BUF Buffer,
+    _In_opt_ PWSK_BUF_LIST BufferList,
+    _In_ ULONG Flags,
+    _In_opt_ PSOCKADDR RemoteAddress,
+    _In_ ULONG ControlInfoLength,
+    _In_opt_ PCMSGHDR ControlInfo,
+    _Inout_ PIRP Irp);
 
 static NTSTATUS WSKAPI
 WskSendTo(
@@ -970,6 +1262,10 @@ WskSendTo(
     PNETIO_CONTEXT NetioContext;
 
     FUNCTION_TRACE;
+
+    /* tcpip waits for each sent fragment, which it can only do at PASSIVE_LEVEL */
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL)
+        return NetioDeferSend(SocketParam, Buffer, NULL, Flags, RemoteAddress, ControlInfoLength, ControlInfo, Irp);
 
     IoSetNextIrpStackLocation(Irp);
 
@@ -1049,14 +1345,423 @@ WskReceiveFrom(
     return STATUS_NOT_IMPLEMENTED;
 }
 
+static NTSTATUS
+NetioSetAddressOption(
+    _In_ PFILE_OBJECT AddressFile,
+    _In_ ULONG Option,
+    _In_ ULONG Value)
+{
+    PTCP_REQUEST_SET_INFORMATION_EX Request;
+    ULONG Size = FIELD_OFFSET(TCP_REQUEST_SET_INFORMATION_EX, Buffer) + sizeof(ULONG);
+    PDEVICE_OBJECT DeviceObject = IoGetRelatedDeviceObject(AddressFile);
+    IO_STATUS_BLOCK Io;
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    Request = ExAllocatePoolZero(NonPagedPool, Size, TAG_NETIO);
+    if (Request == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    Request->ID.toi_entity.tei_entity = CL_TL_ENTITY;
+    Request->ID.toi_entity.tei_instance = 0;
+    Request->ID.toi_class = INFO_CLASS_PROTOCOL;
+    Request->ID.toi_type = INFO_TYPE_ADDRESS_OBJECT;
+    Request->ID.toi_id = Option;
+    Request->BufferSize = sizeof(ULONG);
+    RtlCopyMemory(Request->Buffer, &Value, sizeof(Value));
+
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+    Irp = IoBuildDeviceIoControlRequest(IOCTL_TCP_SET_INFORMATION_EX, DeviceObject, Request, Size,
+                                        NULL, 0, FALSE, &Event, &Io);
+    if (Irp == NULL)
+    {
+        ExFreePoolWithTag(Request, TAG_NETIO);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    IoGetNextIrpStackLocation(Irp)->FileObject = AddressFile;
+    Status = IoCallDriver(DeviceObject, Irp);
+    if (Status == STATUS_PENDING)
+    {
+        KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+        Status = Io.Status;
+    }
+    ExFreePoolWithTag(Request, TAG_NETIO);
+    return Status;
+}
+
+static VOID
+NetioReceiveDone(
+    _In_ PNETIO_RECEIVE Receive)
+{
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+
+    ASSERT(Socket->ReceivesBusy > 0);
+    if (InterlockedDecrement(&Socket->ReceivesBusy) == 0)
+        KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
+}
+
+static IO_COMPLETION_ROUTINE NetioReceiveComplete;
+
+static VOID
+NetioPostReceive(
+    _In_ PNETIO_RECEIVE Receive)
+{
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+    PDEVICE_OBJECT DeviceObject = IoGetRelatedDeviceObject(Socket->LocalAddressFile);
+    PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    if (Socket->ReceiveClosing)
+    {
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+        NetioReceiveDone(Receive);
+        return;
+    }
+    ASSERT(!Receive->InFlight);
+    ASSERT(!Receive->Held);
+    Receive->InFlight = TRUE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
+    TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
+    ConnInfo->Options = Receive->Control;
+    ConnInfo->OptionsLength = sizeof(Receive->Control);
+    TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
+                            Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
+    IoCallDriver(DeviceObject, Receive->Irp);
+}
+
+static VOID
+NetioCompleteDisable(
+    _In_opt_ PIRP Irp)
+{
+    if (Irp == NULL)
+        return;
+    Irp->IoStatus.Status = STATUS_SUCCESS;
+    IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+}
+
+static VOID
+NetioIndicateReceive(
+    _In_ PNETIO_RECEIVE Receive)
+{
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+    PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
+    PTA_IP_ADDRESS Source = (PTA_IP_ADDRESS)ConnInfo->RemoteAddress;
+    PIRP DisableIrp = NULL;
+    BOOLEAN Held = FALSE;
+    NTSTATUS Status;
+    KIRQL OldIrql;
+
+    RtlZeroMemory(&Receive->Remote, sizeof(Receive->Remote));
+    Receive->Remote.sin_family = AF_INET;
+    Receive->Remote.sin_port = Source->Address[0].Address[0].sin_port;
+    Receive->Remote.sin_addr.s_addr = Source->Address[0].Address[0].in_addr;
+
+    Receive->Indication.Next = NULL;
+    Receive->Indication.Buffer.Mdl = Receive->Mdl;
+    Receive->Indication.Buffer.Offset = 0;
+    Receive->Indication.Buffer.Length = Receive->Length;
+    Receive->Indication.ControlInfoLength = Socket->PktInfo ? (ULONG)ConnInfo->OptionsLength : 0;
+    Receive->Indication.ControlInfo = Receive->Indication.ControlInfoLength ? (PCMSGHDR)Receive->Control : NULL;
+    Receive->Indication.RemoteAddress = (PSOCKADDR)&Receive->Remote;
+
+    Status = Socket->DatagramDispatch->WskReceiveFromEvent(
+        Socket->user_context,
+        KeGetCurrentIrql() == DISPATCH_LEVEL ? WSK_FLAG_AT_DISPATCH_LEVEL : 0,
+        &Receive->Indication);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    if (Status == STATUS_DATA_NOT_ACCEPTED && !Socket->ReceiveEventsStatic && !Socket->ReceiveClosing)
+    {
+        Socket->ReceiveEvents = FALSE;
+        Receive->Held = Held = TRUE;
+    }
+    ASSERT(Socket->ReceiveCallbacks > 0);
+    if (--Socket->ReceiveCallbacks == 0)
+    {
+        DisableIrp = Socket->DisableIrp;
+        Socket->DisableIrp = NULL;
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+    NetioCompleteDisable(DisableIrp);
+
+    /* The client keeps the data until it calls WskRelease */
+    if (Held || Status == STATUS_PENDING)
+        return;
+    NetioPostReceive(Receive);
+}
+
+static NTSTATUS NTAPI
+NetioReceiveComplete(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp,
+    _In_opt_ PVOID Context)
+{
+    PNETIO_RECEIVE Receive = Context;
+    PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
+    NTSTATUS Status = Irp->IoStatus.Status;
+    BOOLEAN Indicate = FALSE, Hold = FALSE;
+    KIRQL OldIrql;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    ASSERT(Receive->InFlight);
+    ASSERT(!Receive->Held);
+    Receive->InFlight = FALSE;
+    if (NT_SUCCESS(Status) && !Socket->ReceiveClosing)
+    {
+        Receive->Length = (SIZE_T)Irp->IoStatus.Information;
+        if (Socket->ReceiveEvents)
+        {
+            Socket->ReceiveCallbacks++;
+            Indicate = TRUE;
+        }
+        else
+        {
+            Receive->Held = Hold = TRUE;
+        }
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (Indicate)
+    {
+        NetioIndicateReceive(Receive);
+    }
+    else if (Hold)
+    {
+    }
+    else if (Status == STATUS_BUFFER_OVERFLOW && !Socket->ReceiveClosing)
+    {
+        NetioPostReceive(Receive);
+    }
+    else
+    {
+        if (!Socket->ReceiveClosing)
+            DPRINT1("Datagram receive failed with status 0x%08lx, receiving stops\n", Status);
+        NetioReceiveDone(Receive);
+    }
+    return STATUS_MORE_PROCESSING_REQUIRED;
+}
+
+static VOID
+NetioReceivesReleased(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    ASSERT(Socket->ReceivesBusy > 0);
+    if (InterlockedDecrement(&Socket->ReceivesBusy) == 0)
+        KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
+}
+
+static VOID
+NetioResumeReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    KIRQL OldIrql;
+    ULONG i;
+
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        PNETIO_RECEIVE Receive = Socket->Receives[i];
+        BOOLEAN Indicate = FALSE;
+
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        if (Receive->Held && Socket->ReceiveEvents && !Socket->ReceiveClosing)
+        {
+            Receive->Held = FALSE;
+            Socket->ReceiveCallbacks++;
+            Indicate = TRUE;
+        }
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+        if (Indicate)
+            NetioIndicateReceive(Receive);
+    }
+}
+
+static NTSTATUS
+NetioEnableReceiveEvent(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    NTSTATUS Status;
+    KIRQL OldIrql;
+    ULONG i;
+    BOOLEAN Resume = FALSE;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Socket->ReceiveEvents = TRUE;
+    if (Socket->ReceiveStarted && !Socket->ReceiveClosing)
+    {
+        for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+            Resume |= Socket->Receives[i]->Held;
+        if (Resume)
+        {
+            ASSERT(Socket->ReceivesBusy > 0);
+            InterlockedIncrement(&Socket->ReceivesBusy);
+        }
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (!Resume)
+        return NetioStartReceives(Socket);
+
+    Status = NetioQueuePassive(Socket, NetioPassiveResumeReceives, NULL, NULL, 0);
+    if (Status != STATUS_PENDING)
+    {
+        NetioReceivesReleased(Socket);
+        return Status;
+    }
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+NetioDisableReceiveEvent(
+    _In_ PWSK_SOCKET_INTERNAL Socket,
+    _In_opt_ PIRP Irp)
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Socket->ReceiveEvents = FALSE;
+    if (Socket->ReceiveCallbacks != 0)
+    {
+        if (Irp != NULL && Socket->DisableIrp == NULL)
+        {
+            Socket->DisableIrp = Irp;
+            Status = STATUS_PENDING;
+        }
+        else
+        {
+            Status = STATUS_EVENT_PENDING;
+        }
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+    return Status;
+}
+
+static VOID
+NetioFreeReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    ULONG i;
+
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        PNETIO_RECEIVE Receive = Socket->Receives[i];
+
+        if (Receive == NULL)
+            continue;
+        if (Receive->Irp)
+        {
+            Receive->Irp->MdlAddress = NULL;
+            IoFreeIrp(Receive->Irp);
+        }
+        if (Receive->Mdl)
+            IoFreeMdl(Receive->Mdl);
+        ExFreePoolWithTag(Receive, TAG_NETIO);
+        Socket->Receives[i] = NULL;
+    }
+}
+
+static NTSTATUS
+NetioStartReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    PDEVICE_OBJECT DeviceObject;
+    ULONG i;
+
+    if (Socket->ReceiveStarted || Socket->LocalAddressFile == NULL ||
+        Socket->DatagramDispatch == NULL || Socket->DatagramDispatch->WskReceiveFromEvent == NULL)
+    {
+        return STATUS_SUCCESS;
+    }
+
+    DeviceObject = IoGetRelatedDeviceObject(Socket->LocalAddressFile);
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        PNETIO_RECEIVE Receive = ExAllocatePoolZero(NonPagedPool, sizeof(*Receive), TAG_NETIO);
+
+        if (Receive == NULL)
+            goto Fail;
+        Socket->Receives[i] = Receive;
+        Receive->Socket = Socket;
+        Receive->Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
+        Receive->Mdl = IoAllocateMdl(Receive->Data, NETIO_RECEIVE_SIZE, FALSE, FALSE, NULL);
+        if (Receive->Irp == NULL || Receive->Mdl == NULL)
+            goto Fail;
+        MmBuildMdlForNonPagedPool(Receive->Mdl);
+    }
+
+    KeClearEvent(&Socket->ReceivesIdle);
+    Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
+    Socket->ReceiveStarted = TRUE;
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+        NetioPostReceive(Socket->Receives[i]);
+    return STATUS_SUCCESS;
+
+Fail:
+    NetioFreeReceives(Socket);
+    return STATUS_INSUFFICIENT_RESOURCES;
+}
+
+static VOID
+NetioStopReceives(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    LARGE_INTEGER Timeout;
+    KIRQL OldIrql;
+    ULONG i;
+
+    if (!Socket->ReceiveStarted)
+        return;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Socket->ReceiveClosing = TRUE;
+    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    {
+        if (Socket->Receives[i]->Held)
+        {
+            Socket->Receives[i]->Held = FALSE;
+            NetioReceiveDone(Socket->Receives[i]);
+        }
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    Timeout.QuadPart = -1000000LL;
+    do
+    {
+        /* A receive can be posted again just after a cancel; cancel until all are back */
+        for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+        {
+            if (Socket->Receives[i]->InFlight)
+                IoCancelIrp(Socket->Receives[i]->Irp);
+        }
+    } while (KeWaitForSingleObject(&Socket->ReceivesIdle, Executive, KernelMode, FALSE, &Timeout) == STATUS_TIMEOUT);
+
+    ASSERT(Socket->ReceivesBusy == 0);
+
+    NetioFreeReceives(Socket);
+    Socket->ReceiveStarted = FALSE;
+}
+
 static NTSTATUS WSKAPI
 WskReleaseUdp(_In_ PWSK_SOCKET SocketParam, _In_ PWSK_DATAGRAM_INDICATION DatagramIndication)
 {
-    FUNCTION_TRACE;
+    PWSK_DATAGRAM_INDICATION Next;
 
-    UNIMPLEMENTED;
+    UNREFERENCED_PARAMETER(SocketParam);
 
-    return STATUS_NOT_IMPLEMENTED;
+    for (; DatagramIndication != NULL; DatagramIndication = Next)
+    {
+        Next = DatagramIndication->Next;
+        NetioPostReceive(CONTAINING_RECORD(DatagramIndication, NETIO_RECEIVE, Indication));
+    }
+    return STATUS_SUCCESS;
 }
 
 static NTSTATUS WSKAPI
@@ -1072,15 +1777,324 @@ WskReleaseTcp(_In_ PWSK_SOCKET SocketParam, _In_ PWSK_DATA_INDICATION DataIndica
 static NTSTATUS WSKAPI
 WskGetLocalAddress(_In_ PWSK_SOCKET SocketParam, _Out_ PSOCKADDR LocalAddress, _Inout_ PIRP Irp)
 {
-    FUNCTION_TRACE;
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+    ULONG Size = FIELD_OFFSET(TDI_ADDRESS_INFO, Address) + sizeof(TA_IP_ADDRESS);
+    PTDI_ADDRESS_INFO Info = NULL;
+    PTA_IP_ADDRESS Address;
+    NTSTATUS Status;
+    PMDL Mdl = NULL;
 
-    UNIMPLEMENTED;
-    if (Irp != NULL)
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL)
+        return NetioQueuePassive(Socket, NetioPassiveLocalAddress, Irp, LocalAddress, 0);
+
+    IoSetNextIrpStackLocation(Irp);
+
+    if (Socket->LocalAddressFile == NULL)
     {
-        Irp->IoStatus.Status = STATUS_NOT_IMPLEMENTED;
-        IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+        Status = STATUS_INVALID_DEVICE_STATE;
+        goto Done;
     }
-    return STATUS_NOT_IMPLEMENTED;
+
+    Info = ExAllocatePoolZero(NonPagedPool, Size, TAG_NETIO);
+    Mdl = Info ? IoAllocateMdl(Info, Size, FALSE, FALSE, NULL) : NULL;
+    if (Mdl == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+    _SEH2_TRY
+    {
+        MmProbeAndLockPages(Mdl, KernelMode, IoModifyAccess);
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        IoFreeMdl(Mdl);
+        Mdl = NULL;
+    }
+    _SEH2_END;
+    if (Mdl == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+
+    Status = TdiQueryInformation(Socket->LocalAddressFile, TDI_QUERY_ADDRESS_INFO, Mdl);
+    if (NT_SUCCESS(Status))
+    {
+        Address = (PTA_IP_ADDRESS)&Info->Address;
+        if (Address->TAAddressCount < 1 || Address->Address[0].AddressType != TDI_ADDRESS_TYPE_IP)
+        {
+            Status = STATUS_INVALID_ADDRESS;
+        }
+        else
+        {
+            PSOCKADDR_IN Result = (PSOCKADDR_IN)LocalAddress;
+
+            RtlZeroMemory(Result, sizeof(*Result));
+            Result->sin_family = AF_INET;
+            Result->sin_port = Address->Address[0].Address[0].sin_port;
+            Result->sin_addr.s_addr = Address->Address[0].Address[0].in_addr;
+        }
+    }
+
+Done:
+    if (Info)
+        ExFreePoolWithTag(Info, TAG_NETIO);
+    Irp->IoStatus.Status = Status;
+    IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+    return STATUS_PENDING;
+}
+
+typedef struct _NETIO_SEND_BATCH
+{
+    PIRP UserIrp;
+    PWSK_SOCKET_INTERNAL Socket;
+    PTDI_CONNECTION_INFORMATION Target;
+    LONG Pending;
+    NTSTATUS Status;
+    LONG_PTR Bytes;
+} NETIO_SEND_BATCH, *PNETIO_SEND_BATCH;
+
+typedef struct _NETIO_SEND_ITEM
+{
+    PNETIO_SEND_BATCH Batch;
+    PVOID Copy;
+} NETIO_SEND_ITEM, *PNETIO_SEND_ITEM;
+
+static VOID
+NetioSendItemDone(
+    _In_ PNETIO_SEND_BATCH Batch)
+{
+    if (InterlockedDecrement(&Batch->Pending) != 0)
+        return;
+    Batch->UserIrp->IoStatus.Status = Batch->Status;
+    Batch->UserIrp->IoStatus.Information = NT_SUCCESS(Batch->Status) ? Batch->Bytes : 0;
+    IoCompleteRequest(Batch->UserIrp, IO_NETWORK_INCREMENT);
+    ExFreePoolWithTag(Batch->Target, TAG_AFD_TDI_CONNECTION_INFORMATION);
+    DereferenceSocket(Batch->Socket);
+    ExFreePoolWithTag(Batch, TAG_NETIO);
+}
+
+static NTSTATUS NTAPI
+NetioSendItemComplete(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp,
+    _In_opt_ PVOID Context)
+{
+    PNETIO_SEND_ITEM Item = Context;
+    PNETIO_SEND_BATCH Batch = Item->Batch;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if (NT_SUCCESS(Irp->IoStatus.Status))
+        InterlockedExchangeAddSizeT((volatile SIZE_T *)&Batch->Bytes, Irp->IoStatus.Information);
+    else
+        InterlockedCompareExchange(&Batch->Status, Irp->IoStatus.Status, STATUS_SUCCESS);
+    if (Item->Copy)
+        ExFreePoolWithTag(Item->Copy, TAG_NETIO);
+    ExFreePoolWithTag(Item, TAG_NETIO);
+    NetioSendItemDone(Batch);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS WSKAPI
+WskSendMessages(
+    _In_ PWSK_SOCKET SocketParam,
+    _In_ PWSK_BUF_LIST BufferList,
+    _Reserved_ ULONG Flags,
+    _In_opt_ PSOCKADDR RemoteAddress,
+    _In_ ULONG ControlInfoLength,
+    _In_reads_bytes_opt_(ControlInfoLength) PCMSGHDR ControlInfo,
+    _Inout_ PIRP Irp)
+{
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+    PNETIO_SEND_BATCH Batch;
+    PWSK_BUF_LIST Entry;
+    NTSTATUS Status;
+
+    UNREFERENCED_PARAMETER(Flags);
+    UNREFERENCED_PARAMETER(ControlInfoLength);
+    UNREFERENCED_PARAMETER(ControlInfo);
+
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL)
+        return NetioDeferSend(SocketParam, NULL, BufferList, Flags, RemoteAddress, ControlInfoLength, ControlInfo, Irp);
+
+    IoSetNextIrpStackLocation(Irp);
+
+    if (RemoteAddress == NULL || RemoteAddress->sa_family != AF_INET || Socket->LocalAddressFile == NULL)
+    {
+        Status = (Socket->LocalAddressFile == NULL) ? STATUS_INVALID_DEVICE_STATE : STATUS_INVALID_PARAMETER;
+        goto Fail;
+    }
+
+    Batch = ExAllocatePoolZero(NonPagedPool, sizeof(*Batch), TAG_NETIO);
+    if (Batch == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Fail;
+    }
+    Batch->Target = TdiConnectionInfoFromSocketAddress(RemoteAddress);
+    if (Batch->Target == NULL)
+    {
+        ExFreePoolWithTag(Batch, TAG_NETIO);
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Fail;
+    }
+    Batch->UserIrp = Irp;
+    Batch->Socket = Socket;
+    Batch->Status = STATUS_SUCCESS;
+    Batch->Pending = 1;
+    ReferenceSocket(Socket);
+    IoMarkIrpPending(Irp);
+
+    for (Entry = BufferList; Entry != NULL; Entry = Entry->Next)
+    {
+        PNETIO_SEND_ITEM Item;
+        PIRP TdiIrp = NULL;
+        PUCHAR Data = NULL;
+        PMDL Mdl = Entry->Buffer.Mdl;
+        SIZE_T Offset = Entry->Buffer.Offset, Length = Entry->Buffer.Length;
+
+        Item = ExAllocatePoolZero(NonPagedPool, sizeof(*Item), TAG_NETIO);
+        if (Item == NULL)
+        {
+            InterlockedCompareExchange(&Batch->Status, STATUS_INSUFFICIENT_RESOURCES, STATUS_SUCCESS);
+            break;
+        }
+        Item->Batch = Batch;
+
+        if (Mdl != NULL && Offset + Length <= MmGetMdlByteCount(Mdl))
+        {
+            Data = MmGetSystemAddressForMdlSafe(Mdl, NormalPagePriority);
+            if (Data)
+                Data += Offset;
+        }
+        else if (Mdl != NULL)
+        {
+            SIZE_T Copied = 0;
+
+            Item->Copy = ExAllocatePoolWithTag(NonPagedPool, max(Length, 1), TAG_NETIO);
+            for (; Item->Copy && Mdl && Copied < Length; Mdl = Mdl->Next)
+            {
+                PUCHAR Source = MmGetSystemAddressForMdlSafe(Mdl, NormalPagePriority);
+                SIZE_T Count = MmGetMdlByteCount(Mdl);
+
+                if (Source == NULL)
+                    break;
+                if (Offset >= Count)
+                {
+                    Offset -= Count;
+                    continue;
+                }
+                Count = min(Count - Offset, Length - Copied);
+                RtlCopyMemory((PUCHAR)Item->Copy + Copied, Source + Offset, Count);
+                Copied += Count;
+                Offset = 0;
+            }
+            if (Item->Copy && Copied == Length)
+                Data = Item->Copy;
+        }
+
+        if (Data == NULL && Length != 0)
+        {
+            if (Item->Copy)
+                ExFreePoolWithTag(Item->Copy, TAG_NETIO);
+            ExFreePoolWithTag(Item, TAG_NETIO);
+            InterlockedCompareExchange(&Batch->Status, STATUS_INSUFFICIENT_RESOURCES, STATUS_SUCCESS);
+            break;
+        }
+
+        InterlockedIncrement(&Batch->Pending);
+        Status = TdiSendDatagram(&TdiIrp, Socket->LocalAddressFile, (PCHAR)Data, (UINT)Length,
+                                 Batch->Target, NetioSendItemComplete, Item);
+        if (TdiIrp == NULL)
+        {
+            /* The IRP was never sent, so its completion routine does not run */
+            InterlockedCompareExchange(&Batch->Status, Status, STATUS_SUCCESS);
+            if (Item->Copy)
+                ExFreePoolWithTag(Item->Copy, TAG_NETIO);
+            ExFreePoolWithTag(Item, TAG_NETIO);
+            InterlockedDecrement(&Batch->Pending);
+            break;
+        }
+    }
+
+    NetioSendItemDone(Batch);
+    return STATUS_PENDING;
+
+Fail:
+    Irp->IoStatus.Status = Status;
+    IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+    return STATUS_PENDING;
+}
+
+typedef struct _NETIO_DEFERRED_SEND
+{
+    WORK_QUEUE_ITEM WorkItem;
+    PWSK_SOCKET Socket;
+    WSK_BUF Buffer;
+    PWSK_BUF_LIST BufferList;
+    ULONG Flags;
+    PSOCKADDR RemoteAddress;
+    ULONG ControlInfoLength;
+    PCMSGHDR ControlInfo;
+    PIRP Irp;
+} NETIO_DEFERRED_SEND, *PNETIO_DEFERRED_SEND;
+
+static VOID NTAPI
+NetioDeferredSendWorker(
+    _In_ PVOID Context)
+{
+    PNETIO_DEFERRED_SEND Send = Context;
+    PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(Send->Socket, WSK_SOCKET_INTERNAL, Socket);
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    if (Send->BufferList)
+        WskSendMessages(Send->Socket, Send->BufferList, Send->Flags, Send->RemoteAddress,
+                        Send->ControlInfoLength, Send->ControlInfo, Send->Irp);
+    else
+        WskSendTo(Send->Socket, &Send->Buffer, Send->Flags, Send->RemoteAddress,
+                  Send->ControlInfoLength, Send->ControlInfo, Send->Irp);
+
+    DereferenceSocket(Socket);
+    ExFreePoolWithTag(Send, TAG_NETIO);
+}
+
+static NTSTATUS
+NetioDeferSend(
+    _In_ PWSK_SOCKET SocketParam,
+    _In_opt_ PWSK_BUF Buffer,
+    _In_opt_ PWSK_BUF_LIST BufferList,
+    _In_ ULONG Flags,
+    _In_opt_ PSOCKADDR RemoteAddress,
+    _In_ ULONG ControlInfoLength,
+    _In_opt_ PCMSGHDR ControlInfo,
+    _Inout_ PIRP Irp)
+{
+    PNETIO_DEFERRED_SEND Send = ExAllocatePoolZero(NonPagedPool, sizeof(*Send), TAG_NETIO);
+
+    if (Send == NULL)
+    {
+        IoSetNextIrpStackLocation(Irp);
+        Irp->IoStatus.Status = STATUS_INSUFFICIENT_RESOURCES;
+        IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
+        return STATUS_PENDING;
+    }
+
+    Send->Socket = SocketParam;
+    if (Buffer)
+        Send->Buffer = *Buffer;
+    Send->BufferList = BufferList;
+    Send->Flags = Flags;
+    Send->RemoteAddress = RemoteAddress;
+    Send->ControlInfoLength = ControlInfoLength;
+    Send->ControlInfo = ControlInfo;
+    Send->Irp = Irp;
+    ReferenceSocket(CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket));
+    ExInitializeWorkItem(&Send->WorkItem, NetioDeferredSendWorker, Send);
+    ExQueueWorkItem(&Send->WorkItem, CriticalWorkQueue);
+    return STATUS_PENDING;
 }
 
 static NTSTATUS WSKAPI
@@ -1139,15 +2153,60 @@ WskControlClient(
     _Out_writes_bytes_opt_(OutputSize) PVOID OutputBuffer,
     _Out_opt_ SIZE_T * OutputSizeReturned, _Inout_opt_ PIRP Irp)
 {
+    static const WSK_TRANSPORT Transports[] =
+    {
+        { 0, SOCK_STREAM, IPPROTO_TCP, AF_INET },
+        { 0, SOCK_DGRAM, IPPROTO_UDP, AF_INET },
+    };
+    PNETIO_WSK_CLIENT ClientContext = (PNETIO_WSK_CLIENT)Client;
+    NTSTATUS Status;
+
     FUNCTION_TRACE;
 
-    UNIMPLEMENTED;
+    if (OutputSizeReturned)
+        *OutputSizeReturned = 0;
+
+    switch (ControlCode)
+    {
+        case WSK_TRANSPORT_LIST_QUERY:
+            if (OutputSizeReturned)
+                *OutputSizeReturned = sizeof(Transports);
+            if (OutputBuffer == NULL || OutputSize < sizeof(Transports))
+            {
+                Status = STATUS_BUFFER_OVERFLOW;
+                break;
+            }
+            RtlCopyMemory(OutputBuffer, Transports, sizeof(Transports));
+            Status = STATUS_SUCCESS;
+            break;
+
+        case WSK_SET_STATIC_EVENT_CALLBACKS:
+            if (ClientContext == NULL || InputBuffer == NULL || InputSize < sizeof(WSK_EVENT_CALLBACK_CONTROL))
+            {
+                Status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            ClientContext->EventMask = ((PWSK_EVENT_CALLBACK_CONTROL)InputBuffer)->EventMask;
+            Status = STATUS_SUCCESS;
+            break;
+
+        case WSK_TDI_BEHAVIOR:
+            Status = (InputBuffer != NULL && InputSize >= sizeof(ULONG)) ? STATUS_SUCCESS : STATUS_INVALID_PARAMETER;
+            break;
+
+        default:
+            DPRINT1("WskControlClient: control code %lu not supported\n", ControlCode);
+            Status = STATUS_NOT_SUPPORTED;
+            break;
+    }
+
     if (Irp != NULL)
     {
-        Irp->IoStatus.Status = STATUS_NOT_IMPLEMENTED;
+        Irp->IoStatus.Status = Status;
+        Irp->IoStatus.Information = OutputSizeReturned ? *OutputSizeReturned : 0;
         IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
     }
-    return STATUS_NOT_IMPLEMENTED;
+    return Status;
 }
 
 static WSK_PROVIDER_DATAGRAM_DISPATCH UdpDispatch = {
@@ -1158,6 +2217,7 @@ static WSK_PROVIDER_DATAGRAM_DISPATCH UdpDispatch = {
     .WskReceiveFrom = WskReceiveFrom,
     .WskRelease = WskReleaseUdp,
     .WskGetLocalAddress = WskGetLocalAddress,
+    .WskSendMessages = WskSendMessages,
 };
 
 /* Connection oriented routines (TCP/IP) */
@@ -1462,6 +2522,12 @@ WskSocket(
         case SOCK_DGRAM:
             Socket->Socket.Dispatch = &UdpDispatch;
             RtlInitUnicodeString(&Socket->TdiName, L"\\Device\\Udp");
+            Socket->DatagramDispatch = Dispatch;
+            KeInitializeSpinLock(&Socket->ReceiveLock);
+            KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
+            Socket->ReceiveEvents = Client != NULL &&
+                                    (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
+            Socket->ReceiveEventsStatic = Socket->ReceiveEvents;
             break;
         case SOCK_STREAM:
             Socket->Socket.Dispatch = &TcpDispatch;
@@ -1511,6 +2577,17 @@ WskSocket(
             goto err_out;
     }
 
+    if (Client != NULL)
+    {
+        if (!NetioAddClientUser((PNETIO_WSK_CLIENT)Client))
+        {
+            DereferenceSocket(Socket);
+            status = STATUS_DEVICE_NOT_READY;
+            goto err_out;
+        }
+        Socket->Client = (PNETIO_WSK_CLIENT)Client;
+    }
+
     Irp->IoStatus.Information = (ULONG_PTR)Socket;
     status = STATUS_SUCCESS;
 
@@ -1532,24 +2609,45 @@ static WSK_PROVIDER_DISPATCH provider_dispatch = {
 NTSTATUS WSKAPI
 WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
 {
+    PNETIO_WSK_CLIENT Client;
+    NTSTATUS Status;
+
     FUNCTION_TRACE;
 
     reg->ReservedRegistrationState = 0;
     reg->ReservedRegistrationContext = NULL;
     KeInitializeSpinLock(&reg->ReservedRegistrationLock);
 
+    Client = ExAllocatePoolZero(NonPagedPool, sizeof(*Client), TAG_NETIO);
+    if (Client == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    KeInitializeSpinLock(&Client->Lock);
+    KeInitializeEvent(&Client->Idle, NotificationEvent, TRUE);
+
+    Status = StartSocketDereferenceThread();
+    if (!NT_SUCCESS(Status))
+    {
+        ExFreePoolWithTag(Client, TAG_NETIO);
+        return Status;
+    }
+    reg->ReservedRegistrationContext = Client;
     return STATUS_SUCCESS;
 }
 
 NTSTATUS WSKAPI
 WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PROVIDER_NPI npi)
 {
+    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+
     FUNCTION_TRACE;
 
-    npi->Client = NULL;
-    npi->Dispatch = &provider_dispatch;
+    UNREFERENCED_PARAMETER(wait);
 
-    return StartSocketDereferenceThread();
+    if (Client == NULL || !NetioAddClientUser(Client))
+        return STATUS_DEVICE_NOT_READY;
+    npi->Client = (PWSK_CLIENT)Client;
+    npi->Dispatch = &provider_dispatch;
+    return STATUS_SUCCESS;
 }
 
 VOID WSKAPI
@@ -1557,16 +2655,32 @@ WskReleaseProviderNPI(_In_ PWSK_REGISTRATION reg)
 {
     FUNCTION_TRACE;
 
-    StopSocketDereferenceThread();
+    NetioRemoveClientUser(reg->ReservedRegistrationContext);
 }
 
 VOID WSKAPI
 WskDeregister(_In_ PWSK_REGISTRATION reg)
 {
+    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+    KIRQL OldIrql;
+
     FUNCTION_TRACE;
+
+    if (Client == NULL)
+        return;
+
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    Client->Deregistering = TRUE;
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
+    KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
+
+    KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    KeReleaseSpinLock(&Client->Lock, OldIrql);
 
     reg->ReservedRegistrationState = 0;
     reg->ReservedRegistrationContext = NULL;
+    ExFreePoolWithTag(Client, TAG_NETIO);
+    StopSocketDereferenceThread();
 }
 
 NTSTATUS

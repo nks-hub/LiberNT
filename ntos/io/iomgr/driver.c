@@ -1355,6 +1355,9 @@ IopInitializeBuiltinDriver(
     PLDR_DATA_TABLE_ENTRY LdrEntry = NULL;
     PLIST_ENTRY NextEntry;
 
+    ASSERT(RegistryPath != NULL && RegistryPath->Length >= sizeof(WCHAR));
+    ASSERT(RegistryPath->Buffer[0] == OBJ_NAME_PATH_SEPARATOR);
+
     HANDLE serviceHandle;
     Status = IopOpenRegistryKeyEx(&serviceHandle, NULL, RegistryPath, KEY_READ);
     if (!NT_SUCCESS(Status))

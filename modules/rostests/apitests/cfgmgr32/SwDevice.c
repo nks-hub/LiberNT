@@ -134,6 +134,31 @@ test_DriverRequired(CREATED *State)
 }
 
 static void
+test_DriverRequiredNoIds(CREATED *State)
+{
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    Info.pszInstanceId = L"DriverRequiredNoIds";
+    Info.pszzHardwareIds = L"";
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesDriverRequired;
+    ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+    State->Result = E_PENDING;
+    ResetEvent(State->Event);
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate without IDs returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(WaitForSingleObject(State->Event, 30000) == WAIT_OBJECT_0, "The creation did not complete\n");
+    ok(State->Result == S_OK, "The creation without IDs reported 0x%08lx\n", State->Result);
+    ok(IsPresent(State->InstanceId), "%S is not present\n", State->InstanceId);
+    SwDeviceClose(Device);
+    WaitGone(State->InstanceId);
+}
+
+static void
 test_SecurityDescriptor(CREATED *State)
 {
     PSECURITY_DESCRIPTOR Security = NULL, NoOwner = NULL;
@@ -221,6 +246,7 @@ START_TEST(SwDevice)
     State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
     test_Lifetime(&State);
     test_DriverRequired(&State);
+    test_DriverRequiredNoIds(&State);
     test_SecurityDescriptor(&State);
     test_ProcessEnd();
     CloseHandle(State.Event);

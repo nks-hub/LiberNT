@@ -366,7 +366,8 @@ DuplicateCreatedTokenAsEffective(
             UNICODE_STRING SidText = { 0, sizeof(Text), Text };
 
             RtlConvertSidToUnicodeString(&SidText, EffectiveGroups->Groups[Index].Sid, FALSE);
-            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is %wZ\n", Index, &SidText);
+            ok(EqualSid(EffectiveGroups->Groups[Index].Sid, Kept[Index]), "Group %lu is %s\n", Index,
+               wine_dbgstr_wn(SidText.Buffer, SidText.Length / sizeof(WCHAR)));
         }
     }
     if (EffectiveLabel)

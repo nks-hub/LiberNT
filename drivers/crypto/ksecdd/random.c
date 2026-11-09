@@ -172,9 +172,11 @@ KsecGenRandom(
     ULONG Input[16];
     ULONG Output[16];
     PUCHAR Destination = Buffer;
-    ULONG64 Counter, Blocks;
+    ULONG64 Counter, Blocks, KeyCounter;
     SIZE_T Chunk;
     KIRQL OldIrql;
+
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
     if (Length == 0)
     {
@@ -193,9 +195,11 @@ KsecGenRandom(
     RtlCopyMemory(&Input[4], KsecRandomKey, sizeof(KsecRandomKey));
     Counter = KsecRandomBlockCounter;
     KsecRandomBlockCounter += Blocks + 1;
+    ASSERT(KsecRandomBlockCounter > Counter);
 
     /* The next key is the block after this request's blocks */
-    KsecRandomSetCounter(Input, Counter + Blocks);
+    KeyCounter = Counter + Blocks;
+    KsecRandomSetCounter(Input, KeyCounter);
     KsecRandomCore(Input, Output);
     RtlCopyMemory(KsecRandomKey, Output, sizeof(KsecRandomKey));
     KeReleaseSpinLock(&KsecRandomLock, OldIrql);
@@ -209,6 +213,8 @@ KsecGenRandom(
         Destination += Chunk;
         Length -= Chunk;
     }
+
+    ASSERT(Counter == KeyCounter);
 
     RtlSecureZeroMemory(Input, sizeof(Input));
     RtlSecureZeroMemory(Output, sizeof(Output));

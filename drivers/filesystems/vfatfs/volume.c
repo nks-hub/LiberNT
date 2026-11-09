@@ -322,7 +322,7 @@ FsdSetFsLabelInformation(
     FileOffset.QuadPart = 0;
     _SEH2_TRY
     {
-        CcPinRead(pRootFcb->FileObject, &FileOffset, SizeDirEntry, PIN_WAIT, &Context, (PVOID*)&Entry);
+        CcPinRead(pRootFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, PIN_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -357,7 +357,7 @@ FsdSetFsLabelInformation(
                 FileOffset.u.LowPart += PAGE_SIZE;
                 _SEH2_TRY
                 {
-                    CcPinRead(pRootFcb->FileObject, &FileOffset, SizeDirEntry, PIN_WAIT, &Context, (PVOID*)&Entry);
+                    CcPinRead(pRootFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, PIN_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {
@@ -392,7 +392,7 @@ FsdSetFsLabelInformation(
             Status = STATUS_SUCCESS;
             _SEH2_TRY
             {
-                CcPinRead(pRootFcb->FileObject, &FileOffset, SizeDirEntry, PIN_WAIT, &Context, (PVOID*)&Entry);
+                CcPinRead(pRootFcb->FileObject, (PLARGE_INTEGER)&FileOffset, SizeDirEntry, PIN_WAIT, (PVOID *)&Context, (PVOID*)&Entry);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {

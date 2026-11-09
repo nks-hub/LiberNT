@@ -1105,11 +1105,11 @@ VfatWrite(
 
             if (ByteOffset.QuadPart > OldFileSize.QuadPart)
             {
-                CcZeroData(IrpContext->FileObject, &OldFileSize, &ByteOffset, TRUE);
+                CcZeroData(IrpContext->FileObject, (PLARGE_INTEGER)&OldFileSize, (PLARGE_INTEGER)&ByteOffset, TRUE);
             }
 
             if (CcCopyWrite(IrpContext->FileObject,
-                            &ByteOffset,
+                            (PLARGE_INTEGER)&ByteOffset,
                             Length,
                             TRUE /*CanWait*/,
                             Buffer))
@@ -1141,7 +1141,7 @@ VfatWrite(
 
         if (ByteOffset.QuadPart > OldFileSize.QuadPart)
         {
-            CcZeroData(IrpContext->FileObject, &OldFileSize, &ByteOffset, TRUE);
+            CcZeroData(IrpContext->FileObject, (PLARGE_INTEGER)&OldFileSize, (PLARGE_INTEGER)&ByteOffset, TRUE);
         }
 
         if (!IsVolume)

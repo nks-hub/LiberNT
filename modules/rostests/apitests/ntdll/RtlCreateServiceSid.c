@@ -27,7 +27,8 @@ CheckServiceSid(PCWSTR Name, PCWSTR Expected)
     ok(Status == STATUS_SUCCESS, "RtlConvertSidToUnicodeString: 0x%lx\n", Status);
     if (!NT_SUCCESS(Status))
         return;
-    ok(!_wcsicmp(Text.Buffer, Expected), "%S: got %wZ, expected %S\n", Name, &Text, Expected);
+    ok(!_wcsicmp(Text.Buffer, Expected), "%S: got %s, expected %S\n", Name,
+       wine_dbgstr_wn(Text.Buffer, Text.Length / sizeof(WCHAR)), Expected);
     RtlFreeUnicodeString(&Text);
 }
 

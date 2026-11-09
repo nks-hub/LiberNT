@@ -729,6 +729,8 @@ ExpInitSystemPhase0(VOID)
     /* Initialize the lookaside lists and locks */
     ExpInitLookasideLists();
 
+    ExpInitializeWorkerQueues();
+
     /* Initialize the Firmware Table resource and listhead */
     InitializeListHead(&ExpFirmwareTableProviderListHead);
     ExInitializeResourceLite(&ExpFirmwareTableResource);
@@ -1658,13 +1660,22 @@ Phase1InitializationDiscard(IN PVOID Context)
                                          ExpTimeZoneBias.QuadPart;
         }
 
-        /* Update the system time and notify the system */
-        KeSetSystemTime(&UniversalBootTime, &OldTime, FALSE, NULL);
-        PoNotifySystemTimeSet();
+        /* An unrepresentable boot time would trip the assertion prompt forever */
+        if ((UniversalBootTime.HighPart & 0xF0000000) != 0)
+        {
+            DPRINT1("EX: boot time %08lx:%08lx is outside the representable range, keeping the kernel clock\n",
+                    (ULONG)UniversalBootTime.HighPart, (ULONG)UniversalBootTime.LowPart);
+        }
+        else
+        {
+            /* Update the system time and notify the system */
+            KeSetSystemTime(&UniversalBootTime, &OldTime, FALSE, NULL);
+            PoNotifySystemTimeSet();
 
-        /* Remember this as the boot time */
-        KeBootTime = UniversalBootTime;
-        KeBootTimeBias = 0;
+            /* Remember this as the boot time */
+            KeBootTime = UniversalBootTime;
+            KeBootTimeBias = 0;
+        }
     }
 
 #ifdef CONFIG_SMP

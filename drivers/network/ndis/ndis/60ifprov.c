@@ -140,6 +140,8 @@ Ndis6ReserveNetLuidIndex(
     KIRQL OldIrql;
     BOOLEAN Reserved = FALSE;
 
+    ASSERT(NetLuidIndex != 0 && NetLuidIndex <= 0x00ffffff);
+
     Index = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Index), NDIS6_IF_PROVIDER_TAG);
     if (Index == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -168,6 +170,8 @@ Ndis6AdapterUsesNetLuidIndexAtDpcLevel(
 {
     PLIST_ENTRY Link;
     BOOLEAN Found = FALSE;
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     KeAcquireSpinLockAtDpcLevel(&AdapterListLock);
     for (Link = AdapterListHead.Flink; Link != &AdapterListHead; Link = Link->Flink)

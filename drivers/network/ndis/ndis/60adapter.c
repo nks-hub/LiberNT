@@ -267,6 +267,7 @@ Ndis6AllocateInterfaceIdentity(
     /* NET_LUID reserves 24 bits for NetLuidIndex and zero is invalid. Keep
      * IfIndex and NetLuidIndex identical so NdisIfGetInterfaceIndexFromNetLuid
      * preserves the adapter identity. */
+    ASSERT(!Ext->NetLuidIndexReserved);
     IfType = Ndis6ReadInterfaceType(Pdo);
     LuidIndex = Ndis6ReadNetLuidIndex(Pdo);
     if (LuidIndex != 0)
@@ -301,6 +302,8 @@ Ndis6RetypeInterfaceIdentity(
     UINT32 LuidIndex = (UINT32)Ext->NetLuid.Info.NetLuidIndex;
     LONG Next;
     NTSTATUS Status;
+
+    ASSERT(Ext->NetLuidIndexReserved);
 
     if (Ext->NetLuid.Info.IfType == IfType)
         return STATUS_SUCCESS;

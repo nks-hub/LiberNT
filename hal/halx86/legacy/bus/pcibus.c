@@ -545,12 +545,11 @@ HalpPhase0SetPciDataByOffset(
 
 /* HAL PCI CALLBACKS *********************************************************/
 
+#ifndef _MINIHAL_
 static ULONGLONG HalpPciExtendedConfigBase;
 static ULONG HalpPciExtendedConfigStartBus;
 static ULONG HalpPciExtendedConfigEndBus;
-#ifndef _MINIHAL_
 static PUCHAR HalpPciExtendedConfigBus[PCI_MAX_BRIDGE_NUMBER + 1];
-#endif
 
 VOID
 NTAPI
@@ -563,6 +562,7 @@ HalpPciSetExtendedConfigWindow(
     HalpPciExtendedConfigStartBus = StartBus;
     HalpPciExtendedConfigEndBus = min(EndBus, PCI_MAX_BRIDGE_NUMBER);
 }
+#endif
 
 static
 PUCHAR

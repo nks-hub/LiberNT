@@ -9,6 +9,7 @@
 /* INCLUDES *****************************************************************/
 
 #include <rtl.h>
+#include "../cryptlib/sha1.h"
 #define NDEBUG
 #include <debug.h>
 
@@ -410,7 +411,10 @@ RtlConvertSidToUnicodeString(IN PUNICODE_STRING String,
 }
 
 /*
- * @unimplemented
+ * @implemented
+ *
+ * The SID of a service is S-1-5-80 followed by the SHA-1 hash of its
+ * upper-case name in UTF-16, read as five 32-bit sub-authorities.
  */
 NTSTATUS
 NTAPI
@@ -419,8 +423,38 @@ RtlCreateServiceSid(
     _Out_writes_bytes_opt_(*ServiceSidLength) PSID ServiceSid,
     _Inout_ PULONG ServiceSidLength)
 {
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    ULONG Length = RtlLengthRequiredSid(SECURITY_SERVICE_ID_RID_COUNT);
+    UNICODE_STRING UpcaseName;
+    SHA_CTX Context;
+    ULONG Hash[5];
+    NTSTATUS Status;
+    ULONG i;
+
+    PAGED_CODE_RTL();
+
+    if (ServiceName == NULL || ServiceSidLength == NULL)
+        return STATUS_INVALID_PARAMETER;
+    if (ServiceSid == NULL || *ServiceSidLength < Length)
+    {
+        *ServiceSidLength = Length;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    Status = RtlUpcaseUnicodeString(&UpcaseName, ServiceName, TRUE);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    A_SHAInit(&Context);
+    A_SHAUpdate(&Context, (const unsigned char *)UpcaseName.Buffer, UpcaseName.Length);
+    A_SHAFinal(&Context, Hash);
+    RtlFreeUnicodeString(&UpcaseName);
+
+    RtlInitializeSid(ServiceSid, &NtAuthority, SECURITY_SERVICE_ID_RID_COUNT);
+    *RtlSubAuthoritySid(ServiceSid, 0) = SECURITY_SERVICE_ID_BASE_RID;
+    for (i = 0; i < 5; i++)
+        *RtlSubAuthoritySid(ServiceSid, i + 1) = Hash[i];
+    *ServiceSidLength = Length;
+    return STATUS_SUCCESS;
 }
 
 /* EOF */

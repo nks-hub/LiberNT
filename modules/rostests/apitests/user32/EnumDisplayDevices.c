@@ -21,7 +21,7 @@ CheckTail(
     {
         if (String[i] != UNICODE_NULL)
         {
-            ok(0, "%S has 0x%04x at %Iu after its end at %Iu\n", Name, String[i], i, Length);
+            ok(0, "%S has 0x%04x at %lu after its end at %lu\n", Name, String[i], (ULONG)i, (ULONG)Length);
             return;
         }
     }

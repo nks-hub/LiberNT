@@ -592,8 +592,8 @@ CsrApiRequestThread(IN PVOID Parameter)
     LARGE_INTEGER TimeOut;
     PCSR_THREAD CurrentThread, CsrThread;
     NTSTATUS Status;
-    CSR_REPLY_CODE ReplyCode;
-    PCSR_API_MESSAGE ReplyMsg;
+    CSR_REPLY_CODE _SEH2_VOLATILE ReplyCode;
+    PCSR_API_MESSAGE _SEH2_VOLATILE ReplyMsg;
     CSR_API_MESSAGE ReceiveMsg;
     PCSR_PROCESS CsrProcess;
     PHARDERROR_MSG HardErrorMsg;
@@ -602,7 +602,7 @@ CsrApiRequestThread(IN PVOID Parameter)
     PCLIENT_DIED_MSG ClientDiedMsg;
     PDBGKM_MSG DebugMessage;
     ULONG ServerId, ApiId, MessageType, i;
-    HANDLE ReplyPort;
+    HANDLE _SEH2_VOLATILE ReplyPort;
 
     /* Setup LPC loop port and message */
     ReplyMsg = NULL;
@@ -866,7 +866,7 @@ CsrApiRequestThread(IN PVOID Parameter)
                     /* Call the API and get the reply code */
                     ReplyMsg = NULL;
                     ReplyPort = CsrApiPort;
-                    ServerDll->DispatchTable[ApiId](&ReceiveMsg, &ReplyCode);
+                    ServerDll->DispatchTable[ApiId](&ReceiveMsg, (PCSR_REPLY_CODE)&ReplyCode);
 
                     /* Increase the static thread count */
                     InterlockedIncrementUL(&CsrpStaticThreadCount);
@@ -1104,7 +1104,7 @@ CsrApiRequestThread(IN PVOID Parameter)
 
             /* Call the API, get the reply code and return the result */
             ReplyCode = CsrReplyImmediately;
-            ReplyMsg->Status = ServerDll->DispatchTable[ApiId](&ReceiveMsg, &ReplyCode);
+            ReplyMsg->Status = ServerDll->DispatchTable[ApiId](&ReceiveMsg, (PCSR_REPLY_CODE)&ReplyCode);
 
             /* Increase the static thread count */
             InterlockedIncrementUL(&CsrpStaticThreadCount);
@@ -1340,7 +1340,7 @@ CsrConnectToUser(VOID)
     STRING StartupName;
     PTEB Teb = NtCurrentTeb();
     PCSR_THREAD CsrThread;
-    BOOLEAN Connected = FALSE;
+    BOOLEAN _SEH2_VOLATILE Connected = FALSE;
 
     /* Check if we didn't already find it */
     if (!CsrClientThreadSetup)

@@ -6300,7 +6300,7 @@ NtUserGetTitleBarInfo(
     PTITLEBARINFO bti)
 {
     PWND WindowObject;
-    TITLEBARINFO bartitleinfo;
+    TITLEBARINFO _SEH2_VOLATILE bartitleinfo;
     BOOLEAN retValue = FALSE;
 
     TRACE("Enter NtUserGetTitleBarInfo\n");
@@ -6317,7 +6317,7 @@ NtUserGetTitleBarInfo(
     _SEH2_TRY
     {
         ProbeForRead(bti, sizeof(TITLEBARINFO), 1);
-        RtlCopyMemory(&bartitleinfo, bti, sizeof(TITLEBARINFO));
+        RtlCopyMemory((void *)&bartitleinfo, bti, sizeof(TITLEBARINFO));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6327,7 +6327,7 @@ NtUserGetTitleBarInfo(
     _SEH2_END
 
     /* Get the tile bar info */
-    retValue = intGetTitleBarInfo(WindowObject, &bartitleinfo);
+    retValue = intGetTitleBarInfo(WindowObject, (PTITLEBARINFO)&bartitleinfo);
     if (!retValue)
     {
         // intGetTitleBarInfo() set LastError.
@@ -6338,7 +6338,7 @@ NtUserGetTitleBarInfo(
     _SEH2_TRY
     {
         ProbeForWrite(bti, sizeof(TITLEBARINFO), 1);
-        RtlCopyMemory(bti, &bartitleinfo, sizeof(TITLEBARINFO));
+        RtlCopyMemory(bti, (const void *)&bartitleinfo, sizeof(TITLEBARINFO));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6793,7 +6793,7 @@ NtUserDrawMenuBarTemp(
 {
    PMENU Menu;
    PWND Window;
-   RECT Rect;
+   RECT _SEH2_VOLATILE Rect;
    NTSTATUS Status = STATUS_SUCCESS;
    DWORD Ret = 0;
 
@@ -6815,7 +6815,7 @@ NtUserDrawMenuBarTemp(
    _SEH2_TRY
    {
       ProbeForRead(pRect, sizeof(RECT), sizeof(ULONG));
-      RtlCopyMemory(&Rect, pRect, sizeof(RECT));
+      RtlCopyMemory((void *)&Rect, pRect, sizeof(RECT));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {
@@ -6829,7 +6829,7 @@ NtUserDrawMenuBarTemp(
       goto Exit; // Return 0
    }
 
-   Ret = IntDrawMenuBarTemp(Window, hDC, &Rect, Menu, hFont);
+   Ret = IntDrawMenuBarTemp(Window, hDC, (LPRECTL)&Rect, Menu, hFont);
 
 Exit:
    UserLeave();
@@ -7184,7 +7184,7 @@ NtUserTrackPopupMenuEx(
 {
     PMENU menu;
     PWND pWnd;
-    TPMPARAMS tpm;
+    TPMPARAMS _SEH2_VOLATILE tpm;
     BOOL Ret = FALSE;
     USER_REFERENCE_ENTRY WndRef, MenuRef;
 
@@ -7235,7 +7235,7 @@ NtUserTrackPopupMenuEx(
 
     UserRefObjectCo(pWnd, &WndRef);
     UserRefObjectCo(menu, &MenuRef);
-    Ret = IntTrackPopupMenuEx(menu, fuFlags, x, y, pWnd, (lptpm ? &tpm : NULL));
+    Ret = IntTrackPopupMenuEx(menu, fuFlags, x, y, pWnd, (lptpm ? (const TPMPARAMS *)&tpm : NULL));
     UserDerefObjectCo(menu);
     UserDerefObjectCo(pWnd);
 

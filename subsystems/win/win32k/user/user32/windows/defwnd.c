@@ -1627,7 +1627,7 @@ LRESULT WINAPI
 DefWindowProcA(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
    BOOL Hook, msgOverride = FALSE;
-   LRESULT Result = 0;
+   LRESULT _SEH2_VOLATILE Result = 0;
 
    LoadUserApiHook();
 
@@ -1664,7 +1664,7 @@ LRESULT WINAPI
 DefWindowProcW(HWND hWnd, UINT Msg, WPARAM wParam, LPARAM lParam)
 {
    BOOL Hook, msgOverride = FALSE;
-   LRESULT Result = 0;
+   LRESULT _SEH2_VOLATILE Result = 0;
 
    LoadUserApiHook();
 

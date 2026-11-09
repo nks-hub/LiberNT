@@ -263,7 +263,7 @@ NtGdiCombineTransform(
     LPXFORM Unsafexform1,
     LPXFORM Unsafexform2)
 {
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     _SEH2_TRY
     {
@@ -593,7 +593,7 @@ NtGdiModifyWorldTransform(
     DWORD dwMode)
 {
     PDC pdc;
-    XFORML xformSafe;
+    XFORML _SEH2_VOLATILE xformSafe;
     BOOL Ret = TRUE;
 
     pdc = DC_LockDc(hdc);
@@ -617,7 +617,7 @@ NtGdiModifyWorldTransform(
         _SEH2_TRY
         {
             ProbeForRead(pxformUnsafe, sizeof(XFORML), 1);
-            RtlCopyMemory(&xformSafe, pxformUnsafe, sizeof(XFORML));
+            RtlCopyMemory((void *)&xformSafe, pxformUnsafe, sizeof(XFORML));
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -627,7 +627,7 @@ NtGdiModifyWorldTransform(
     }
 
     /* Safe to handle kernel mode data. */
-    if (Ret) Ret = GreModifyWorldTransform(pdc, &xformSafe, dwMode);
+    if (Ret) Ret = GreModifyWorldTransform(pdc, (const XFORML *)&xformSafe, dwMode);
     DC_UnlockDc(pdc);
     return Ret;
 }
@@ -836,7 +836,7 @@ NtGdiScaleWindowExtEx(
     PDC pDC;
     PDC_ATTR pdcattr;
     BOOL Ret = FALSE;
-    LONG X, Y;
+    LONG _SEH2_VOLATILE X, Y;
 
     pDC = DC_LockDc(hDC);
     if (!pDC)

@@ -226,8 +226,8 @@ VersionRegisterClass(
   HANDLE Contex,
   HMODULE * phLibModule)
 {
-    BOOL Ret = FALSE;
-    HMODULE hLibModule = NULL;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
+    HMODULE _SEH2_VOLATILE hLibModule = NULL;
     PREGISTERCLASSNAMEW pRegisterClassNameW;
     UNICODE_STRING ClassName;
     WCHAR ClassNameBuf[MAX_PATH] = {0};
@@ -857,7 +857,7 @@ GetClassLongA(HWND hWnd, int nIndex)
 #else
     PWND Wnd;
     PCLS Class;
-    ULONG_PTR Ret = 0;
+    ULONG_PTR _SEH2_VOLATILE Ret = 0;
 
     TRACE("%p %d\n", hWnd, nIndex);
 
@@ -918,7 +918,7 @@ GetClassLongW(HWND hWnd, int nIndex)
 #else
     PWND Wnd;
     PCLS Class;
-    ULONG_PTR Ret = 0;
+    ULONG_PTR _SEH2_VOLATILE Ret = 0;
 
     TRACE("%p %d\n", hWnd, nIndex);
 
@@ -978,7 +978,7 @@ GetClassLongPtrA(HWND hWnd,
 {
     PWND Wnd;
     PCLS Class;
-    ULONG_PTR Ret = 0;
+    ULONG_PTR _SEH2_VOLATILE Ret = 0;
 
     TRACE("%p %d\n", hWnd, nIndex);
 
@@ -1017,7 +1017,7 @@ GetClassLongPtrW(HWND hWnd,
 {
     PWND Wnd;
     PCLS Class;
-    ULONG_PTR Ret = 0;
+    ULONG_PTR _SEH2_VOLATILE Ret = 0;
 
     TRACE("%p %d\n", hWnd, nIndex);
 

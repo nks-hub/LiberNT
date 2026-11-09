@@ -100,7 +100,7 @@ NtUserGetAtomName(
     _Inout_ PUNICODE_STRING pustrName)
 {
     WCHAR awcBuffer[256];
-    ULONG cjLength;
+    ULONG _SEH2_VOLATILE cjLength;
 
     /* Retrieve the atom name into a local buffer (max length is 255 chars) */
     cjLength = IntGetAtomName((RTL_ATOM)atom, awcBuffer, sizeof(awcBuffer));

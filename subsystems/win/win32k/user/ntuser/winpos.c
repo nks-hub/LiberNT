@@ -4462,8 +4462,8 @@ NtUserSetInternalWindowPos(
    WINDOWPLACEMENT wndpl;
    UINT flags;
    PWND Wnd;
-   RECT rect = {0};
-   POINT pt = {0};
+   RECT _SEH2_VOLATILE rect = {0};
+   POINT _SEH2_VOLATILE pt = {0};
    BOOL Ret = FALSE;
    USER_REFERENCE_ENTRY Ref;
 
@@ -4481,12 +4481,12 @@ NtUserSetInternalWindowPos(
       if (lppt)
       {
          ProbeForRead(lppt, sizeof(POINT), 1);
-         RtlCopyMemory(&pt, lppt, sizeof(POINT));
+         RtlCopyMemory((void *)&pt, lppt, sizeof(POINT));
       }
       if (lprect)
       {
          ProbeForRead(lprect, sizeof(RECT), 1);
-         RtlCopyMemory(&rect, lprect, sizeof(RECT));
+         RtlCopyMemory((void *)&rect, lprect, sizeof(RECT));
       }
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -4531,7 +4531,7 @@ NtUserSetWindowPlacement(HWND hWnd,
                          WINDOWPLACEMENT *lpwndpl)
 {
    PWND Wnd;
-   WINDOWPLACEMENT Safepl;
+   WINDOWPLACEMENT _SEH2_VOLATILE Safepl;
    UINT Flags;
    BOOL Ret = FALSE;
    USER_REFERENCE_ENTRY Ref;
@@ -4571,7 +4571,7 @@ NtUserSetWindowPlacement(HWND hWnd,
 
     UserRefObjectCo(Wnd, &Ref);
     if (!UserIsDesktopWindow(Wnd) && !UserIsMessageWindow(Wnd))
-        Ret = IntSetWindowPlacement(Wnd, &Safepl, Flags);
+        Ret = IntSetWindowPlacement(Wnd, (WINDOWPLACEMENT *)&Safepl, Flags);
     UserDerefObjectCo(Wnd);
 
     if (Ret)

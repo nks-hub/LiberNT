@@ -650,7 +650,7 @@ NtUserGetMouseMovePointsEx(
 {
     MOUSEMOVEPOINT Safeppt;
     //BOOL Hit;
-    INT iRet = -1;
+    INT _SEH2_VOLATILE iRet = -1;
     PTHREADINFO pti;
 
     TRACE("Enter NtUserGetMouseMovePointsEx\n");

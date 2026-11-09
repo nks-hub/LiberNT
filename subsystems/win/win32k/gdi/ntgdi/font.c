@@ -1204,11 +1204,11 @@ NtGdiGetFontResourceInfoInternalW(
     _In_ DWORD dwType)
 {
     NTSTATUS Status = STATUS_SUCCESS;
-    DWORD dwBytes, dwBytesRequested = 0;
+    DWORD _SEH2_VOLATILE dwBytes, dwBytesRequested = 0;
     UNICODE_STRING SafeFileNames;
     BOOL bRet = FALSE;
     ULONG cbStringSize;
-    LPVOID Buffer = NULL;
+    LPVOID _SEH2_VOLATILE Buffer = NULL;
 
     /* FIXME: Handle cFiles > 0 */
 
@@ -1270,7 +1270,7 @@ NtGdiGetFontResourceInfoInternalW(
     /* Do the actual call */
     bRet = IntGdiGetFontResourceInfo(&SafeFileNames,
                                      (pvBuf ? Buffer : NULL),
-                                     &dwBytes, dwType);
+                                     (DWORD *)&dwBytes, dwType);
 
     /* Check if succeeded */
     if (bRet)
@@ -1391,7 +1391,7 @@ NtGdiGetFontFileData(
     _In_ SIZE_T cjBuf)
 {
     PVOID Buffer = NULL;
-    ULONGLONG Offset = 0;
+    ULONGLONG _SEH2_VOLATILE Offset = 0;
     NTSTATUS Status = STATUS_SUCCESS;
     BOOL Ret;
 
@@ -1467,7 +1467,7 @@ NtGdiGetRealizationInfo(
   INT i = 0;
   REALIZATION_INFO ri;
   FONT_REALIZATION_INFO fri;
-  DWORD ModernSize = 0;
+  DWORD _SEH2_VOLATILE ModernSize = 0;
   NTSTATUS Status = STATUS_SUCCESS;
 
   if (Modern)
@@ -1645,7 +1645,7 @@ NtGdiHfontCreate(
     _In_ FLONG  fl,
     _In_opt_ PVOID pvCliData)
 {
-  ENUMLOGFONTEXDVW SafeLogfont;
+  ENUMLOGFONTEXDVW _SEH2_VOLATILE SafeLogfont;
   NTSTATUS Status = STATUS_SUCCESS;
 
   /* Silence GCC warnings */
@@ -1660,7 +1660,7 @@ NtGdiHfontCreate(
   _SEH2_TRY
   {
       ProbeForRead(pelfw, sizeof(ENUMLOGFONTEXDVW), 1);
-      RtlCopyMemory(&SafeLogfont, pelfw, sizeof(ENUMLOGFONTEXDVW));
+      RtlCopyMemory((void *)&SafeLogfont, pelfw, sizeof(ENUMLOGFONTEXDVW));
   }
   _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
   {
@@ -1673,7 +1673,7 @@ NtGdiHfontCreate(
       return NULL;
   }
 
-  return HfontCreate(&SafeLogfont, cjElfw, lft, fl, pvCliData);
+  return HfontCreate((const ENUMLOGFONTEXDVW *)&SafeLogfont, cjElfw, lft, fl, pvCliData);
 }
 
 

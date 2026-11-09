@@ -299,7 +299,7 @@ DuplicateCreatedTokenAsEffective(
     _In_ PSID Owner,
     _In_ PSID ExpectedOwner)
 {
-    static PSID const Kept[] = { &WorldSid, &MediumSid, &AuthenticatedSid, &ServiceSid };
+    static PSID const Kept[] = { &WorldSid, &ServiceSid, &AuthenticatedSid, &MediumSid };
     NTSTATUS Status;
     HANDLE Token, EffectiveToken;
     OBJECT_ATTRIBUTES ObjectAttributes;

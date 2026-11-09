@@ -542,7 +542,7 @@ SepDuplicateToken(
     ULONG PrimaryGroupIndex;
     ULONG VariableLength;
     ULONG DynamicPartSize, TotalSize;
-    ULONG PrivilegesIndex, GroupsIndex;
+    ULONG PrivilegesIndex, GroupsIndex, LastIndex;
 
     PAGED_CODE();
 
@@ -815,9 +815,6 @@ SepDuplicateToken(
              * that the group has just been enabled by default). A mandatory
              * group (that is, the group has SE_GROUP_MANDATORY attribute)
              * by standards it's always enabled and no one can disable it.
-             * The integrity label is never enabled but the token keeps it. A
-             * group for deny only is not enabled either; dropping it would
-             * grant what it denies, and Windows 11 keeps it too.
              */
             if ((AccessToken->UserAndGroups[GroupsIndex].Attributes &
                  (SE_GROUP_ENABLED | SE_GROUP_INTEGRITY | SE_GROUP_USE_FOR_DENY_ONLY)) == 0)
@@ -827,11 +824,15 @@ SepDuplicateToken(
                  * from the token and update the groups index
                  * accordingly and continue with the next group.
                  */
-                SepRemoveUserGroupToken(AccessToken, GroupsIndex);
+                LastIndex = AccessToken->UserAndGroupCount - 1;
+
+                /* Windows 11 moves the last group into the place of the removed one */
+                AccessToken->UserAndGroups[GroupsIndex] = AccessToken->UserAndGroups[LastIndex];
+                AccessToken->UserAndGroupCount--;
                 if (AccessToken->DefaultOwnerIndex == GroupsIndex)
                     AccessToken->DefaultOwnerIndex = 0;
-                else if (AccessToken->DefaultOwnerIndex > GroupsIndex)
-                    AccessToken->DefaultOwnerIndex--;
+                else if (AccessToken->DefaultOwnerIndex == LastIndex)
+                    AccessToken->DefaultOwnerIndex = GroupsIndex;
                 GroupsIndex--;
             }
         }

@@ -470,7 +470,7 @@ Return Value:
     PATH_ENTRY PathEntry;
     PCD_MCB_ENTRY McbEntry;
 
-    BOOLEAN UnlockVcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnlockVcb = FALSE;
 
     PAGED_CODE();
 

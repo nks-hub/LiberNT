@@ -342,7 +342,7 @@ Return Value:
 
     IO_RUN IoRuns[MAX_PARALLEL_IOS];
     ULONG RunCount = 0;
-    ULONG CleanupRunCount = 0;
+    ULONG _SEH2_VOLATILE CleanupRunCount = 0;
 
     PVOID UserBuffer;
     ULONG UserBufferOffset = 0;
@@ -432,7 +432,7 @@ Return Value:
                                           CurrentOffset,
                                           RemainingByteCount,
                                           IoRuns,
-                                          &CleanupRunCount,
+                                          (PULONG)&CleanupRunCount,
                                           &ThisByteCount );
 
 
@@ -636,7 +636,7 @@ Return Value:
     RAW_READ_INFO RawReads[MAX_PARALLEL_IOS];
     IO_RUN IoRuns[MAX_PARALLEL_IOS];
     ULONG RunCount = 0;
-    ULONG CleanupRunCount = 0;
+    ULONG _SEH2_VOLATILE CleanupRunCount = 0;
 
     PVOID UserBuffer;
     ULONG UserBufferOffset = 0;
@@ -881,7 +881,7 @@ Return Value:
                                     CurrentOffset,
                                     RemainingByteCount,
                                     IoRuns,
-                                    &CleanupRunCount,
+                                    (PULONG)&CleanupRunCount,
                                     &ThisByteCount );
             }
 
@@ -1253,7 +1253,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_INSUFFICIENT_RESOURCES;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_INSUFFICIENT_RESOURCES;
     PMDL Mdl;
 
     PAGED_CODE();

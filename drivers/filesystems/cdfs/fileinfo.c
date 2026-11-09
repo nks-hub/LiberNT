@@ -145,7 +145,7 @@ Return Value:
     PFCB Fcb;
     PCCB Ccb;
 
-    BOOLEAN ReleaseFcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleaseFcb = FALSE;
 
     PAGED_CODE();
 
@@ -1271,20 +1271,20 @@ Return Value:
 {
     NTSTATUS Status = STATUS_SUCCESS;
 
-    DIRENT_ENUM_CONTEXT DirContext = {0};
-    DIRENT Dirent = {0};
+    DIRENT_ENUM_CONTEXT _SEH2_VOLATILE DirContext = {0};
+    DIRENT _SEH2_VOLATILE Dirent = {0};
 
     PUNICODE_STRING NameToUse;
     ULONG DirentOffset;
 
-    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
-    FILE_ENUM_CONTEXT FileContext;
+    COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext;
 
-    PFCB ParentFcb = NULL;
-    BOOLEAN ReleaseParentFcb = FALSE;
+    PFCB _SEH2_VOLATILE ParentFcb = NULL;
+    BOOLEAN _SEH2_VOLATILE ReleaseParentFcb = FALSE;
 
-    BOOLEAN CleanupFileLookup = FALSE;
-    BOOLEAN CleanupDirectoryLookup = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupFileLookup = FALSE;
+    BOOLEAN _SEH2_VOLATILE CleanupDirectoryLookup = FALSE;
 
     WCHAR ShortNameBuffer[ BYTE_COUNT_8_DOT_3 / 2 ];
     USHORT ShortNameLength;
@@ -1330,8 +1330,8 @@ Return Value:
             //  This could be optimized somewhat.
             //
 
-            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
-            CdInitializeFileContext( IrpContext, &FileContext );
+            CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
+            CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
 
             CleanupDirectoryLookup = TRUE;
 
@@ -1339,15 +1339,15 @@ Return Value:
                                CdQueryFidPathTableOffset( Fcb->FileId ),
                                Fcb->Ordinal,
                                FALSE,
-                               &CompoundPathEntry );
+                               (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
 
-            CdUpdatePathEntryName( IrpContext, &CompoundPathEntry.PathEntry, TRUE );
+            CdUpdatePathEntryName( IrpContext, (PPATH_ENTRY)&CompoundPathEntry.PathEntry, TRUE );
 
             if (!CdFindDirectory( IrpContext,
                                   ParentFcb,
-                                  &CompoundPathEntry.PathEntry.CdCaseDirName,
+                                  (PCD_NAME)&CompoundPathEntry.PathEntry.CdCaseDirName,
                                   TRUE,
-                                  &FileContext )) {
+                                  (PFILE_ENUM_CONTEXT)&FileContext )) {
 
                 //
                 //  If we failed to find the child directory by name in the parent
@@ -1366,28 +1366,28 @@ Return Value:
             //  Initialize the search dirent structures.
             //
 
-            CdInitializeDirContext( IrpContext, &DirContext );
-            CdInitializeDirent( IrpContext, &Dirent );
+            CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
+            CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
 
             CleanupFileLookup = TRUE;
 
             CdLookupDirent( IrpContext,
                             ParentFcb,
                             CdQueryFidDirentOffset( Fcb->FileId ),
-                            &DirContext );
+                            (PDIRENT_ENUM_CONTEXT)&DirContext );
 
             CdUpdateDirentFromRawDirent( IrpContext,
                                          ParentFcb,
-                                         &DirContext,
-                                         &Dirent );
+                                         (PDIRENT_ENUM_CONTEXT)&DirContext,
+                                         (PDIRENT)&Dirent );
 
             //
             //  Now update the dirent name.
             //
 
-            CdUpdateDirentName( IrpContext, &Dirent, TRUE );
+            CdUpdateDirentName( IrpContext, (PDIRENT)&Dirent, TRUE );
 
-            NameToUse = &Dirent.CdCaseFileName.FileName;
+            NameToUse = (PUNICODE_STRING)&Dirent.CdCaseFileName.FileName;
             DirentOffset = Dirent.DirentOffset;
         }
 
@@ -1433,7 +1433,7 @@ Return Value:
         } else if (CleanupDirectoryLookup) {
 
             CdCleanupCompoundPathEntry( IrpContext, &CompoundPathEntry );
-            CdCleanupFileContext( IrpContext, &FileContext );
+            CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
         }
 
         if (ReleaseParentFcb) {

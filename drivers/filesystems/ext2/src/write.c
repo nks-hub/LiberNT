@@ -195,7 +195,7 @@ Ext2ZeroData (
     PBCB            Bcb;
     PVOID           Ptr;
     ULONG           Size;
-    BOOLEAN         rc = TRUE;
+    BOOLEAN         _SEH2_VOLATILE rc = TRUE;
 
     ASSERT (End && Start && End->QuadPart > Start->QuadPart);
     Fcb = (PEXT2_FCB) FileObject->FsContext;
@@ -235,30 +235,30 @@ Ext2DeferWrite(IN PEXT2_IRP_CONTEXT IrpContext, PIRP Irp)
 NTSTATUS
 Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
-    PEXT2_VCB           Vcb = NULL;
+    PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
     PEXT2_CCB           Ccb = NULL;
     PEXT2_FCBVCB        FcbOrVcb = NULL;
-    PFILE_OBJECT        FileObject = NULL;
+    PFILE_OBJECT        _SEH2_VOLATILE FileObject = NULL;
 
     PDEVICE_OBJECT      DeviceObject = NULL;
 
-    PIRP                Irp = NULL;
+    PIRP                _SEH2_VOLATILE Irp = NULL;
     PIO_STACK_LOCATION  IoStackLocation = NULL;
 
-    ULONG               Length;
-    LARGE_INTEGER       ByteOffset;
+    ULONG               _SEH2_VOLATILE Length;
+    LARGE_INTEGER       _SEH2_VOLATILE ByteOffset;
 
-    BOOLEAN             PagingIo = FALSE;
+    BOOLEAN             _SEH2_VOLATILE PagingIo = FALSE;
     BOOLEAN             Nocache = FALSE;
-    BOOLEAN             SynchronousIo = FALSE;
-    BOOLEAN             MainResourceAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE SynchronousIo = FALSE;
+    BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
 
-    BOOLEAN             bDeferred = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bDeferred = FALSE;
 
     PUCHAR              Buffer = NULL;
-    PEXT2_EXTENT        Chain = NULL;
+    PEXT2_EXTENT        _SEH2_VOLATILE Chain = NULL;
     EXT2_EXTENT         BlockArray;
 
     _SEH2_TRY {
@@ -389,7 +389,7 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             ExReleaseResourceLite(&Vcb->PagingIoResource);
 
             CcFlushCache( &(Vcb->SectionObject),
-                          &ByteOffset,
+                          (PLARGE_INTEGER)&ByteOffset,
                           Length,
                           &(Irp->IoStatus));
 
@@ -420,7 +420,7 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
                 CcPrepareMdlWrite (
                     Vcb->Volume,
-                    &ByteOffset,
+                    (PLARGE_INTEGER)&ByteOffset,
                     Length,
                     &Irp->MdlAddress,
                     &Irp->IoStatus );
@@ -676,8 +676,8 @@ Ext2WriteInode (
     OUT PULONG              BytesWritten
     )
 {
-    PEXT2_EXTENT    Chain = NULL;
-    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    PEXT2_EXTENT    _SEH2_VOLATILE Chain = NULL;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY {
 
@@ -692,7 +692,7 @@ Ext2WriteInode (
                      Offset,
                      Size,
                      S_ISDIR(Mcb->Inode.i_mode) ? FALSE : TRUE,
-                     &Chain
+                     (PEXT2_EXTENT *)&Chain
                  );
 
         if (!NT_SUCCESS(Status)) {
@@ -763,32 +763,32 @@ NTSTATUS
 Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PEXT2_VCB           Vcb = NULL;
-    PEXT2_FCB           Fcb = NULL;
+    PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
     PEXT2_CCB           Ccb = NULL;
-    PFILE_OBJECT        FileObject = NULL;
+    PFILE_OBJECT        _SEH2_VOLATILE FileObject = NULL;
 
     PDEVICE_OBJECT      DeviceObject = NULL;
 
-    PIRP                Irp = NULL;
+    PIRP                _SEH2_VOLATILE Irp = NULL;
     PIO_STACK_LOCATION  IoStackLocation = NULL;
     PUCHAR              Buffer = NULL;
 
-    LARGE_INTEGER       ByteOffset;
+    LARGE_INTEGER       _SEH2_VOLATILE ByteOffset;
     ULONG               ReturnedLength = 0;
     ULONG               Length;
 
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
-    BOOLEAN             OpPostIrp = FALSE;
-    BOOLEAN             PagingIo = FALSE;
+    BOOLEAN             _SEH2_VOLATILE OpPostIrp = FALSE;
+    BOOLEAN             _SEH2_VOLATILE PagingIo = FALSE;
     BOOLEAN             Nocache = FALSE;
-    BOOLEAN             SynchronousIo = FALSE;
+    BOOLEAN             _SEH2_VOLATILE SynchronousIo = FALSE;
 
     BOOLEAN             RecursiveWriteThrough = FALSE;
-    BOOLEAN             MainResourceAcquired = FALSE;
-    BOOLEAN             PagingIoResourceAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
+    BOOLEAN             _SEH2_VOLATILE PagingIoResourceAcquired = FALSE;
 
-    BOOLEAN             bDeferred = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bDeferred = FALSE;
 #ifndef __REACTOS__
     BOOLEAN             UpdateFileValidSize = FALSE;
 #endif
@@ -983,7 +983,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 ExReleaseResourceLite(&Fcb->PagingIoResource);
 
                 CcFlushCache( &(Fcb->SectionObject),
-                              &ByteOffset,
+                              (PLARGE_INTEGER)&ByteOffset,
                               CEILING_ALIGNED(ULONG, Length, BLOCK_SIZE),
                               &(Irp->IoStatus));
                 ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
@@ -997,7 +997,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 ExReleaseResourceLite(&Fcb->PagingIoResource);
 
                 CcPurgeCacheSection( &(Fcb->SectionObject),
-                                     &(ByteOffset),
+                                     (PLARGE_INTEGER)&ByteOffset,
                                      CEILING_ALIGNED(ULONG, Length, BLOCK_SIZE),
                                      FALSE );
             }
@@ -1116,7 +1116,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 
                 CcPrepareMdlWrite(
                     FileObject,
-                    &ByteOffset,
+                    (PLARGE_INTEGER)&ByteOffset,
                     Length,
                     &Irp->MdlAddress,
                     &Irp->IoStatus );
@@ -1138,7 +1138,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
                     rc = Ext2ZeroData(IrpContext, Vcb, FileObject,
-                                      &Fcb->Header.ValidDataLength, &ByteOffset);
+                                      &Fcb->Header.ValidDataLength, (PLARGE_INTEGER)&ByteOffset);
                     if (!rc) {
                         Status = STATUS_PENDING;
                         DbgBreak();
@@ -1146,9 +1146,9 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     }
                 }
 
-                if (!CcCopyWrite(FileObject, &ByteOffset, Length, Ext2CanIWait(), Buffer)) {
+                if (!CcCopyWrite(FileObject, (PLARGE_INTEGER)&ByteOffset, Length, Ext2CanIWait(), Buffer)) {
                     if (Ext2CanIWait() ||
-                        !CcCopyWrite(FileObject,  &ByteOffset, Length, TRUE, Buffer)) {
+                        !CcCopyWrite(FileObject,  (PLARGE_INTEGER)&ByteOffset, Length, TRUE, Buffer)) {
                         Status = STATUS_PENDING;
                         DbgBreak();
                         _SEH2_LEAVE;
@@ -1188,7 +1188,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
                     rc = Ext2ZeroData(IrpContext, Vcb, FileObject,
                                       &Fcb->Header.ValidDataLength,
-                                      &ByteOffset);
+                                      (PLARGE_INTEGER)&ByteOffset);
                     if (!rc) {
                         Status = STATUS_PENDING;
                         DbgBreak();
@@ -1320,7 +1320,7 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 NTSTATUS
 Ext2WriteComplete (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PFILE_OBJECT    FileObject;
     PIRP            Irp;
     PIO_STACK_LOCATION IrpSp;
@@ -1354,12 +1354,12 @@ Ext2WriteComplete (IN PEXT2_IRP_CONTEXT IrpContext)
 NTSTATUS
 Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext)
 {
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PEXT2_FCBVCB        FcbOrVcb;
     PDEVICE_OBJECT      DeviceObject;
     PFILE_OBJECT        FileObject;
     PEXT2_VCB           Vcb;
-    BOOLEAN             bCompleteRequest = TRUE;
+    BOOLEAN             _SEH2_VOLATILE bCompleteRequest = TRUE;
 
     ASSERT(IrpContext);
 

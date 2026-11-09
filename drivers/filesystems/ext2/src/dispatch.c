@@ -307,10 +307,10 @@ NTSTATUS
 #endif
 Ext2BuildRequest (PDEVICE_OBJECT   DeviceObject, PIRP Irp)
 {
-    BOOLEAN             AtIrqlPassiveLevel = FALSE;
-    BOOLEAN             IsTopLevelIrp = FALSE;
-    PEXT2_IRP_CONTEXT   IrpContext = NULL;
-    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN             _SEH2_VOLATILE AtIrqlPassiveLevel = FALSE;
+    BOOLEAN             _SEH2_VOLATILE IsTopLevelIrp = FALSE;
+    PEXT2_IRP_CONTEXT   _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY {
 

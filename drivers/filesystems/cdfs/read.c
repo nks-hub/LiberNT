@@ -68,7 +68,7 @@ __pragma(warning(suppress: 6320))                           \
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 CdCommonRead (
-    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP_CONTEXT _SEH2_VOLATILE IrpContext,
     _Inout_ PIRP Irp
     )
 
@@ -113,7 +113,7 @@ Return Value:
 
     PVOID SystemBuffer;
 
-    BOOLEAN ReleaseFile = TRUE;
+    BOOLEAN _SEH2_VOLATILE ReleaseFile = TRUE;
 
     CD_IO_CONTEXT LocalIoContext;
 

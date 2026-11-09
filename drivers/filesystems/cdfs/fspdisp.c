@@ -51,7 +51,7 @@ Return Value:
 {
     THREAD_CONTEXT ThreadContext = {0};
     PIRP_CONTEXT IrpContext = Context;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PIRP Irp = IrpContext->Irp;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( Irp );

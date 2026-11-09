@@ -2058,14 +2058,28 @@ SerCx2DdiPioTransmitPurgeFifoComplete(
     UNREFERENCED_PARAMETER(BytesPurged);
 }
 
-/* FIXME: on x86 the stdcall callers of these slots expect a typed no-op that pops its arguments */
 static
 VOID
-SerCx2DdiNoOperation(
+NTAPI
+SerCx2DdiPioTransactionComplete(
     _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
-    ...)
+    _In_ WDFOBJECT Object)
 {
     UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(Object);
+}
+
+static
+VOID
+NTAPI
+SerCx2DdiSaveReceiveFifoOnD0Exit(
+    _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
+    _In_ SERCX2PIORECEIVE PioReceive,
+    _In_ ULONG BytesToSave)
+{
+    UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(PioReceive);
+    UNREFERENCED_PARAMETER(BytesToSave);
 }
 
 
@@ -2576,13 +2590,13 @@ static PVOID SerCx2Functions[SercxFunctionTableNumEntries] =
     SerCx2DdiSystemDmaCleanupTransactionComplete,
     SerCx2DdiSystemDmaCleanupTransactionComplete,
     SerCx2DdiSystemDmaReceiveNewDataNotification,
-    SerCx2DdiNoOperation,
-    SerCx2DdiNoOperation,
-    SerCx2DdiNoOperation,
-    SerCx2DdiNoOperation,
+    SerCx2DdiPioTransactionComplete,
+    SerCx2DdiPioTransactionComplete,
+    SerCx2DdiPioTransactionComplete,
+    SerCx2DdiPioTransactionComplete,
     SerCx2DdiPioTransmitReady,
     SerCx2DdiPioReceiveReady,
-    SerCx2DdiNoOperation,
+    SerCx2DdiSaveReceiveFifoOnD0Exit,
     SerCx2DdiPioTransmitDrainFifoComplete,
     SerCx2DdiPioTransmitPurgeFifoComplete,
     SerCx2DdiSystemDmaTransmitDrainFifoComplete,

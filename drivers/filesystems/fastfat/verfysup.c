@@ -791,9 +791,9 @@ Return Value:
 
 {
     PCHAR Sector;
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     KEVENT Event;
-    PIRP Irp = NULL;
+    PIRP _SEH2_VOLATILE Irp = NULL;
     NTSTATUS Status;
     BOOLEAN FsInfoUpdate = FALSE;
     ULONG FsInfoOffset = 0;
@@ -924,7 +924,7 @@ Return Value:
                        &Offset,
                        PinLength,
                        TRUE,
-                       &Bcb,
+                       (PVOID *)&Bcb,
                        (PVOID *)&Sector );
 
             DbgDoit( IrpContext->PinCount += 1 )
@@ -1815,7 +1815,7 @@ _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 FatPerformVerify (
     _In_ PIRP_CONTEXT IrpContext,
-    _In_ PIRP Irp,
+    _In_ PIRP _SEH2_VOLATILE Irp,
     _In_ PDEVICE_OBJECT Device
     )
 
@@ -1842,7 +1842,7 @@ Return Value:
 
 {
     PVCB Vcb;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
     PFILE_OBJECT FileObject = IoGetCurrentIrpStackLocation(Irp)->FileObject;
     BOOLEAN AllowRawMount = FALSE;

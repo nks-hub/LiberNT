@@ -226,8 +226,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -307,8 +307,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -1358,7 +1358,7 @@ Return Value:
 --*/
 
 {
-    PBCB Bcb;
+    PBCB _SEH2_VOLATILE Bcb;
 
     PAGED_CODE();
 
@@ -1967,12 +1967,12 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PFILE_BASIC_INFORMATION Buffer;
 
     PDIRENT Dirent;
-    PBCB DirentBcb;
+    PBCB _SEH2_VOLATILE DirentBcb;
 
     FAT_TIME_STAMP CreationTime = {0};
     UCHAR CreationMSec = 0;
@@ -2056,7 +2056,7 @@ Return Value:
                                   Fcb,
                                   FALSE,
                                   &Dirent,
-                                  &DirentBcb );
+                                  (PBCB *)&DirentBcb );
         //
         //  Check if the user specified a non-zero creation time
         //
@@ -2769,24 +2769,24 @@ Return Value:
 
     DIRENT Dirent;
 
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     OEM_STRING OldOemName;
     OEM_STRING NewOemName;
     UCHAR OemNameBuffer[24*2];
 
-    PBCB DotDotBcb;
-    PBCB NewDirentBcb;
-    PBCB OldDirentBcb;
-    PBCB SecondPageBcb;
-    PBCB TargetDirentBcb;
+    PBCB _SEH2_VOLATILE DotDotBcb;
+    PBCB _SEH2_VOLATILE NewDirentBcb;
+    PBCB _SEH2_VOLATILE OldDirentBcb;
+    PBCB _SEH2_VOLATILE SecondPageBcb;
+    PBCB _SEH2_VOLATILE TargetDirentBcb;
 
     PDCB TargetDcb = NULL;
     PDCB OldParentDcb;
 
     PDIRENT DotDotDirent = NULL;
     PDIRENT FirstPageDirent = NULL;
-    PDIRENT NewDirent = NULL;
+    PDIRENT _SEH2_VOLATILE NewDirent = NULL;
     PDIRENT OldDirent = NULL;
     PDIRENT SecondPageDirent = NULL;
     PDIRENT ShortDirent = NULL;
@@ -3340,7 +3340,7 @@ Return Value:
                              0,
                              &Flags,
                              &TargetDirent,
-                             &TargetDirentBcb,
+                             (PBCB *)&TargetDirentBcb,
                              (PVBO)&TargetDirentOffset,
                              NULL,
                              &TargetLfn,
@@ -3527,7 +3527,7 @@ Return Value:
             //  Capture a copy of the source dirent.
             //
 
-            FatGetDirentFromFcbOrDcb( IrpContext, Fcb, FALSE, &OldDirent, &OldDirentBcb );
+            FatGetDirentFromFcbOrDcb( IrpContext, Fcb, FALSE, &OldDirent, (PBCB *)&OldDirentBcb );
 
             Dirent = *OldDirent;
 
@@ -3611,7 +3611,7 @@ Return Value:
                                           TargetDcb,
                                           NewOffset,
                                           sizeof(DIRENT),
-                                          &NewDirentBcb,
+                                          (PBCB *)&NewDirentBcb,
 #ifndef __REACTOS__
                                           &NewDirent,
 #else
@@ -3619,7 +3619,7 @@ Return Value:
 #endif
                                           FALSE,
                                           TRUE,
-                                          &Status );
+                                          (PNTSTATUS)&Status );
 
             NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -3641,7 +3641,7 @@ Return Value:
                                               TargetDcb,
                                               SecondPageOffset,
                                               sizeof(DIRENT),
-                                              &SecondPageBcb,
+                                              (PBCB *)&SecondPageBcb,
 #ifndef __REACTOS__
                                               &SecondPageDirent,
 #else
@@ -3649,7 +3649,7 @@ Return Value:
 #endif
                                               FALSE,
                                               TRUE,
-                                              &Status );
+                                              (PNTSTATUS)&Status );
 
                 NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -3842,7 +3842,7 @@ Return Value:
                                               Fcb,
                                               sizeof(DIRENT),
                                               sizeof(DIRENT),
-                                              &DotDotBcb,
+                                              (PBCB *)&DotDotBcb,
 #ifndef __REACTOS__
                                               &DotDotDirent,
 #else
@@ -3850,7 +3850,7 @@ Return Value:
 #endif
                                               FALSE,
                                               TRUE,
-                                              &Status );
+                                              (PNTSTATUS)&Status );
 
                 NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -4150,12 +4150,12 @@ Return Value:
     ULONG NewAllocationSize = 0;
     ULONG HeaderSize = 0;
 
-    BOOLEAN FileSizeTruncated = FALSE;
+    BOOLEAN _SEH2_VOLATILE FileSizeTruncated = FALSE;
     BOOLEAN CacheMapInitialized = FALSE;
-    BOOLEAN ResourceAcquired = FALSE;
-    ULONG OriginalFileSize = 0;
-    ULONG OriginalValidDataLength = 0;
-    ULONG OriginalValidDataToDisk = 0;
+    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
+    ULONG _SEH2_VOLATILE OriginalFileSize = 0;
+    ULONG _SEH2_VOLATILE OriginalValidDataLength = 0;
+    ULONG _SEH2_VOLATILE OriginalValidDataToDisk = 0;
 
     PAGED_CODE();
 
@@ -4445,18 +4445,18 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PFILE_END_OF_FILE_INFORMATION Buffer;
 
     ULONG NewFileSize = 0;
-    ULONG InitialFileSize = 0;
-    ULONG InitialValidDataLength = 0;
-    ULONG InitialValidDataToDisk = 0;
+    ULONG _SEH2_VOLATILE InitialFileSize = 0;
+    ULONG _SEH2_VOLATILE InitialValidDataLength = 0;
+    ULONG _SEH2_VOLATILE InitialValidDataToDisk = 0;
 
-    BOOLEAN CacheMapInitialized = FALSE;
-    BOOLEAN UnwindFileSizes = FALSE;
-    BOOLEAN ResourceAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE CacheMapInitialized = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindFileSizes = FALSE;
+    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
 
 
     PAGED_CODE();
@@ -4843,12 +4843,12 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PFILE_VALID_DATA_LENGTH_INFORMATION Buffer;
 
     ULONG NewValidDataLength;
-    BOOLEAN ResourceAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -5004,9 +5004,9 @@ FatRenameEAs (
     IN POEM_STRING OldOemName
     )
 {
-    BOOLEAN LockedEaFcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE LockedEaFcb = FALSE;
 
-    PBCB EaBcb = NULL;
+    PBCB _SEH2_VOLATILE EaBcb = NULL;
     PDIRENT EaDirent;
     EA_RANGE EaSetRange;
     PEA_SET_HEADER EaSetHeader;
@@ -5035,7 +5035,7 @@ FatRenameEAs (
             FatGetEaFile( IrpContext,
                           Vcb,
                           &EaDirent,
-                          &EaBcb,
+                          (PBCB *)&EaBcb,
                           FALSE,
                           FALSE );
 

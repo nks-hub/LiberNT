@@ -148,10 +148,10 @@ Return Value:
 
 {
     PFCB Fcb = NULL;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
-    BOOLEAN TopLevel = FALSE;
+    BOOLEAN _SEH2_VOLATILE TopLevel = FALSE;
 
     DebugTrace(+1, Dbg, "FatFsdRead\n", 0);
 

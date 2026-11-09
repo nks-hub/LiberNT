@@ -662,8 +662,8 @@ Return Value:
 
 {
     BOOLEAN Wait;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -893,12 +893,12 @@ Return Value:
 
 {
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation( IrpContext->OriginatingIrp );
-    NTSTATUS Status = STATUS_INVALID_PARAMETER;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_INVALID_PARAMETER;
 
-    PBCB BootBcb;
-    PPACKED_BOOT_SECTOR BootSector = NULL;
+    PBCB _SEH2_VOLATILE BootBcb;
+    PPACKED_BOOT_SECTOR _SEH2_VOLATILE BootSector = NULL;
 
-    PBCB DirentBcb;
+    PBCB _SEH2_VOLATILE DirentBcb;
     PDIRENT Dirent;
     ULONG ByteOffset;
 
@@ -1195,7 +1195,7 @@ Return Value:
                                Vcb,
                                0,                          // Starting Byte
                                sizeof(PACKED_BOOT_SECTOR),
-                               &BootBcb,
+                               (PBCB *)&BootBcb,
                                (PVOID *)&BootSector );
 
         } _SEH2_EXCEPT( Vpb->RealDevice->DeviceType == FILE_DEVICE_CD_ROM ?
@@ -1421,7 +1421,7 @@ Return Value:
         FatLocateVolumeLabel( IrpContext,
                               Vcb,
                               &Dirent,
-                              &DirentBcb,
+                              (PBCB *)&DirentBcb,
                               (PVBO)&ByteOffset );
 
         if (Dirent != NULL) {
@@ -1894,12 +1894,12 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     PIO_STACK_LOCATION IrpSp;
 
-    PDIRENT RootDirectory = NULL;
-    PPACKED_BOOT_SECTOR BootSector = NULL;
+    PDIRENT _SEH2_VOLATILE RootDirectory = NULL;
+    PPACKED_BOOT_SECTOR _SEH2_VOLATILE BootSector = NULL;
 
     BIOS_PARAMETER_BLOCK Bpb;
 
@@ -1909,7 +1909,7 @@ Return Value:
 
     ULONG SectorSize;
     BOOLEAN ClearVerify = FALSE;
-    BOOLEAN ReleaseEntireVolume = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleaseEntireVolume = FALSE;
     BOOLEAN VerifyAlreadyDone = FALSE;
 
     DISK_GEOMETRY DiskGeometry;

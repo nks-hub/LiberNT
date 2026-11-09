@@ -673,7 +673,7 @@ Arguments:
     ULONG BytesPerCluster;
     ULARGE_INTEGER BytesOnVolume;
 
-    FAT_ENUMERATION_CONTEXT Context;
+    FAT_ENUMERATION_CONTEXT _SEH2_VOLATILE Context;
 
     PAGED_CODE();
 
@@ -832,7 +832,7 @@ Arguments:
             //  Get the next fat entry, and update our Current variables.
             //
 
-            FatLookupFatEntry( IrpContext, Vcb, FatEntry, (PULONG)&FatEntry, &Context );
+            FatLookupFatEntry( IrpContext, Vcb, FatEntry, (PULONG)&FatEntry, (PFAT_ENUMERATION_CONTEXT)&Context );
 
             PriorLbo = CurrentLbo;
             CurrentLbo = FatGetLboFromIndex( Vcb, FatEntry );
@@ -1112,14 +1112,14 @@ Arguments:
 {
     PVCB Vcb;
     LARGE_MCB NewMcb = {0};
-    PLARGE_MCB McbToCleanup = NULL;
-    PDIRENT Dirent = NULL;
-    ULONG NewAllocation = 0;
-    PBCB Bcb = NULL;
-    BOOLEAN UnwindWeAllocatedDiskSpace = FALSE;
-    BOOLEAN UnwindAllocationSizeSet = FALSE;
-    BOOLEAN UnwindCacheManagerInformed = FALSE;
-    BOOLEAN UnwindWeInitializedMcb = FALSE;
+    PLARGE_MCB _SEH2_VOLATILE McbToCleanup = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
+    ULONG _SEH2_VOLATILE NewAllocation = 0;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindWeAllocatedDiskSpace = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindAllocationSizeSet = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindCacheManagerInformed = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindWeInitializedMcb = FALSE;
 
     PAGED_CODE();
 
@@ -1174,8 +1174,8 @@ Arguments:
             FatGetDirentFromFcbOrDcb( IrpContext,
                                       FcbOrDcb,
                                       FALSE,
-                                      &Dirent,
-                                      &Bcb );
+                                      (PDIRENT *)&Dirent,
+                                      (PBCB *)&Bcb );
             //
             //  Set this dirty right now since this call can fail.
             //
@@ -1249,7 +1249,7 @@ Arguments:
                                   (LastAllocatedLbo != ~0  ?
                                    FatGetIndexFromLbo(Vcb,LastAllocatedLbo + 1) :
                                    0),
-                                  &NewAllocation,
+                                  (PULONG)&NewAllocation,
                                   FALSE,
                                   &NewMcb );
 
@@ -1461,15 +1461,15 @@ Return Value:
 
 {
     PVCB Vcb;
-    PBCB Bcb = NULL;
-    LARGE_MCB RemainingMcb = {0};
+    PBCB _SEH2_VOLATILE Bcb = NULL;
+    LARGE_MCB _SEH2_VOLATILE RemainingMcb = {0};
     ULONG BytesPerCluster;
-    PDIRENT Dirent = NULL;
-    BOOLEAN UpdatedDirent = FALSE;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
+    BOOLEAN _SEH2_VOLATILE UpdatedDirent = FALSE;
 
     ULONG UnwindInitialAllocationSize;
     ULONG UnwindInitialFirstClusterOfFile;
-    BOOLEAN UnwindWeAllocatedMcb = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindWeAllocatedMcb = FALSE;
 
     PAGED_CODE();
 
@@ -1573,7 +1573,7 @@ Return Value:
 
             NT_ASSERT( FcbOrDcb->FcbCondition == FcbGood );
 
-            FatGetDirentFromFcbOrDcb( IrpContext, FcbOrDcb, FALSE, &Dirent, &Bcb );
+            FatGetDirentFromFcbOrDcb( IrpContext, FcbOrDcb, FALSE, (PDIRENT *)&Dirent, (PBCB *)&Bcb );
 
             Dirent->FirstClusterOfFile = 0;
 
@@ -1598,18 +1598,18 @@ Return Value:
             //  one we will deallocate.
             //
 
-            FsRtlInitializeLargeMcb( &RemainingMcb, PagedPool );
+            FsRtlInitializeLargeMcb( (PLARGE_MCB)&RemainingMcb, PagedPool );
             UnwindWeAllocatedMcb = TRUE;
 
             FatSplitAllocation( IrpContext,
                                 Vcb,
                                 &FcbOrDcb->Mcb,
                                 DesiredAllocationSize,
-                                &RemainingMcb );
+                                (PLARGE_MCB)&RemainingMcb );
 
-            FatDeallocateDiskSpace( IrpContext, Vcb, &RemainingMcb, ((FcbOrDcb->FcbState & FCB_STATE_ZERO_ON_DEALLOCATION) != 0) );
+            FatDeallocateDiskSpace( IrpContext, Vcb, (PLARGE_MCB)&RemainingMcb, ((FcbOrDcb->FcbState & FCB_STATE_ZERO_ON_DEALLOCATION) != 0) );
 
-            FsRtlUninitializeLargeMcb( &RemainingMcb );
+            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&RemainingMcb );
         }
 
     } _SEH2_FINALLY {
@@ -1658,7 +1658,7 @@ Return Value:
 
             if ( UnwindWeAllocatedMcb ) {
 
-                FsRtlUninitializeLargeMcb( &RemainingMcb );
+                FsRtlUninitializeLargeMcb( (PLARGE_MCB)&RemainingMcb );
             }
 
             //
@@ -1814,9 +1814,9 @@ Arguments:
     ULONG PreviousClear = 0;
 #endif
 
-    PFAT_WINDOW Window;
-    BOOLEAN Wait = FALSE;
-    BOOLEAN Result = TRUE;
+    PFAT_WINDOW _SEH2_VOLATILE Window;
+    BOOLEAN _SEH2_VOLATILE Wait = FALSE;
+    BOOLEAN _SEH2_VOLATILE Result = TRUE;
 
     PAGED_CODE();
 
@@ -2132,15 +2132,15 @@ Arguments:
         //
 
         ULONG Index = 0;
-        ULONG Cluster = 0;
-        ULONG CurrentVbo = 0;
+        ULONG _SEH2_VOLATILE Cluster = 0;
+        ULONG _SEH2_VOLATILE CurrentVbo = 0;
         ULONG PriorLastCluster = 0;
-        ULONG BytesFound = 0;
+        ULONG _SEH2_VOLATILE BytesFound = 0;
 
-        ULONG ClustersFound = 0;
+        ULONG _SEH2_VOLATILE ClustersFound = 0;
         ULONG ClustersRemaining = 0;
 
-        BOOLEAN LockedBitMap = FALSE;
+        BOOLEAN _SEH2_VOLATILE LockedBitMap = FALSE;
         BOOLEAN SelectNextContigWindow = FALSE;
 
         //
@@ -2643,20 +2643,20 @@ Return Value:
 --*/
 
 {
-    LBO Lbo;
-    VBO Vbo;
+    LBO _SEH2_VOLATILE Lbo;
+    VBO _SEH2_VOLATILE Vbo;
 
     ULONG RunsInMcb;
-    ULONG ByteCount;
+    ULONG _SEH2_VOLATILE ByteCount;
     ULONG ClusterCount = 0;
     ULONG ClusterIndex = 0;
-    ULONG McbIndex = 0;
+    ULONG _SEH2_VOLATILE McbIndex = 0;
 
     UCHAR LogOfBytesPerCluster;
 
     PFAT_WINDOW Window;
 
-    NTSTATUS ZeroingStatus = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE ZeroingStatus = STATUS_SUCCESS;
 
     PAGED_CODE();
 
@@ -2700,7 +2700,7 @@ Return Value:
 
             for ( McbIndex = 0; McbIndex < RunsInMcb; McbIndex++ ) {
 
-                FatGetNextMcbEntry( Vcb, Mcb, McbIndex, &Vbo, &Lbo, &ByteCount );
+                FatGetNextMcbEntry( Vcb, Mcb, McbIndex, (PVBO)&Vbo, (PLBO)&Lbo, (PULONG)&ByteCount );
 
                 //
                 //  Assert that Fat files have no holes.
@@ -2865,7 +2865,7 @@ Return Value:
 
         for ( McbIndex = 0; McbIndex < RunsInMcb; McbIndex++ ) {
 
-            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, &Vbo, &Lbo, &ByteCount );
+            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, (PVBO)&Vbo, (PLBO)&Lbo, (PULONG)&ByteCount );
 
             //
             //  Assert that Fat files have no holes.
@@ -2913,7 +2913,7 @@ Return Value:
             ULONG i = 0;
 #endif
 
-            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, &Vbo, &Lbo, &ByteCount );
+            FatGetNextMcbEntry( Vcb, Mcb, McbIndex, (PVBO)&Vbo, (PLBO)&Lbo, (PULONG)&ByteCount );
 
             //
             //  Mark the bits clear in the FreeClusterBitMap.
@@ -3104,7 +3104,7 @@ Return Value:
 
             for (Index = 0; Index <= McbIndex; Index++) {
 
-                FatGetNextMcbEntry(Vcb, Mcb, Index, &LocalVbo, &LocalLbo, &ByteCount);
+                FatGetNextMcbEntry(Vcb, Mcb, Index, &LocalVbo, &LocalLbo, (PULONG)&ByteCount);
 
                 if (ByteCount == 0xFFFFFFFF) {
 
@@ -3217,13 +3217,13 @@ Return Value:
 --*/
 
 {
-    VBO SourceVbo;
-    VBO TargetVbo;
+    VBO _SEH2_VOLATILE SourceVbo;
+    VBO _SEH2_VOLATILE TargetVbo;
     VBO DontCare;
 
-    LBO Lbo;
+    LBO _SEH2_VOLATILE Lbo;
 
-    ULONG ByteCount;
+    ULONG _SEH2_VOLATILE ByteCount;
 
 #if DBG
     ULONG BytesPerCluster;
@@ -3277,7 +3277,7 @@ Return Value:
         SourceVbo = SplitAtVbo;
         TargetVbo = 0;
 
-        while (FatLookupMcbEntry(Vcb, Mcb, SourceVbo, &Lbo, &ByteCount, NULL)) {
+        while (FatLookupMcbEntry(Vcb, Mcb, SourceVbo, (PLBO)&Lbo, (PULONG)&ByteCount, NULL)) {
 
             FatAddMcbEntry( Vcb, RemainingMcb, TargetVbo, Lbo, ByteCount );
 
@@ -3303,7 +3303,7 @@ Return Value:
 
         if ( SplitAtVbo != 0 ) {
 
-            FatLookupLastMcbEntry( Vcb, Mcb, &DontCare, &Lbo, NULL );
+            FatLookupLastMcbEntry( Vcb, Mcb, &DontCare, (PLBO)&Lbo, NULL );
 
             FatSetFatEntry( IrpContext,
                             Vcb,
@@ -3324,7 +3324,7 @@ Return Value:
             TargetVbo = SplitAtVbo;
             SourceVbo = 0;
 
-            while (FatLookupMcbEntry(Vcb, RemainingMcb, SourceVbo, &Lbo, &ByteCount, NULL)) {
+            while (FatLookupMcbEntry(Vcb, RemainingMcb, SourceVbo, (PLBO)&Lbo, (PULONG)&ByteCount, NULL)) {
 
                 FatAddMcbEntry( Vcb, Mcb, TargetVbo, Lbo, ByteCount );
 
@@ -3393,11 +3393,11 @@ Return Value:
 --*/
 
 {
-    VBO SpliceVbo = 0;
+    VBO _SEH2_VOLATILE SpliceVbo = 0;
     LBO SpliceLbo;
 
     VBO SourceVbo;
-    VBO TargetVbo = 0;
+    VBO _SEH2_VOLATILE TargetVbo = 0;
 
     LBO Lbo;
 
@@ -3416,7 +3416,7 @@ Return Value:
         //  Append the runs from SecondMcb to Mcb
         //
 
-        (void)FatLookupLastMcbEntry( Vcb, Mcb, &SpliceVbo, &SpliceLbo, NULL );
+        (void)FatLookupLastMcbEntry( Vcb, Mcb, (PVBO)&SpliceVbo, &SpliceLbo, NULL );
 
         SourceVbo = 0;
         TargetVbo = SpliceVbo + 1;
@@ -3796,13 +3796,13 @@ Arguments:
 
 {
     LBO Lbo;
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     ULONG SectorSize;
     ULONG OffsetIntoVolumeFile;
     ULONG WasWait = TRUE;
     BOOLEAN RegularOperation = TRUE;
     BOOLEAN CleaningOperation = FALSE;
-    BOOLEAN ReleaseMutex = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleaseMutex = FALSE;
 
     PAGED_CODE();
 
@@ -3919,7 +3919,7 @@ Arguments:
                                        Vcb,
                                        FatReservedBytes( &Vcb->Bpb ),
                                        FatBytesPerFat( &Vcb->Bpb ),
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        &PinnedFat,
                                        RegularOperation,
                                        FALSE );
@@ -3986,7 +3986,7 @@ Arguments:
                                        Vcb,
                                        OffsetIntoVolumeFile,
                                        sizeof(FAT_ENTRY),
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        (PVOID *)&PinnedFatEntry32,
                                        RegularOperation,
                                        FALSE );
@@ -4042,7 +4042,7 @@ Arguments:
                                        Vcb,
                                        OffsetIntoVolumeFile,
                                        sizeof(USHORT),
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        (PVOID *)&PinnedFatEntry,
                                        RegularOperation,
                                        FALSE );
@@ -4139,9 +4139,9 @@ VOID
 FatSetFatRun (
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN ULONG StartingFatIndex,
+    IN ULONG _SEH2_VOLATILE StartingFatIndex,
     IN ULONG ClusterCount,
-    IN BOOLEAN ChainTogether
+    IN BOOLEAN _SEH2_VOLATILE ChainTogether
     )
 
 /*++
@@ -4186,7 +4186,7 @@ Return Value:
 
     PVOID PinnedFat;
 
-    BOOLEAN ReleaseMutex = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleaseMutex = FALSE;
 
     ULONG SavedStartingFatIndex = StartingFatIndex;
 
@@ -4776,7 +4776,7 @@ Return Value:
     FAT_ENTRY FirstFatEntry = FAT_CLUSTER_AVAILABLE;
     PUSHORT FatBuffer;
     PVOID pv;
-    PBCB Bcb = NULL;
+    PBCB _SEH2_VOLATILE Bcb = NULL;
     ULONG EntriesPerWindow;
 
     ULONG ClustersThisRun;
@@ -4936,7 +4936,7 @@ Return Value:
                                Vcb,
                                FatReservedBytes( &Vcb->Bpb ),
                                FatBytesPerFat( &Vcb->Bpb ),
-                               &Bcb,
+                               (PBCB *)&Bcb,
                                (PVOID *)&FatBuffer );
 
             FatLookup12BitEntry(FatBuffer, 0, &FirstFatEntry);
@@ -4977,7 +4977,7 @@ Return Value:
                                Vcb,
                                Offset,
                                PAGE_SIZE,
-                               &Bcb,
+                               (PBCB *)&Bcb,
                                &pv);
 
             if (FatIndexBitSize == 32) {
@@ -5091,7 +5091,7 @@ Return Value:
                                        Vcb,
                                        Offset,
                                        PAGE_SIZE,
-                                       &Bcb,
+                                       (PBCB *)&Bcb,
                                        &pv );
 
                     FatBuffer = (PUSHORT)pv;

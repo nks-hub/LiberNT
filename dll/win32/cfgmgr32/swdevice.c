@@ -230,7 +230,11 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
     HRESULT hr = S_OK;
 
     if (!HasIds)
+    {
+        if (DriverRequired)
+            CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
         return S_OK;
+    }
 
     hSetupApi = LoadLibraryW(L"setupapi.dll");
     hNewDev = LoadLibraryW(L"newdev.dll");
@@ -638,9 +642,6 @@ SwDeviceCreate(
         !pCreateInfo->pszInstanceId || !*pCreateInfo->pszInstanceId || wcschr(pCreateInfo->pszInstanceId, L'\\') ||
         !pCallback ||
         (pCreateInfo->pSecurityDescriptor && !IsSelfRelativeSecurityDescriptor((PSECURITY_DESCRIPTOR)pCreateInfo->pSecurityDescriptor)) ||
-        ((pCreateInfo->CapabilityFlags & SWDeviceCapabilitiesDriverRequired) &&
-         !(pCreateInfo->pszzHardwareIds && *pCreateInfo->pszzHardwareIds) &&
-         !(pCreateInfo->pszzCompatibleIds && *pCreateInfo->pszzCompatibleIds)) ||
         (pCreateInfo->CapabilityFlags & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall |
                                           SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
     {

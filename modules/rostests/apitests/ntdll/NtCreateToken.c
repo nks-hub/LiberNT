@@ -8,8 +8,8 @@
 #include "precomp.h"
 #include <tlhelp32.h>
 
-static SID SystemSid = { SID_REVISION, 1, SECURITY_NT_AUTHORITY, { SECURITY_LOCAL_SYSTEM_RID } };
-static SID WorldSid = { SID_REVISION, 1, SECURITY_WORLD_SID_AUTHORITY, { SECURITY_WORLD_RID } };
+static SID SystemSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_LOCAL_SYSTEM_RID } };
+static SID WorldSid = { SID_REVISION, 1, { SECURITY_WORLD_SID_AUTHORITY }, { SECURITY_WORLD_RID } };
 
 /* Windows 11 grants SeCreateTokenPrivilege to lsass.exe only */
 static

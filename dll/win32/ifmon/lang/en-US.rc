@@ -5,6 +5,9 @@ BEGIN
     IDS_HLP_INTERFACE_SHOW "Displays information.\n"
     IDS_HLP_INTERFACE_SHOW_INTERFACE "Displays interfaces.\n"
     IDS_HLP_INTERFACE_SHOW_INTERFACE_EX "\nUsage:\n"
+    IDS_HLP_INTERFACE_SET "Sets configuration information.\n"
+    IDS_HLP_INTERFACE_SET_INTERFACE "Sets interface parameters.\n"
+    IDS_HLP_INTERFACE_SET_INTERFACE_EX "\nUsage: %1!s! [name=]<string> [[admin=]enabled|disabled]\n             [[connect=]connected|disconnected] [[newname=]<string>]\n\nParameters:\n\n      Tag            Value\n      name           The name of the interface.\n      admin          Whether the interface is administratively enabled.\n      connect        Whether to connect the interface.\n      newname        The new name of the interface.\n\nRemarks: At least one option other than the name must be specified.\n\nExamples:\n\n      %1!s! name=""Ethernet"" newname=""LAN""\n"
 
     IDS_HLP_IP_ADD "Adds a configuration entry to a table.\n"
     IDS_HLP_IP_ADD_ADDRESS     "Adds an IP address to the specified interface.\n"

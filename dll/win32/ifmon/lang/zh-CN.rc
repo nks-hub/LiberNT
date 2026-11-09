@@ -12,6 +12,9 @@ BEGIN
     IDS_HLP_INTERFACE_SHOW "显示信息。\n"
     IDS_HLP_INTERFACE_SHOW_INTERFACE "显示接口。\n"
     IDS_HLP_INTERFACE_SHOW_INTERFACE_EX "\n用法:\n"
+    IDS_HLP_INTERFACE_SET "设置配置信息。\n"
+    IDS_HLP_INTERFACE_SET_INTERFACE "Sets interface parameters.\n"
+    IDS_HLP_INTERFACE_SET_INTERFACE_EX "\nUsage: %1!s! [name=]<string> [[admin=]enabled|disabled]\n             [[connect=]connected|disconnected] [[newname=]<string>]\n\nParameters:\n\n      Tag            Value\n      name           The name of the interface.\n      admin          Whether the interface is administratively enabled.\n      connect        Whether to connect the interface.\n      newname        The new name of the interface.\n\nRemarks: At least one option other than the name must be specified.\n\nExamples:\n\n      %1!s! name=""Ethernet"" newname=""LAN""\n"
 
     IDS_HLP_IP_ADD "将配置项添加到表中。\n"
     IDS_HLP_IP_ADD_ADDRESS     "将 IP 地址添加到指定的接口。\n"

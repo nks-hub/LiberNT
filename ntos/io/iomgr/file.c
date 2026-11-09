@@ -4753,8 +4753,13 @@ IopCancelIoFileExKernelApc(
     UNREFERENCED_PARAMETER(NormalContext);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+    ASSERT(Apc == &Context->Apc);
+    ASSERT(Context->Status == STATUS_PENDING);
+
     Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel,
                                                           Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
+    ASSERT(!NotCancelled || Context->Found);
 
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
     {

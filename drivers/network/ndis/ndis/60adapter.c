@@ -206,10 +206,12 @@ Ndis6AllocateInterfaceIndex(VOID)
 
     do
     {
+        /* Index 1 is the loopback interface of tcpip, as on Windows */
         Current = InterlockedCompareExchange(&Ndis6NextInterfaceIndex, 0, 0);
-        Next = (Current <= 0 || Current >= 0x00ffffff) ? 1 : Current + 1;
+        Next = (Current <= 1 || Current >= 0x00ffffff) ? 2 : Current + 1;
     } while (InterlockedCompareExchange(&Ndis6NextInterfaceIndex, Next, Current) != Current);
 
+    ASSERT(Next >= 2 && Next <= 0x00ffffff);
     return (NET_IFINDEX)Next;
 }
 

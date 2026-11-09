@@ -141,6 +141,8 @@ GetPacketTypeFromHeaderBuffer(PLAN_ADAPTER Adapter,
 
         case NdisMediumIP:
             /* A raw IP frame has no link header; the IP version tells the protocol */
+            ASSERT(Adapter->HeaderSize == 0);
+            ASSERT(HeaderBufferSize >= 1);
             switch (*(PUCHAR)HeaderBuffer >> 4)
             {
                 case 4:
@@ -1172,6 +1174,8 @@ VOID LANTransmit(
             break;
 
         case NdisMediumIP:
+            ASSERT(Adapter->HeaderSize == 0);
+            ASSERT(Type == LAN_PROTO_IPv4 || Type == LAN_PROTO_IPv6);
             NET_BUFFER_LIST_INFO(Nbl, NetBufferListFrameType) =
                 (PVOID)(ULONG_PTR)(Type == LAN_PROTO_IPv4 ? ETYPE_IPv4 : ETYPE_IPv6);
             break;

@@ -257,6 +257,7 @@ NetioRemoveClientUser(_In_ PNETIO_WSK_CLIENT Client)
     KIRQL OldIrql;
 
     KeAcquireSpinLock(&Client->Lock, &OldIrql);
+    ASSERT(Client->Users > 0);
     if (--Client->Users == 0)
         KeSetEvent(&Client->Idle, IO_NO_INCREMENT, FALSE);
     KeReleaseSpinLock(&Client->Lock, OldIrql);
@@ -441,7 +442,9 @@ static NTSTATUS StartSocketDereferenceThread(void)
 
 static void StopSocketDereferenceThread(void)
 {
+    ASSERT(DereferenceSocketsThreadLockState == 2);
     KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
+    ASSERT(DereferenceSocketsThreadUsers > 0);
     if (--DereferenceSocketsThreadUsers == 0)
     {
         DereferenceSocketsThreadShouldRun = FALSE;
@@ -495,6 +498,9 @@ NetioPassiveWorker(
     PNETIO_PASSIVE_REQUEST Request = Context;
     PWSK_SOCKET_INTERNAL Socket = Request->Socket;
 
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(Socket->RefCount > 0);
+
     switch (Request->Kind)
     {
         case NetioPassiveLocalAddress:
@@ -539,6 +545,9 @@ NetioQueuePassive(
         IoCompleteRequest(Irp, IO_NETWORK_INCREMENT);
         return STATUS_PENDING;
     }
+
+    ASSERT(Kind == NetioPassiveResumeReceives || Irp != NULL);
+    ASSERT(Socket->RefCount > 0);
 
     Request->Kind = Kind;
     Request->Socket = Socket;
@@ -1096,6 +1105,8 @@ NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp)
 {
     NTSTATUS status = STATUS_SUCCESS;
 
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
     IoSetNextIrpStackLocation(Irp);
 
     /* There might be a reference from (for example) a pending
@@ -1384,6 +1395,7 @@ NetioReceiveDone(
 {
     PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
 
+    ASSERT(Socket->ReceivesBusy > 0);
     if (InterlockedDecrement(&Socket->ReceivesBusy) == 0)
         KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
 }
@@ -1406,6 +1418,8 @@ NetioPostReceive(
         NetioReceiveDone(Receive);
         return;
     }
+    ASSERT(!Receive->InFlight);
+    ASSERT(!Receive->Held);
     Receive->InFlight = TRUE;
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
@@ -1464,6 +1478,7 @@ NetioIndicateReceive(
         Socket->ReceiveEvents = FALSE;
         Receive->Held = Held = TRUE;
     }
+    ASSERT(Socket->ReceiveCallbacks > 0);
     if (--Socket->ReceiveCallbacks == 0)
     {
         DisableIrp = Socket->DisableIrp;
@@ -1493,6 +1508,8 @@ NetioReceiveComplete(
     UNREFERENCED_PARAMETER(DeviceObject);
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    ASSERT(Receive->InFlight);
+    ASSERT(!Receive->Held);
     Receive->InFlight = FALSE;
     if (NT_SUCCESS(Status) && !Socket->ReceiveClosing)
     {
@@ -1533,6 +1550,7 @@ static VOID
 NetioReceivesReleased(
     _In_ PWSK_SOCKET_INTERNAL Socket)
 {
+    ASSERT(Socket->ReceivesBusy > 0);
     if (InterlockedDecrement(&Socket->ReceivesBusy) == 0)
         KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
 }
@@ -1579,7 +1597,10 @@ NetioEnableReceiveEvent(
         for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
             Resume |= Socket->Receives[i]->Held;
         if (Resume)
+        {
+            ASSERT(Socket->ReceivesBusy > 0);
             InterlockedIncrement(&Socket->ReceivesBusy);
+        }
     }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
@@ -1697,6 +1718,8 @@ NetioStopReceives(
     if (!Socket->ReceiveStarted)
         return;
 
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveClosing = TRUE;
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
@@ -1719,6 +1742,8 @@ NetioStopReceives(
                 IoCancelIrp(Socket->Receives[i]->Irp);
         }
     } while (KeWaitForSingleObject(&Socket->ReceivesIdle, Executive, KernelMode, FALSE, &Timeout) == STATUS_TIMEOUT);
+
+    ASSERT(Socket->ReceivesBusy == 0);
 
     NetioFreeReceives(Socket);
     Socket->ReceiveStarted = FALSE;
@@ -2022,6 +2047,8 @@ NetioDeferredSendWorker(
 {
     PNETIO_DEFERRED_SEND Send = Context;
     PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(Send->Socket, WSK_SOCKET_INTERNAL, Socket);
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     if (Send->BufferList)
         WskSendMessages(Send->Socket, Send->BufferList, Send->Flags, Send->RemoteAddress,

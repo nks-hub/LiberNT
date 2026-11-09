@@ -506,6 +506,8 @@ NetioOpenDevice(
     OBJECT_ATTRIBUTES Attributes;
     IO_STATUS_BLOCK Io;
 
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
     RtlInitUnicodeString(&Name, DeviceName);
     InitializeObjectAttributes(&Attributes, &Name, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
     return ZwCreateFile(Handle, GENERIC_READ | SYNCHRONIZE, &Attributes, &Io, NULL, FILE_ATTRIBUTE_NORMAL,
@@ -1443,8 +1445,10 @@ VOID
 NetioReleaseNotify(
     _In_ PNETIO_CHANGE_NOTIFY Notify)
 {
+    ASSERT(Notify->References > 0);
     if (InterlockedDecrement(&Notify->References) != 0)
         return;
+    ASSERT(!Notify->Linked);
     if (Notify->FreeOnRelease)
         ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
     else
@@ -1467,6 +1471,10 @@ NetioNotify(
     MIB_IPINTERFACE_ROW Interface;
     KIRQL OldIrql;
 
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(PsGetCurrentThread() == NetioChangeThread);
+    ASSERT(InitialOnly || Row != NULL);
+
     KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
     for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList; Entry = Entry->Flink)
         Capacity++;
@@ -1482,6 +1490,9 @@ NetioNotify(
     for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList && Count < Capacity; Entry = Entry->Flink)
     {
         PNETIO_CHANGE_NOTIFY Notify = CONTAINING_RECORD(Entry, NETIO_CHANGE_NOTIFY, Link);
+
+        ASSERT(Notify->Linked);
+        ASSERT(Notify->References > 0);
 
         if (InitialOnly)
         {
@@ -1681,6 +1692,8 @@ NetioChangeWorker(
 
     UNREFERENCED_PARAMETER(StartContext);
 
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(NetioChangeThread == NULL);
     NetioChangeThread = PsGetCurrentThread();
     HaveOld = NT_SUCCESS(NetioTakeSnapshot(&Old));
     Retry.QuadPart = -50000000LL;
@@ -1727,6 +1740,7 @@ NetioChangeWorker(
 
         if (!Changed)
         {
+            ASSERT(!Pending || Completed != NULL);
             Objects[0] = &NetioChangeKick;
             Objects[1] = Completed;
             Status = KeWaitForMultipleObjects(Pending ? 2 : 1, Objects, WaitAny, Executive, KernelMode,
@@ -1784,6 +1798,9 @@ NetioRegisterChange(
 
     StartWait.QuadPart = -10000LL;
 
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+    ASSERT(Kind == NETIO_CHANGE_ROUTE || Kind == NETIO_CHANGE_INTERFACE);
+
     if (Callback == NULL || NotificationHandle == NULL ||
         (Family != AF_UNSPEC && Family != AF_INET && Family != AF_INET6))
     {
@@ -1825,6 +1842,7 @@ NetioRegisterChange(
         KeDelayExecutionThread(KernelMode, FALSE, &StartWait);
     }
 
+    ASSERT(NetioChangeState == NETIO_CHANGE_RUNNING);
     KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
     InsertTailList(&NetioChangeList, &Notify->Link);
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
@@ -1874,6 +1892,8 @@ CancelMibChangeNotify2(
     if (NotificationHandle == NULL)
         return STATUS_INVALID_PARAMETER;
 
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
     KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
     for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList; Entry = Entry->Flink)
     {
@@ -1887,6 +1907,8 @@ CancelMibChangeNotify2(
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
     if (Notify == NULL)
         return STATUS_INVALID_HANDLE;
+
+    ASSERT(Notify->References > 0);
 
     if (PsGetCurrentThread() == NetioChangeThread)
     {

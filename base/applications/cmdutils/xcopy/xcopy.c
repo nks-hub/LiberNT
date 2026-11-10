@@ -574,7 +574,13 @@ static int XCOPY_DoCopy(WCHAR *srcstem, WCHAR *srcspec,
                 copiedFile = TRUE;
                 if (flags & OPT_SIMULATE || flags & OPT_NOCOPY) {
                     /* Skip copy */
+#ifdef __REACTOS__
+                } else if ((flags & OPT_RESTARTABLE ?
+                            CopyFileExW(copyFrom, copyTo, NULL, NULL, NULL, COPY_FILE_RESTARTABLE) :
+                            CopyFileW(copyFrom, copyTo, FALSE)) == 0) {
+#else
                 } else if (CopyFileW(copyFrom, copyTo, FALSE) == 0) {
+#endif
                     skipFile = TRUE;
                     if (XCOPY_IsSameFile(copyFrom, copyTo)) {
                         XCOPY_wprintf(XCOPY_LoadMessage(STRING_NOCOPYTOSELF));
@@ -788,7 +794,7 @@ static int XCOPY_ParseCommandLine(WCHAR *suppliedsource,
                 case 'R': flags |= OPT_REPLACEREAD;   break;
                 case 'K': flags |= OPT_KEEPATTRS;     break;
 #ifdef __REACTOS__
-                case 'Z': WINE_FIXME("ignoring /Z\n"); break;
+                case 'Z': flags |= OPT_RESTARTABLE;   break;
 #endif
                 case 'H': flags |= OPT_COPYHIDSYS;    break;
                 case 'C': flags |= OPT_IGNOREERRORS;  break;

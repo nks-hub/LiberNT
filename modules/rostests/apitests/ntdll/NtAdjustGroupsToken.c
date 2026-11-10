@@ -272,6 +272,73 @@ Cleanup:
     CloseHandle(Token);
 }
 
+static
+VOID
+AdjustUserSid(VOID)
+{
+    NTSTATUS Status;
+    HANDLE Token;
+    PTOKEN_GROUPS Before;
+    TOKEN_GROUPS Adjust;
+    union
+    {
+        TOKEN_USER User;
+        UCHAR Buffer[sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE];
+    } UserBefore, UserAfter;
+    ULONG Index, Length;
+
+    Token = DuplicateProcessToken();
+    if (!Token)
+        return;
+    Before = QueryGroups(Token);
+    Status = NtQueryInformationToken(Token, TokenUser, &UserBefore, sizeof(UserBefore), &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (!Before || !NT_SUCCESS(Status))
+    {
+        skip("Failed to query the token\n");
+        goto Cleanup;
+    }
+    for (Index = 0; Index < Before->GroupCount; Index++)
+    {
+        if (RtlEqualSid(Before->Groups[Index].Sid, UserBefore.User.User.Sid))
+        {
+            skip("The user SID is also group %lu of the token\n", Index);
+            goto Cleanup;
+        }
+    }
+
+    Adjust.GroupCount = 1;
+    Adjust.Groups[0].Sid = UserBefore.User.User.Sid;
+    Adjust.Groups[0].Attributes = UserBefore.User.User.Attributes ^ SE_GROUP_ENABLED;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Adjust, 0, NULL, NULL);
+    ok_hex(Status, STATUS_NOT_ALL_ASSIGNED);
+
+    Status = NtQueryInformationToken(Token, TokenUser, &UserAfter, sizeof(UserAfter), &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        ok(UserAfter.User.User.Attributes == UserBefore.User.User.Attributes,
+           "The user has attributes 0x%lx, expected 0x%lx\n",
+           UserAfter.User.User.Attributes, UserBefore.User.User.Attributes);
+    }
+    CheckGroupsUnchanged(Token, Before);
+
+    Status = NtAdjustGroupsToken(Token, TRUE, NULL, 0, NULL, NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    Status = NtQueryInformationToken(Token, TokenUser, &UserAfter, sizeof(UserAfter), &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        ok(UserAfter.User.User.Attributes == UserBefore.User.User.Attributes,
+           "The user has attributes 0x%lx after the reset, expected 0x%lx\n",
+           UserAfter.User.User.Attributes, UserBefore.User.User.Attributes);
+    }
+
+Cleanup:
+    if (Before) RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+    CloseHandle(Token);
+}
+
 START_TEST(NtAdjustGroupsToken)
 {
     HANDLE TokenHandle;
@@ -325,4 +392,5 @@ START_TEST(NtAdjustGroupsToken)
     AdjustOneGroup();
     AdjustMandatoryGroup();
     AdjustWithPreviousState();
+    AdjustUserSid();
 }

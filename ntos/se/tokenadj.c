@@ -274,6 +274,7 @@ SepAdjustGroups(
     ASSERT(ExIsResourceAcquiredExclusiveLite(Token->TokenLock));
     ASSERT(ResetToDefaultStates || NewState != NULL || NewStateCount == 0);
     ASSERT(PreviousGroupsState == NULL || PreviousSids != NULL);
+    ASSERT(Token->UserAndGroupCount >= 1);
 
     /* Initialize the counters and begin the work */
     *ChangesMade = FALSE;
@@ -283,8 +284,8 @@ SepAdjustGroups(
     ChangeCount = 0;
     SidsLength = 0;
 
-    /* Begin looping all the groups in the token */
-    for (GroupsInToken = 0; GroupsInToken < Token->UserAndGroupCount; GroupsInToken++)
+    /* Begin looping all the groups in the token, the first entry is the user */
+    for (GroupsInToken = 1;GroupsInToken < Token->UserAndGroupCount; GroupsInToken++)
     {
         Attributes = Token->UserAndGroups[GroupsInToken].Attributes;
 

@@ -160,7 +160,7 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
 
     status = NtQueryInformationToken( handle, TokenGroups, NULL, 0, &size );
     if (status != STATUS_BUFFER_TOO_SMALL) return status;
-    token_groups = Wow64AllocateTemp( size );
+    if (!(token_groups = Wow64AllocateTemp( size ))) return STATUS_NO_MEMORY;
     status = NtQueryInformationToken( handle, TokenGroups, token_groups, size, &size );
     if (status) return status;
     for (i = 0; i < token_groups->GroupCount; i++)
@@ -189,7 +189,7 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     }
 
     size = ret_size;
-    prev64 = Wow64AllocateTemp( size );
+    if (!(prev64 = Wow64AllocateTemp( size ))) return STATUS_NO_MEMORY;
     status = NtAdjustGroupsToken( handle, reset, groups64, size, prev64, &ret_size );
     if (status == STATUS_SUCCESS || status == STATUS_NOT_ALL_ASSIGNED)
     {

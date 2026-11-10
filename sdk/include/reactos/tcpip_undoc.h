@@ -112,6 +112,9 @@ typedef struct _IP4_INTERFACE_INFO
     BOOLEAN DhcpRouterDiscovery;
     BOOLEAN Reserved;
     ULONG PhysicalMedium;
+    ULONG MediaType;
+    ULONG AccessType;
+    BOOLEAN ConnectorPresent;
     ULONG64 NetLuid;
 } IP4_INTERFACE_INFO, *PIP4_INTERFACE_INFO;
 

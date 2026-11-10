@@ -1501,6 +1501,9 @@ BOOLEAN BindAdapter(
     IF->NdisIfIndex = BindParameters->BoundIfIndex;
     IF->IfType = (ULONG)BindParameters->BoundIfNetluid.Info.IfType;
     IF->PhysicalMedium = BindParameters->PhysicalMediumType;
+    IF->MediaType = BindParameters->MediaType;
+    IF->AccessType = BindParameters->AccessType;
+    IF->ConnectorPresent = BindParameters->IfConnectorPresent;
     IF->Wireless = BindParameters->PhysicalMediumType == NdisPhysicalMediumWirelessLan ||
                    BindParameters->PhysicalMediumType == NdisPhysicalMediumWirelessWan ||
                    BindParameters->PhysicalMediumType == NdisPhysicalMediumNative802_11;

@@ -181,6 +181,9 @@ typedef struct _IP_INTERFACE {
     BOOLEAN Wireless;
     BOOLEAN HalfDuplex;
     ULONG PhysicalMedium;
+    ULONG MediaType;
+    ULONG AccessType;
+    BOOLEAN ConnectorPresent;
     ULONG64 TransmitLinkSpeed;
     ULONG64 NetLuid;
     BOOLEAN ManualMetric;

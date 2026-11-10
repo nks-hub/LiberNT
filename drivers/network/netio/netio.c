@@ -1534,13 +1534,13 @@ NetioDisableReceiveEvent(
 
 static VOID
 NetioFreeReceives(
-    _In_ PWSK_SOCKET_INTERNAL Socket)
+    _Inout_updates_(NETIO_RECEIVE_COUNT) PNETIO_RECEIVE *Receives)
 {
     ULONG i;
 
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
     {
-        PNETIO_RECEIVE Receive = Socket->Receives[i];
+        PNETIO_RECEIVE Receive = Receives[i];
 
         if (Receive == NULL)
             continue;
@@ -1552,7 +1552,7 @@ NetioFreeReceives(
         if (Receive->Mdl)
             IoFreeMdl(Receive->Mdl);
         ExFreePoolWithTag(Receive, TAG_NETIO);
-        Socket->Receives[i] = NULL;
+        Receives[i] = NULL;
     }
 }
 
@@ -1560,7 +1560,10 @@ static NTSTATUS
 NetioStartReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
 {
+    PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT] = { NULL };
     PDEVICE_OBJECT DeviceObject;
+    BOOLEAN Start;
+    KIRQL OldIrql;
     ULONG i;
 
     if (Socket->ReceiveStarted || Socket->LocalAddressFile == NULL ||
@@ -1576,7 +1579,7 @@ NetioStartReceives(
 
         if (Receive == NULL)
             goto Fail;
-        Socket->Receives[i] = Receive;
+        Receives[i] = Receive;
         Receive->Socket = Socket;
         Receive->Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         Receive->Mdl = IoAllocateMdl(Receive->Data, NETIO_RECEIVE_SIZE, FALSE, FALSE, NULL);
@@ -1585,15 +1588,30 @@ NetioStartReceives(
         MmBuildMdlForNonPagedPool(Receive->Mdl);
     }
 
-    KeClearEvent(&Socket->ReceivesIdle);
-    Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
-    Socket->ReceiveStarted = TRUE;
+    /* Another caller can have started the receives, or the close can have begun, since the check above */
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Start = !Socket->ReceiveStarted && !Socket->ReceiveClosing;
+    if (Start)
+    {
+        RtlCopyMemory(Socket->Receives, Receives, sizeof(Receives));
+        KeClearEvent(&Socket->ReceivesIdle);
+        Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
+        Socket->ReceiveStarted = TRUE;
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (!Start)
+    {
+        NetioFreeReceives(Receives);
+        return STATUS_SUCCESS;
+    }
+
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
-        NetioPostReceive(Socket->Receives[i]);
+        NetioPostReceive(Receives[i]);
     return STATUS_SUCCESS;
 
 Fail:
-    NetioFreeReceives(Socket);
+    NetioFreeReceives(Receives);
     return STATUS_INSUFFICIENT_RESOURCES;
 }
 
@@ -1602,17 +1620,17 @@ NetioStopReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
 {
     LARGE_INTEGER Timeout;
+    BOOLEAN Started;
     KIRQL OldIrql;
     ULONG i;
 
-    if (!Socket->ReceiveStarted)
+    if (Socket->type != SOCK_DGRAM)
         return;
-
-    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveClosing = TRUE;
-    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    Started = Socket->ReceiveStarted;
+    for (i = 0; Started && i < NETIO_RECEIVE_COUNT; i++)
     {
         if (Socket->Receives[i]->Held)
         {
@@ -1621,6 +1639,11 @@ NetioStopReceives(
         }
     }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (!Started)
+        return;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     Timeout.QuadPart = -1000000LL;
     do
@@ -1635,8 +1658,11 @@ NetioStopReceives(
 
     ASSERT(Socket->ReceivesBusy == 0);
 
-    NetioFreeReceives(Socket);
+    NetioFreeReceives(Socket->Receives);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveStarted = FALSE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 }
 
 static NTSTATUS WSKAPI

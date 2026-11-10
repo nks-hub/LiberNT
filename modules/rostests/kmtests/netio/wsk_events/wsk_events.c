@@ -2,7 +2,8 @@
  * PROJECT:     LiberNT kernel-mode tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
- *              requests made at DISPATCH_LEVEL, repeated registration
+ *              requests made at DISPATCH_LEVEL, repeated registration, enabling
+ *              the event from two threads at once
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -578,6 +579,95 @@ deregister:
     WskDeregister(&Registration);
 }
 
+typedef struct _ENABLE_THREAD
+{
+    PWSK_SOCKET Socket;
+    PKEVENT Start;
+    NTSTATUS Status;
+} ENABLE_THREAD, *PENABLE_THREAD;
+
+static KSTART_ROUTINE EnableThread;
+
+static
+VOID
+NTAPI
+EnableThread(
+    _In_ PVOID Context)
+{
+    PENABLE_THREAD Thread = Context;
+
+    KeWaitForSingleObject(Thread->Start, Executive, KernelMode, FALSE, NULL);
+    Thread->Status = SetReceiveEvent(Thread->Socket, TRUE);
+}
+
+static
+VOID
+TestConcurrentEnable(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    ENABLE_THREAD Threads[2];
+    PKTHREAD ThreadObjects[2];
+    KEVENT Start;
+    NTSTATUS Status;
+    LONG Round, Count;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Sender == NULL)
+        goto release;
+
+    for (Round = 0; Round < 32; Round++)
+    {
+        Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 3);
+        if (Receiver == NULL)
+            break;
+
+        KeInitializeEvent(&Start, NotificationEvent, FALSE);
+        Threads[0].Socket = Threads[1].Socket = Receiver;
+        Threads[0].Start = Threads[1].Start = &Start;
+        Threads[0].Status = Threads[1].Status = STATUS_UNSUCCESSFUL;
+        ThreadObjects[0] = KmtStartThread(EnableThread, &Threads[0]);
+        ThreadObjects[1] = KmtStartThread(EnableThread, &Threads[1]);
+        KmtFinishThread(ThreadObjects[0], &Start);
+        KmtFinishThread(ThreadObjects[1], &Start);
+        ok_eq_hex(Threads[0].Status, STATUS_SUCCESS);
+        ok_eq_hex(Threads[1].Status, STATUS_SUCCESS);
+
+        Status = SendTo(Sender, "CONC0001", WSKEVENTS_PORT + 3);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Count = WaitReceives(Round + 1, 2000);
+        ok_eq_long(Count, Round + 1);
+
+        CloseSocket(Receiver);
+    }
+
+    Count = WaitReceives(Round + 1, 500);
+    ok_eq_long(Count, Round);
+
+    CloseSocket(Sender);
+release:
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -625,5 +715,6 @@ TestMessageHandler(
     TestRun();
     TestStaticCallbacks();
     TestRegisterAgain();
+    TestConcurrentEnable();
     return STATUS_SUCCESS;
 }

@@ -1,7 +1,8 @@
 /*
- * PROJECT:     LiberNT API Tests
- * LICENSE:     GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later)
+ * PROJECT:     LiberNT API tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     Test for the thread alert around a cancelled synchronous request
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
 #include "precomp.h"

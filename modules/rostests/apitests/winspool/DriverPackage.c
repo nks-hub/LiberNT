@@ -261,10 +261,48 @@ static const char MissingInf[] =
     "TESTMISS.DAT=1\r\n"
     "TESTGONE.DLL=1\r\n";
 
+static const char NeedsMissingInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Needs Missing Printer\"=TESTNM,LiberNT_Package_Needs_Missing\r\n"
+    "\r\n"
+    "[TESTNM]\r\n"
+    "CopyFiles=TESTNM_FILES\r\n"
+    "Needs=TESTNM_MORE\r\n"
+    "\r\n"
+    "[TESTNM_MORE]\r\n"
+    "CopyFiles=TESTNM_MORE_FILES\r\n"
+    "Needs=TESTNM\r\n"
+    "\r\n"
+    "[TESTNM_FILES]\r\n"
+    "TESTNM.DAT\r\n"
+    "\r\n"
+    "[TESTNM_MORE_FILES]\r\n"
+    "TESTNMGONE.DLL\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTNM.DAT=1\r\n"
+    "TESTNMGONE.DLL=1\r\n";
+
 static VOID
-TestMissingPackageFile(VOID)
+TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present)
 {
-    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
+    WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
     ULONG Length = ARRAYSIZE(StoreInf);
     WIN32_FIND_DATAW Find;
@@ -272,20 +310,23 @@ TestMissingPackageFile(VOID)
     HRESULT hr;
 
     GetTempPathW(MAX_PATH, Dir);
-    StringCchCatW(Dir, MAX_PATH, L"lntprnmiss");
+    StringCchCatW(Dir, MAX_PATH, Name);
     CreateDirectoryW(Dir, NULL);
-    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnmiss.inf", Dir);
+    StringCchPrintfW(InfName, ARRAYSIZE(InfName), L"%s.inf", Name);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, InfName);
 
-    if (WriteTestFile(Dir, L"lntprnmiss.inf", MissingInf, sizeof(MissingInf) - 1) &&
-        WriteTestFile(Dir, L"TESTMISS.DAT", Text, sizeof(Text) - 1))
+    if (WriteTestFile(Dir, InfName, Inf, InfSize) &&
+        WriteTestFile(Dir, Present, Text, sizeof(Text) - 1))
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
-        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
         if (hr == S_OK)
             DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
 
         GetWindowsDirectoryW(Path, ARRAYSIZE(Path));
-        StringCchCatW(Path, ARRAYSIZE(Path), L"\\System32\\DriverStore\\FileRepository\\lntprnmiss.inf_*");
+        StringCchCatW(Path, ARRAYSIZE(Path), L"\\System32\\DriverStore\\FileRepository\\");
+        StringCchCatW(Path, ARRAYSIZE(Path), InfName);
+        StringCchCatW(Path, ARRAYSIZE(Path), L"_*");
         hFind = FindFirstFileW(Path, &Find);
         ok(hFind == INVALID_HANDLE_VALUE, "%S was staged\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
         if (hFind != INVALID_HANDLE_VALUE)
@@ -293,10 +334,10 @@ TestMissingPackageFile(VOID)
     }
     else
     {
-        skip("Failed to create the package with a missing file (%lu)\n", GetLastError());
+        skip("Failed to create the package %S with a missing file (%lu)\n", InfName, GetLastError());
     }
 
-    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTMISS.DAT", Dir);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Present);
     DeleteFileW(Path);
     DeleteFileW(InfPath);
     RemoveDirectoryW(Dir);
@@ -322,7 +363,8 @@ START_TEST(DriverPackage)
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
     ok(hr == E_INVALIDARG, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
-    TestMissingPackageFile();
+    TestMissingPackageFile(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT");
+    TestMissingPackageFile(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT");
 
     if (!CreateTestPackage(Dir, InfPath))
     {

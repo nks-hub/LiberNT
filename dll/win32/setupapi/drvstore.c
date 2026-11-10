@@ -256,6 +256,8 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     PCWSTR StoreRoot;
     STAGE_NAME_LIST Sections;
     STAGE_NAME_LIST Files;
+    STAGE_NAME_LIST Installs;
+    STAGE_NAME_LIST Includes;
     BOOL Required;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
@@ -548,6 +550,83 @@ StageSectionCopyFiles(
 }
 
 static BOOL
+StageIncludedInfs(
+    IN HINF hInf,
+    IN PCWSTR Section,
+    IN OUT PSTAGE_PACKAGE_CONTEXT Package)
+{
+    WCHAR Name[MAX_PATH], Path[MAX_PATH];
+    DWORD Field, FieldCount;
+    INFCONTEXT Context;
+    BOOL Found;
+
+    for (Found = SetupFindFirstLineW(hInf, Section, L"Include", &Context);
+         Found;
+         Found = SetupFindNextMatchLineW(&Context, L"Include", &Context))
+    {
+        FieldCount = SetupGetFieldCount(&Context);
+        for (Field = 1; Field <= FieldCount; Field++)
+        {
+            /* An INF that is not in the package directory belongs to the system, not to the package */
+            if (!SetupGetStringFieldW(&Context, Field, Name, ARRAY_SIZE(Name), NULL) || !Name[0] ||
+                !IsSafeRelativePath(Name) ||
+                !CombinePath(Path, Package->SourceRoot, Name) ||
+                GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES ||
+                !MarkNameSeen(&Package->Includes, Name))
+            {
+                continue;
+            }
+
+            if (!StagePackageFile(Package->SourceRoot, Package->StoreRoot, Name, NULL, TRUE) ||
+                !SetupOpenAppendInfFileW(Path, hInf, NULL))
+            {
+                return FALSE;
+            }
+        }
+    }
+    return TRUE;
+}
+
+static BOOL
+StageInstallSection(
+    IN HINF hInf,
+    IN PCWSTR Section,
+    IN OUT PSTAGE_PACKAGE_CONTEXT Package)
+{
+    WCHAR Needs[MAX_INF_SECTION_NAME_LENGTH + 1];
+    DWORD Index = Package->Installs.Count, Field, FieldCount;
+    INFCONTEXT Context;
+    PCWSTR Current;
+    BOOL Found;
+
+    if (!MarkNameSeen(&Package->Installs, Section))
+        return TRUE;
+
+    for (; Index < Package->Installs.Count; Index++)
+    {
+        Current = Package->Installs.Names[Index];
+        if (!StageIncludedInfs(hInf, Current, Package) ||
+            !StageSectionCopyFiles(hInf, Current, Package))
+        {
+            return FALSE;
+        }
+
+        for (Found = SetupFindFirstLineW(hInf, Current, L"Needs", &Context);
+             Found;
+             Found = SetupFindNextMatchLineW(&Context, L"Needs", &Context))
+        {
+            FieldCount = SetupGetFieldCount(&Context);
+            for (Field = 1; Field <= FieldCount; Field++)
+            {
+                if (SetupGetStringFieldW(&Context, Field, Needs, ARRAY_SIZE(Needs), NULL) && Needs[0])
+                    MarkNameSeen(&Package->Installs, Needs);
+            }
+        }
+    }
+    return TRUE;
+}
+
+static BOOL
 StageModelCopyFiles(
     IN HINF hInf,
     IN OUT PSTAGE_PACKAGE_CONTEXT Package)
@@ -576,10 +655,10 @@ StageModelCopyFiles(
                 continue;
             }
 
-            if (!StageSectionCopyFiles(hInf, Actual, Package))
+            if (!StageInstallSection(hInf, Actual, Package))
                 return FALSE;
             lstrcatW(Actual, L".CoInstallers");
-            if (!StageSectionCopyFiles(hInf, Actual, Package))
+            if (!StageInstallSection(hInf, Actual, Package))
                 return FALSE;
         } while (SetupFindNextLine(&Model, &Model));
     } while (SetupFindNextLine(&Manufacturer, &Manufacturer));
@@ -840,10 +919,13 @@ SETUPAPI_StageDriverPackage(
         ZeroMemory(&Package, sizeof(Package));
         Package.SourceRoot = SourceRoot;
         Package.StoreRoot = Staging;
+        MarkNameSeen(&Package.Includes, BaseName);
         Staged = StageCatalogFiles(hInf, SourceRoot, Staging) && StageCopyFiles(hInf, &Package);
         Error = GetLastError();
         FreeNameList(&Package.Sections);
         FreeNameList(&Package.Files);
+        FreeNameList(&Package.Installs);
+        FreeNameList(&Package.Includes);
         SetupCloseInfFile(hInf);
     }
 

@@ -43,6 +43,11 @@ DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID fImpLoad)
             InitCommonControls();
             break;
 
+        case DLL_PROCESS_DETACH:
+            if (fImpLoad == NULL)
+                FreeInstanceIdLock();
+            break;
+
         default:
             break;
     }

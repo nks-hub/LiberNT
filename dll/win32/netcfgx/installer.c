@@ -1006,7 +1006,7 @@ GetSuggestedInstanceId(
     return !Used;
 }
 
-static HANDLE InstanceIdLock;
+static HANDLE InstanceIdNamespace, InstanceIdLock;
 
 /* Any process can create a global name first and hold it; only administrators can open this namespace */
 static
@@ -1020,7 +1020,7 @@ CreateInstanceIdLock(
     SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
     BYTE Admins[SECURITY_MAX_SID_SIZE];
     DWORD dwSize = sizeof(Admins);
-    HANDLE hBoundary, hNamespace = NULL;
+    HANDLE hBoundary;
     DWORD Try;
 
     UNREFERENCED_PARAMETER(Once);
@@ -1037,24 +1037,37 @@ CreateInstanceIdLock(
     if (hBoundary && AddSIDToBoundaryDescriptor(&hBoundary, Admins))
     {
         /* The namespace ends with its last handle, so it can be gone again once creating it found it */
-        for (Try = 0; !hNamespace && Try < 3; Try++)
+        for (Try = 0; !InstanceIdNamespace && Try < 3; Try++)
         {
-            hNamespace = CreatePrivateNamespaceW(&Security, hBoundary, L"NetCfgxInstanceId");
-            if (!hNamespace)
-                hNamespace = OpenPrivateNamespaceW(hBoundary, L"NetCfgxInstanceId");
+            InstanceIdNamespace = CreatePrivateNamespaceW(&Security, hBoundary, L"NetCfgxInstanceId");
+            if (!InstanceIdNamespace)
+                InstanceIdNamespace = OpenPrivateNamespaceW(hBoundary, L"NetCfgxInstanceId");
         }
     }
     if (hBoundary)
         DeleteBoundaryDescriptor(hBoundary);
-    if (hNamespace)
+    if (InstanceIdNamespace)
     {
-        /* The namespace stays open as long as the lock */
         InstanceIdLock = CreateMutexW(&Security, FALSE, L"NetCfgxInstanceId\\Lock");
         if (!InstanceIdLock)
-            ClosePrivateNamespace(hNamespace, 0);
+        {
+            ClosePrivateNamespace(InstanceIdNamespace, 0);
+            InstanceIdNamespace = NULL;
+        }
     }
     LocalFree(Security.lpSecurityDescriptor);
     return InstanceIdLock != NULL;
+}
+
+/* SetupAPI unloads the class installer after each call */
+VOID
+FreeInstanceIdLock(VOID)
+{
+    if (InstanceIdLock)
+    {
+        CloseHandle(InstanceIdLock);
+        ClosePrivateNamespace(InstanceIdNamespace, 0);
+    }
 }
 
 static

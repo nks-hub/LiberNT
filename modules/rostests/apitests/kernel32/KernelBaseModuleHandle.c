@@ -114,6 +114,33 @@ START_TEST(KernelBaseModuleHandle)
         ok(Result, "GetModuleHandleExW failed with %lu\n", GetLastError());
         ok(Module == HookBase, "Module is %p, expected %p\n", Module, HookBase);
 
+        Module = NULL;
+        Result = pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)Memory, &Module);
+        ok(Result, "GetModuleHandleExW with a reference failed with %lu\n", GetLastError());
+        ok(Module == HookBase, "Module is %p, expected %p\n", Module, HookBase);
+
+        /* A copy of the image headers, which the loader did not map */
+        RtlCopyMemory(Memory, HookBase, 0x1000);
+        HookBase = Memory;
+        HookAddress = (PBYTE)Memory + 0x800;
+
+        Module = NULL;
+        Result = pGetModuleHandleExW(FromAddress, (LPCWSTR)HookAddress, &Module);
+        ok(Result, "GetModuleHandleExW in an image the loader did not map failed with %lu\n", GetLastError());
+        ok(Module == Memory, "Module is %p, expected %p\n", Module, Memory);
+
+        SetLastError(0xdeadbeef);
+        Module = (HMODULE)(ULONG_PTR)1;
+        Result = pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)HookAddress, &Module);
+        trace("A reference to an image the loader did not map: result %d, module %p, error %lu\n", Result, Module, GetLastError());
+        ok(!Result, "GetModuleHandleExW referenced an image the loader did not map\n");
+
+        SetLastError(0xdeadbeef);
+        Module = (HMODULE)(ULONG_PTR)1;
+        Result = pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, (LPCWSTR)HookAddress, &Module);
+        trace("A pin of an image the loader did not map: result %d, module %p, error %lu\n", Result, Module, GetLastError());
+        ok(!Result, "GetModuleHandleExW pinned an image the loader did not map\n");
+
         *Import = (PVOID)RealPcToFileHeader;
         VirtualProtect(Import, sizeof(*Import), Protect, &Protect);
     }

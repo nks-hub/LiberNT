@@ -149,8 +149,8 @@ typedef struct _WSK_SOCKET_INTERNAL
     struct _WSK_SOCKET_INTERNAL *ListenSocket;
 
     /* DereferenceSocket() only works at PASSIVE_LEVEL. If > PASSIVE_LEVEL,
-     * it will put the socket on this list and wake the putsockets
-     * thread.
+     * it will put the socket on this list and queue the work item
+     * that dereferences the sockets on it.
      */
     struct _WSK_SOCKET_INTERNAL *NextSocketToDereference;
     ULONG NumSocketDereferences;
@@ -361,127 +361,47 @@ DereferenceSocketSynchronous(_In_ PWSK_SOCKET_INTERNAL Socket)
 
 static PWSK_SOCKET_INTERNAL SocketsToDereference = NULL;
 static KSPIN_LOCK SocketsToDereferenceListLock = 0;
-static volatile BOOLEAN DereferenceSocketsThreadShouldRun = FALSE;
-static KEVENT DereferenceSocketsEvent;
-static PKTHREAD DereferenceSocketsThreadObject;
+static WORK_QUEUE_ITEM DereferenceSocketsWorkItem;
+static BOOLEAN DereferenceSocketsWorkerQueued;
 
-static VOID NTAPI DereferenceSocketsThread(_In_opt_ void *p)
+static VOID NTAPI
+DereferenceSocketsWorker(_In_opt_ PVOID Context)
 {
-    NTSTATUS status;
     PWSK_SOCKET_INTERNAL SocketToDereference;
     KIRQL OldIrql;
     ULONG NumSocketDereferences;
 
-    FUNCTION_TRACE;
+    UNREFERENCED_PARAMETER(Context);
 
-    while (DereferenceSocketsThreadShouldRun)
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    KeAcquireSpinLock(&SocketsToDereferenceListLock, &OldIrql);
+    ASSERT(DereferenceSocketsWorkerQueued);
+    while (SocketsToDereference != NULL)
     {
-        status = KeWaitForSingleObject(&DereferenceSocketsEvent, Executive, KernelMode, FALSE, NULL);
-        if (!NT_SUCCESS(status))
-        {
-            DPRINT1("KeWaitForSingleObject failed with status 0x%08x!\n", status);
-        }
+        SocketToDereference = SocketsToDereference;
+        SocketsToDereference = SocketToDereference->NextSocketToDereference;
+        NumSocketDereferences = SocketToDereference->NumSocketDereferences;
 
-        KeAcquireSpinLock(&SocketsToDereferenceListLock, &OldIrql);
-        while (SocketsToDereference != NULL)
+        while (NumSocketDereferences > 0)
         {
-            SocketToDereference = SocketsToDereference;
-            SocketsToDereference = SocketToDereference->NextSocketToDereference;
+            SocketToDereference->NumSocketDereferences--;
             NumSocketDereferences = SocketToDereference->NumSocketDereferences;
 
-            while (NumSocketDereferences > 0)
-            {
-                SocketToDereference->NumSocketDereferences--;
-                NumSocketDereferences = SocketToDereference->NumSocketDereferences;
-
-                KeReleaseSpinLock(&SocketsToDereferenceListLock, OldIrql);
-                DereferenceSocketSynchronous(SocketToDereference);
-                KeAcquireSpinLock(&SocketsToDereferenceListLock, &OldIrql);
-            }
-        }
-        KeReleaseSpinLock(&SocketsToDereferenceListLock, OldIrql);
-    }
-
-    PsTerminateSystemThread(STATUS_SUCCESS);
-}
-
-static KMUTEX DereferenceSocketsThreadLock;
-static ULONG DereferenceSocketsThreadUsers;
-static volatile LONG DereferenceSocketsThreadLockState;
-
-static NTSTATUS StartSocketDereferenceThread(void)
-{
-    OBJECT_ATTRIBUTES Attributes;
-    HANDLE ThreadHandle;
-    NTSTATUS status = STATUS_SUCCESS;
-
-    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
-
-    if (InterlockedCompareExchange(&DereferenceSocketsThreadLockState, 1, 0) == 0)
-    {
-        KeInitializeMutex(&DereferenceSocketsThreadLock, 0);
-        KeInitializeSpinLock(&SocketsToDereferenceListLock);
-        KeInitializeEvent(&DereferenceSocketsEvent, SynchronizationEvent, FALSE);
-        InterlockedExchange(&DereferenceSocketsThreadLockState, 2);
-    }
-    while (DereferenceSocketsThreadLockState != 2)
-        YieldProcessor();
-
-    KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
-    if (DereferenceSocketsThreadUsers == 0)
-    {
-        ASSERT(DereferenceSocketsThreadObject == NULL);
-        DereferenceSocketsThreadShouldRun = TRUE;
-        InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-        status = PsCreateSystemThread(&ThreadHandle, THREAD_ALL_ACCESS, &Attributes, NULL, NULL,
-                                      DereferenceSocketsThread, NULL);
-        if (!NT_SUCCESS(status))
-        {
-            DPRINT1("Could not start put sockets thread, status is %x\n", status);
-        }
-        else
-        {
-            status = ObReferenceObjectByHandle(ThreadHandle, SYNCHRONIZE, *PsThreadType, KernelMode,
-                                               (PVOID *)&DereferenceSocketsThreadObject, NULL);
-            if (!NT_SUCCESS(status))
-            {
-                DereferenceSocketsThreadShouldRun = FALSE;
-                KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
-                ZwWaitForSingleObject(ThreadHandle, FALSE, NULL);
-            }
-            ZwClose(ThreadHandle);
+            KeReleaseSpinLock(&SocketsToDereferenceListLock, OldIrql);
+            DereferenceSocketSynchronous(SocketToDereference);
+            KeAcquireSpinLock(&SocketsToDereferenceListLock, &OldIrql);
         }
     }
-    if (NT_SUCCESS(status))
-        DereferenceSocketsThreadUsers++;
-    KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
-    return status;
-}
-
-static void StopSocketDereferenceThread(void)
-{
-    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
-    ASSERT(DereferenceSocketsThreadLockState == 2);
-    KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
-    ASSERT(DereferenceSocketsThreadUsers > 0);
-    if (--DereferenceSocketsThreadUsers == 0)
-    {
-        ASSERT(DereferenceSocketsThreadObject != NULL);
-        DereferenceSocketsThreadShouldRun = FALSE;
-        KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
-
-        /* A registration that follows must not find this thread still running */
-        KeWaitForSingleObject(DereferenceSocketsThreadObject, Executive, KernelMode, FALSE, NULL);
-        ObDereferenceObject(DereferenceSocketsThreadObject);
-        DereferenceSocketsThreadObject = NULL;
-    }
-    KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
+    DereferenceSocketsWorkerQueued = FALSE;
+    KeReleaseSpinLock(&SocketsToDereferenceListLock, OldIrql);
 }
 
 static void
 DereferenceSocket(_In_ PWSK_SOCKET_INTERNAL Socket)
 {
     KIRQL OldIrql;
+    BOOLEAN Queue;
 
     FUNCTION_TRACE;
 
@@ -503,9 +423,15 @@ DereferenceSocket(_In_ PWSK_SOCKET_INTERNAL Socket)
         {
             Socket->NumSocketDereferences++;
         }
+        Queue = !DereferenceSocketsWorkerQueued;
+        DereferenceSocketsWorkerQueued = TRUE;
         KeReleaseSpinLock(&SocketsToDereferenceListLock, OldIrql);
 
-        KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
+        if (Queue)
+        {
+            ExInitializeWorkItem(&DereferenceSocketsWorkItem, DereferenceSocketsWorker, NULL);
+            ExQueueWorkItem(&DereferenceSocketsWorkItem, DelayedWorkQueue);
+        }
 
         return;
     }
@@ -1669,13 +1595,13 @@ NetioDisableReceiveEvent(
 
 static VOID
 NetioFreeReceives(
-    _In_ PWSK_SOCKET_INTERNAL Socket)
+    _Inout_updates_(NETIO_RECEIVE_COUNT) PNETIO_RECEIVE *Receives)
 {
     ULONG i;
 
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
     {
-        PNETIO_RECEIVE Receive = Socket->Receives[i];
+        PNETIO_RECEIVE Receive = Receives[i];
 
         if (Receive == NULL)
             continue;
@@ -1687,7 +1613,7 @@ NetioFreeReceives(
         if (Receive->Mdl)
             IoFreeMdl(Receive->Mdl);
         ExFreePoolWithTag(Receive, TAG_NETIO);
-        Socket->Receives[i] = NULL;
+        Receives[i] = NULL;
     }
 }
 
@@ -1695,7 +1621,10 @@ static NTSTATUS
 NetioStartReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
 {
+    PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT] = { NULL };
     PDEVICE_OBJECT DeviceObject;
+    BOOLEAN Start;
+    KIRQL OldIrql;
     ULONG i;
 
     if (Socket->ReceiveStarted || Socket->LocalAddressFile == NULL ||
@@ -1711,7 +1640,7 @@ NetioStartReceives(
 
         if (Receive == NULL)
             goto Fail;
-        Socket->Receives[i] = Receive;
+        Receives[i] = Receive;
         Receive->Socket = Socket;
         Receive->Irp = IoAllocateIrp(DeviceObject->StackSize, FALSE);
         Receive->Mdl = IoAllocateMdl(Receive->Data, NETIO_RECEIVE_SIZE, FALSE, FALSE, NULL);
@@ -1720,15 +1649,30 @@ NetioStartReceives(
         MmBuildMdlForNonPagedPool(Receive->Mdl);
     }
 
-    KeClearEvent(&Socket->ReceivesIdle);
-    Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
-    Socket->ReceiveStarted = TRUE;
+    /* Another caller can have started the receives, or the close can have begun, since the check above */
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Start = !Socket->ReceiveStarted && !Socket->ReceiveClosing;
+    if (Start)
+    {
+        RtlCopyMemory(Socket->Receives, Receives, sizeof(Receives));
+        KeClearEvent(&Socket->ReceivesIdle);
+        Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
+        Socket->ReceiveStarted = TRUE;
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (!Start)
+    {
+        NetioFreeReceives(Receives);
+        return STATUS_SUCCESS;
+    }
+
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
-        NetioPostReceive(Socket->Receives[i]);
+        NetioPostReceive(Receives[i]);
     return STATUS_SUCCESS;
 
 Fail:
-    NetioFreeReceives(Socket);
+    NetioFreeReceives(Receives);
     return STATUS_INSUFFICIENT_RESOURCES;
 }
 
@@ -1737,17 +1681,17 @@ NetioStopReceives(
     _In_ PWSK_SOCKET_INTERNAL Socket)
 {
     LARGE_INTEGER Timeout;
+    BOOLEAN Started;
     KIRQL OldIrql;
     ULONG i;
 
-    if (!Socket->ReceiveStarted)
+    if (Socket->type != SOCK_DGRAM)
         return;
-
-    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveClosing = TRUE;
-    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
+    Started = Socket->ReceiveStarted;
+    for (i = 0; Started && i < NETIO_RECEIVE_COUNT; i++)
     {
         if (Socket->Receives[i]->Held)
         {
@@ -1756,6 +1700,11 @@ NetioStopReceives(
         }
     }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (!Started)
+        return;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     Timeout.QuadPart = -1000000LL;
     do
@@ -1770,8 +1719,11 @@ NetioStopReceives(
 
     ASSERT(Socket->ReceivesBusy == 0);
 
-    NetioFreeReceives(Socket);
+    NetioFreeReceives(Socket->Receives);
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveStarted = FALSE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 }
 
 static NTSTATUS WSKAPI
@@ -2639,7 +2591,6 @@ NTSTATUS WSKAPI
 WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
 {
     PNETIO_WSK_CLIENT Client;
-    NTSTATUS Status;
 
     FUNCTION_TRACE;
 
@@ -2653,12 +2604,6 @@ WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
     KeInitializeSpinLock(&Client->Lock);
     KeInitializeEvent(&Client->Idle, NotificationEvent, TRUE);
 
-    Status = StartSocketDereferenceThread();
-    if (!NT_SUCCESS(Status))
-    {
-        ExFreePoolWithTag(Client, TAG_NETIO);
-        return Status;
-    }
     reg->ReservedRegistrationContext = Client;
     return STATUS_SUCCESS;
 }
@@ -2699,11 +2644,10 @@ VOID WSKAPI
 WskDeregister(_In_ PWSK_REGISTRATION reg)
 {
     PNETIO_WSK_CLIENT Client;
+    BOOLEAN Idle = TRUE;
     KIRQL OldIrql;
 
     FUNCTION_TRACE;
-
-    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
     Client = reg->ReservedRegistrationContext;
@@ -2711,6 +2655,7 @@ WskDeregister(_In_ PWSK_REGISTRATION reg)
     {
         KeAcquireSpinLockAtDpcLevel(&Client->Lock);
         Client->Deregistering = TRUE;
+        Idle = Client->Users == 0;
         KeReleaseSpinLockFromDpcLevel(&Client->Lock);
     }
     KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
@@ -2718,7 +2663,11 @@ WskDeregister(_In_ PWSK_REGISTRATION reg)
     if (Client == NULL)
         return;
 
-    KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
+    if (!Idle)
+    {
+        ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+        KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
+    }
 
     /* WskReleaseProviderNPI still reads the client from the registration, so detach it only now */
     KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
@@ -2730,7 +2679,6 @@ WskDeregister(_In_ PWSK_REGISTRATION reg)
     KeReleaseSpinLock(&Client->Lock, OldIrql);
 
     ExFreePoolWithTag(Client, TAG_NETIO);
-    StopSocketDereferenceThread();
 }
 
 NTSTATUS

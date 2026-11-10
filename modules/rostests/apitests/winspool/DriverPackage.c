@@ -500,11 +500,59 @@ BuildBigInf(VOID)
     return (DWORD)strlen(BigInf);
 }
 
+static const char IncludeInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Include Printer\"=TESTINC,LiberNT_Package_Include\r\n"
+    "\r\n"
+    "[TESTINC]\r\n"
+    "Include=lntprncmn.inf\r\n"
+    "Needs=TESTINC_COMMON\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTINC.DLL=1\r\n"
+    "TESTINC0.DAT=1\r\n"
+    "TESTINC1.DAT=1\r\n";
+
+#define INCLUDED_INF(Files) \
+    "[Version]\r\n" \
+    "Signature=\"$Windows NT$\"\r\n" \
+    "\r\n" \
+    "[TESTINC_COMMON]\r\n" \
+    "CopyFiles=TESTINC_FILES\r\n" \
+    "DriverFile=TESTINC.DLL\r\n" \
+    "ConfigFile=TESTINC.DLL\r\n" \
+    "DataFile=TESTINC0.DAT\r\n" \
+    "\r\n" \
+    "[TESTINC_FILES]\r\n" \
+    "TESTINC.DLL\r\n" \
+    "TESTINC0.DAT\r\n" \
+    Files
+
+static const char IncludedInf[] = INCLUDED_INF("TESTINC1.DAT\r\n");
+static const char SystemIncludedInf[] = INCLUDED_INF("");
+
 static VOID
 TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSize, PCWSTR DriverFile,
-                   PCWSTR FilePattern, UINT FileCount, PCWSTR Dependent)
+                   PCWSTR FilePattern, UINT FileCount, PCWSTR Dependent, PCWSTR IncludeName)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
+    WCHAR SystemInfDir[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
     static WCHAR Value[4096];
     WCHAR DriverDir[MAX_PATH] = L"";
@@ -530,6 +578,14 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
     {
         StringCchPrintfW(File, ARRAYSIZE(File), FilePattern, i);
         Created = WriteTestFile(Dir, File, Text, sizeof(Text) - 1);
+    }
+
+    GetWindowsDirectoryW(SystemInfDir, ARRAYSIZE(SystemInfDir));
+    StringCchCatW(SystemInfDir, ARRAYSIZE(SystemInfDir), L"\\inf");
+    if (Created && IncludeName)
+    {
+        Created = WriteTestFile(Dir, IncludeName, IncludedInf, sizeof(IncludedInf) - 1) &&
+                  WriteTestFile(SystemInfDir, IncludeName, SystemIncludedInf, sizeof(SystemIncludedInf) - 1);
     }
 
     if (Created)
@@ -581,6 +637,13 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
             StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", DriverDir, File);
             DeleteFileW(Path);
         }
+    }
+    if (IncludeName)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, IncludeName);
+        DeleteFileW(Path);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", SystemInfDir, IncludeName);
+        DeleteFileW(Path);
     }
     DeleteFileW(InfPath);
     RemoveDirectoryW(Dir);
@@ -845,9 +908,11 @@ START_TEST(DriverPackage)
     TestRefusedPackage(L"lntprnbad", MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
     TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
-                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL);
+                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL, NULL);
     TestInstallPackage(L"lntprnbig", L"LiberNT Package Big Printer", BigInf, BuildBigInf(),
-                       L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT");
+                       L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT", NULL);
+    TestInstallPackage(L"lntprninc", L"LiberNT Package Include Printer", IncludeInf, sizeof(IncludeInf) - 1,
+                       L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"lntprncmn.inf");
     TestOtherEnvironment();
 
     if (!CreateTestPackage(Dir, InfPath))

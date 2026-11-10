@@ -509,8 +509,9 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DefaultDataType[MAX_PATH], PackageDir[MAX_PATH], DriverDir[MAX_PATH];
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
-    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH];
+    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 };
+    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH], IncludePath[MAX_PATH];
+    BOOL Found;
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     PSP_ALTPLATFORM_INFO Platform = NULL;
@@ -570,7 +571,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         hr = HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
         goto Cleanup;
     }
-    if (!AddPackageFile(&Sections, ActualSection, NULL))
+    if (!AddPackageFile(&Sections, ActualSection, NULL) || !AddPackageFile(&Includes, Slash + 1, NULL))
     {
         hr = E_OUTOFMEMORY;
         goto Cleanup;
@@ -578,13 +579,32 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 
     for (i = 0; i < Sections.Count; i++)
     {
-        if (SetupFindFirstLineW(hInf, Sections.Names[i], L"Include", &Context))
+        for (Found = SetupFindFirstLineW(hInf, Sections.Names[i], L"Include", &Context);
+             Found;
+             Found = SetupFindNextMatchLineW(&Context, L"Include", &Context))
         {
             FieldCount = SetupGetFieldCount(&Context);
             for (Field = 1; Field <= FieldCount; Field++)
             {
-                if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL) &&
-                    !SetupOpenAppendInfFileW(Include, hInf, NULL))
+                if (!SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL))
+                    continue;
+
+                Size = Includes.Count;
+                if (!AddPackageFile(&Includes, Include, NULL))
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto Cleanup;
+                }
+                if (Includes.Count == Size)
+                    continue;
+
+                if (wcspbrk(Include, L"\\/:") ||
+                    FAILED(StringCchPrintfW(IncludePath, ARRAYSIZE(IncludePath), L"%s\\%s", PackageDir, Include)) ||
+                    GetFileAttributesW(IncludePath) == INVALID_FILE_ATTRIBUTES)
+                {
+                    StringCchCopyW(IncludePath, ARRAYSIZE(IncludePath), Include);
+                }
+                if (!SetupOpenAppendInfFileW(IncludePath, hInf, NULL))
                 {
                     hr = HRESULT_FROM_WIN32(GetLastError());
                     goto Cleanup;
@@ -724,6 +744,7 @@ Cleanup:
     FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
     FreePackageFiles(&Sections);
+    FreePackageFiles(&Includes);
     SetupCloseInfFile(hInf);
     return hr;
 }

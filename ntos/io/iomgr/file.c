@@ -4763,7 +4763,7 @@ IopCancelIoFileExKernelApc(
 
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
     {
-        /* FIXME: the alert outlives a request the driver completes before the wait takes it */
+        /* IopCompleteRequest drops the alert if the request ends before a wait takes it */
         KeAlertThread(Thread, UserMode);
     }
     Context->Status = STATUS_SUCCESS;

@@ -530,6 +530,7 @@ list(APPEND KMTEST_SOURCE
     ntos_cc/CcPinRead_user.c
     ntos_cc/CcSetFileSizes_user.c
     ntos_io/IoAddDeviceUnload_user.c
+    ntos_io/IoCancelSync_user.c
     ntos_io/IoCreateFile_user.c
     ntos_io/IoDeviceObject_user.c
     ntos_io/IoReadWrite_user.c

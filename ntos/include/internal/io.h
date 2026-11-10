@@ -1233,18 +1233,6 @@ IopAbortInterruptedIrp(
     IN PIRP Irp
 );
 
-BOOLEAN
-NTAPI
-IopRecordCancelAlert(
-    _In_ PIRP Irp
-);
-
-BOOLEAN
-NTAPI
-IopForgetCancelAlert(
-    _In_ PIRP Irp
-);
-
 PIRP
 NTAPI
 IopAllocateIrpMustSucceed(

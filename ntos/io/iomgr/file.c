@@ -4664,17 +4664,14 @@ IopCancelMatchingIrpsInCurrentThread(
     _In_opt_ PFILE_OBJECT FileObject,
     _In_opt_ PIO_STATUS_BLOCK IoRequestToCancel,
     _In_ BOOLEAN SynchronousOnly,
-    _In_ BOOLEAN PortOnly,
-    _Out_opt_ PIRP *NotCancelled)
+    _In_ BOOLEAN PortOnly)
 {
     PETHREAD Thread;
     PLIST_ENTRY ListHead, NextEntry;
     PIRP Irp;
     KIRQL OldIrql;
     BOOLEAN Found = FALSE;
-
-    if (NotCancelled)
-        *NotCancelled = NULL;
+    BOOLEAN SynchronousLeft = FALSE;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4691,11 +4688,15 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            if (!IoCancelIrp(Irp) && NotCancelled)
-                *NotCancelled = Irp;
+            if (!IoCancelIrp(Irp) && IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
+                SynchronousLeft = TRUE;
             Found = TRUE;
         }
     }
+
+    /* As on Windows 11, a synchronous request that has no cancel routine leaves its thread alerted in kernel mode */
+    if (SynchronousLeft)
+        KeAlertThread(&Thread->Tcb, KernelMode);
 
     KeLowerIrql(OldIrql);
     return Found;
@@ -4745,8 +4746,6 @@ IopCancelIoFileExKernelApc(
     _Inout_ PVOID *SystemArgument2)
 {
     PIOP_CANCEL_IO_APC_CONTEXT Context = *SystemArgument1;
-    PKTHREAD Thread = KeGetCurrentThread();
-    PIRP NotCancelled;
 
     UNREFERENCED_PARAMETER(Apc);
     UNREFERENCED_PARAMETER(NormalRoutine);
@@ -4757,18 +4756,7 @@ IopCancelIoFileExKernelApc(
     ASSERT(Apc == &Context->Apc);
     ASSERT(Context->Status == STATUS_PENDING);
 
-    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel,
-                                                          Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
-    ASSERT(!NotCancelled || Context->Found);
-
-    if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
-    {
-        /* An alert that was already pending belongs to its sender and is not recorded as ours */
-        BOOLEAN Recorded = IopRecordCancelAlert(NotCancelled);
-
-        if (KeAlertThread(Thread, UserMode) && Recorded)
-            IopForgetCancelAlert(NotCancelled);
-    }
+    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel, Context->SynchronousOnly, Context->PortOnly);
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);
 }
@@ -4804,7 +4792,7 @@ IopCancelIoFileExInThread(
 
     if (Thread == PsGetCurrentThread())
     {
-        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly, NULL);
+        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly);
         return STATUS_SUCCESS;
     }
 

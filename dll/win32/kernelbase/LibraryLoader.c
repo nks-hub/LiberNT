@@ -10,6 +10,9 @@
 
 NTSYSAPI NTSTATUS NTAPI LdrLockLoaderLock(_In_ ULONG Flags, _Out_opt_ PULONG Disposition, _Out_ PULONG_PTR Cookie);
 NTSYSAPI NTSTATUS NTAPI LdrUnlockLoaderLock(_In_ ULONG Flags, _In_opt_ ULONG_PTR Cookie);
+NTSYSAPI NTSTATUS NTAPI LdrAddRefDll(_In_ ULONG Flags, _In_ HMODULE Module);
+
+#define LDR_ADDREF_DLL_PIN 0x00000001
 
 /* Invalid flags go to kernel32 unchanged, which rejects them before any lookup */
 static BOOL
@@ -31,8 +34,8 @@ KbGetModuleHandleExW(
 {
     PVOID ImageBase = NULL;
     ULONG_PTR Cookie;
+    DWORD Error = ERROR_SUCCESS;
     NTSTATUS Status;
-    BOOL Result;
 
     if (!KbValidModuleHandleFlags(dwFlags) || !(dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) ||
         !lpModuleName || !phModule)
@@ -47,18 +50,26 @@ KbGetModuleHandleExW(
         SetLastError(RtlNtStatusToDosError(Status));
         return FALSE;
     }
-    if (RtlPcToFileHeader((PVOID)lpModuleName, &ImageBase))
+    if (!RtlPcToFileHeader((PVOID)lpModuleName, &ImageBase))
     {
-        Result = GetModuleHandleExW(dwFlags, (LPCWSTR)ImageBase, phModule);
+        Error = ERROR_MOD_NOT_FOUND;
     }
-    else
+    else if (!(dwFlags & GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT))
     {
-        *phModule = NULL;
-        SetLastError(ERROR_MOD_NOT_FOUND);
-        Result = FALSE;
+        Status = LdrAddRefDll((dwFlags & GET_MODULE_HANDLE_EX_FLAG_PIN) ? LDR_ADDREF_DLL_PIN : 0, (HMODULE)ImageBase);
+        if (!NT_SUCCESS(Status))
+            Error = RtlNtStatusToDosError(Status);
     }
     LdrUnlockLoaderLock(0, Cookie);
-    return Result;
+
+    if (Error != ERROR_SUCCESS)
+    {
+        *phModule = NULL;
+        SetLastError(Error);
+        return FALSE;
+    }
+    *phModule = (HMODULE)ImageBase;
+    return TRUE;
 }
 
 BOOL

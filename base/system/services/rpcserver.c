@@ -120,6 +120,7 @@ DWORD g_dwServiceBits = 0;
 
 static CRITICAL_SECTION ScmNotifyLock;
 static LIST_ENTRY ScmManagerNotifyList;
+static DWORD ScmDatabaseNotifySequence;
 
 /* FUNCTIONS ***************************************************************/
 
@@ -307,6 +308,10 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
             pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
         pParams->dwSequence = lpService->dwNotifySequence;
     }
+    else
+    {
+        pParams->dwSequence = ScmDatabaseNotifySequence;
+    }
     if (lpServiceName != NULL)
     {
         /* As on Windows, the name of a created service starts with a slash */
@@ -413,6 +418,9 @@ ScmNotifyServiceDatabase(DWORD dwTrigger,
     PNOTIFY_HANDLE pNotify;
 
     EnterCriticalSection(&ScmNotifyLock);
+
+    if (++ScmDatabaseNotifySequence == 0)
+        ScmDatabaseNotifySequence = 1;
 
     for (Entry = ScmManagerNotifyList.Flink; Entry != &ScmManagerNotifyList; Entry = Next)
     {
@@ -7024,8 +7032,17 @@ RNotifyServiceStatusChange(
 
         pNotify->Owner = hManager;
         EnterCriticalSection(&ScmNotifyLock);
-        InterlockedIncrement(&pNotify->RefCount);
-        InsertTailList(&ScmManagerNotifyList, &pNotify->ListEntry);
+        /* A renewed subscription names the last change it saw; one made since has no name to report */
+        dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
+        if (pNotify->bSubscription && dwSequence != 0 && dwSequence != ScmDatabaseNotifySequence)
+        {
+            ScmFillNotify(pNotify, NULL, dwMask, NULL);
+        }
+        else
+        {
+            InterlockedIncrement(&pNotify->RefCount);
+            InsertTailList(&ScmManagerNotifyList, &pNotify->ListEntry);
+        }
         LeaveCriticalSection(&ScmNotifyLock);
 
         *pfCreateRemoteQueue = FALSE;

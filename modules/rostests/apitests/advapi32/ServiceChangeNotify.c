@@ -471,6 +471,73 @@ test_ChangeDuringCallback(PCSTR NameA, PCWSTR NameW, void *Param)
     CloseServiceHandle(Manager);
 }
 
+static volatile LONG DatabaseCalls;
+
+static VOID CALLBACK
+DatabaseChangedGated(DWORD Notify, PVOID Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    trace("Database callback 0x%lx
+", Notify);
+    if (InterlockedIncrement(&DatabaseCalls) == 1)
+        WaitForSingleObject(GateEvent, 30000);
+}
+
+/* A second service is created before the callback for the first one returns */
+static void
+test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
+{
+    PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
+    SC_HANDLE First, Second;
+    WCHAR Path[MAX_PATH];
+    DWORD Error, Start;
+
+    GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    DatabaseCalls = 0;
+    Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChangedGated, NULL, &Subscription);
+    ok(Error == ERROR_SUCCESS, "Database subscription returned %lu
+", Error);
+    if (Error != ERROR_SUCCESS)
+    {
+        CloseHandle(GateEvent);
+        return;
+    }
+
+    First = CreateTestService(Manager);
+    ok(First != NULL, "CreateServiceW failed (%lu)
+", GetLastError());
+    for (Start = GetTickCount(); !DatabaseCalls && GetTickCount() - Start < 5000; )
+        Sleep(50);
+    ok(DatabaseCalls != 0, "No callback for the first service
+");
+
+    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
+    StringCchCatW(Path, ARRAYSIZE(Path), L"\svchost.exe");
+    Second = CreateServiceW(Manager, TEST_SERVICE L"2", TEST_SERVICE L"2", SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
+                            SERVICE_DEMAND_START, SERVICE_ERROR_IGNORE, Path, NULL, NULL, NULL, NULL, NULL);
+    ok(Second != NULL, "CreateServiceW failed (%lu)
+", GetLastError());
+
+    SetEvent(GateEvent);
+    for (Start = GetTickCount(); DatabaseCalls < 2 && GetTickCount() - Start < 5000; )
+        Sleep(50);
+    ok(DatabaseCalls >= 2, "No callback for the second service after %ld callbacks
+", DatabaseCalls);
+
+    pUnsubscribe(Subscription);
+    if (First)
+    {
+        DeleteService(First);
+        CloseServiceHandle(First);
+    }
+    if (Second)
+    {
+        DeleteService(Second);
+        CloseServiceHandle(Second);
+    }
+    CloseHandle(GateEvent);
+}
+
 START_TEST(ServiceChangeNotify)
 {
     HMODULE hSechost = LoadLibraryW(L"sechost.dll");
@@ -507,6 +574,7 @@ START_TEST(ServiceChangeNotify)
         test_Subscribe(Manager);
         test_SubscribeCleanup(Manager);
         test_runner(test_ChangeDuringCallback, NULL);
+        test_DatabaseChangeDuringCallback(Manager);
     }
     else
         skip("SubscribeServiceChangeNotifications is missing\n");

@@ -2844,6 +2844,27 @@ ScmAutoStartServices(VOID)
     for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
         i++;
     Delayed = HeapAlloc(GetProcessHeap(), 0, i * sizeof(*Delayed));
+    hThread = NULL;
+    if (Delayed != NULL)
+    {
+        ScmDelayedAutoStartStop = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (ScmDelayedAutoStartStop != NULL)
+            hThread = CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, CREATE_SUSPENDED, NULL);
+    }
+    if (hThread == NULL)
+    {
+        DPRINT1("Cannot delay the delayed automatic services, they start with the other ones\n");
+        if (ScmDelayedAutoStartStop != NULL)
+        {
+            CloseHandle(ScmDelayedAutoStartStop);
+            ScmDelayedAutoStartStop = NULL;
+        }
+        if (Delayed != NULL)
+        {
+            HeapFree(GetProcessHeap(), 0, Delayed);
+            Delayed = NULL;
+        }
+    }
 
     /* Acquire the service control critical section, to synchronize starts */
     EnterCriticalSection(&ControlServiceCriticalSection);
@@ -2859,15 +2880,12 @@ ScmAutoStartServices(VOID)
              !ScmIsSafeBootServiceAllowed(CurrentService, hSafeBootKey)) ||
             ScmIsDeferredDuringSetup(CurrentService);
 
-        if (!CurrentService->ServiceVisited && CurrentService->dwStartType == SERVICE_AUTO_START &&
+        if (Delayed != NULL && !CurrentService->ServiceVisited && CurrentService->dwStartType == SERVICE_AUTO_START &&
             ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
         {
             CurrentService->ServiceVisited = TRUE;
-            if (Delayed != NULL)
-            {
-                ScmReferenceService(CurrentService);
-                Delayed[DelayedCount++] = CurrentService;
-            }
+            ScmReferenceService(CurrentService);
+            Delayed[DelayedCount++] = CurrentService;
         }
 
         ServiceEntry = ServiceEntry->Flink;
@@ -2973,35 +2991,12 @@ ScmAutoStartServices(VOID)
     LeaveCriticalSection(&ControlServiceCriticalSection);
 
     if (Delayed == NULL)
-    {
-        DPRINT1("Cannot keep the list of delayed automatic services\n");
         return;
-    }
     Delayed[DelayedCount] = NULL;
-    hThread = NULL;
-    if (DelayedCount)
-    {
-        ScmDelayedAutoStartStop = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (ScmDelayedAutoStartStop != NULL)
-            hThread = CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, 0, NULL);
-    }
-    if (hThread != NULL)
-    {
-        ScmDelayedAutoStartWorker = hThread;
-        return;
-    }
-    if (ScmDelayedAutoStartStop != NULL)
-    {
-        CloseHandle(ScmDelayedAutoStartStop);
-        ScmDelayedAutoStartStop = NULL;
-    }
-    if (DelayedCount)
-        DPRINT1("Cannot start the delayed automatic services (Error %lu)\n", GetLastError());
-    ScmLockDatabaseExclusive();
-    for (i = 0; i < DelayedCount; i++)
-        ScmDereferenceService(Delayed[i]);
-    ScmUnlockDatabase();
-    HeapFree(GetProcessHeap(), 0, Delayed);
+    if (DelayedCount == 0)
+        SetEvent(ScmDelayedAutoStartStop);
+    ResumeThread(hThread);
+    ScmDelayedAutoStartWorker = hThread;
 }
 
 

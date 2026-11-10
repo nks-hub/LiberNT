@@ -947,6 +947,7 @@ GetIfEntry2(
 {
     PUCHAR Entries;
     IFEntry *Entry;
+    IP4_INTERFACE_INFO Info;
     ULONG Count, Index, Length, i;
     BOOLEAN Loopback;
     NTSTATUS Status;
@@ -970,6 +971,12 @@ GetIfEntry2(
         goto Done;
     }
 
+    RtlZeroMemory(&Info, sizeof(Info));
+    Info.Index = Entry->if_index;
+    Status = NetioDeviceIoControl(L"\\Device\\Ip", IOCTL_IP_QUERY_INTERFACE, &Info, sizeof(Info), &Info, sizeof(Info));
+    if (!NT_SUCCESS(Status))
+        goto Done;
+
     Loopback = Entry->if_type == IF_TYPE_SOFTWARE_LOOPBACK;
     RtlZeroMemory(Row, sizeof(*Row));
     Row->InterfaceLuid = NetioInterfaceLuid(Entry->if_index, Entry->if_type);
@@ -983,12 +990,12 @@ GetIfEntry2(
     Row->Mtu = Entry->if_mtu;
     Row->Type = Entry->if_type;
     Row->TunnelType = TUNNEL_TYPE_NONE;
-    Row->MediaType = NdisMedium802_3;
-    Row->PhysicalMediumType = NdisPhysicalMediumUnspecified;
-    Row->AccessType = Loopback ? NET_IF_ACCESS_LOOPBACK : NET_IF_ACCESS_BROADCAST;
+    Row->MediaType = (NDIS_MEDIUM)Info.MediaType;
+    Row->PhysicalMediumType = (NDIS_PHYSICAL_MEDIUM)Info.PhysicalMedium;
+    Row->AccessType = Loopback ? NET_IF_ACCESS_LOOPBACK : (NET_IF_ACCESS_TYPE)Info.AccessType;
     Row->DirectionType = NET_IF_DIRECTION_SENDRECEIVE;
     Row->InterfaceAndOperStatusFlags.HardwareInterface = !Loopback;
-    Row->InterfaceAndOperStatusFlags.ConnectorPresent = !Loopback;
+    Row->InterfaceAndOperStatusFlags.ConnectorPresent = Info.ConnectorPresent;
     Row->OperStatus = NetioOperStatus(Entry->if_operstatus);
     Row->InterfaceAndOperStatusFlags.NotMediaConnected = Row->OperStatus != IfOperStatusUp;
     Row->AdminStatus = (Entry->if_adminstatus == 2) ? NET_IF_ADMIN_STATUS_DOWN : NET_IF_ADMIN_STATUS_UP;
@@ -1508,6 +1515,7 @@ typedef struct _NETIO_CHANGE_NOTIFY
     BOOLEAN Linked;
     BOOLEAN InitialPending;
     BOOLEAN FreeOnRelease;
+    BOOLEAN Running;
     KEVENT Released;
 } NETIO_CHANGE_NOTIFY, *PNETIO_CHANGE_NOTIFY;
 
@@ -1549,6 +1557,7 @@ NetioNotify(
     ULONG Count = 0, Capacity = 0, i;
     MIB_IPFORWARD_ROW2 Route;
     MIB_IPINTERFACE_ROW Interface;
+    BOOLEAN Invoke;
     KIRQL OldIrql;
 
     ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
@@ -1591,6 +1600,16 @@ NetioNotify(
 
     for (i = 0; i < Count; i++)
     {
+        KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+        ASSERT(!Targets[i]->Running);
+        Invoke = Targets[i]->Running = Targets[i]->Linked;
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+        if (!Invoke)
+        {
+            NetioReleaseNotify(Targets[i]);
+            continue;
+        }
+
         if (InitialOnly)
         {
             if (Targets[i]->Kind == NETIO_CHANGE_ROUTE)
@@ -1608,6 +1627,11 @@ NetioNotify(
             Interface = *(const MIB_IPINTERFACE_ROW *)Row;
             ((PIPINTERFACE_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, &Interface, Type);
         }
+
+        ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+        KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+        Targets[i]->Running = FALSE;
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
         NetioReleaseNotify(Targets[i]);
     }
 
@@ -1967,6 +1991,7 @@ CancelMibChangeNotify2(
 {
     PNETIO_CHANGE_NOTIFY Notify = NULL;
     PLIST_ENTRY Entry;
+    BOOLEAN Wait = FALSE;
     KIRQL OldIrql;
 
     if (NotificationHandle == NULL)
@@ -1982,24 +2007,22 @@ CancelMibChangeNotify2(
         Notify = NotificationHandle;
         RemoveEntryList(&Notify->Link);
         Notify->Linked = FALSE;
+        ASSERT(Notify->References > 0);
+        /* Only a callback running on another thread is waited for; the worker skips an unlinked registration */
+        Wait = Notify->Running && PsGetCurrentThread() != NetioChangeThread;
+        Notify->FreeOnRelease = !Wait;
         break;
     }
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
     if (Notify == NULL)
         return STATUS_INVALID_HANDLE;
 
-    ASSERT(Notify->References > 0);
-
-    if (PsGetCurrentThread() == NetioChangeThread)
-    {
-        Notify->FreeOnRelease = TRUE;
-        if (InterlockedDecrement(&Notify->References) == 0)
-            ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
-        return STATUS_SUCCESS;
-    }
-
     if (InterlockedDecrement(&Notify->References) != 0)
+    {
+        if (!Wait)
+            return STATUS_SUCCESS;
         KeWaitForSingleObject(&Notify->Released, Executive, KernelMode, FALSE, NULL);
+    }
     ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
     return STATUS_SUCCESS;
 }

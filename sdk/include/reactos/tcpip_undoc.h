@@ -113,6 +113,9 @@ typedef struct _IP4_INTERFACE_INFO
     BOOLEAN Reserved;
     ULONG PhysicalMedium;
     ULONG64 NetLuid;
+    ULONG MediaType;
+    ULONG AccessType;
+    BOOLEAN ConnectorPresent;
 } IP4_INTERFACE_INFO, *PIP4_INTERFACE_INFO;
 
 typedef struct _IP_BEST_SOURCE

@@ -4763,8 +4763,15 @@ IopCancelIoFileExKernelApc(
 
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
     {
-        /* IopCompleteRequest drops the alert if the request ends before a wait takes it */
-        KeAlertThread(Thread, UserMode);
+        /*
+         * IopCompleteRequest drops the alert if the request ends before a wait
+         * takes it. An alert that was already pending belongs to its sender,
+         * and so does this one when no memory is left to record it.
+         */
+        BOOLEAN Recorded = IopRecordCancelAlert(NotCancelled);
+
+        if (KeAlertThread(Thread, UserMode) && Recorded)
+            IopForgetCancelAlert(NotCancelled);
     }
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);

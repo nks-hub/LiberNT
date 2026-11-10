@@ -81,6 +81,7 @@ list(APPEND SOURCE
     NtApphelpCacheControl.c
     NtCompareTokens.c
     NtCreateFile.c
+    NtCancelIoFileEx.c
     NtCreateKey.c
     NtCreateKeyCached.c
     NtCreateProfile.c

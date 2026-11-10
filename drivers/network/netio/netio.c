@@ -168,6 +168,8 @@ typedef struct _WSK_SOCKET_INTERNAL
     KEVENT ReceivesIdle;
     KSPIN_LOCK ReceiveLock;
     PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
+    LONG DeferredSends;            /* queued sends; the close takes one off, so below zero means none are left */
+    KEVENT SendsIdle;
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
 
 typedef struct _NETIO_CONTEXT
@@ -1047,6 +1049,10 @@ NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp)
     ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     IoSetNextIrpStackLocation(Irp);
+
+    /* A send deferred from DISPATCH_LEVEL must go out before the close completes */
+    if (InterlockedDecrement(&Socket->DeferredSends) >= 0)
+        KeWaitForSingleObject(&Socket->SendsIdle, Executive, KernelMode, FALSE, NULL);
 
     /* There might be a reference from (for example) a pending
      * receive. Shutdown the socket here explicitly. We expect
@@ -1996,6 +2002,8 @@ NetioDeferredSendWorker(
         WskSendTo(Send->Socket, &Send->Buffer, Send->Flags, Send->RemoteAddress,
                   Send->ControlInfoLength, Send->ControlInfo, Send->Irp);
 
+    if (InterlockedDecrement(&Socket->DeferredSends) < 0)
+        KeSetEvent(&Socket->SendsIdle, IO_NO_INCREMENT, FALSE);
     DereferenceSocket(Socket);
     ExFreePoolWithTag(Send, TAG_NETIO);
 }
@@ -2031,6 +2039,7 @@ NetioDeferSend(
     Send->ControlInfo = ControlInfo;
     Send->Irp = Irp;
     ReferenceSocket(CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket));
+    InterlockedIncrement(&CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket)->DeferredSends);
     ExInitializeWorkItem(&Send->WorkItem, NetioDeferredSendWorker, Send);
     ExQueueWorkItem(&Send->WorkItem, CriticalWorkQueue);
     return STATUS_PENDING;
@@ -2464,6 +2473,7 @@ WskSocket(
             Socket->DatagramDispatch = Dispatch;
             KeInitializeSpinLock(&Socket->ReceiveLock);
             KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
+            KeInitializeEvent(&Socket->SendsIdle, NotificationEvent, FALSE);
             Socket->ReceiveEvents = Client != NULL &&
                                     (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
             Socket->ReceiveEventsStatic = Socket->ReceiveEvents;

@@ -21,6 +21,19 @@ DEBUG_CHANNEL(kernel32file);
 
 /* FUNCTIONS ****************************************************************/
 
+static BOOL
+BasepIsRemoteFile(HANDLE FileHandle)
+{
+    FILE_FS_DEVICE_INFORMATION FileFsDevice;
+    IO_STATUS_BLOCK IoStatusBlock;
+
+    return NT_SUCCESS(NtQueryVolumeInformationFile(FileHandle,
+                                                   &IoStatusBlock,
+                                                   &FileFsDevice,
+                                                   sizeof(FileFsDevice),
+                                                   FileFsDeviceInformation)) &&
+           (FileFsDevice.Characteristics & FILE_REMOTE_DEVICE);
+}
 
 static NTSTATUS
 CopyLoop (
@@ -29,7 +42,8 @@ CopyLoop (
     LARGE_INTEGER		SourceFileSize,
     LPPROGRESS_ROUTINE	lpProgressRoutine,
     LPVOID			lpData,
-    BOOL			*pbCancel
+    BOOL			*pbCancel,
+    BOOL                 *KeepDest
 )
 {
     NTSTATUS errCode;
@@ -41,6 +55,7 @@ CopyLoop (
     DWORD ProgressResult;
     BOOL EndOfFileFound;
 
+    *KeepDest = FALSE;
     errCode = NtAllocateVirtualMemory(NtCurrentProcess(),
                                       (PVOID *)&lpBuffer,
                                       0,
@@ -75,9 +90,10 @@ CopyLoop (
                     errCode = STATUS_REQUEST_ABORTED;
                     break;
                 case PROGRESS_STOP:
-                    /* Windows 11 deletes the destination as on cancel; only a restartable network copy keeps it */
                     TRACE("Progress callback requested stop\n");
                     errCode = STATUS_REQUEST_ABORTED;
+                    /* Windows 11 deletes a stopped local copy (measured); a network copy keeps it as documented */
+                    *KeepDest = BasepIsRemoteFile(FileHandleSource) || BasepIsRemoteFile(FileHandleDest);
                     break;
                 case PROGRESS_QUIET:
                     lpProgressRoutine = NULL;
@@ -255,6 +271,7 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
     FILE_STANDARD_INFORMATION FileStandard;
     FILE_BASIC_INFORMATION FileBasic;
     BOOL RC = FALSE;
+    BOOL KeepDestOnError = FALSE;
     BOOL NoDeleteAccess = FALSE;
     DWORD SystemError;
 
@@ -323,7 +340,8 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                                        FileStandard.EndOfFile,
                                        lpProgressRoutine,
                                        lpData,
-                                       pbCancel);
+                                       pbCancel,
+                                       &KeepDestOnError);
                     if (!NT_SUCCESS(errCode))
                     {
                         BaseSetLastNTError(errCode);
@@ -344,7 +362,7 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                         }
                     }
                     NtClose(FileHandleDest);
-                    if (! RC && ! NoDeleteAccess)
+                    if (! RC && ! KeepDestOnError && ! NoDeleteAccess)
                     {
                         SystemError = GetLastError();
                         SetFileAttributesW(lpNewFileName, FILE_ATTRIBUTE_NORMAL);

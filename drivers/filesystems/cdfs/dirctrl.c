@@ -191,8 +191,13 @@ Return Value:
 --*/
 
 {
+#ifdef __REACTOS__
     NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG _SEH2_VOLATILE Information = 0;
+#else
+    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG Information = 0;
+#endif
 
     ULONG LastEntry = 0;
     ULONG NextEntry = 0;
@@ -202,12 +207,24 @@ Return Value:
     ULONG VersionStringBytes;
 
     FILE_ENUM_CONTEXT FileContext;
+#ifdef __REACTOS__
     PDIRENT _SEH2_VOLATILE ThisDirent = NULL;
+#else
+    PDIRENT ThisDirent = NULL;
+#endif
     BOOLEAN InitialQuery;
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE ReturnNextEntry = FALSE;
+#else
+    BOOLEAN ReturnNextEntry = FALSE;
+#endif
     BOOLEAN ReturnSingleEntry;
     BOOLEAN Found;
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE DoCcbUpdate = FALSE;
+#else
+    BOOLEAN DoCcbUpdate = FALSE;
+#endif
 
     PCHAR UserBuffer;
     ULONG BytesRemainingInBuffer;
@@ -306,6 +323,7 @@ Return Value:
         //  to search.
         //
 
+#ifdef __REACTOS__
         CdInitializeEnumeration( IrpContext,
                                  IrpSp,
                                  Fcb,
@@ -314,6 +332,16 @@ Return Value:
                                  (PBOOLEAN)&ReturnNextEntry,
                                  &ReturnSingleEntry,
                                  &InitialQuery );
+#else
+        CdInitializeEnumeration( IrpContext,
+                                 IrpSp,
+                                 Fcb,
+                                 Ccb,
+                                 &FileContext,
+                                 &ReturnNextEntry,
+                                 &ReturnSingleEntry,
+                                 &InitialQuery );
+#endif
 
         //
         //  The current dirent is stored in the InitialDirent field.  We capture

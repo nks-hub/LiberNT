@@ -48,10 +48,18 @@ NTSTATUS
 Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
+#ifdef __REACTOS__
     NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+#endif
     PFILE_OBJECT            FileObject;
     PEXT2_VCB               Vcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB               _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB               Fcb = NULL;
+#endif
     PEXT2_MCB               Mcb = NULL;
     PEXT2_CCB               Ccb = NULL;
     PIRP                    Irp = NULL;
@@ -59,7 +67,11 @@ Ext2QueryFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
     FILE_INFORMATION_CLASS  FileInformationClass;
     ULONG                   Length;
     PVOID                   Buffer;
+#ifdef __REACTOS__
     BOOLEAN                 _SEH2_VOLATILE FcbResourceAcquired = FALSE;
+#else
+    BOOLEAN                 FcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -514,23 +526,45 @@ NTSTATUS
 Ext2SetFileInformation (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
+#ifdef __REACTOS__
     NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PEXT2_VCB               _SEH2_VOLATILE Vcb = NULL;
+#else
+    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+    PEXT2_VCB               Vcb = NULL;
+#endif
     PFILE_OBJECT            FileObject = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB               _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB               Fcb = NULL;
+#endif
     PEXT2_CCB               Ccb = NULL;
+#ifdef __REACTOS__
     PEXT2_MCB               _SEH2_VOLATILE Mcb = NULL;
+#else
+    PEXT2_MCB               Mcb = NULL;
+#endif
     PIRP                    Irp = NULL;
     PIO_STACK_LOCATION      IoStackLocation = NULL;
     FILE_INFORMATION_CLASS  FileInformationClass;
 
+#ifdef __REACTOS__
     ULONG                   _SEH2_VOLATILE NotifyFilter = 0;
+#else
+    ULONG                   NotifyFilter = 0;
+#endif
 
     ULONG                   Length;
     PVOID                   Buffer;
 
+#ifdef __REACTOS__
     BOOLEAN                 _SEH2_VOLATILE FcbMainResourceAcquired = FALSE;
     BOOLEAN                 _SEH2_VOLATILE FcbPagingIoResourceAcquired = FALSE;
+#else
+    BOOLEAN                 FcbMainResourceAcquired = FALSE;
+    BOOLEAN                 FcbPagingIoResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -1924,19 +1958,34 @@ Ext2DeleteFile(
     PEXT2_MCB         Mcb
 )
 {
+#ifdef __REACTOS__
     PEXT2_FCB       _SEH2_VOLATILE Dcb = NULL;
+#else
+    PEXT2_FCB       Dcb = NULL;
+#endif
 
     NTSTATUS        Status = STATUS_UNSUCCESSFUL;
 
+#ifdef __REACTOS__
     BOOLEAN         _SEH2_VOLATILE VcbResourceAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE FcbPagingIoAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE FcbResourceAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE DcbResourceAcquired = FALSE;
+#else
+    BOOLEAN         VcbResourceAcquired = FALSE;
+    BOOLEAN         FcbPagingIoAcquired = FALSE;
+    BOOLEAN         FcbResourceAcquired = FALSE;
+    BOOLEAN         DcbResourceAcquired = FALSE;
+#endif
 
     LARGE_INTEGER   Size;
     LARGE_INTEGER   SysTime;
 
+#ifdef __REACTOS__
     BOOLEAN         _SEH2_VOLATILE bFcbLockAcquired = FALSE;
+#else
+    BOOLEAN         bFcbLockAcquired = FALSE;
+#endif
 
     DEBUG(DL_INF, ( "Ext2DeleteFile: File %wZ (%xh) will be deleted!\n",
                     &Mcb->FullName, Mcb->Inode.i_ino));

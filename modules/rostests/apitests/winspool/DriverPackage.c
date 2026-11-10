@@ -386,6 +386,38 @@ START_TEST(DriverPackage)
         ok(FilesMatch(StoreFile, SourceFile), "%S was not copied again\n", StoreFile);
     }
 
+    {
+        WCHAR StoreFile[MAX_PATH], Original[MAX_PATH], Removed[MAX_PATH], Again[MAX_PATH];
+        static const char Text[] = "LiberNT package test file\r\n";
+        static const char Changed[] = "changed in the source\r\n";
+        PWSTR Last = wcsrchr(StoreInf, L'\\');
+        WIN32_FIND_DATAW Find;
+        HANDLE hFind;
+
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%.*s\\TESTPKG.HLP", (int)(Last - StoreInf), StoreInf);
+        StringCchPrintfW(Original, ARRAYSIZE(Original), L"%s\\TESTPKG.GPD", Dir);
+        StringCchPrintfW(Removed, ARRAYSIZE(Removed), L"%s\\TESTPKG.DAT", Dir);
+        ok(WriteTestFile(Dir, L"TESTPKG.HLP", Changed, sizeof(Changed) - 1), "Changing the source TESTPKG.HLP failed\n");
+        ok(DeleteFileW(Removed), "Deleting %S failed with %lu\n", Removed, GetLastError());
+
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S is gone after a failed upload\n", StoreInf);
+        ok(FilesMatch(StoreFile, Original), "%S was replaced by a failed upload\n", StoreFile);
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%.*s\\TESTPKG.DAT", (int)(Last - StoreInf), StoreInf);
+        ok(FilesMatch(StoreFile, Original), "%S was lost in a failed upload\n", StoreFile);
+
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%.*s.stage-*", (int)(Last - StoreInf), StoreInf);
+        hFind = FindFirstFileW(StoreFile, &Find);
+        ok(hFind == INVALID_HANDLE_VALUE, "%S was left behind\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+        if (hFind != INVALID_HANDLE_VALUE)
+            FindClose(hFind);
+
+        ok(WriteTestFile(Dir, L"TESTPKG.HLP", Text, sizeof(Text) - 1), "Restoring TESTPKG.HLP failed\n");
+        ok(WriteTestFile(Dir, L"TESTPKG.DAT", Text, sizeof(Text) - 1), "Restoring TESTPKG.DAT failed\n");
+    }
+
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, BROKEN_DRIVER_NAME, NULL, 0);
     ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     {

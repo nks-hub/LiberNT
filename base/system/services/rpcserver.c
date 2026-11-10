@@ -7032,7 +7032,7 @@ RNotifyServiceStatusChange(
 
         pNotify->Owner = hManager;
         EnterCriticalSection(&ScmNotifyLock);
-        /* A renewed subscription names the last change it saw; one made since has no name to report */
+        /* A renewed subscription names the last change it saw; one made since is reported without its kind and name */
         dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
         if (pNotify->bSubscription && dwSequence != 0 && dwSequence != ScmDatabaseNotifySequence)
         {

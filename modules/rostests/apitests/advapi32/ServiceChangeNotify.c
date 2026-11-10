@@ -477,8 +477,7 @@ static VOID CALLBACK
 DatabaseChangedGated(DWORD Notify, PVOID Context)
 {
     UNREFERENCED_PARAMETER(Context);
-    trace("Database callback 0x%lx
-", Notify);
+    trace("Database callback 0x%lx\n", Notify);
     if (InterlockedIncrement(&DatabaseCalls) == 1)
         WaitForSingleObject(GateEvent, 30000);
 }
@@ -495,8 +494,7 @@ test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
     GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     DatabaseCalls = 0;
     Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChangedGated, NULL, &Subscription);
-    ok(Error == ERROR_SUCCESS, "Database subscription returned %lu
-", Error);
+    ok(Error == ERROR_SUCCESS, "Database subscription returned %lu\n", Error);
     if (Error != ERROR_SUCCESS)
     {
         CloseHandle(GateEvent);
@@ -504,25 +502,21 @@ test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
     }
 
     First = CreateTestService(Manager);
-    ok(First != NULL, "CreateServiceW failed (%lu)
-", GetLastError());
+    ok(First != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
     for (Start = GetTickCount(); !DatabaseCalls && GetTickCount() - Start < 5000; )
         Sleep(50);
-    ok(DatabaseCalls != 0, "No callback for the first service
-");
+    ok(DatabaseCalls != 0, "No callback for the first service\n");
 
     GetSystemDirectoryW(Path, ARRAYSIZE(Path));
-    StringCchCatW(Path, ARRAYSIZE(Path), L"\svchost.exe");
+    StringCchCatW(Path, ARRAYSIZE(Path), L"\\svchost.exe");
     Second = CreateServiceW(Manager, TEST_SERVICE L"2", TEST_SERVICE L"2", SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
                             SERVICE_DEMAND_START, SERVICE_ERROR_IGNORE, Path, NULL, NULL, NULL, NULL, NULL);
-    ok(Second != NULL, "CreateServiceW failed (%lu)
-", GetLastError());
+    ok(Second != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
 
     SetEvent(GateEvent);
     for (Start = GetTickCount(); DatabaseCalls < 2 && GetTickCount() - Start < 5000; )
         Sleep(50);
-    ok(DatabaseCalls >= 2, "No callback for the second service after %ld callbacks
-", DatabaseCalls);
+    ok(DatabaseCalls >= 2, "No callback for the second service after %ld callbacks\n", DatabaseCalls);
 
     pUnsubscribe(Subscription);
     if (First)

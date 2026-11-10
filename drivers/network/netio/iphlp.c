@@ -1128,14 +1128,10 @@ NetioZones(
     _In_ const MIB_IPINTERFACE_ROW *Current,
     _Out_writes_(ScopeLevelCount) PULONG Zones)
 {
-    ULONG Level, Zone;
+    ULONG Level;
 
     for (Level = 0; Level < ScopeLevelCount; Level++)
-    {
-        Zone = (Row->ZoneIndices[Level] == NETIO_UNCHANGED_ULONG) ? Current->ZoneIndices[Level] :
-                                                                    Row->ZoneIndices[Level];
-        Zones[Level] = (Zone == Current->ZoneIndices[Level]) ? 0 : Zone;
-    }
+        Zones[Level] = NetioValue(Row->ZoneIndices[Level], Current->ZoneIndices[Level], FALSE);
 }
 
 NTSTATUS

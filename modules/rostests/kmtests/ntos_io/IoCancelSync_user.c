@@ -102,7 +102,7 @@ START_TEST(IoCancelSync)
     WORKER Worker;
     DWORD Error;
 
-    Error = KmtLoadAndOpenDriver(L"IoCancelSync", TRUE);
+    Error = KmtLoadDriver(L"IoCancelSync", TRUE);
     ok_eq_int(Error, ERROR_SUCCESS);
     if (Error)
         return;
@@ -140,6 +140,5 @@ START_TEST(IoCancelSync)
     ok_eq_hex(Worker.Waits[0], STATUS_ALERTED);
     ok_eq_hex(Worker.Waits[1], STATUS_SUCCESS);
 
-    KmtCloseDriver();
     KmtUnloadDriver();
 }

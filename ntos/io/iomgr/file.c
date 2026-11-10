@@ -4656,7 +4656,7 @@ typedef struct _IOP_CANCEL_IO_APC_CONTEXT
     BOOLEAN Found;
     BOOLEAN SynchronousOnly;
     BOOLEAN PortOnly;
-    PVOID CancelAlert;
+    PVOID CancelWake;
 } IOP_CANCEL_IO_APC_CONTEXT, *PIOP_CANCEL_IO_APC_CONTEXT;
 
 static
@@ -4746,7 +4746,6 @@ IopCancelIoFileExKernelApc(
     _Inout_ PVOID *SystemArgument2)
 {
     PIOP_CANCEL_IO_APC_CONTEXT Context = *SystemArgument1;
-    PKTHREAD Thread = KeGetCurrentThread();
     PIRP NotCancelled;
 
     UNREFERENCED_PARAMETER(Apc);
@@ -4762,16 +4761,12 @@ IopCancelIoFileExKernelApc(
                                                           Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
     ASSERT(!NotCancelled || Context->Found);
 
-    if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
+    if (Context->SynchronousOnly && NotCancelled)
     {
-        ASSERT(Context->CancelAlert != NULL);
+        ASSERT(Context->CancelWake != NULL);
 
-        IopRecordCancelAlert(Context->CancelAlert, NotCancelled);
-        Context->CancelAlert = NULL;
-
-        /* An alert that was already pending belongs to its sender and is not recorded as ours */
-        if (KeAlertThread(Thread, UserMode))
-            IopForgetCancelAlert(NotCancelled);
+        IopQueueCancelWake(Context->CancelWake, NotCancelled);
+        Context->CancelWake = NULL;
     }
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);
@@ -4819,13 +4814,13 @@ IopCancelIoFileExInThread(
     Context.Found = FALSE;
     Context.SynchronousOnly = SynchronousOnly;
     Context.PortOnly = PortOnly;
-    Context.CancelAlert = NULL;
+    Context.CancelWake = NULL;
 
     if (SynchronousOnly)
     {
-        /* The APC cannot fail, so the record of the alert it may send exists before it runs */
-        Context.CancelAlert = IopAllocateCancelAlert();
-        if (!Context.CancelAlert)
+        /* The APC cannot fail, so the wake it may queue exists before it runs */
+        Context.CancelWake = IopAllocateCancelWake();
+        if (!Context.CancelWake)
             return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -4833,8 +4828,8 @@ IopCancelIoFileExInThread(
 
     if (!KeInsertQueueApc(&Context.Apc, &Context, NULL, IO_NO_INCREMENT))
     {
-        if (Context.CancelAlert)
-            IopFreeCancelAlert(Context.CancelAlert);
+        if (Context.CancelWake)
+            IopFreeCancelWake(Context.CancelWake);
         return STATUS_SUCCESS;
     }
 
@@ -4846,8 +4841,8 @@ IopCancelIoFileExInThread(
     Status = KeWaitForSingleObject(&Context.Event, Executive, KernelMode, FALSE, NULL);
     ASSERT(Status == STATUS_SUCCESS);
 
-    if (Context.CancelAlert)
-        IopFreeCancelAlert(Context.CancelAlert);
+    if (Context.CancelWake)
+        IopFreeCancelWake(Context.CancelWake);
 
     if (NT_SUCCESS(Status))
     {

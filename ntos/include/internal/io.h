@@ -1235,26 +1235,26 @@ IopAbortInterruptedIrp(
 
 PVOID
 NTAPI
-IopAllocateCancelAlert(
+IopAllocateCancelWake(
     VOID
 );
 
 VOID
 NTAPI
-IopFreeCancelAlert(
+IopFreeCancelWake(
     _In_ PVOID Record
 );
 
 VOID
 NTAPI
-IopRecordCancelAlert(
+IopQueueCancelWake(
     _In_ PVOID Record,
     _In_ PIRP Irp
 );
 
-BOOLEAN
+VOID
 NTAPI
-IopForgetCancelAlert(
+IopRemoveCancelWake(
     _In_ PIRP Irp
 );
 

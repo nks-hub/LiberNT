@@ -18,31 +18,101 @@
 PIRP IopDeadIrp;
 RESERVE_IRP_ALLOCATOR IopReserveIrpAllocator;
 
-/* Requests whose thread CancelSynchronousIo alerted, until the alert is taken or the request ends */
-typedef struct _IOP_CANCEL_ALERT
+/* A user APC that ends the alertable wait of a request CancelSynchronousIo could not cancel */
+typedef struct _IOP_CANCEL_WAKE
 {
     LIST_ENTRY ListEntry;
     PIRP Irp;
-} IOP_CANCEL_ALERT, *PIOP_CANCEL_ALERT;
+    KAPC Apc;
+} IOP_CANCEL_WAKE, *PIOP_CANCEL_WAKE;
 
-static LIST_ENTRY IopCancelAlertList = { &IopCancelAlertList, &IopCancelAlertList };
-static KSPIN_LOCK IopCancelAlertLock;
-static LONG IopCancelAlertCount;
+static LIST_ENTRY IopCancelWakeList = { &IopCancelWakeList, &IopCancelWakeList };
+static KSPIN_LOCK IopCancelWakeLock;
+static LONG IopCancelWakeCount;
 
 /* PRIVATE FUNCTIONS  ********************************************************/
 
+static
+VOID
+IopUnlinkCancelWake(
+    _In_ PIOP_CANCEL_WAKE Wake)
+{
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&IopCancelWakeLock, &OldIrql);
+    if (!IsListEmpty(&Wake->ListEntry))
+    {
+        RemoveEntryList(&Wake->ListEntry);
+        InitializeListHead(&Wake->ListEntry);
+        IopCancelWakeCount--;
+        ASSERT(IopCancelWakeCount >= 0);
+    }
+    KeReleaseSpinLock(&IopCancelWakeLock, OldIrql);
+}
+
+static
+VOID
+NTAPI
+IopCancelWakeNormalRoutine(
+    _In_opt_ PVOID NormalContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    UNREFERENCED_PARAMETER(NormalContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+
+    ASSERT(FALSE);
+}
+
+static
+VOID
+NTAPI
+IopCancelWakeKernelRoutine(
+    _In_ PKAPC Apc,
+    _Inout_ PKNORMAL_ROUTINE *NormalRoutine,
+    _Inout_ PVOID *NormalContext,
+    _Inout_ PVOID *SystemArgument1,
+    _Inout_ PVOID *SystemArgument2)
+{
+    PIOP_CANCEL_WAKE Wake = CONTAINING_RECORD(Apc, IOP_CANCEL_WAKE, Apc);
+
+    UNREFERENCED_PARAMETER(NormalContext);
+    UNREFERENCED_PARAMETER(SystemArgument1);
+    UNREFERENCED_PARAMETER(SystemArgument2);
+
+    ASSERT(Apc->Thread == KeGetCurrentThread());
+
+    /* The APC only ends a wait, nothing runs in user mode */
+    *NormalRoutine = NULL;
+    IopUnlinkCancelWake(Wake);
+    ExFreePoolWithTag(Wake, TAG_IO);
+}
+
+static
+VOID
+NTAPI
+IopCancelWakeRundownRoutine(
+    _In_ PKAPC Apc)
+{
+    PIOP_CANCEL_WAKE Wake = CONTAINING_RECORD(Apc, IOP_CANCEL_WAKE, Apc);
+
+    IopUnlinkCancelWake(Wake);
+    ExFreePoolWithTag(Wake, TAG_IO);
+}
+
 PVOID
 NTAPI
-IopAllocateCancelAlert(VOID)
+IopAllocateCancelWake(VOID)
 {
     PAGED_CODE();
 
-    return ExAllocatePoolWithTag(NonPagedPool, sizeof(IOP_CANCEL_ALERT), TAG_IO);
+    return ExAllocatePoolWithTag(NonPagedPool, sizeof(IOP_CANCEL_WAKE), TAG_IO);
 }
 
 VOID
 NTAPI
-IopFreeCancelAlert(
+IopFreeCancelWake(
     _In_ PVOID Record)
 {
     ASSERT(Record != NULL);
@@ -52,59 +122,77 @@ IopFreeCancelAlert(
 
 VOID
 NTAPI
-IopRecordCancelAlert(
+IopQueueCancelWake(
     _In_ PVOID Record,
     _In_ PIRP Irp)
 {
-    PIOP_CANCEL_ALERT Alert = Record;
+    PIOP_CANCEL_WAKE Wake = Record;
     KIRQL OldIrql;
 
     ASSERT(KeGetCurrentIrql() == APC_LEVEL);
-    ASSERT(Alert != NULL);
+    ASSERT(Wake != NULL);
     ASSERT(Irp->Type == IO_TYPE_IRP);
     ASSERT(Irp->Tail.Overlay.Thread == PsGetCurrentThread());
     ASSERT(!IsListEmpty(&Irp->ThreadListEntry));
 
-    Alert->Irp = Irp;
-    KeAcquireSpinLock(&IopCancelAlertLock, &OldIrql);
-    InsertTailList(&IopCancelAlertList, &Alert->ListEntry);
-    IopCancelAlertCount++;
-    KeReleaseSpinLock(&IopCancelAlertLock, OldIrql);
+    Wake->Irp = Irp;
+    KeInitializeApc(&Wake->Apc,
+                    KeGetCurrentThread(),
+                    OriginalApcEnvironment,
+                    IopCancelWakeKernelRoutine,
+                    IopCancelWakeRundownRoutine,
+                    IopCancelWakeNormalRoutine,
+                    UserMode,
+                    NULL);
+
+    KeAcquireSpinLock(&IopCancelWakeLock, &OldIrql);
+    InsertTailList(&IopCancelWakeList, &Wake->ListEntry);
+    IopCancelWakeCount++;
+    KeReleaseSpinLock(&IopCancelWakeLock, OldIrql);
+
+    if (!KeInsertQueueApc(&Wake->Apc, NULL, NULL, IO_NO_INCREMENT))
+    {
+        IopUnlinkCancelWake(Wake);
+        ExFreePoolWithTag(Wake, TAG_IO);
+    }
 }
 
-BOOLEAN
+VOID
 NTAPI
-IopForgetCancelAlert(
+IopRemoveCancelWake(
     _In_ PIRP Irp)
 {
-    PIOP_CANCEL_ALERT Alert = NULL;
+    PIOP_CANCEL_WAKE Wake = NULL;
     PLIST_ENTRY Entry;
+    BOOLEAN Removed = FALSE;
     KIRQL OldIrql;
 
     ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
 
-    /* Nearly always empty; a record added right now is not of a request that ends now */
-    if (!IopCancelAlertCount)
-        return FALSE;
+    /* Nearly always empty; a wake queued right now is not of a request that ends now */
+    if (!IopCancelWakeCount)
+        return;
 
-    KeAcquireSpinLock(&IopCancelAlertLock, &OldIrql);
-    for (Entry = IopCancelAlertList.Flink; Entry != &IopCancelAlertList; Entry = Entry->Flink)
+    KeAcquireSpinLock(&IopCancelWakeLock, &OldIrql);
+    for (Entry = IopCancelWakeList.Flink; Entry != &IopCancelWakeList; Entry = Entry->Flink)
     {
-        if (CONTAINING_RECORD(Entry, IOP_CANCEL_ALERT, ListEntry)->Irp == Irp)
+        if (CONTAINING_RECORD(Entry, IOP_CANCEL_WAKE, ListEntry)->Irp == Irp)
         {
-            Alert = CONTAINING_RECORD(Entry, IOP_CANCEL_ALERT, ListEntry);
+            Wake = CONTAINING_RECORD(Entry, IOP_CANCEL_WAKE, ListEntry);
             RemoveEntryList(Entry);
-            IopCancelAlertCount--;
-            ASSERT(IopCancelAlertCount >= 0);
+            InitializeListHead(Entry);
+            IopCancelWakeCount--;
+            ASSERT(IopCancelWakeCount >= 0);
+
+            /* An APC its thread already took off the queue is freed by its kernel or rundown routine */
+            Removed = KeRemoveQueueApc(&Wake->Apc);
             break;
         }
     }
-    KeReleaseSpinLock(&IopCancelAlertLock, OldIrql);
+    KeReleaseSpinLock(&IopCancelWakeLock, OldIrql);
 
-    if (!Alert)
-        return FALSE;
-    ExFreePoolWithTag(Alert, TAG_IO);
-    return TRUE;
+    if (Removed)
+        ExFreePoolWithTag(Wake, TAG_IO);
 }
 
 VOID
@@ -185,10 +273,6 @@ IopAbortInterruptedIrp(IN PKEVENT EventObject,
     /* Check if nobody completed it yet */
     if (!KeReadStateEvent(EventObject))
     {
-        /* FIXME: an alert sent after the wait took the CancelSynchronousIo one and before this check is dropped as that one */
-        if (!KeGetCurrentThread()->Alerted[UserMode])
-            IopForgetCancelAlert(Irp);
-
         /* First, cancel it */
         CancelResult = IoCancelIrp(Irp);
         KeLowerIrql(OldIrql);
@@ -548,9 +632,7 @@ IopCompleteRequest(IN PKAPC Apc,
 
     IopCheckUnwoundCompletionTarget(Irp);
 
-    /* FIXME: an NtAlertThread alert sent on top of the CancelSynchronousIo one is dropped with it */
-    if (IopForgetCancelAlert(Irp) && KeGetCurrentThread()->Alerted[UserMode])
-        KeTestAlertThread(UserMode);
+    IopRemoveCancelWake(Irp);
 
     /* Check if we have a file object */
     if (*SystemArgument2)
@@ -2104,7 +2186,7 @@ IoFreeIrp(IN PIRP Irp)
     ASSERT(Irp->CurrentLocation >= Irp->StackCount);
 
     /* A request that left its thread does not end in IopCompleteRequest */
-    IopForgetCancelAlert(Irp);
+    IopRemoveCancelWake(Irp);
     IopFreeIrpExtension(Irp);
 
     /* Get the PRCB */

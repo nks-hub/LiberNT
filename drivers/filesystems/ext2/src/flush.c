@@ -147,20 +147,41 @@ Ext2FlushFiles(
 NTSTATUS
 Ext2Flush (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS                _SEH2_VOLATILE Status = STATUS_SUCCESS;
+#else
+    NTSTATUS                Status = STATUS_SUCCESS;
+#endif
 
+#ifdef __REACTOS__
     PIRP                    _SEH2_VOLATILE Irp = NULL;
     PIO_STACK_LOCATION      _SEH2_VOLATILE IrpSp = NULL;
+#else
+    PIRP                    Irp = NULL;
+    PIO_STACK_LOCATION      IrpSp = NULL;
+#endif
 
+#ifdef __REACTOS__
     PEXT2_VCB               _SEH2_VOLATILE Vcb = NULL;
+#else
+    PEXT2_VCB               Vcb = NULL;
+#endif
     PEXT2_FCB               Fcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCBVCB            _SEH2_VOLATILE FcbOrVcb = NULL;
+#else
+    PEXT2_FCBVCB            FcbOrVcb = NULL;
+#endif
     PEXT2_CCB               Ccb = NULL;
     PFILE_OBJECT            FileObject = NULL;
 
     PDEVICE_OBJECT          DeviceObject = NULL;
 
+#ifdef __REACTOS__
     BOOLEAN                 _SEH2_VOLATILE MainResourceAcquired = FALSE;
+#else
+    BOOLEAN                 MainResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 

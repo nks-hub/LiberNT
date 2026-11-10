@@ -210,7 +210,11 @@ Ext2LoadGroup(IN PEXT2_VCB Vcb)
     struct ext3_sb_info *sbi = &Vcb->sbi;
     ext3_fsblk_t sb_block = 1;
     unsigned long i;
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE rc = FALSE;
+#else
+    BOOLEAN rc = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -660,7 +664,11 @@ Ext2LoadBlock (IN PEXT2_VCB Vcb,
                IN ULONG     Index,
                IN PVOID     Buffer )
 {
+#ifdef __REACTOS__
     struct buffer_head * _SEH2_VOLATILE bh = NULL;
+#else
+    struct buffer_head *bh = NULL;
+#endif
     BOOLEAN             rc = 0;
 
     _SEH2_TRY {
@@ -686,8 +694,13 @@ Ext2LoadBlock (IN PEXT2_VCB Vcb,
 
     } _SEH2_FINALLY {
 
+#ifdef __REACTOS__
         if (bh)
             fini_bh((struct buffer_head **)&bh);
+#else
+        if (bh)
+            fini_bh(&bh);
+#endif
     } _SEH2_END;
 
     return rc;
@@ -700,7 +713,11 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN ULONG                Index,
                 IN PVOID                Buf )
 {
+#ifdef __REACTOS__
     struct buffer_head * _SEH2_VOLATILE bh = NULL;
+#else
+    struct buffer_head *bh = NULL;
+#endif
     BOOLEAN             rc = 0;
 
     _SEH2_TRY {
@@ -722,8 +739,13 @@ Ext2SaveBlock ( IN PEXT2_IRP_CONTEXT    IrpContext,
 
     } _SEH2_FINALLY {
 
+#ifdef __REACTOS__
         if (bh)
             fini_bh((struct buffer_head **)&bh);
+#else
+        if (bh)
+            fini_bh(&bh);
+#endif
     } _SEH2_END;
 
     return rc;
@@ -736,7 +758,11 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN ULONG                size,
                 IN PVOID                buf )
 {
+#ifdef __REACTOS__
     struct buffer_head * _SEH2_VOLATILE bh = NULL;
+#else
+    struct buffer_head *bh = NULL;
+#endif
     BOOLEAN             rc;
 
     _SEH2_TRY {
@@ -770,7 +796,11 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
             _SEH2_TRY {
                 RtlCopyMemory(buf, bh->b_data + delta, len);
             } _SEH2_FINALLY {
+#ifdef __REACTOS__
                 fini_bh((struct buffer_head **)&bh);
+#else
+                fini_bh(&bh);
+#endif
             } _SEH2_END;
 
             buf = (PUCHAR)buf + len;
@@ -782,8 +812,13 @@ Ext2LoadBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
 
     } _SEH2_FINALLY {
 
+#ifdef __REACTOS__
         if (bh)
             fini_bh((struct buffer_head **)&bh);
+#else
+        if (bh)
+            fini_bh(&bh);
+#endif
 
     } _SEH2_END;
 
@@ -798,7 +833,11 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
                 IN ULONG                size
     )
 {
+#ifdef __REACTOS__
     struct buffer_head * _SEH2_VOLATILE bh = NULL;
+#else
+    struct buffer_head *bh = NULL;
+#endif
     BOOLEAN             rc = 0;
 
     _SEH2_TRY {
@@ -842,7 +881,11 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
                 }
                 mark_buffer_dirty(bh);
             } _SEH2_FINALLY {
+#ifdef __REACTOS__
                 fini_bh((struct buffer_head **)&bh);
+#else
+                fini_bh(&bh);
+#endif
             } _SEH2_END;
 
             offset = offset + len;
@@ -853,8 +896,13 @@ Ext2ZeroBuffer( IN PEXT2_IRP_CONTEXT    IrpContext,
 
     } _SEH2_FINALLY {
 
+#ifdef __REACTOS__
         if (bh)
             fini_bh((struct buffer_head **)&bh);
+#else
+        if (bh)
+            fini_bh(&bh);
+#endif
 
     } _SEH2_END;
 
@@ -1885,7 +1933,11 @@ Ext2AddEntry (
     struct dentry        **Dentry
 )
 {
+#ifdef __REACTOS__
     struct dentry          * _SEH2_VOLATILE de = NULL;
+#else
+    struct dentry          *de = NULL;
+#endif
 
     NTSTATUS                status = STATUS_UNSUCCESSFUL;
     OEM_STRING              oem;
@@ -1957,7 +2009,11 @@ Ext2SetFileType (
     )
 {
     struct inode *dir = Dcb->Inode;
+#ifdef __REACTOS__
     struct buffer_head * _SEH2_VOLATILE bh = NULL;
+#else
+    struct buffer_head *bh = NULL;
+#endif
     struct ext3_dir_entry_2 *de;
     struct inode *inode;
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
@@ -2026,7 +2082,11 @@ Ext2RemoveEntry (
 )
 {
     struct inode *dir = Dcb->Inode;
+#ifdef __REACTOS__
     struct buffer_head * _SEH2_VOLATILE bh = NULL;
+#else
+    struct buffer_head *bh = NULL;
+#endif
     struct ext3_dir_entry_2 *de;
     struct inode *inode;
     int rc = -ENOENT;
@@ -2104,7 +2164,11 @@ Ext2SetParentEntry (
 {
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
 
+#ifdef __REACTOS__
     PEXT2_DIR_ENTRY2        _SEH2_VOLATILE pSelf   = NULL;
+#else
+    PEXT2_DIR_ENTRY2        pSelf   = NULL;
+#endif
     PEXT2_DIR_ENTRY2        pParent = NULL;
 
     ULONG                   dwBytes = 0;

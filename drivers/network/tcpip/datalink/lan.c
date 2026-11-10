@@ -1477,6 +1477,7 @@ BOOLEAN BindAdapter(
                    BindParameters->PhysicalMediumType == NdisPhysicalMediumNative802_11;
     IF->HalfDuplex = BindParameters->MediaDuplexState == MediaDuplexStateHalf;
     IF->TransmitLinkSpeed = BindParameters->XmitLinkSpeed;
+    IF->NetLuid = BindParameters->BoundIfNetluid.Value;
 
     /*
      * Query per-adapter configuration from the registry

@@ -875,6 +875,7 @@ IPQueryInterfaceV4(PIP4_INTERFACE_INFO Info)
     Info->MediaType = Interface->MediaType;
     Info->AccessType = Interface->AccessType;
     Info->ConnectorPresent = Interface->ConnectorPresent;
+    Info->NetLuid = Interface->NetLuid;
     Info->Mtu = Interface->MTU;
     Info->RetransmitTime = Interface->RetransmitTime;
     Info->BaseReachableTime = Interface->BaseReachableTime;

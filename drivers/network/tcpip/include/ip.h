@@ -183,6 +183,7 @@ typedef struct _IP_INTERFACE {
     ULONG AccessType;
     BOOLEAN ConnectorPresent;
     ULONG64 TransmitLinkSpeed;
+    ULONG64 NetLuid;
     BOOLEAN ManualMetric;
     UINT  InterfaceMetric;
     BOOLEAN Forwarding;

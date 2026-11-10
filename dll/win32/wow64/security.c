@@ -145,16 +145,52 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     ULONG *retlen = get_ptr( &args );
 
 #ifdef __REACTOS__
-    TOKEN_GROUPS *prev64;
-    ULONG i, size, ret_size = 0, count_off, sid_off;
+    TOKEN_GROUPS *groups64 = token_groups_32to64( groups );
+    TOKEN_GROUPS *prev64, *token_groups;
+    TOKEN_GROUPS probe;
+    ULONG i, j, attrs, new_attrs, count = 0, size = 0, ret_size = 0, count_off, sid_off;
     NTSTATUS status;
 
-    if (!prev || !len)
-        return NtAdjustGroupsToken( handle, reset, token_groups_32to64( groups ), len, NULL, retlen );
+    if (!prev)
+        return NtAdjustGroupsToken( handle, reset, groups64, len, NULL, retlen );
 
-    size = len * 2 + sizeof(TOKEN_GROUPS);
+    /* a zero length changes nothing and returns the 64-bit length, which does not tell the group count */
+    status = NtAdjustGroupsToken( handle, reset, groups64, 0, &probe, &ret_size );
+    if (status != STATUS_BUFFER_TOO_SMALL) return status;
+
+    status = NtQueryInformationToken( handle, TokenGroups, NULL, 0, &size );
+    if (status != STATUS_BUFFER_TOO_SMALL) return status;
+    token_groups = Wow64AllocateTemp( size );
+    status = NtQueryInformationToken( handle, TokenGroups, token_groups, size, &size );
+    if (status) return status;
+    for (i = 0; i < token_groups->GroupCount; i++)
+    {
+        attrs = token_groups->Groups[i].Attributes;
+        if (reset)
+        {
+            new_attrs = attrs & ~SE_GROUP_ENABLED;
+            if (attrs & SE_GROUP_ENABLED_BY_DEFAULT) new_attrs |= SE_GROUP_ENABLED;
+        }
+        else
+        {
+            for (j = 0; j < groups64->GroupCount; j++)
+                if (RtlEqualSid( token_groups->Groups[i].Sid, groups64->Groups[j].Sid )) break;
+            if (j == groups64->GroupCount) continue;
+            new_attrs = (attrs & ~SE_GROUP_ENABLED) | (groups64->Groups[j].Attributes & SE_GROUP_ENABLED);
+        }
+        if (attrs != new_attrs) count++;
+    }
+    count_off = offsetof( TOKEN_GROUPS, Groups[count] );
+    sid_off = offsetof( TOKEN_GROUPS32, Groups[count] );
+    if (ret_size < count_off || len < ret_size - count_off + sid_off)
+    {
+        if (retlen) *retlen = ret_size < count_off ? ret_size : ret_size - count_off + sid_off;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    size = ret_size;
     prev64 = Wow64AllocateTemp( size );
-    status = NtAdjustGroupsToken( handle, reset, token_groups_32to64( groups ), size, prev64, &ret_size );
+    status = NtAdjustGroupsToken( handle, reset, groups64, size, prev64, &ret_size );
     if (status == STATUS_SUCCESS || status == STATUS_NOT_ALL_ASSIGNED)
     {
         count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );

@@ -149,6 +149,45 @@ test_SubscribeCleanup(SC_HANDLE Manager)
     ok(After < Before + 4, "8 ended subscriptions left %lu threads\n", After - Before);
 }
 
+/* A request ends without a result when its handle is closed */
+static void
+test_SubscribeHandleClosed(void)
+{
+    PSC_NOTIFICATION_REGISTRATION Subscriptions[8] = { NULL };
+    SC_HANDLE Managers[8] = { NULL };
+    ULONG Before, After, i;
+    DWORD Error, Start;
+
+    Before = CountThreads();
+    for (i = 0; i < 8; i++)
+    {
+        Managers[i] = OpenSCManagerW(NULL, NULL, SC_MANAGER_ENUMERATE_SERVICE);
+        ok(Managers[i] != NULL, "OpenSCManagerW %lu failed (%lu)\n", i, GetLastError());
+        if (!Managers[i])
+            continue;
+        Error = pSubscribe(Managers[i], SC_EVENT_DATABASE_CHANGE, DatabaseChanged, NULL, &Subscriptions[i]);
+        ok(Error == ERROR_SUCCESS, "Subscription %lu returned %lu\n", i, Error);
+        if (Error != ERROR_SUCCESS)
+            Subscriptions[i] = NULL;
+    }
+    for (i = 0; i < 8; i++)
+    {
+        if (Managers[i])
+            CloseServiceHandle(Managers[i]);
+    }
+
+    for (Start = GetTickCount(); (After = CountThreads()) >= Before + 4 && GetTickCount() - Start < 15000; )
+        Sleep(500);
+    trace("Threads before %lu, after 8 subscriptions lost their handles %lu\n", Before, After);
+    ok(After < Before + 4, "8 subscriptions whose handles were closed left %lu threads\n", After - Before);
+
+    for (i = 0; i < 8; i++)
+    {
+        if (Subscriptions[i])
+            pUnsubscribe(Subscriptions[i]);
+    }
+}
+
 static volatile BOOL ApcFired;
 
 static VOID CALLBACK
@@ -588,6 +627,7 @@ START_TEST(ServiceChangeNotify)
     {
         test_Subscribe(Manager);
         test_SubscribeCleanup(Manager);
+        test_SubscribeHandleClosed();
         test_runner(test_ChangeDuringCallback, NULL);
         test_DatabaseChangeDuringCallback(Manager);
     }

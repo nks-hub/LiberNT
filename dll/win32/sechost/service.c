@@ -1476,7 +1476,32 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
         return err;
     }
 
+#ifdef __REACTOS__
+    {
+        HANDLE thread = CreateThread( NULL, 0, &notify_thread, data, 0, NULL );
+
+        if (!thread)
+        {
+            err = GetLastError();
+            ERR("CreateThread failed: %lu\n", err);
+            __TRY
+            {
+                svcctl_CloseNotifyHandle( &data->notify_handle, &b_dummy );
+            }
+            __EXCEPT(rpc_filter)
+            {
+            }
+            __ENDTRY
+            LeaveCriticalSection( &service_cs );
+            CloseHandle( data->calling_thread );
+            free( data );
+            return err;
+        }
+        CloseHandle( thread );
+    }
+#else
     CloseHandle( CreateThread( NULL, 0, &notify_thread, data, 0, NULL ) );
+#endif
 
     list_add_tail( &notify_list, &data->entry );
 
@@ -1564,8 +1589,9 @@ static DWORD WINAPI subscription_thread( void *param )
 {
     struct _SC_NOTIFICATION_REGISTRATION *sub = param;
     struct subscription_request *req;
-    BOOL first = TRUE;
-    DWORD err, sequence = 0;
+    BOOL first = TRUE, retry;
+    DWORD err, wait, sequence = 0;
+    HANDLE events[2];
 
     SetThreadDescription( GetCurrentThread(), L"sechost_service_subscription" );
 
@@ -1599,12 +1625,21 @@ static DWORD WINAPI subscription_thread( void *param )
             break;
         }
 
-        while (!req->fired && WaitForSingleObjectEx( sub->stop_event, INFINITE, TRUE ) != WAIT_OBJECT_0)
-            ;
-        if (req->fired && WaitForSingleObject( sub->stop_event, 0 ) != WAIT_OBJECT_0)
+        events[0] = sub->stop_event;
+        events[1] = req->done_event;
+        do wait = WaitForMultipleObjectsEx( 2, events, FALSE, INFINITE, TRUE );
+        while (wait == WAIT_IO_COMPLETION);
+        retry = FALSE;
+        if (wait == WAIT_OBJECT_0 + 1)
         {
-            WaitForSingleObject( req->done_event, INFINITE );
-            if (req->notify.dwNotificationStatus == ERROR_SUCCESS)
+            /* A request that has a result queued its APC before it set done_event */
+            SleepEx( 0, TRUE );
+            if (!req->fired)
+            {
+                WARN( "The request ended without a result\n" );
+                retry = TRUE;
+            }
+            else if (req->notify.dwNotificationStatus == ERROR_SUCCESS)
             {
                 sequence = req->sequence;
                 sub->callback( req->notify.dwNotificationTriggered, sub->context );
@@ -1612,6 +1647,8 @@ static DWORD WINAPI subscription_thread( void *param )
         }
         InterlockedExchange( &req->abandoned, TRUE );
         release_request( req );
+        if (wait != WAIT_OBJECT_0 + 1) break;
+        if (retry) WaitForSingleObject( sub->stop_event, 1000 );
     }
 
     release_subscription( sub );

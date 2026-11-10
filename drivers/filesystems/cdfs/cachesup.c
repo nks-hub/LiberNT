@@ -64,14 +64,28 @@ Return Value:
 --*/
 
 {
+#ifdef __REACTOS__
     PFILE_OBJECT _SEH2_VOLATILE StreamFile = NULL;
     BOOLEAN _SEH2_VOLATILE DecrementReference = FALSE;
+#else
+    PFILE_OBJECT StreamFile = NULL;
+    BOOLEAN DecrementReference = FALSE;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE CleanupDirContext = FALSE;
+#else
+    BOOLEAN CleanupDirContext = FALSE;
+#endif
     BOOLEAN UpdateFcbSizes = FALSE;
 
+#ifdef __REACTOS__
     DIRENT _SEH2_VOLATILE Dirent = {0};
     DIRENT_ENUM_CONTEXT _SEH2_VOLATILE DirContext = {0};
+#else
+    DIRENT Dirent = {0};
+    DIRENT_ENUM_CONTEXT DirContext = {0};
+#endif
 
     PAGED_CODE();
 
@@ -181,8 +195,13 @@ Return Value:
             //  Initialize the search structures.
             //
 
+#ifdef __REACTOS__
             CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
             CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
+#else
+            CdInitializeDirContext( IrpContext, &DirContext );
+            CdInitializeDirent( IrpContext, &Dirent );
+#endif
             CleanupDirContext = TRUE;
 
             //
@@ -190,12 +209,23 @@ Return Value:
             //  in-memory dirent.
             //
 
+#ifdef __REACTOS__
             CdLookupDirent( IrpContext,
                             Fcb,
                             Fcb->StreamOffset,
                             (PDIRENT_ENUM_CONTEXT)&DirContext );
+#else
+            CdLookupDirent( IrpContext,
+                            Fcb,
+                            Fcb->StreamOffset,
+                            &DirContext );
+#endif
 
+#ifdef __REACTOS__
             CdUpdateDirentFromRawDirent( IrpContext, Fcb, (PDIRENT_ENUM_CONTEXT)&DirContext, (PDIRENT)&Dirent );
+#else
+            CdUpdateDirentFromRawDirent( IrpContext, Fcb, &DirContext, &Dirent );
+#endif
 
             //
             //  Verify that this really for the self entry.  We do this by
@@ -203,7 +233,11 @@ Return Value:
             //  one of the hard coded names.
             //
 
+#ifdef __REACTOS__
             CdUpdateDirentName( IrpContext, (PDIRENT)&Dirent, FALSE );
+#else
+            CdUpdateDirentName( IrpContext, &Dirent, FALSE );
+#endif
 
             if (Dirent.CdFileName.FileName.Buffer != CdUnicodeSelfArray) {
 

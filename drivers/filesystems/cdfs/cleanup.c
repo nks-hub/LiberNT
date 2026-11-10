@@ -81,9 +81,17 @@ Return Value:
     PFILE_OBJECT FileObject;
     TYPE_OF_OPEN TypeOfOpen;
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE SendUnlockNotification = FALSE;
+#else
+    BOOLEAN SendUnlockNotification = FALSE;
+#endif
     BOOLEAN AttemptTeardown = FALSE;
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE VcbAcquired = FALSE;
+#else
+    BOOLEAN VcbAcquired = FALSE;
+#endif
 
     PVCB Vcb;
     PFCB Fcb;

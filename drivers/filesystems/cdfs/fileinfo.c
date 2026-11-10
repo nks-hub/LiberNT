@@ -145,7 +145,11 @@ Return Value:
     PFCB Fcb;
     PCCB Ccb;
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE ReleaseFcb = FALSE;
+#else
+    BOOLEAN ReleaseFcb = FALSE;
+#endif
 
     PAGED_CODE();
 
@@ -1271,20 +1275,40 @@ Return Value:
 {
     NTSTATUS Status = STATUS_SUCCESS;
 
+#ifdef __REACTOS__
     DIRENT_ENUM_CONTEXT _SEH2_VOLATILE DirContext = {0};
     DIRENT _SEH2_VOLATILE Dirent = {0};
+#else
+    DIRENT_ENUM_CONTEXT DirContext = {0};
+    DIRENT Dirent = {0};
+#endif
 
     PUNICODE_STRING NameToUse;
     ULONG DirentOffset;
 
+#ifdef __REACTOS__
     COMPOUND_PATH_ENTRY _SEH2_VOLATILE CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
     FILE_ENUM_CONTEXT _SEH2_VOLATILE FileContext;
+#else
+    COMPOUND_PATH_ENTRY CompoundPathEntry = {{0}};/* ReactOS Change: GCC "missing braces around initializer" */
+    FILE_ENUM_CONTEXT FileContext;
+#endif
 
+#ifdef __REACTOS__
     PFCB _SEH2_VOLATILE ParentFcb = NULL;
     BOOLEAN _SEH2_VOLATILE ReleaseParentFcb = FALSE;
+#else
+    PFCB ParentFcb = NULL;
+    BOOLEAN ReleaseParentFcb = FALSE;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE CleanupFileLookup = FALSE;
     BOOLEAN _SEH2_VOLATILE CleanupDirectoryLookup = FALSE;
+#else
+    BOOLEAN CleanupFileLookup = FALSE;
+    BOOLEAN CleanupDirectoryLookup = FALSE;
+#endif
 
     WCHAR ShortNameBuffer[ BYTE_COUNT_8_DOT_3 / 2 ];
     USHORT ShortNameLength;
@@ -1330,24 +1354,49 @@ Return Value:
             //  This could be optimized somewhat.
             //
 
+#ifdef __REACTOS__
             CdInitializeCompoundPathEntry( IrpContext, (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
             CdInitializeFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
+#else
+            CdInitializeCompoundPathEntry( IrpContext, &CompoundPathEntry );
+            CdInitializeFileContext( IrpContext, &FileContext );
+#endif
 
             CleanupDirectoryLookup = TRUE;
 
+#ifdef __REACTOS__
             CdLookupPathEntry( IrpContext,
                                CdQueryFidPathTableOffset( Fcb->FileId ),
                                Fcb->Ordinal,
                                FALSE,
                                (PCOMPOUND_PATH_ENTRY)&CompoundPathEntry );
+#else
+            CdLookupPathEntry( IrpContext,
+                               CdQueryFidPathTableOffset( Fcb->FileId ),
+                               Fcb->Ordinal,
+                               FALSE,
+                               &CompoundPathEntry );
+#endif
 
+#ifdef __REACTOS__
             CdUpdatePathEntryName( IrpContext, (PPATH_ENTRY)&CompoundPathEntry.PathEntry, TRUE );
+#else
+            CdUpdatePathEntryName( IrpContext, &CompoundPathEntry.PathEntry, TRUE );
+#endif
 
+#ifdef __REACTOS__
             if (!CdFindDirectory( IrpContext,
                                   ParentFcb,
                                   (PCD_NAME)&CompoundPathEntry.PathEntry.CdCaseDirName,
                                   TRUE,
                                   (PFILE_ENUM_CONTEXT)&FileContext )) {
+#else
+            if (!CdFindDirectory( IrpContext,
+                                  ParentFcb,
+                                  &CompoundPathEntry.PathEntry.CdCaseDirName,
+                                  TRUE,
+                                  &FileContext )) {
+#endif
 
                 //
                 //  If we failed to find the child directory by name in the parent
@@ -1366,28 +1415,55 @@ Return Value:
             //  Initialize the search dirent structures.
             //
 
+#ifdef __REACTOS__
             CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
             CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
+#else
+            CdInitializeDirContext( IrpContext, &DirContext );
+            CdInitializeDirent( IrpContext, &Dirent );
+#endif
 
             CleanupFileLookup = TRUE;
 
+#ifdef __REACTOS__
             CdLookupDirent( IrpContext,
                             ParentFcb,
                             CdQueryFidDirentOffset( Fcb->FileId ),
                             (PDIRENT_ENUM_CONTEXT)&DirContext );
+#else
+            CdLookupDirent( IrpContext,
+                            ParentFcb,
+                            CdQueryFidDirentOffset( Fcb->FileId ),
+                            &DirContext );
+#endif
 
+#ifdef __REACTOS__
             CdUpdateDirentFromRawDirent( IrpContext,
                                          ParentFcb,
                                          (PDIRENT_ENUM_CONTEXT)&DirContext,
                                          (PDIRENT)&Dirent );
+#else
+            CdUpdateDirentFromRawDirent( IrpContext,
+                                         ParentFcb,
+                                         &DirContext,
+                                         &Dirent );
+#endif
 
             //
             //  Now update the dirent name.
             //
 
+#ifdef __REACTOS__
             CdUpdateDirentName( IrpContext, (PDIRENT)&Dirent, TRUE );
+#else
+            CdUpdateDirentName( IrpContext, &Dirent, TRUE );
+#endif
 
+#ifdef __REACTOS__
             NameToUse = (PUNICODE_STRING)&Dirent.CdCaseFileName.FileName;
+#else
+            NameToUse = &Dirent.CdCaseFileName.FileName;
+#endif
             DirentOffset = Dirent.DirentOffset;
         }
 
@@ -1433,7 +1509,11 @@ Return Value:
         } else if (CleanupDirectoryLookup) {
 
             CdCleanupCompoundPathEntry( IrpContext, &CompoundPathEntry );
+#ifdef __REACTOS__
             CdCleanupFileContext( IrpContext, (PFILE_ENUM_CONTEXT)&FileContext );
+#else
+            CdCleanupFileContext( IrpContext, &FileContext );
+#endif
         }
 
         if (ReleaseParentFcb) {

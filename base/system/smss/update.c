@@ -84,9 +84,12 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
             }
         }
     }
-    if (FileName.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
-    if (Directory.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
-    if (Arguments.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
+    if (FileName.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
+    if (Directory.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
+    if (Arguments.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
     if (!NT_SUCCESS(Status))
         DPRINT1("SMSS: UpdateExecute failed for %wZ: %lx\n", &Command, Status);
     /* The updater journal owns recovery; a missing updater must not stop boot. */
@@ -131,6 +134,7 @@ SmpInitializeUpdateRegistry(VOID)
     Query[0].Name = L"UpdateExecute";
     Status = RtlQueryRegistryValues(RTL_REGISTRY_CONTROL,
                                     L"Session Manager", Query, NULL, NULL);
-    if (!NT_SUCCESS(Status)) DPRINT1("SMSS: UpdateExecute query failed: %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        DPRINT1("SMSS: UpdateExecute query failed: %lx\n", Status);
     return STATUS_SUCCESS;
 }

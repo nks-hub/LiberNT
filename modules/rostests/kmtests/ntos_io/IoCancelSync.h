@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT kernel-mode tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     CancelSynchronousIo on a request without a cancel routine, shared declarations
+ * PURPOSE:     Cancelling a synchronous request that has no cancel routine, shared declarations
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 

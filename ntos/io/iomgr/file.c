@@ -4656,7 +4656,6 @@ typedef struct _IOP_CANCEL_IO_APC_CONTEXT
     BOOLEAN Found;
     BOOLEAN SynchronousOnly;
     BOOLEAN PortOnly;
-    PVOID CancelWake;
 } IOP_CANCEL_IO_APC_CONTEXT, *PIOP_CANCEL_IO_APC_CONTEXT;
 
 static
@@ -4665,17 +4664,14 @@ IopCancelMatchingIrpsInCurrentThread(
     _In_opt_ PFILE_OBJECT FileObject,
     _In_opt_ PIO_STATUS_BLOCK IoRequestToCancel,
     _In_ BOOLEAN SynchronousOnly,
-    _In_ BOOLEAN PortOnly,
-    _Out_opt_ PIRP *NotCancelled)
+    _In_ BOOLEAN PortOnly)
 {
     PETHREAD Thread;
     PLIST_ENTRY ListHead, NextEntry;
     PIRP Irp;
     KIRQL OldIrql;
     BOOLEAN Found = FALSE;
-
-    if (NotCancelled)
-        *NotCancelled = NULL;
+    BOOLEAN SynchronousLeft = FALSE;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4692,11 +4688,15 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            if (!IoCancelIrp(Irp) && NotCancelled)
-                *NotCancelled = Irp;
+            if (!IoCancelIrp(Irp) && IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
+                SynchronousLeft = TRUE;
             Found = TRUE;
         }
     }
+
+    /* As on Windows 11, a synchronous request that has no cancel routine leaves its thread alerted in kernel mode */
+    if (SynchronousLeft)
+        KeAlertThread(&Thread->Tcb, KernelMode);
 
     KeLowerIrql(OldIrql);
     return Found;
@@ -4746,7 +4746,6 @@ IopCancelIoFileExKernelApc(
     _Inout_ PVOID *SystemArgument2)
 {
     PIOP_CANCEL_IO_APC_CONTEXT Context = *SystemArgument1;
-    PIRP NotCancelled;
 
     UNREFERENCED_PARAMETER(Apc);
     UNREFERENCED_PARAMETER(NormalRoutine);
@@ -4757,17 +4756,7 @@ IopCancelIoFileExKernelApc(
     ASSERT(Apc == &Context->Apc);
     ASSERT(Context->Status == STATUS_PENDING);
 
-    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel,
-                                                          Context->SynchronousOnly, Context->PortOnly, &NotCancelled);
-    ASSERT(!NotCancelled || Context->Found);
-
-    if (Context->SynchronousOnly && NotCancelled)
-    {
-        ASSERT(Context->CancelWake != NULL);
-
-        IopQueueCancelWake(Context->CancelWake, NotCancelled);
-        Context->CancelWake = NULL;
-    }
+    Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel, Context->SynchronousOnly, Context->PortOnly);
     Context->Status = STATUS_SUCCESS;
     KeSetEvent(&Context->Event, IO_NO_INCREMENT, FALSE);
 }
@@ -4803,7 +4792,7 @@ IopCancelIoFileExInThread(
 
     if (Thread == PsGetCurrentThread())
     {
-        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly, NULL);
+        *Found = IopCancelMatchingIrpsInCurrentThread(FileObject, IoRequestToCancel, SynchronousOnly, PortOnly);
         return STATUS_SUCCESS;
     }
 
@@ -4814,24 +4803,11 @@ IopCancelIoFileExInThread(
     Context.Found = FALSE;
     Context.SynchronousOnly = SynchronousOnly;
     Context.PortOnly = PortOnly;
-    Context.CancelWake = NULL;
-
-    if (SynchronousOnly)
-    {
-        /* The APC cannot fail, so the wake it may queue exists before it runs */
-        Context.CancelWake = IopAllocateCancelWake();
-        if (!Context.CancelWake)
-            return STATUS_INSUFFICIENT_RESOURCES;
-    }
 
     KeInitializeApc(&Context.Apc, &Thread->Tcb, OriginalApcEnvironment, IopCancelIoFileExKernelApc, IopCancelIoFileExRundownApc, NULL, KernelMode, NULL);
 
     if (!KeInsertQueueApc(&Context.Apc, &Context, NULL, IO_NO_INCREMENT))
-    {
-        if (Context.CancelWake)
-            IopFreeCancelWake(Context.CancelWake);
         return STATUS_SUCCESS;
-    }
 
     /*
      * Thread IRP lists are synchronized by disabling special kernel APCs in
@@ -4839,10 +4815,6 @@ IopCancelIoFileExInThread(
      * until the APC has either run or been rundown.
      */
     Status = KeWaitForSingleObject(&Context.Event, Executive, KernelMode, FALSE, NULL);
-    ASSERT(Status == STATUS_SUCCESS);
-
-    if (Context.CancelWake)
-        IopFreeCancelWake(Context.CancelWake);
 
     if (NT_SUCCESS(Status))
     {

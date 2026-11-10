@@ -1233,31 +1233,6 @@ IopAbortInterruptedIrp(
     IN PIRP Irp
 );
 
-PVOID
-NTAPI
-IopAllocateCancelWake(
-    VOID
-);
-
-VOID
-NTAPI
-IopFreeCancelWake(
-    _In_ PVOID Record
-);
-
-VOID
-NTAPI
-IopQueueCancelWake(
-    _In_ PVOID Record,
-    _In_ PIRP Irp
-);
-
-VOID
-NTAPI
-IopRemoveCancelWake(
-    _In_ PIRP Irp
-);
-
 PIRP
 NTAPI
 IopAllocateIrpMustSucceed(

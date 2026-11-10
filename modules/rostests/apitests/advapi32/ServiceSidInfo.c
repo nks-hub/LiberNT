@@ -65,8 +65,7 @@ static void WINAPI service_main(DWORD argc, LPWSTR *argv)
     {
         StringCbPrintfW(peer, sizeof(peer), L"%lsPeer", argv[0]);
         service_ok(token_has_service_sid(groups, argv[0]), "the process token lacks the service SID of %S\n", argv[0]);
-        service_trace("the service SID of the stopped service of the same image is %s the process token\n",
-                      token_has_service_sid(groups, peer) ? "in" : "not in");
+        service_ok(token_has_service_sid(groups, peer), "the process token lacks the service SID of %S, the stopped service of the same image\n", peer);
         HeapFree(GetProcessHeap(), 0, groups);
     }
 

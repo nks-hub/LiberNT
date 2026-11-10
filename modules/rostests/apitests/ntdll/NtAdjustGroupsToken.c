@@ -249,7 +249,16 @@ AdjustWithPreviousState(VOID)
         skip("Out of memory\n");
         goto Cleanup;
     }
-    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Expected, Previous, &Length);
+
+    Length = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Expected - 1, Previous, &Length);
+    ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
+    ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
+    CheckGroupsUnchanged(Token, Before);
+    if (Length != Expected)
+        goto Cleanup;
+
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Length, Previous, &Length);
     ok_hex(Status, STATUS_SUCCESS);
     ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
     ok(Previous->GroupCount == 1, "GroupCount is %lu\n", Previous->GroupCount);

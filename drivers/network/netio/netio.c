@@ -2576,13 +2576,21 @@ WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
 NTSTATUS WSKAPI
 WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PROVIDER_NPI npi)
 {
-    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+    PNETIO_WSK_CLIENT Client;
+    KIRQL OldIrql;
 
     FUNCTION_TRACE;
 
     UNREFERENCED_PARAMETER(wait);
 
-    if (Client == NULL || !NetioAddClientUser(Client))
+    /* WskDeregister detaches the client under this lock before it frees it */
+    KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
+    Client = reg->ReservedRegistrationContext;
+    if (Client != NULL && !NetioAddClientUser(Client))
+        Client = NULL;
+    KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
+
+    if (Client == NULL)
         return STATUS_DEVICE_NOT_READY;
     npi->Client = (PWSK_CLIENT)Client;
     npi->Dispatch = &provider_dispatch;
@@ -2600,24 +2608,35 @@ WskReleaseProviderNPI(_In_ PWSK_REGISTRATION reg)
 VOID WSKAPI
 WskDeregister(_In_ PWSK_REGISTRATION reg)
 {
-    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+    PNETIO_WSK_CLIENT Client;
     KIRQL OldIrql;
 
     FUNCTION_TRACE;
 
+    KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
+    Client = reg->ReservedRegistrationContext;
+    if (Client != NULL)
+    {
+        KeAcquireSpinLockAtDpcLevel(&Client->Lock);
+        Client->Deregistering = TRUE;
+        KeReleaseSpinLockFromDpcLevel(&Client->Lock);
+    }
+    KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
+
     if (Client == NULL)
         return;
 
-    KeAcquireSpinLock(&Client->Lock, &OldIrql);
-    Client->Deregistering = TRUE;
-    KeReleaseSpinLock(&Client->Lock, OldIrql);
     KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
 
+    /* WskReleaseProviderNPI still reads the client from the registration, so detach it only now */
+    KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
+    reg->ReservedRegistrationState = 0;
+    reg->ReservedRegistrationContext = NULL;
+    KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
+
     KeAcquireSpinLock(&Client->Lock, &OldIrql);
     KeReleaseSpinLock(&Client->Lock, OldIrql);
 
-    reg->ReservedRegistrationState = 0;
-    reg->ReservedRegistrationContext = NULL;
     ExFreePoolWithTag(Client, TAG_NETIO);
     StopSocketDereferenceThread();
 }

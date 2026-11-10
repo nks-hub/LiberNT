@@ -7020,8 +7020,8 @@ RNotifyServiceStatusChange(
         if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
             return ERROR_INVALID_LEVEL;
 
-        dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
-        if ((dwMask & ~SERVICE_NOTIFY_ALL) ||
+        dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & SERVICE_NOTIFY_ALL;
+        if (!dwMask ||
             ((dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) && (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED))))
             return ERROR_INVALID_PARAMETER;
         if (!(dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)))
@@ -7066,8 +7066,8 @@ RNotifyServiceStatusChange(
     if (NotifyParams.dwInfoLevel != 2 || NotifyParams.pStatusChangeParam2 == NULL)
         return ERROR_INVALID_LEVEL;
 
-    dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & ~SERVICE_NOTIFY_SUBSCRIPTION;
-    if (!dwMask || (dwMask & ~SERVICE_NOTIFY_ALL) ||
+    dwMask = NotifyParams.pStatusChangeParam2->dwNotifyMask & SERVICE_NOTIFY_ALL;
+    if (!dwMask ||
         ((dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED)) && (dwMask & ~(SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED))))
         return ERROR_INVALID_PARAMETER;
     if (dwMask & (SERVICE_NOTIFY_CREATED | SERVICE_NOTIFY_DELETED))

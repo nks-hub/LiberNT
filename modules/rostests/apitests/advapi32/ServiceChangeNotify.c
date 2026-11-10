@@ -173,11 +173,9 @@ test_Masks(SC_HANDLE Manager)
         Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_INVALID_HANDLE, "State mask on a manager handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Own, 0x00010000, &Notify);
-        trace("Unknown mask on a manager handle returned %lu\n", Error);
-        ok(Error != ERROR_SUCCESS, "Unknown mask on a manager handle was accepted\n");
+        ok(Error == ERROR_INVALID_PARAMETER, "Unknown mask on a manager handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_CREATED | 0x00010000, &Notify);
-        trace("Database mask with an unknown bit on a manager handle returned %lu\n", Error);
-        ok(Error != ERROR_SUCCESS, "Database mask with an unknown bit on a manager handle was accepted\n");
+        ok(Error == ERROR_SUCCESS, "Database mask with an unknown bit on a manager handle returned %lu\n", Error);
         CloseServiceHandle(Own);
     }
 
@@ -190,11 +188,9 @@ test_Masks(SC_HANDLE Manager)
         Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a service handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Service, 0x00010000, &Notify);
-        trace("Unknown mask on a service handle returned %lu\n", Error);
-        ok(Error != ERROR_SUCCESS, "Unknown mask on a service handle was accepted\n");
+        ok(Error == ERROR_INVALID_PARAMETER, "Unknown mask on a service handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_RUNNING | 0x00010000, &Notify);
-        trace("State mask with an unknown bit on a service handle returned %lu\n", Error);
-        ok(Error != ERROR_SUCCESS, "State mask with an unknown bit on a service handle was accepted\n");
+        ok(Error == ERROR_SUCCESS, "State mask with an unknown bit on a service handle returned %lu\n", Error);
         DeleteService(Service);
         CloseServiceHandle(Service);
     }

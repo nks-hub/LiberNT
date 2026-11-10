@@ -146,15 +146,15 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
 
 #ifdef __REACTOS__
     TOKEN_GROUPS *groups64 = token_groups_32to64( groups );
-    TOKEN_GROUPS *prev64, *token_groups;
+    TOKEN_GROUPS *prev64, *token_groups, *changes;
     TOKEN_GROUPS probe;
-    ULONG i, j, attrs, new_attrs, count = 0, size = 0, ret_size = 0, count_off, sid_off;
+    ULONG i, j, attrs, new_attrs, matched = 0, count = 0, sids = 0, size = 0, ret_size = 0, count_off, sid_off;
     NTSTATUS status;
 
     if (!prev)
         return NtAdjustGroupsToken( handle, reset, groups64, len, NULL, retlen );
 
-    /* a zero length changes nothing and returns the 64-bit length, which does not tell the group count */
+    /* a zero length changes nothing and reports what the kernel refuses in the request */
     status = NtAdjustGroupsToken( handle, reset, groups64, 0, &probe, &ret_size );
     if (status != STATUS_BUFFER_TOO_SMALL) return status;
 
@@ -163,6 +163,8 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     if (!(token_groups = Wow64AllocateTemp( size ))) return STATUS_NO_MEMORY;
     status = NtQueryInformationToken( handle, TokenGroups, token_groups, size, &size );
     if (status) return status;
+    if (!(changes = Wow64AllocateTemp( offsetof( TOKEN_GROUPS, Groups[token_groups->GroupCount] )))) return STATUS_NO_MEMORY;
+    changes->GroupCount = 0;
     for (i = 0; i < token_groups->GroupCount; i++)
     {
         attrs = token_groups->Groups[i].Attributes;
@@ -176,41 +178,47 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
             for (j = 0; j < groups64->GroupCount; j++)
                 if (RtlEqualSid( token_groups->Groups[i].Sid, groups64->Groups[j].Sid )) break;
             if (j == groups64->GroupCount) continue;
+            matched++;
             new_attrs = (attrs & ~SE_GROUP_ENABLED) | (groups64->Groups[j].Attributes & SE_GROUP_ENABLED);
         }
-        if (attrs != new_attrs) count++;
+        if (attrs == new_attrs) continue;
+        changes->Groups[changes->GroupCount].Sid = token_groups->Groups[i].Sid;
+        changes->Groups[changes->GroupCount++].Attributes = new_attrs & SE_GROUP_ENABLED;
+    }
+    for (i = 0; i < token_groups->GroupCount; i++)
+    {
+        for (j = 0; j < changes->GroupCount; j++)
+            if (RtlEqualSid( token_groups->Groups[i].Sid, changes->Groups[j].Sid )) break;
+        if (j == changes->GroupCount) continue;
+        count++;
+        sids += RtlLengthSid( token_groups->Groups[i].Sid );
     }
     count_off = offsetof( TOKEN_GROUPS, Groups[count] );
     sid_off = offsetof( TOKEN_GROUPS32, Groups[count] );
-    if (ret_size < count_off || len < ret_size - count_off + sid_off)
+    if (len < sid_off + sids)
     {
-        if (retlen) *retlen = ret_size < count_off ? ret_size : ret_size - count_off + sid_off;
+        if (retlen) *retlen = sid_off + sids;
         return STATUS_BUFFER_TOO_SMALL;
     }
 
-    size = ret_size;
+    size = count_off + sids;
     if (!(prev64 = Wow64AllocateTemp( size ))) return STATUS_NO_MEMORY;
-    status = NtAdjustGroupsToken( handle, reset, groups64, size, prev64, &ret_size );
-    if (status == STATUS_SUCCESS || status == STATUS_NOT_ALL_ASSIGNED)
+    /* only the groups counted above are passed on, so the kernel cannot return more than len was checked for */
+    status = NtAdjustGroupsToken( handle, FALSE, changes, size, prev64, &ret_size );
+    if (status) return status;
+
+    count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );
+    sid_off = offsetof( TOKEN_GROUPS32, Groups[prev64->GroupCount] );
+    ret_size = ret_size - count_off + sid_off;
+    prev->GroupCount = prev64->GroupCount;
+    for (i = 0; i < prev64->GroupCount; i++)
     {
-        count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );
-        sid_off = offsetof( TOKEN_GROUPS32, Groups[prev64->GroupCount] );
-        ret_size = ret_size - count_off + sid_off;
-        if (len < ret_size)
-        {
-            if (retlen) *retlen = ret_size;
-            return STATUS_BUFFER_TOO_SMALL;
-        }
-        prev->GroupCount = prev64->GroupCount;
-        for (i = 0; i < prev64->GroupCount; i++)
-        {
-            prev->Groups[i].Sid = PtrToUlong( prev ) + sid_off + (ULONG)((char *)prev64->Groups[i].Sid - ((char *)prev64 + count_off));
-            prev->Groups[i].Attributes = prev64->Groups[i].Attributes;
-        }
-        memcpy( (char *)prev + sid_off, (char *)prev64 + count_off, ret_size - sid_off );
+        prev->Groups[i].Sid = PtrToUlong( prev ) + sid_off + (ULONG)((char *)prev64->Groups[i].Sid - ((char *)prev64 + count_off));
+        prev->Groups[i].Attributes = prev64->Groups[i].Attributes;
     }
+    memcpy( (char *)prev + sid_off, (char *)prev64 + count_off, ret_size - sid_off );
     if (retlen) *retlen = ret_size;
-    return status;
+    return (!reset && matched < groups64->GroupCount) ? STATUS_NOT_ALL_ASSIGNED : STATUS_SUCCESS;
 #else
     FIXME( "%p %d %p %lu %p %p\n", handle, reset, groups, len, prev, retlen );
     return STATUS_NOT_IMPLEMENTED;

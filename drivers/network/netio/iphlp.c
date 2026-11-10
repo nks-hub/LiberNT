@@ -496,6 +496,78 @@ Done:
 #define NETIO_UNCHANGED_BOOLEAN ((BOOLEAN)0xFF)
 #define NETIO_ROUTE_TYPE_DIRECT 3
 
+typedef enum _NETIO_PASSIVE_FUNCTION
+{
+    NetioPassiveGetIfEntry2,
+    NetioPassiveGetIpInterfaceEntry,
+    NetioPassiveSetIpInterfaceEntry,
+    NetioPassiveGetIpForwardTable2
+} NETIO_PASSIVE_FUNCTION;
+
+typedef struct _NETIO_PASSIVE_CALL
+{
+    WORK_QUEUE_ITEM Item;
+    KEVENT Done;
+    NETIO_PASSIVE_FUNCTION Function;
+    ADDRESS_FAMILY Family;
+    PVOID Argument;
+    NTSTATUS Status;
+} NETIO_PASSIVE_CALL, *PNETIO_PASSIVE_CALL;
+
+static
+VOID
+NTAPI
+NetioPassiveWorker(
+    _In_ PVOID Parameter)
+{
+    PNETIO_PASSIVE_CALL Call = Parameter;
+
+    switch (Call->Function)
+    {
+        case NetioPassiveGetIfEntry2:
+            Call->Status = GetIfEntry2(Call->Argument);
+            break;
+        case NetioPassiveGetIpInterfaceEntry:
+            Call->Status = GetIpInterfaceEntry(Call->Argument);
+            break;
+        case NetioPassiveSetIpInterfaceEntry:
+            Call->Status = SetIpInterfaceEntry(Call->Argument);
+            break;
+        case NetioPassiveGetIpForwardTable2:
+            Call->Status = GetIpForwardTable2(Call->Family, Call->Argument);
+            break;
+    }
+    KeSetEvent(&Call->Done, IO_NO_INCREMENT, FALSE);
+}
+
+/* Synchronous I/O completes in a special kernel APC, so a caller that blocks them runs the call on a worker thread */
+static
+BOOLEAN
+NetioCallAtPassive(
+    _In_ NETIO_PASSIVE_FUNCTION Function,
+    _In_ ADDRESS_FAMILY Family,
+    _In_ PVOID Argument,
+    _Out_ PNTSTATUS Status)
+{
+    NETIO_PASSIVE_CALL Call;
+
+    if (!KeAreAllApcsDisabled())
+        return FALSE;
+
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    Call.Function = Function;
+    Call.Family = Family;
+    Call.Argument = Argument;
+    Call.Status = STATUS_UNSUCCESSFUL;
+    KeInitializeEvent(&Call.Done, NotificationEvent, FALSE);
+    ExInitializeWorkItem(&Call.Item, NetioPassiveWorker, &Call);
+    ExQueueWorkItem(&Call.Item, DelayedWorkQueue);
+    KeWaitForSingleObject(&Call.Done, Executive, KernelMode, FALSE, NULL);
+    *Status = Call.Status;
+    return TRUE;
+}
+
 static
 NTSTATUS
 NetioOpenDevice(
@@ -881,6 +953,8 @@ GetIfEntry2(
 
     if (Row == NULL)
         return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveGetIfEntry2, AF_UNSPEC, Row, &Status))
+        return Status;
     Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
         return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
@@ -952,6 +1026,8 @@ GetIpInterfaceEntry(
 
     if (Row == NULL || (Row->Family != AF_INET && Row->Family != AF_INET6))
         return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveGetIpInterfaceEntry, AF_UNSPEC, Row, &Status))
+        return Status;
     Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
     if (Index == 0)
         return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
@@ -1039,6 +1115,8 @@ SetIpInterfaceEntry(
         return STATUS_INVALID_PARAMETER;
     if (!Row->InterfaceLuid.Value && !Row->InterfaceIndex)
         return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveSetIpInterfaceEntry, AF_UNSPEC, Row, &Status))
+        return Status;
 
     InitializeIpInterfaceEntry(&Current);
     Current.Family = Row->Family;
@@ -1391,6 +1469,8 @@ GetIpForwardTable2(
     *Table = NULL;
     if (Family != AF_INET && Family != AF_INET6 && Family != AF_UNSPEC)
         return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveGetIpForwardTable2, Family, Table, &Status))
+        return Status;
 
     Status = NetioQueryRoutes(Family, FALSE, &Rows, &Count);
     if (!NT_SUCCESS(Status))

@@ -7,6 +7,7 @@
 
 #include "precomp.h"
 #include <setupapi.h>
+#include <winnls.h>
 
 extern const WCHAR wszCurrentEnvironment[];
 
@@ -158,7 +159,7 @@ IsDriverPackageInUse(PCWSTR InfPath)
         else
         {
             ResolvePackageInf(Value, Used);
-            if (_wcsicmp(Used, InfPath) == 0)
+            if (CompareStringOrdinal(Used, -1, InfPath, -1, TRUE) == CSTR_EQUAL)
                 hr = S_OK;
         }
     }
@@ -436,7 +437,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     PCWSTR Sections[16];
     DWORD SectionCount = 0, Field, FieldCount, Size, i, j, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"";
+    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH];
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
@@ -616,7 +617,8 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
-    DriverInfo.pszInfPath = (PWSTR)pszInfPath;
+    ResolvePackageInf(pszInfPath, RecordedInf);
+    DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : (PWSTR)pszInfPath;
 
     if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
                              APD_COPY_FROM_DIRECTORY |

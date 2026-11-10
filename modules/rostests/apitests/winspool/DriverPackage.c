@@ -466,6 +466,19 @@ START_TEST(DriverPackage)
         ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE),
            "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", InfPath, hr);
         ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted while in use\n", StoreInf);
+
+        if (Last && SUCCEEDED(StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\TESTPKG.GPD", (int)(Last - StoreInf), StoreInf)))
+        {
+            hr = DeletePrinterDriverPackageW(NULL, Other, NULL);
+            ok(FAILED(hr), "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", Other, hr);
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted through %S\n", StoreInf, Other);
+        }
+        if (Last && SUCCEEDED(StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s", (int)(Last - StoreInf), StoreInf)))
+        {
+            hr = DeletePrinterDriverPackageW(NULL, Other, NULL);
+            ok(FAILED(hr), "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", Other, hr);
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted through %S\n", StoreInf, Other);
+        }
     }
 
     DeleteTestDriver();

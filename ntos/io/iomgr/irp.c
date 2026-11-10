@@ -185,8 +185,9 @@ IopAbortInterruptedIrp(IN PKEVENT EventObject,
     /* Check if nobody completed it yet */
     if (!KeReadStateEvent(EventObject))
     {
-        /* The interrupted wait took the alert of CancelSynchronousIo; one pending now was sent later */
-        IopForgetCancelAlert(Irp);
+        /* FIXME: an alert sent after the wait took the CancelSynchronousIo one and before this check is dropped as that one */
+        if (!KeGetCurrentThread()->Alerted[UserMode])
+            IopForgetCancelAlert(Irp);
 
         /* First, cancel it */
         CancelResult = IoCancelIrp(Irp);

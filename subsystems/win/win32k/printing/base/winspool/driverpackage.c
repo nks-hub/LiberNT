@@ -254,13 +254,23 @@ AddPackageFile(PPACKAGE_FILES Files, PCWSTR Name, PCWSTR Source)
             SetLastError(ERROR_NOT_ENOUGH_MEMORY);
             return FALSE;
         }
-        Grown = ReallocSplMem(Files->Names, Files->Capacity * sizeof(PWSTR), Capacity * sizeof(PWSTR));
+        Grown = DllAllocSplMem(Capacity * sizeof(PWSTR));
         if (!Grown)
             return FALSE;
+        if (Files->Names)
+        {
+            CopyMemory(Grown, Files->Names, Files->Count * sizeof(PWSTR));
+            DllFreeSplMem(Files->Names);
+        }
         Files->Names = Grown;
-        Grown = ReallocSplMem(Files->Sources, Files->Capacity * sizeof(PWSTR), Capacity * sizeof(PWSTR));
+        Grown = DllAllocSplMem(Capacity * sizeof(PWSTR));
         if (!Grown)
             return FALSE;
+        if (Files->Sources)
+        {
+            CopyMemory(Grown, Files->Sources, Files->Count * sizeof(PWSTR));
+            DllFreeSplMem(Files->Sources);
+        }
         Files->Sources = Grown;
         Files->Capacity = Capacity;
     }

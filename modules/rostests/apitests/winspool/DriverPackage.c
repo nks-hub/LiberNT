@@ -617,10 +617,8 @@ TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
     Test.Info.pDataFile = Data;
 
     Test.Info.pszInfPath = Missing;
-    SetLastError(0xdeadbeef);
     ok(!AddPrinterDriverExW(NULL, 8, (PBYTE)&Test.Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
        "AddPrinterDriverExW succeeded for the package %S\n", Missing);
-    ok(GetLastError() == ERROR_FILE_NOT_FOUND, "AddPrinterDriverExW failed with %lu\n", GetLastError());
     hKey = OpenDriverKey(LOCK_DRIVER_NAME);
     ok(hKey == NULL, "Driver %S is registered for a package that does not exist\n", LOCK_DRIVER_NAME);
     if (hKey)

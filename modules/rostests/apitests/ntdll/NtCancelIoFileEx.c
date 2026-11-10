@@ -42,7 +42,7 @@ RunReader(BOOL AlertFirst, BOOL CancelSynchronous, READER *Reader)
     BOOL Cancelled = FALSE;
     ULONG Try;
 
-    swprintf(Name, L"\\.\pipe\NtCancelIoFileEx%lu_%ld", GetCurrentProcessId(), InterlockedIncrement(&Counter));
+    _snwprintf(Name, ARRAYSIZE(Name), L"\\\\.\\pipe\\NtCancelIoFileEx%lu_%ld", GetCurrentProcessId(), InterlockedIncrement(&Counter));
     Server = CreateNamedPipeW(Name, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_WAIT, 1, 4096, 4096, 0, NULL);
     ok(Server != INVALID_HANDLE_VALUE, "CreateNamedPipeW failed: %lu\n", GetLastError());
     Client = CreateFileW(Name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);

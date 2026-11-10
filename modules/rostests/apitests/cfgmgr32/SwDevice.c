@@ -196,6 +196,57 @@ test_SecurityDescriptor(CREATED *State)
 }
 
 static void
+test_PropertyCountOverflow(CREATED *State)
+{
+    static const DEVPROPKEY Key = { { 0x4c6e7453, 0x7754, 0x4465, { 0x76, 0x69, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } }, 2 };
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    DEVPROPERTY Properties[2];
+    HSWDEVICE Device = NULL;
+    DWORD Exception = 0;
+    ULONG Value = 1;
+    HRESULT hr = S_OK;
+
+    ZeroMemory(Properties, sizeof(Properties));
+    Properties[0].CompKey.Key = Key;
+    Properties[0].CompKey.Store = DEVPROP_STORE_SYSTEM;
+    Properties[0].Type = DEVPROP_TYPE_UINT32;
+    Properties[0].BufferSize = sizeof(Value);
+    Properties[0].Buffer = &Value;
+    Properties[1] = Properties[0];
+    Properties[1].Buffer = NULL;
+
+    Info.pszInstanceId = L"PropertyCount";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+    State->Result = E_PENDING;
+    ResetEvent(State->Event);
+
+    /* The size of this many properties does not fit in 32 bits */
+    _SEH2_TRY
+    {
+        hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, MAXDWORD / sizeof(DEVPROPERTY) + 1, Properties,
+                            Created, State, &Device);
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Exception = _SEH2_GetExceptionCode();
+    }
+    _SEH2_END;
+
+    ok(Exception == 0, "SwDeviceCreate raised 0x%08lx\n", Exception);
+    trace("SwDeviceCreate with an overflowing property count returned 0x%08lx\n", hr);
+    ok(FAILED(hr), "SwDeviceCreate with an overflowing property count returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr) && Device)
+    {
+        WaitForSingleObject(State->Event, 30000);
+        SwDeviceClose(Device);
+        WaitGone(L"SWD\\" TEST_ENUMERATOR L"\\PropertyCount");
+    }
+}
+
+static void
 RunChild(void)
 {
     CREATED State;
@@ -248,6 +299,7 @@ START_TEST(SwDevice)
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
     test_SecurityDescriptor(&State);
+    test_PropertyCountOverflow(&State);
     test_ProcessEnd();
     CloseHandle(State.Event);
 }

@@ -50,6 +50,17 @@ GetArchitectureName(
     }
 }
 
+static const WORD StoreArchitectures[] =
+{
+    PROCESSOR_ARCHITECTURE_INTEL,
+    PROCESSOR_ARCHITECTURE_AMD64,
+    PROCESSOR_ARCHITECTURE_ARM,
+    PROCESSOR_ARCHITECTURE_ARM64,
+    PROCESSOR_ARCHITECTURE_IA64,
+    PROCESSOR_ARCHITECTURE_RISCV64,
+    PROCESSOR_ARCHITECTURE_PPC,
+};
+
 static BOOL
 GetRepositoryRoot(
     OUT PWSTR Buffer,
@@ -274,6 +285,7 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     STAGE_NAME_LIST Files;
     STAGE_NAME_LIST Installs;
     STAGE_NAME_LIST Includes;
+    PSP_ALTPLATFORM_INFO Platform;
     BOOL Required;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
@@ -381,11 +393,16 @@ StagePackageFile(
     PWSTR Last;
     DWORD Error;
 
-    if (!IsSafeRelativePath(Relative) ||
+    Error = IsSafeRelativePath(Relative) ? ERROR_FILENAME_EXCED_RANGE : ERROR_BAD_PATHNAME;
+    if (Error == ERROR_BAD_PATHNAME ||
         !CombinePath(Source, SourceRoot, Relative) ||
         !CombinePath(Target, StoreRoot, Relative))
     {
-        return TRUE;
+        if (!Required)
+            return TRUE;
+        ERR("Package file %s cannot be taken from the package directory\n", debugstr_w(Relative));
+        SetLastError(Error);
+        return FALSE;
     }
 
     Compressed[0] = UNICODE_NULL;
@@ -487,7 +504,11 @@ StageCopyFile(
     if (!CombinePath(Relative, DiskPath, SubDir) ||
         lstrlenW(Relative) + 1 + lstrlenW(FileName) >= MAX_PATH)
     {
-        return TRUE;
+        if (!Package->Required)
+            return TRUE;
+        ERR("The source path of package file %s is too long\n", debugstr_w(FileName));
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
     }
     if (Relative[0] && Relative[lstrlenW(Relative) - 1] != L'\\')
         lstrcatW(Relative, L"\\");
@@ -659,14 +680,14 @@ StageModelCopyFiles(
         /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
         Found = SetupGetFieldCount(&Manufacturer) < 2
                     ? SetupGetStringFieldW(&Manufacturer, 1, Models, ARRAY_SIZE(Models), NULL)
-                    : SetupDiGetActualModelsSectionW(&Manufacturer, NULL, Models, ARRAY_SIZE(Models), NULL, NULL);
+                    : SetupDiGetActualModelsSectionW(&Manufacturer, Package->Platform, Models, ARRAY_SIZE(Models), NULL, NULL);
         if (!Found || !SetupFindFirstLineW(hInf, Models, NULL, &Model))
             continue;
 
         do
         {
             if (!SetupGetStringFieldW(&Model, 1, Install, ARRAY_SIZE(Install), NULL) ||
-                !SetupDiGetActualSectionToInstallW(hInf, Install, Actual, LINE_LEN, NULL, NULL))
+                !SetupDiGetActualSectionToInstallExW(hInf, Install, Package->Platform, Actual, LINE_LEN, NULL, NULL, NULL))
             {
                 continue;
             }
@@ -913,6 +934,7 @@ StageDriverPackage(
 {
     WCHAR Source[MAX_PATH], SourceRoot[MAX_PATH], Root[MAX_PATH], Store[MAX_PATH], Staging[MAX_PATH], Target[MAX_PATH];
     STAGE_PACKAGE_CONTEXT Package;
+    SP_ALTPLATFORM_INFO Platform;
     PWSTR BaseName;
     HINF hInf;
     DWORD Length, Error;
@@ -948,6 +970,16 @@ StageDriverPackage(
         ZeroMemory(&Package, sizeof(Package));
         Package.SourceRoot = SourceRoot;
         Package.StoreRoot = Staging;
+        if (Architecture != GetProcessArchitecture())
+        {
+            ZeroMemory(&Platform, sizeof(Platform));
+            Platform.cbSize = sizeof(Platform);
+            Platform.Platform = VER_PLATFORM_WIN32_NT;
+            Platform.MajorVersion = OsVersionInfo.dwMajorVersion;
+            Platform.MinorVersion = OsVersionInfo.dwMinorVersion;
+            Platform.ProcessorArchitecture = Architecture;
+            Package.Platform = &Platform;
+        }
         MarkNameSeen(&Package.Includes, BaseName);
         Staged = StageCatalogFiles(hInf, SourceRoot, Staging) && StageCopyFiles(hInf, &Package);
         Error = GetLastError();
@@ -956,6 +988,11 @@ StageDriverPackage(
         FreeNameList(&Package.Installs);
         FreeNameList(&Package.Includes);
         SetupCloseInfFile(hInf);
+    }
+    else if (Staged)
+    {
+        Error = GetLastError();
+        Staged = FALSE;
     }
 
     if (Staged)
@@ -1022,6 +1059,11 @@ FindStoreInf(
     if (Length != 0 && Length < ARRAY_SIZE(Long))
         Published = Long;
 
+    if (!HashFileContents(Published, &Hash))
+        return FALSE;
+
+    swprintf(Suffix, ARRAY_SIZE(Suffix), L"_%s_%016I64x", GetArchitectureName(Architecture), Hash);
+
     Length = lstrlenW(Root);
     if (_wcsnicmp(Published, Root, Length) == 0 && Published[Length] == L'\\')
     {
@@ -1040,14 +1082,15 @@ FindStoreInf(
         Attributes = GetFileAttributesW(Published);
         if (Attributes == INVALID_FILE_ATTRIBUTES || (Attributes & FILE_ATTRIBUTE_DIRECTORY))
             return FALSE;
+        if (_wcsnicmp(Directory + Length, Suffix, lstrlenW(Suffix)) != 0 ||
+            Directory + Length + lstrlenW(Suffix) + 1 != Name)
+        {
+            return FALSE;
+        }
         lstrcpyW(StoreInfFileName, Published);
         return TRUE;
     }
 
-    if (!HashFileContents(Published, &Hash))
-        return FALSE;
-
-    swprintf(Suffix, ARRAY_SIZE(Suffix), L"_%s_%016I64x", GetArchitectureName(Architecture), Hash);
     if (lstrlenW(Root) + 2 + lstrlenW(Suffix) >= MAX_PATH)
         return FALSE;
 
@@ -1086,6 +1129,25 @@ FindStoreInf(
     return Found;
 }
 
+static BOOL
+FindStoreInfOfAnyArchitecture(
+    IN PCWSTR Published,
+    IN PCWSTR RequiredName,
+    OUT PWSTR StoreInfFileName)
+{
+    DWORD i;
+
+    if (FindStoreInf(Published, RequiredName, GetNativeArchitecture(), StoreInfFileName))
+        return TRUE;
+
+    for (i = 0; i < ARRAY_SIZE(StoreArchitectures); i++)
+    {
+        if (FindStoreInf(Published, RequiredName, StoreArchitectures[i], StoreInfFileName))
+            return TRUE;
+    }
+    return FALSE;
+}
+
 BOOL
 SETUPAPI_FindDriverStoreInf(
     IN PCWSTR FileName,
@@ -1095,7 +1157,7 @@ SETUPAPI_FindDriverStoreInf(
 
     if (!GetPublishedInfPath(FileName, Published))
         return FALSE;
-    return FindStoreInf(Published, NULL, GetNativeArchitecture(), StoreInfFileName);
+    return FindStoreInfOfAnyArchitecture(Published, NULL, StoreInfFileName);
 }
 
 PCWSTR
@@ -1264,13 +1326,17 @@ CheckStoreRequest(
     IN WORD Architecture,
     IN PDWORD ReturnLength)
 {
+    DWORD i;
+
     if (*ReturnLength < MAX_PATH)
         return E_INVALIDARG;
 
-    if (Architecture != GetNativeArchitecture() && Architecture != GetProcessArchitecture())
-        return E_INVALIDARG;
-
-    return S_OK;
+    for (i = 0; i < ARRAY_SIZE(StoreArchitectures); i++)
+    {
+        if (Architecture == StoreArchitectures[i])
+            return S_OK;
+    }
+    return E_INVALIDARG;
 }
 
 static HRESULT
@@ -1424,10 +1490,12 @@ DriverStoreDeleteDriverPackageW(
     IN PVOID Reserved2)
 {
     WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
-    PWSTR Last;
+    PWSTR Last, BaseName;
+    DWORD Length;
 
-    if (!FindSourceStoreInf(InfPath, GetNativeArchitecture(), Source, StoreInf) &&
-        !FindSourceStoreInf(InfPath, GetProcessArchitecture(), Source, StoreInf))
+    Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
+    if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName ||
+        !FindStoreInfOfAnyArchitecture(Source, BaseName, StoreInf))
     {
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     }

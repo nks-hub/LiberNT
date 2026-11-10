@@ -44,15 +44,13 @@ EnvironmentArchitectures[] =
 };
 
 static HRESULT
-CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment, PWORD Architecture)
+CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment, PCWSTR *Environment, PWORD Architecture)
 {
     WCHAR ComputerName[MAX_COMPUTERNAME_LENGTH + 1];
     DWORD Size = ARRAYSIZE(ComputerName), i;
 
     if (!pszEnvironment || !*pszEnvironment)
         pszEnvironment = wszCurrentEnvironment;
-    else if (_wcsicmp(pszEnvironment, wszCurrentEnvironment) != 0)
-        return HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT);
 
     for (i = 0; i < ARRAYSIZE(EnvironmentArchitectures); i++)
     {
@@ -61,6 +59,7 @@ CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment, PWORD Architecture)
     }
     if (i == ARRAYSIZE(EnvironmentArchitectures))
         return HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT);
+    *Environment = EnvironmentArchitectures[i].Environment;
     *Architecture = EnvironmentArchitectures[i].Architecture;
 
     if (!pszServer || !*pszServer)
@@ -98,6 +97,7 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     WCHAR StoreInf[MAX_PATH];
     DWORD Length = ARRAYSIZE(StoreInf);
     HANDLE Namespace, Lock;
+    PCWSTR Environment;
     WORD Architecture;
     HRESULT hr;
 
@@ -112,7 +112,7 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
         return E_INVALIDARG;
     }
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
     if (FAILED(hr))
         return hr;
 
@@ -150,7 +150,7 @@ ResolvePackageInf(PCWSTR InfPath, WORD Architecture, PWSTR Resolved)
 }
 
 static HRESULT
-IsDriverPackageInUse(PCWSTR InfPath, WORD Architecture)
+IsDriverPackageInUse(PCWSTR InfPath, PCWSTR Environment, WORD Architecture)
 {
     WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH], Used[MAX_PATH];
     HRESULT hr = S_FALSE;
@@ -158,7 +158,7 @@ IsDriverPackageInUse(PCWSTR InfPath, WORD Architecture)
     DWORD i, Size;
     LSTATUS Error;
 
-    if (FAILED(StringCchPrintfW(Key, ARRAYSIZE(Key), DRIVERS_KEY, wszCurrentEnvironment)))
+    if (FAILED(StringCchPrintfW(Key, ARRAYSIZE(Key), DRIVERS_KEY, Environment)))
         return E_FAIL;
     Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, Key, 0, KEY_READ, &hDrivers);
     if (Error == ERROR_FILE_NOT_FOUND)
@@ -200,6 +200,7 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 {
     WCHAR Package[MAX_PATH];
     HANDLE Namespace, Lock;
+    PCWSTR Environment;
     WORD Architecture;
     BOOL Stored;
     HRESULT hr;
@@ -209,7 +210,7 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (!pszInfPath)
         return E_INVALIDARG;
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
     if (FAILED(hr))
         return hr;
 
@@ -220,7 +221,7 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (!AcquirePackageLock(&Namespace, &Lock))
         return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 
-    hr = IsDriverPackageInUse(Package, Architecture);
+    hr = IsDriverPackageInUse(Package, Environment, Architecture);
     if (hr == S_OK)
         hr = HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
     else if (hr == S_FALSE)
@@ -391,7 +392,7 @@ GetDirective(HINF hInf, PWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR V
 }
 
 static BOOL
-FindModelSection(HINF hInf, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
+FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
 {
     WCHAR Models[MAX_PATH];
     INFCONTEXT MfgContext, ModelContext;
@@ -404,7 +405,7 @@ FindModelSection(HINF hInf, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
         /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
         if (SetupGetFieldCount(&MfgContext) < 2
                 ? !SetupGetStringFieldW(&MfgContext, 1, Models, ARRAYSIZE(Models), NULL)
-                : !SetupDiGetActualModelsSectionW(&MfgContext, NULL, Models, ARRAYSIZE(Models), NULL, NULL))
+                : !SetupDiGetActualModelsSectionW(&MfgContext, Platform, Models, ARRAYSIZE(Models), NULL, NULL))
         {
             continue;
         }
@@ -508,11 +509,16 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DefaultDataType[MAX_PATH], PackageDir[MAX_PATH], DriverDir[MAX_PATH];
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
-    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH];
+    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 };
+    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH], IncludePath[MAX_PATH];
+    BOOL Found;
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
+    PSP_ALTPLATFORM_INFO Platform = NULL;
+    SP_ALTPLATFORM_INFO OtherPlatform;
+    RTL_OSVERSIONINFOW Version;
     INFCONTEXT Context;
+    PCWSTR Environment;
     WORD Architecture;
     HINF hInf;
     HRESULT hr;
@@ -526,9 +532,22 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!pszInfPath)
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
     if (FAILED(hr))
         return hr;
+
+    if (_wcsicmp(Environment, wszCurrentEnvironment) != 0)
+    {
+        Version.dwOSVersionInfoSize = sizeof(Version);
+        RtlGetVersion(&Version);
+        ZeroMemory(&OtherPlatform, sizeof(OtherPlatform));
+        OtherPlatform.cbSize = sizeof(OtherPlatform);
+        OtherPlatform.Platform = VER_PLATFORM_WIN32_NT;
+        OtherPlatform.MajorVersion = Version.dwMajorVersion;
+        OtherPlatform.MinorVersion = Version.dwMinorVersion;
+        OtherPlatform.ProcessorArchitecture = Architecture;
+        Platform = &OtherPlatform;
+    }
 
     if (FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), pszInfPath)) ||
         !(Slash = wcsrchr(PackageDir, L'\\')))
@@ -538,21 +557,21 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     *Slash = UNICODE_NULL;
 
     Size = sizeof(DriverDir);
-    if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)wszCurrentEnvironment, 1, (PBYTE)DriverDir, Size, &Size))
+    if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)Environment, 1, (PBYTE)DriverDir, Size, &Size))
         return HRESULT_FROM_WIN32(GetLastError());
 
     hInf = SetupOpenInfFileW(pszInfPath, NULL, INF_STYLE_WIN4, NULL);
     if (hInf == INVALID_HANDLE_VALUE)
         return HRESULT_FROM_WIN32(GetLastError());
 
-    if (!FindModelSection(hInf, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
-        !SetupDiGetActualSectionToInstallW(hInf, InstallSection, ActualSection, ARRAYSIZE(ActualSection),
-                                           NULL, NULL))
+    if (!FindModelSection(hInf, Platform, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
+        !SetupDiGetActualSectionToInstallExW(hInf, InstallSection, Platform, ActualSection, ARRAYSIZE(ActualSection),
+                                             NULL, NULL, NULL))
     {
         hr = HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
         goto Cleanup;
     }
-    if (!AddPackageFile(&Sections, ActualSection, NULL))
+    if (!AddPackageFile(&Sections, ActualSection, NULL) || !AddPackageFile(&Includes, Slash + 1, NULL))
     {
         hr = E_OUTOFMEMORY;
         goto Cleanup;
@@ -560,13 +579,32 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 
     for (i = 0; i < Sections.Count; i++)
     {
-        if (SetupFindFirstLineW(hInf, Sections.Names[i], L"Include", &Context))
+        for (Found = SetupFindFirstLineW(hInf, Sections.Names[i], L"Include", &Context);
+             Found;
+             Found = SetupFindNextMatchLineW(&Context, L"Include", &Context))
         {
             FieldCount = SetupGetFieldCount(&Context);
             for (Field = 1; Field <= FieldCount; Field++)
             {
-                if (SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL) &&
-                    !SetupOpenAppendInfFileW(Include, hInf, NULL))
+                if (!SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL))
+                    continue;
+
+                Size = Includes.Count;
+                if (!AddPackageFile(&Includes, Include, NULL))
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto Cleanup;
+                }
+                if (Includes.Count == Size)
+                    continue;
+
+                if (wcspbrk(Include, L"\\/:") ||
+                    FAILED(StringCchPrintfW(IncludePath, ARRAYSIZE(IncludePath), L"%s\\%s", PackageDir, Include)) ||
+                    GetFileAttributesW(IncludePath) == INVALID_FILE_ATTRIBUTES)
+                {
+                    StringCchCopyW(IncludePath, ARRAYSIZE(IncludePath), Include);
+                }
+                if (!SetupOpenAppendInfFileW(IncludePath, hInf, NULL))
                 {
                     hr = HRESULT_FROM_WIN32(GetLastError());
                     goto Cleanup;
@@ -676,7 +714,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 
     DriverInfo.cVersion = 3;
     DriverInfo.pName = (PWSTR)pszDriverName;
-    DriverInfo.pEnvironment = (PWSTR)wszCurrentEnvironment;
+    DriverInfo.pEnvironment = (PWSTR)Environment;
     DriverInfo.pDriverPath = DriverPath;
     DriverInfo.pConfigFile = ConfigPath;
     DriverInfo.pDataFile = DataPath;
@@ -706,6 +744,7 @@ Cleanup:
     FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
     FreePackageFiles(&Sections);
+    FreePackageFiles(&Includes);
     SetupCloseInfFile(hInf);
     return hr;
 }

@@ -8,7 +8,7 @@
 #include "precomp.h"
 #include <setupapi.h>
 #include <winnls.h>
-#include <sddl.h>
+#include <drvpkglock.h>
 
 extern const WCHAR wszCurrentEnvironment[];
 
@@ -18,24 +18,50 @@ HRESULT WINAPI DriverStoreDeleteDriverPackageW(PCWSTR InfPath, PVOID Reserved1, 
 HRESULT WINAPI DriverStoreFindDriverPackageW(PCWSTR InfPath, PVOID Reserved1, PVOID Reserved2, WORD Architecture,
                                              PVOID Reserved3, PWSTR ReturnPath, PDWORD ReturnLength);
 
-#define MAX_PACKAGE_FILES 128
 #define DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\%s\\Drivers\\Version-3"
 
 typedef struct _PACKAGE_FILES
 {
     DWORD Count;
-    PWSTR Names[MAX_PACKAGE_FILES];
-    PWSTR Sources[MAX_PACKAGE_FILES];
+    DWORD Capacity;
+    PWSTR *Names;
+    PWSTR *Sources;
 } PACKAGE_FILES, *PPACKAGE_FILES;
 
+static const struct
+{
+    PCWSTR Environment;
+    WORD Architecture;
+}
+EnvironmentArchitectures[] =
+{
+    { L"Windows NT x86", PROCESSOR_ARCHITECTURE_INTEL },
+    { L"Windows x64", PROCESSOR_ARCHITECTURE_AMD64 },
+    { L"Windows ARM64", PROCESSOR_ARCHITECTURE_ARM64 },
+    { L"Windows ARM", PROCESSOR_ARCHITECTURE_ARM },
+    { L"ReactOS RISC-V64", PROCESSOR_ARCHITECTURE_RISCV64 },
+    { L"Windows NT PowerPC", PROCESSOR_ARCHITECTURE_PPC },
+};
+
 static HRESULT
-CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment)
+CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment, PWORD Architecture)
 {
     WCHAR ComputerName[MAX_COMPUTERNAME_LENGTH + 1];
-    DWORD Size = ARRAYSIZE(ComputerName);
+    DWORD Size = ARRAYSIZE(ComputerName), i;
 
-    if (pszEnvironment && *pszEnvironment && _wcsicmp(pszEnvironment, wszCurrentEnvironment) != 0)
+    if (!pszEnvironment || !*pszEnvironment)
+        pszEnvironment = wszCurrentEnvironment;
+    else if (_wcsicmp(pszEnvironment, wszCurrentEnvironment) != 0)
         return HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT);
+
+    for (i = 0; i < ARRAYSIZE(EnvironmentArchitectures); i++)
+    {
+        if (_wcsicmp(pszEnvironment, EnvironmentArchitectures[i].Environment) == 0)
+            break;
+    }
+    if (i == ARRAYSIZE(EnvironmentArchitectures))
+        return HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT);
+    *Architecture = EnvironmentArchitectures[i].Architecture;
 
     if (!pszServer || !*pszServer)
         return S_OK;
@@ -47,15 +73,6 @@ CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment)
         return S_OK;
 
     return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
-}
-
-static WORD
-GetNativeArchitecture(VOID)
-{
-    SYSTEM_INFO SystemInfo;
-
-    GetNativeSystemInfo(&SystemInfo);
-    return SystemInfo.wProcessorArchitecture;
 }
 
 static HRESULT
@@ -80,6 +97,8 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 {
     WCHAR StoreInf[MAX_PATH];
     DWORD Length = ARRAYSIZE(StoreInf);
+    HANDLE Namespace, Lock;
+    WORD Architecture;
     HRESULT hr;
 
     TRACE("UploadPrinterDriverPackageW(%S, %S, %S, 0x%lx, %p, %p, %p)\n",
@@ -93,16 +112,22 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
         return E_INVALIDARG;
     }
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
     if (FAILED(hr))
         return hr;
 
-    if ((dwFlags & UPDP_UPLOAD_ALWAYS) &&
-        !SetupCopyOEMInfW(pszInfPath, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL))
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+
+    if (!(dwFlags & UPDP_UPLOAD_ALWAYS))
+        hr = DriverStoreFindDriverPackageW(pszInfPath, NULL, NULL, Architecture, NULL, StoreInf, &Length);
+    if ((dwFlags & UPDP_UPLOAD_ALWAYS) || FAILED(hr))
     {
-        return HRESULT_FROM_WIN32(GetLastError());
+        Length = ARRAYSIZE(StoreInf);
+        hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, Architecture, StoreInf, &Length);
     }
-    hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, GetNativeArchitecture(), StoreInf, &Length);
+
+    ReleasePackageLock(Namespace, Lock);
     if (FAILED(hr))
         return hr;
 
@@ -110,21 +135,22 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 }
 
 /* Gives the store INF that a path names, however it is spelled, or the full path when the store has none */
-static VOID
-ResolvePackageInf(PCWSTR InfPath, PWSTR Resolved)
+static BOOL
+ResolvePackageInf(PCWSTR InfPath, WORD Architecture, PWSTR Resolved)
 {
     DWORD Length = MAX_PATH;
 
-    if (SUCCEEDED(DriverStoreFindDriverPackageW(InfPath, NULL, NULL, GetNativeArchitecture(), NULL, Resolved, &Length)))
-        return;
+    if (SUCCEEDED(DriverStoreFindDriverPackageW(InfPath, NULL, NULL, Architecture, NULL, Resolved, &Length)))
+        return TRUE;
 
     Length = GetFullPathNameW(InfPath, MAX_PATH, Resolved, NULL);
     if (Length == 0 || Length >= MAX_PATH)
         *Resolved = UNICODE_NULL;
+    return FALSE;
 }
 
 static HRESULT
-IsDriverPackageInUse(PCWSTR InfPath)
+IsDriverPackageInUse(PCWSTR InfPath, WORD Architecture)
 {
     WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH], Used[MAX_PATH];
     HRESULT hr = S_FALSE;
@@ -159,7 +185,7 @@ IsDriverPackageInUse(PCWSTR InfPath)
             hr = HRESULT_FROM_WIN32(Error);
         else
         {
-            ResolvePackageInf(Value, Used);
+            ResolvePackageInf(Value, Architecture, Used);
             if (CompareStringOrdinal(Used, -1, InfPath, -1, TRUE) == CSTR_EQUAL)
                 hr = S_OK;
         }
@@ -169,66 +195,13 @@ IsDriverPackageInUse(PCWSTR InfPath)
     return hr;
 }
 
-/* Any process can create a global name first and hold it; only administrators can open this namespace */
-static BOOL
-AcquirePackageLock(PHANDLE Namespace, PHANDLE Lock)
-{
-    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
-    BYTE Admins[SECURITY_MAX_SID_SIZE];
-    DWORD Size = sizeof(Admins), Wait;
-    HANDLE Boundary;
-    ULONG Try;
-
-    *Namespace = NULL;
-    *Lock = NULL;
-    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
-        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
-                                                              &Security.lpSecurityDescriptor, NULL))
-    {
-        return FALSE;
-    }
-    Boundary = CreateBoundaryDescriptorW(L"PrinterDriverPackages", 0);
-    if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
-    {
-        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
-        for (Try = 0; !*Namespace && Try < 3; Try++)
-        {
-            *Namespace = CreatePrivateNamespaceW(&Security, Boundary, L"PrinterDriverPackages");
-            if (!*Namespace)
-                *Namespace = OpenPrivateNamespaceW(Boundary, L"PrinterDriverPackages");
-        }
-    }
-    if (Boundary)
-        DeleteBoundaryDescriptor(Boundary);
-    if (*Namespace)
-        *Lock = CreateMutexW(&Security, FALSE, L"PrinterDriverPackages\\Lock");
-    LocalFree(Security.lpSecurityDescriptor);
-
-    if (*Lock)
-    {
-        Wait = WaitForSingleObject(*Lock, INFINITE);
-        if (Wait == WAIT_OBJECT_0 || Wait == WAIT_ABANDONED)
-            return TRUE;
-        CloseHandle(*Lock);
-    }
-    if (*Namespace)
-        ClosePrivateNamespace(*Namespace, 0);
-    return FALSE;
-}
-
-static VOID
-ReleasePackageLock(HANDLE Namespace, HANDLE Lock)
-{
-    ReleaseMutex(Lock);
-    CloseHandle(Lock);
-    ClosePrivateNamespace(Namespace, 0);
-}
-
 HRESULT WINAPI
 DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEnvironment)
 {
     WCHAR Package[MAX_PATH];
     HANDLE Namespace, Lock;
+    WORD Architecture;
+    BOOL Stored;
     HRESULT hr;
 
     TRACE("DeletePrinterDriverPackageW(%S, %S, %S)\n", pszServer, pszInfPath, pszEnvironment);
@@ -236,22 +209,22 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (!pszInfPath)
         return E_INVALIDARG;
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
     if (FAILED(hr))
         return hr;
 
-    ResolvePackageInf(pszInfPath, Package);
+    Stored = ResolvePackageInf(pszInfPath, Architecture, Package);
     if (!*Package)
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     if (!AcquirePackageLock(&Namespace, &Lock))
         return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 
-    hr = IsDriverPackageInUse(Package);
+    hr = IsDriverPackageInUse(Package, Architecture);
     if (hr == S_OK)
         hr = HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
     else if (hr == S_FALSE)
-        hr = DriverStoreDeleteDriverPackageW(Package, NULL, NULL);
+        hr = Stored ? DriverStoreDeleteDriverPackageW(Package, NULL, NULL) : HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     ReleasePackageLock(Namespace, Lock);
     return hr;
@@ -271,8 +244,36 @@ AddPackageFile(PPACKAGE_FILES Files, PCWSTR Name, PCWSTR Source)
             return TRUE;
     }
 
-    if (Files->Count == MAX_PACKAGE_FILES)
-        return FALSE;
+    if (Files->Count == Files->Capacity)
+    {
+        DWORD Capacity = Files->Capacity ? Files->Capacity * 2 : 32;
+        PWSTR *Grown;
+
+        if (Capacity <= Files->Capacity || Capacity > MAXDWORD / sizeof(PWSTR))
+        {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
+        Grown = DllAllocSplMem(Capacity * sizeof(PWSTR));
+        if (!Grown)
+            return FALSE;
+        if (Files->Names)
+        {
+            CopyMemory(Grown, Files->Names, Files->Count * sizeof(PWSTR));
+            DllFreeSplMem(Files->Names);
+        }
+        Files->Names = Grown;
+        Grown = DllAllocSplMem(Capacity * sizeof(PWSTR));
+        if (!Grown)
+            return FALSE;
+        if (Files->Sources)
+        {
+            CopyMemory(Grown, Files->Sources, Files->Count * sizeof(PWSTR));
+            DllFreeSplMem(Files->Sources);
+        }
+        Files->Sources = Grown;
+        Files->Capacity = Capacity;
+    }
 
     Files->Names[Files->Count] = AllocSplStr(Name);
     Files->Sources[Files->Count] = NULL;
@@ -301,6 +302,12 @@ FreePackageFiles(PPACKAGE_FILES Files)
         if (Files->Sources[Files->Count])
             DllFreeSplStr(Files->Sources[Files->Count]);
     }
+    if (Files->Names)
+        DllFreeSplMem(Files->Names);
+    if (Files->Sources)
+        DllFreeSplMem(Files->Sources);
+    Files->Names = Files->Sources = NULL;
+    Files->Capacity = 0;
 }
 
 static BOOL
@@ -353,7 +360,7 @@ CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
 }
 
 static BOOL
-GetDirective(HINF hInf, PCWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR Value, DWORD ValueSize)
+GetDirective(HINF hInf, PWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR Value, DWORD ValueSize)
 {
     WCHAR DataSection[MAX_PATH];
     INFCONTEXT Context;
@@ -394,8 +401,13 @@ FindModelSection(HINF hInf, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
 
     do
     {
-        if (!SetupDiGetActualModelsSectionW(&MfgContext, NULL, Models, ARRAYSIZE(Models), NULL, NULL))
+        /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
+        if (SetupGetFieldCount(&MfgContext) < 2
+                ? !SetupGetStringFieldW(&MfgContext, 1, Models, ARRAYSIZE(Models), NULL)
+                : !SetupDiGetActualModelsSectionW(&MfgContext, NULL, Models, ARRAYSIZE(Models), NULL, NULL))
+        {
             continue;
+        }
 
         if (SetupFindFirstLineW(hInf, Models, DriverName, &ModelContext) &&
             SetupGetStringFieldW(&ModelContext, 1, Section, SectionSize, NULL))
@@ -495,14 +507,13 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DriverFile[MAX_PATH], ConfigFile[MAX_PATH], DataFile[MAX_PATH], HelpFile[MAX_PATH];
     WCHAR DefaultDataType[MAX_PATH], PackageDir[MAX_PATH], DriverDir[MAX_PATH];
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
-    PCWSTR Sections[16];
-    DWORD SectionCount = 0, Field, FieldCount, Size, i, j, DependentLength = 1;
-    PACKAGE_FILES Files = { 0 }, Staged = { 0 };
+    DWORD Field, FieldCount, Size, i, DependentLength = 1;
+    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 };
     WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH];
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
-    HANDLE Namespace, Lock;
+    WORD Architecture;
     HINF hInf;
     HRESULT hr;
 
@@ -515,7 +526,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!pszInfPath)
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
     if (FAILED(hr))
         return hr;
 
@@ -530,16 +541,9 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)wszCurrentEnvironment, 1, (PBYTE)DriverDir, Size, &Size))
         return HRESULT_FROM_WIN32(GetLastError());
 
-    if (!AcquirePackageLock(&Namespace, &Lock))
-        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
-
     hInf = SetupOpenInfFileW(pszInfPath, NULL, INF_STYLE_WIN4, NULL);
     if (hInf == INVALID_HANDLE_VALUE)
-    {
-        hr = HRESULT_FROM_WIN32(GetLastError());
-        ReleasePackageLock(Namespace, Lock);
-        return hr;
-    }
+        return HRESULT_FROM_WIN32(GetLastError());
 
     if (!FindModelSection(hInf, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
         !SetupDiGetActualSectionToInstallW(hInf, InstallSection, ActualSection, ARRAYSIZE(ActualSection),
@@ -548,11 +552,15 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         hr = HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
         goto Cleanup;
     }
-    Sections[SectionCount++] = ActualSection;
-
-    for (i = 0; i < SectionCount; i++)
+    if (!AddPackageFile(&Sections, ActualSection, NULL))
     {
-        if (SetupFindFirstLineW(hInf, Sections[i], L"Include", &Context))
+        hr = E_OUTOFMEMORY;
+        goto Cleanup;
+    }
+
+    for (i = 0; i < Sections.Count; i++)
+    {
+        if (SetupFindFirstLineW(hInf, Sections.Names[i], L"Include", &Context))
         {
             FieldCount = SetupGetFieldCount(&Context);
             for (Field = 1; Field <= FieldCount; Field++)
@@ -566,7 +574,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             }
         }
 
-        if (!SetupFindFirstLineW(hInf, Sections[i], L"Needs", &Context))
+        if (!SetupFindFirstLineW(hInf, Sections.Names[i], L"Needs", &Context))
             continue;
         FieldCount = SetupGetFieldCount(&Context);
         for (Field = 1; Field <= FieldCount; Field++)
@@ -576,28 +584,17 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             {
                 continue;
             }
-            for (j = 0; j < SectionCount && _wcsicmp(Sections[j], NeedsSection) != 0; j++);
-            if (j < SectionCount)
-                continue;
-
             if (SetupGetLineCountW(hInf, NeedsSection) < 0)
             {
                 ERR("Needed section %S not found\n", NeedsSection);
                 hr = HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND);
                 goto Cleanup;
             }
-            if (SectionCount == ARRAYSIZE(Sections))
-            {
-                hr = HRESULT_FROM_WIN32(ERROR_BUFFER_OVERFLOW);
-                goto Cleanup;
-            }
-            Sections[SectionCount] = AllocSplStr(NeedsSection);
-            if (!Sections[SectionCount])
+            if (!AddPackageFile(&Sections, NeedsSection, NULL))
             {
                 hr = E_OUTOFMEMORY;
                 goto Cleanup;
             }
-            SectionCount++;
         }
     }
 
@@ -608,21 +605,21 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         goto Cleanup;
     }
 
-    if (!GetDirective(hInf, Sections, SectionCount, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile)))
+    if (!GetDirective(hInf, Sections.Names, Sections.Count, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile)))
         StringCchCopyW(DriverFile, ARRAYSIZE(DriverFile), InstallSection);
-    if (!GetDirective(hInf, Sections, SectionCount, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile)))
+    if (!GetDirective(hInf, Sections.Names, Sections.Count, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile)))
         StringCchCopyW(ConfigFile, ARRAYSIZE(ConfigFile), DriverFile);
-    GetDirective(hInf, Sections, SectionCount, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile));
-    GetDirective(hInf, Sections, SectionCount, L"DefaultDataType", DefaultDataType, ARRAYSIZE(DefaultDataType));
-    if (!GetDirective(hInf, Sections, SectionCount, L"DataFile", DataFile, ARRAYSIZE(DataFile)))
+    GetDirective(hInf, Sections.Names, Sections.Count, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile));
+    GetDirective(hInf, Sections.Names, Sections.Count, L"DefaultDataType", DefaultDataType, ARRAYSIZE(DefaultDataType));
+    if (!GetDirective(hInf, Sections.Names, Sections.Count, L"DataFile", DataFile, ARRAYSIZE(DataFile)))
         StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
 
     /* TODO: LanguageMonitor and VendorSetup are not processed */
 
-    for (i = 0; i < SectionCount; i++)
+    for (i = 0; i < Sections.Count; i++)
     {
-        SetLastError(ERROR_BUFFER_OVERFLOW);
-        if (!CollectCopyFiles(hInf, Sections[i], &Files))
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        if (!CollectCopyFiles(hInf, Sections.Names[i], &Files))
         {
             hr = HRESULT_FROM_WIN32(GetLastError());
             goto Cleanup;
@@ -686,7 +683,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
-    ResolvePackageInf(pszInfPath, RecordedInf);
+    ResolvePackageInf(pszInfPath, Architecture, RecordedInf);
     DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : (PWSTR)pszInfPath;
 
     if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
@@ -708,10 +705,8 @@ Cleanup:
         RemoveDirectoryW(StagingDir);
     FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
-    for (i = 1; i < SectionCount; i++)
-        DllFreeSplStr((PWSTR)Sections[i]);
+    FreePackageFiles(&Sections);
     SetupCloseInfFile(hInf);
-    ReleasePackageLock(Namespace, Lock);
     return hr;
 }
 

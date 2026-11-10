@@ -950,6 +950,7 @@ BOOL
 GetSuggestedInstanceId(
     _In_ HDEVINFO DeviceInfoSet,
     _In_ PSP_DEVINFO_DATA DeviceInfoData,
+    _In_ BOOL CheckUse,
     _Out_ UUID *Uuid)
 {
     WCHAR Suggested[40], SubKey[MAX_PATH], Existing[40];
@@ -968,6 +969,8 @@ GetSuggestedInstanceId(
     {
         return FALSE;
     }
+    if (!CheckUse)
+        return TRUE;
 
     hClassKey = SetupDiOpenClassRegKey(&GUID_DEVCLASS_NET, KEY_ENUMERATE_SUB_KEYS);
     if (hClassKey == INVALID_HANDLE_VALUE)
@@ -1250,12 +1253,22 @@ NetClassInstaller(
                 hInstanceIdLock = InstanceIdLock;
         }
         if (!hInstanceIdLock)
-            WARN("Cannot lock the instance IDs (error %lu)\n", GetLastError());
+        {
+            rc = GetLastError();
+            WARN("Cannot lock the instance IDs (error %ld)\n", rc);
+            if (GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, FALSE, &Uuid))
+            {
+                ERR("The suggested instance ID cannot be checked without the lock\n");
+                if (rc == ERROR_SUCCESS)
+                    rc = ERROR_LOCK_FAILED;
+                goto cleanup;
+            }
+        }
     }
 
     /* Use the suggested UUID of the adapter or create a new one */
     if (!hInstanceIdLock ||
-        !GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, &Uuid))
+        !GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, TRUE, &Uuid))
     {
         RpcStatus = UuidCreate(&Uuid);
         if (RpcStatus != RPC_S_OK && RpcStatus != RPC_S_UUID_LOCAL_ONLY)

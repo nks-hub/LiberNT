@@ -21,8 +21,9 @@ DEBUG_CHANNEL(kernel32file);
 
 /* FUNCTIONS ****************************************************************/
 
+/* A file whose device cannot be queried is not known to be local */
 static BOOL
-BasepIsRemoteFile(HANDLE FileHandle)
+BasepIsLocalFile(HANDLE FileHandle)
 {
     FILE_FS_DEVICE_INFORMATION FileFsDevice;
     IO_STATUS_BLOCK IoStatusBlock;
@@ -32,7 +33,7 @@ BasepIsRemoteFile(HANDLE FileHandle)
                                                    &FileFsDevice,
                                                    sizeof(FileFsDevice),
                                                    FileFsDeviceInformation)) &&
-           (FileFsDevice.Characteristics & FILE_REMOTE_DEVICE);
+           !(FileFsDevice.Characteristics & FILE_REMOTE_DEVICE);
 }
 
 static NTSTATUS
@@ -93,7 +94,7 @@ CopyLoop (
                     TRACE("Progress callback requested stop\n");
                     errCode = STATUS_REQUEST_ABORTED;
                     /* Windows 11 deletes a stopped local copy (measured); a network copy keeps it as documented */
-                    *KeepDest = BasepIsRemoteFile(FileHandleSource) || BasepIsRemoteFile(FileHandleDest);
+                    *KeepDest = !BasepIsLocalFile(FileHandleSource) || !BasepIsLocalFile(FileHandleDest);
                     break;
                 case PROGRESS_QUIET:
                     lpProgressRoutine = NULL;

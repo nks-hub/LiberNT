@@ -11,6 +11,10 @@ static const WCHAR RepositoryPath[] = L"\\System32\\DriverStore\\FileRepository"
 static const WCHAR VersionSection[] = L"Version";
 static const WCHAR CatalogFile[] = L"CatalogFile";
 
+static BOOL
+DeleteDirectoryTree(
+    IN PCWSTR Directory);
+
 static PCWSTR
 GetStoreArchitecture(VOID)
 {
@@ -252,6 +256,7 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     PCWSTR StoreRoot;
     STAGE_NAME_LIST Sections;
     STAGE_NAME_LIST Files;
+    BOOL Required;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
 static BOOL
@@ -305,6 +310,7 @@ typedef struct _STAGE_CABINET_CONTEXT
 {
     PCWSTR FileName;
     PCWSTR Target;
+    BOOL Found;
 } STAGE_CABINET_CONTEXT, *PSTAGE_CABINET_CONTEXT;
 
 static UINT CALLBACK
@@ -327,6 +333,7 @@ StageCabinetCallback(
             if (_wcsicmp(Name, Stage->FileName) != 0)
                 return FILEOP_SKIP;
 
+            Stage->Found = TRUE;
             lstrcpynW(Info->FullTargetName, Stage->Target, ARRAY_SIZE(Info->FullTargetName));
             return FILEOP_DOIT;
         }
@@ -348,7 +355,8 @@ StagePackageFile(
     IN PCWSTR SourceRoot,
     IN PCWSTR StoreRoot,
     IN PCWSTR Relative,
-    IN PCWSTR Cabinet OPTIONAL)
+    IN PCWSTR Cabinet OPTIONAL,
+    IN BOOL Required)
 {
     WCHAR Source[MAX_PATH], Target[MAX_PATH], Compressed[MAX_PATH];
     STAGE_CABINET_CONTEXT Stage;
@@ -370,7 +378,13 @@ StagePackageFile(
         {
             Compressed[0] = UNICODE_NULL;
             if (!Cabinet || GetFileAttributesW(Cabinet) == INVALID_FILE_ATTRIBUTES)
-                return TRUE;
+            {
+                if (!Required)
+                    return TRUE;
+                ERR("Package file %s is missing\n", debugstr_w(Source));
+                SetLastError(ERROR_FILE_NOT_FOUND);
+                return FALSE;
+            }
         }
         else
         {
@@ -398,9 +412,16 @@ StagePackageFile(
         Stage.FileName = wcsrchr(Relative, L'\\');
         Stage.FileName = Stage.FileName ? Stage.FileName + 1 : Relative;
         Stage.Target = Target;
+        Stage.Found = FALSE;
         if (!SetupIterateCabinetW(Cabinet, 0, StageCabinetCallback, &Stage))
         {
             ERR("Extracting %s from %s failed with error %lu\n", debugstr_w(Relative), debugstr_w(Cabinet), GetLastError());
+            return FALSE;
+        }
+        if (!Stage.Found && Required)
+        {
+            ERR("Package file %s is missing from %s\n", debugstr_w(Relative), debugstr_w(Cabinet));
+            SetLastError(ERROR_FILE_NOT_FOUND);
             return FALSE;
         }
     }
@@ -466,7 +487,7 @@ StageCopyFile(
         CabinetPath = Cabinet;
     }
 
-    return StagePackageFile(Package->SourceRoot, Package->StoreRoot, Relative, CabinetPath);
+    return StagePackageFile(Package->SourceRoot, Package->StoreRoot, Relative, CabinetPath, Package->Required);
 }
 
 static BOOL
@@ -499,31 +520,87 @@ StageCopyFilesSection(
 }
 
 static BOOL
+StageSectionCopyFiles(
+    IN HINF hInf,
+    IN PCWSTR Section,
+    IN OUT PSTAGE_PACKAGE_CONTEXT Package)
+{
+    WCHAR Files[MAX_INF_SECTION_NAME_LENGTH + 1];
+    DWORD Field, FieldCount;
+    INFCONTEXT Context;
+    BOOL Found;
+
+    for (Found = SetupFindFirstLineW(hInf, Section, L"CopyFiles", &Context);
+         Found;
+         Found = SetupFindNextMatchLineW(&Context, L"CopyFiles", &Context))
+    {
+        FieldCount = SetupGetFieldCount(&Context);
+        for (Field = 1; Field <= FieldCount; Field++)
+        {
+            if (SetupGetStringFieldW(&Context, Field, Files, ARRAY_SIZE(Files), NULL) && Files[0] &&
+                !StageCopyFilesSection(hInf, Files, Package))
+            {
+                return FALSE;
+            }
+        }
+    }
+    return TRUE;
+}
+
+static BOOL
+StageModelCopyFiles(
+    IN HINF hInf,
+    IN OUT PSTAGE_PACKAGE_CONTEXT Package)
+{
+    WCHAR Models[LINE_LEN + 1], Install[LINE_LEN], Actual[LINE_LEN + 16];
+    INFCONTEXT Manufacturer, Model;
+
+    if (!SetupFindFirstLineW(hInf, L"Manufacturer", NULL, &Manufacturer))
+        return TRUE;
+
+    do
+    {
+        if (!SetupDiGetActualModelsSectionW(&Manufacturer, NULL, Models, ARRAY_SIZE(Models), NULL, NULL) ||
+            !SetupFindFirstLineW(hInf, Models, NULL, &Model))
+        {
+            continue;
+        }
+
+        do
+        {
+            if (!SetupGetStringFieldW(&Model, 1, Install, ARRAY_SIZE(Install), NULL) ||
+                !SetupDiGetActualSectionToInstallW(hInf, Install, Actual, LINE_LEN, NULL, NULL))
+            {
+                continue;
+            }
+
+            if (!StageSectionCopyFiles(hInf, Actual, Package))
+                return FALSE;
+            lstrcatW(Actual, L".CoInstallers");
+            if (!StageSectionCopyFiles(hInf, Actual, Package))
+                return FALSE;
+        } while (SetupFindNextLine(&Model, &Model));
+    } while (SetupFindNextLine(&Manufacturer, &Manufacturer));
+    return TRUE;
+}
+
+static BOOL
 StageCopyFiles(
     IN HINF hInf,
     IN OUT PSTAGE_PACKAGE_CONTEXT Package)
 {
-    WCHAR Section[MAX_INF_SECTION_NAME_LENGTH + 1], Files[MAX_INF_SECTION_NAME_LENGTH + 1];
-    DWORD Index, Field, FieldCount;
-    INFCONTEXT Context;
-    BOOL Found;
+    WCHAR Section[MAX_INF_SECTION_NAME_LENGTH + 1];
+    DWORD Index;
 
+    Package->Required = TRUE;
+    if (!StageModelCopyFiles(hInf, Package))
+        return FALSE;
+
+    Package->Required = FALSE;
     for (Index = 0; SetupEnumInfSectionsW(hInf, Index, Section, ARRAY_SIZE(Section), NULL); Index++)
     {
-        for (Found = SetupFindFirstLineW(hInf, Section, L"CopyFiles", &Context);
-             Found;
-             Found = SetupFindNextMatchLineW(&Context, L"CopyFiles", &Context))
-        {
-            FieldCount = SetupGetFieldCount(&Context);
-            for (Field = 1; Field <= FieldCount; Field++)
-            {
-                if (SetupGetStringFieldW(&Context, Field, Files, ARRAY_SIZE(Files), NULL) && Files[0] &&
-                    !StageCopyFilesSection(hInf, Files, Package))
-                {
-                    return FALSE;
-                }
-            }
-        }
+        if (!StageSectionCopyFiles(hInf, Section, Package))
+            return FALSE;
     }
     return TRUE;
 }
@@ -549,7 +626,7 @@ StageCatalogFiles(
         }
 
         if (SetupGetStringFieldW(&Context, 1, Value, ARRAY_SIZE(Value), NULL) && Value[0] &&
-            !StagePackageFile(SourceRoot, StoreRoot, Value, NULL))
+            !StagePackageFile(SourceRoot, StoreRoot, Value, NULL, FALSE))
         {
             return FALSE;
         }
@@ -630,7 +707,7 @@ SETUPAPI_StageDriverPackage(
     PWSTR BaseName;
     HINF hInf;
     DWORD Length, Error;
-    BOOL Staged;
+    BOOL Staged, Created;
 
     Length = GetFullPathNameW(SourceInfFileName, ARRAY_SIZE(Source), Source, &BaseName);
     if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName)
@@ -652,6 +729,7 @@ SETUPAPI_StageDriverPackage(
         return FALSE;
     }
 
+    Created = GetFileAttributesW(Store) == INVALID_FILE_ATTRIBUTES;
     if (!CreateDirectoryPath(Store))
         return FALSE;
 
@@ -668,6 +746,8 @@ SETUPAPI_StageDriverPackage(
         SetupCloseInfFile(hInf);
         if (!Staged)
         {
+            if (Created)
+                DeleteDirectoryTree(Store);
             SetLastError(Error);
             return FALSE;
         }

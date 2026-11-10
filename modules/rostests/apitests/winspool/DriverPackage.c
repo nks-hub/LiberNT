@@ -230,6 +230,78 @@ DeleteTestDriver(VOID)
     }
 }
 
+static const char MissingInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Missing Printer\"=TESTMISS,LiberNT_Package_Missing\r\n"
+    "\r\n"
+    "[TESTMISS]\r\n"
+    "CopyFiles=TESTMISS_FILES\r\n"
+    "\r\n"
+    "[TESTMISS_FILES]\r\n"
+    "TESTMISS.DAT\r\n"
+    "TESTGONE.DLL\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTMISS.DAT=1\r\n"
+    "TESTGONE.DLL=1\r\n";
+
+static VOID
+TestMissingPackageFile(VOID)
+{
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
+    static const char Text[] = "LiberNT package test file\r\n";
+    ULONG Length = ARRAYSIZE(StoreInf);
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+    HRESULT hr;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnmiss");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnmiss.inf", Dir);
+
+    if (WriteTestFile(Dir, L"lntprnmiss.inf", MissingInf, sizeof(MissingInf) - 1) &&
+        WriteTestFile(Dir, L"TESTMISS.DAT", Text, sizeof(Text) - 1))
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+        if (hr == S_OK)
+            DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+
+        GetWindowsDirectoryW(Path, ARRAYSIZE(Path));
+        StringCchCatW(Path, ARRAYSIZE(Path), L"\\System32\\DriverStore\\FileRepository\\lntprnmiss.inf_*");
+        hFind = FindFirstFileW(Path, &Find);
+        ok(hFind == INVALID_HANDLE_VALUE, "%S was staged\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+        if (hFind != INVALID_HANDLE_VALUE)
+            FindClose(hFind);
+    }
+    else
+    {
+        skip("Failed to create the package with a missing file (%lu)\n", GetLastError());
+    }
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTMISS.DAT", Dir);
+    DeleteFileW(Path);
+    DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -249,6 +321,8 @@ START_TEST(DriverPackage)
     ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
     ok(hr == E_INVALIDARG, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+
+    TestMissingPackageFile();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

@@ -247,6 +247,7 @@ PIP_INTERFACE IPCreateInterface(
     IF->SitePrefixLength = 64;
     IF->Address       = BindInfo->Address;
     IF->AddressLength = BindInfo->AddressLength;
+    IF->LinkType      = BindInfo->LinkType;
     IF->Transmit      = BindInfo->Transmit;
 
 	IF->Unicast.Type = IP_ADDRESS_V4;

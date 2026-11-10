@@ -285,6 +285,7 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     STAGE_NAME_LIST Files;
     STAGE_NAME_LIST Installs;
     STAGE_NAME_LIST Includes;
+    PSP_ALTPLATFORM_INFO Platform;
     BOOL Required;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
@@ -679,14 +680,14 @@ StageModelCopyFiles(
         /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
         Found = SetupGetFieldCount(&Manufacturer) < 2
                     ? SetupGetStringFieldW(&Manufacturer, 1, Models, ARRAY_SIZE(Models), NULL)
-                    : SetupDiGetActualModelsSectionW(&Manufacturer, NULL, Models, ARRAY_SIZE(Models), NULL, NULL);
+                    : SetupDiGetActualModelsSectionW(&Manufacturer, Package->Platform, Models, ARRAY_SIZE(Models), NULL, NULL);
         if (!Found || !SetupFindFirstLineW(hInf, Models, NULL, &Model))
             continue;
 
         do
         {
             if (!SetupGetStringFieldW(&Model, 1, Install, ARRAY_SIZE(Install), NULL) ||
-                !SetupDiGetActualSectionToInstallW(hInf, Install, Actual, LINE_LEN, NULL, NULL))
+                !SetupDiGetActualSectionToInstallExW(hInf, Install, Package->Platform, Actual, LINE_LEN, NULL, NULL, NULL))
             {
                 continue;
             }
@@ -933,6 +934,7 @@ StageDriverPackage(
 {
     WCHAR Source[MAX_PATH], SourceRoot[MAX_PATH], Root[MAX_PATH], Store[MAX_PATH], Staging[MAX_PATH], Target[MAX_PATH];
     STAGE_PACKAGE_CONTEXT Package;
+    SP_ALTPLATFORM_INFO Platform;
     PWSTR BaseName;
     HINF hInf;
     DWORD Length, Error;
@@ -968,6 +970,16 @@ StageDriverPackage(
         ZeroMemory(&Package, sizeof(Package));
         Package.SourceRoot = SourceRoot;
         Package.StoreRoot = Staging;
+        if (Architecture != GetProcessArchitecture())
+        {
+            ZeroMemory(&Platform, sizeof(Platform));
+            Platform.cbSize = sizeof(Platform);
+            Platform.Platform = VER_PLATFORM_WIN32_NT;
+            Platform.MajorVersion = OsVersionInfo.dwMajorVersion;
+            Platform.MinorVersion = OsVersionInfo.dwMinorVersion;
+            Platform.ProcessorArchitecture = Architecture;
+            Package.Platform = &Platform;
+        }
         MarkNameSeen(&Package.Includes, BaseName);
         Staged = StageCatalogFiles(hInf, SourceRoot, Staging) && StageCopyFiles(hInf, &Package);
         Error = GetLastError();
@@ -1314,13 +1326,17 @@ CheckStoreRequest(
     IN WORD Architecture,
     IN PDWORD ReturnLength)
 {
+    DWORD i;
+
     if (*ReturnLength < MAX_PATH)
         return E_INVALIDARG;
 
-    if (Architecture != GetNativeArchitecture() && Architecture != GetProcessArchitecture())
-        return E_INVALIDARG;
-
-    return S_OK;
+    for (i = 0; i < ARRAY_SIZE(StoreArchitectures); i++)
+    {
+        if (Architecture == StoreArchitectures[i])
+            return S_OK;
+    }
+    return E_INVALIDARG;
 }
 
 static HRESULT

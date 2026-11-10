@@ -7,12 +7,15 @@
 
 #include "precomp.h"
 #include <setupapi.h>
+#include <winnls.h>
 
 extern const WCHAR wszCurrentEnvironment[];
 
 HRESULT WINAPI DriverStoreAddDriverPackageW(PCWSTR InfPath, PVOID Reserved1, PVOID Reserved2,
                                             WORD Architecture, PWSTR ReturnPath, PDWORD ReturnLength);
 HRESULT WINAPI DriverStoreDeleteDriverPackageW(PCWSTR InfPath, PVOID Reserved1, PVOID Reserved2);
+HRESULT WINAPI DriverStoreFindDriverPackageW(PCWSTR InfPath, PVOID Reserved1, PVOID Reserved2, WORD Architecture,
+                                             PVOID Reserved3, PWSTR ReturnPath, PDWORD ReturnLength);
 
 #define MAX_PACKAGE_FILES 128
 #define DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\%s\\Drivers\\Version-3"
@@ -105,10 +108,24 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     return ReturnString(StoreInf, pszDestInfPath, pcchDestInfPath);
 }
 
+/* Gives the store INF that a path names, however it is spelled, or the full path when the store has none */
+static VOID
+ResolvePackageInf(PCWSTR InfPath, PWSTR Resolved)
+{
+    DWORD Length = MAX_PATH;
+
+    if (SUCCEEDED(DriverStoreFindDriverPackageW(InfPath, NULL, NULL, GetNativeArchitecture(), NULL, Resolved, &Length)))
+        return;
+
+    Length = GetFullPathNameW(InfPath, MAX_PATH, Resolved, NULL);
+    if (Length == 0 || Length >= MAX_PATH)
+        *Resolved = UNICODE_NULL;
+}
+
 static HRESULT
 IsDriverPackageInUse(PCWSTR InfPath)
 {
-    WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH];
+    WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH], Used[MAX_PATH];
     HRESULT hr = S_FALSE;
     HKEY hDrivers;
     DWORD i, Size;
@@ -139,8 +156,12 @@ IsDriverPackageInUse(PCWSTR InfPath)
             continue;
         if (Error != ERROR_SUCCESS)
             hr = HRESULT_FROM_WIN32(Error);
-        else if (_wcsicmp(Value, InfPath) == 0)
-            hr = S_OK;
+        else
+        {
+            ResolvePackageInf(Value, Used);
+            if (CompareStringOrdinal(Used, -1, InfPath, -1, TRUE) == CSTR_EQUAL)
+                hr = S_OK;
+        }
     }
 
     RegCloseKey(hDrivers);
@@ -150,6 +171,7 @@ IsDriverPackageInUse(PCWSTR InfPath)
 HRESULT WINAPI
 DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEnvironment)
 {
+    WCHAR Package[MAX_PATH];
     HRESULT hr;
 
     TRACE("DeletePrinterDriverPackageW(%S, %S, %S)\n", pszServer, pszInfPath, pszEnvironment);
@@ -161,13 +183,17 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (FAILED(hr))
         return hr;
 
-    hr = IsDriverPackageInUse(pszInfPath);
+    ResolvePackageInf(pszInfPath, Package);
+    if (!*Package)
+        return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+
+    hr = IsDriverPackageInUse(Package);
     if (FAILED(hr))
         return hr;
     if (hr == S_OK)
         return HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
 
-    return DriverStoreDeleteDriverPackageW(pszInfPath, NULL, NULL);
+    return DriverStoreDeleteDriverPackageW(Package, NULL, NULL);
 }
 
 static BOOL
@@ -411,7 +437,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     PCWSTR Sections[16];
     DWORD SectionCount = 0, Field, FieldCount, Size, i, j, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"";
+    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH];
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
@@ -591,7 +617,8 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
-    DriverInfo.pszInfPath = (PWSTR)pszInfPath;
+    ResolvePackageInf(pszInfPath, RecordedInf);
+    DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : (PWSTR)pszInfPath;
 
     if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
                              APD_COPY_FROM_DIRECTORY |

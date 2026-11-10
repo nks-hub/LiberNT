@@ -25,7 +25,7 @@ START_TEST(ServiceSidInfo)
     SERVICE_SID_INFO info;
     WCHAR name[64], path[MAX_PATH];
     SC_HANDLE scm, service;
-    DWORD needed, expected;
+    DWORD needed;
     BOOL res;
 
     scm = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
@@ -62,15 +62,14 @@ START_TEST(ServiceSidInfo)
     info.dwServiceSidType = SERVICE_SID_TYPE_RESTRICTED;
     SetLastError(0xdeadbeef);
     res = ChangeServiceConfig2A(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);
-    ok(res || GetLastError() == ERROR_NOT_SUPPORTED, "ChangeServiceConfig2A(RESTRICTED) failed: %lu\n", GetLastError());
-    expected = res ? SERVICE_SID_TYPE_RESTRICTED : SERVICE_SID_TYPE_UNRESTRICTED;
-    ok(query_sid_type(service) == expected, "SID type is not %lu\n", expected);
+    ok(res, "ChangeServiceConfig2A(RESTRICTED) failed: %lu\n", GetLastError());
+    ok(query_sid_type(service) == SERVICE_SID_TYPE_RESTRICTED, "SID type is not RESTRICTED\n");
 
     info.dwServiceSidType = 2;
     SetLastError(0xdeadbeef);
     res = ChangeServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);
     ok(!res && GetLastError() == ERROR_INVALID_PARAMETER, "invalid SID type: %d error %lu\n", res, GetLastError());
-    ok(query_sid_type(service) == expected, "invalid SID type changed the value\n");
+    ok(query_sid_type(service) == SERVICE_SID_TYPE_RESTRICTED, "invalid SID type changed the value\n");
 
     info.dwServiceSidType = SERVICE_SID_TYPE_NONE;
     res = ChangeServiceConfig2W(service, SERVICE_CONFIG_SERVICE_SID_INFO, &info);

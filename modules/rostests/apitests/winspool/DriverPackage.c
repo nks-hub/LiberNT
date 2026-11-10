@@ -377,13 +377,82 @@ static const char PlainInf[] =
     "TESTPLAIN.DLL=1\r\n"
     "TESTPLAIN.GPD=1\r\n";
 
+#define BIG_SECTIONS 20
+#define BIG_SECTION_FILES 7
+
+static char BigInf[16384];
+
+static DWORD
+BuildBigInf(VOID)
+{
+    char Line[96];
+    UINT i, j;
+
+    StringCchCopyA(BigInf, ARRAYSIZE(BigInf),
+                   "[Version]\r\n"
+                   "Signature=\"$Windows NT$\"\r\n"
+                   "Class=Printer\r\n"
+                   "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+                   "Provider=LiberNT\r\n"
+                   "DriverVer=11/06/2026,1.0.0.0\r\n"
+                   "\r\n"
+                   "[Manufacturer]\r\n"
+                   "LiberNT=Models\r\n"
+                   "\r\n"
+                   "[Models]\r\n"
+                   "\"LiberNT Package Big Printer\"=TESTBIG,LiberNT_Package_Big\r\n"
+                   "\r\n"
+                   "[TESTBIG]\r\n"
+                   "CopyFiles=@TESTBIG.DLL\r\n"
+                   "DriverFile=TESTBIG.DLL\r\n"
+                   "ConfigFile=TESTBIG.DLL\r\n"
+                   "DataFile=TESTBIG000.DAT\r\n"
+                   "Needs=TESTBIG_N00");
+    for (i = 1; i < BIG_SECTIONS; i++)
+    {
+        StringCchPrintfA(Line, ARRAYSIZE(Line), ",TESTBIG_N%02u", i);
+        StringCchCatA(BigInf, ARRAYSIZE(BigInf), Line);
+    }
+    StringCchCatA(BigInf, ARRAYSIZE(BigInf), "\r\n");
+
+    for (i = 0; i < BIG_SECTIONS; i++)
+    {
+        StringCchPrintfA(Line, ARRAYSIZE(Line), "\r\n[TESTBIG_N%02u]\r\nCopyFiles=TESTBIG_F%02u\r\n\r\n[TESTBIG_F%02u]\r\n", i, i, i);
+        StringCchCatA(BigInf, ARRAYSIZE(BigInf), Line);
+        for (j = 0; j < BIG_SECTION_FILES; j++)
+        {
+            StringCchPrintfA(Line, ARRAYSIZE(Line), "TESTBIG%03u.DAT\r\n", i * BIG_SECTION_FILES + j);
+            StringCchCatA(BigInf, ARRAYSIZE(BigInf), Line);
+        }
+    }
+
+    StringCchCatA(BigInf, ARRAYSIZE(BigInf),
+                  "\r\n"
+                  "[DestinationDirs]\r\n"
+                  "DefaultDestDir=66000\r\n"
+                  "\r\n"
+                  "[SourceDisksNames]\r\n"
+                  "1=\"Disk\",,,\r\n"
+                  "\r\n"
+                  "[SourceDisksFiles]\r\n"
+                  "TESTBIG.DLL=1\r\n");
+    for (i = 0; i < BIG_SECTIONS * BIG_SECTION_FILES; i++)
+    {
+        StringCchPrintfA(Line, ARRAYSIZE(Line), "TESTBIG%03u.DAT=1\r\n", i);
+        StringCchCatA(BigInf, ARRAYSIZE(BigInf), Line);
+    }
+    return (DWORD)strlen(BigInf);
+}
+
 static VOID
 TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSize, PCWSTR DriverFile,
-                   PCWSTR FilePattern, UINT FileCount)
+                   PCWSTR FilePattern, UINT FileCount, PCWSTR Dependent)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
+    static WCHAR Value[4096];
     WCHAR DriverDir[MAX_PATH] = L"";
+    PWSTR Entry;
     DWORD Size = sizeof(DriverDir);
     ULONG Length = ARRAYSIZE(StoreInf);
     BOOL Created;
@@ -417,6 +486,15 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
             ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", DriverName, hr);
             hKey = OpenDriverKey(DriverName);
             ok(hKey != NULL, "Driver %S is not registered\n", DriverName);
+            if (hKey && Dependent)
+            {
+                Size = sizeof(Value) - 2 * sizeof(WCHAR);
+                ZeroMemory(Value, sizeof(Value));
+                ok(RegQueryValueExW(hKey, L"Dependent Files", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS,
+                   "No Dependent Files of %S\n", DriverName);
+                for (Entry = Value; *Entry && _wcsicmp(Entry, Dependent); Entry += wcslen(Entry) + 1);
+                ok(*Entry != UNICODE_NULL, "%S is not a dependent file of %S\n", Dependent, DriverName);
+            }
             if (hKey)
                 RegCloseKey(hKey);
 
@@ -431,6 +509,7 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
         skip("Failed to create the package %S (%lu)\n", InfName, GetLastError());
     }
 
+    Size = sizeof(DriverDir);
     if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
         DriverDir[0] = UNICODE_NULL;
     for (i = 0; i <= FileCount; i++)
@@ -474,7 +553,9 @@ START_TEST(DriverPackage)
     TestMissingPackageFile(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT");
     TestMissingPackageFile(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT");
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
-                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1);
+                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL);
+    TestInstallPackage(L"lntprnbig", L"LiberNT Package Big Printer", BigInf, BuildBigInf(),
+                       L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT");
 
     if (!CreateTestPackage(Dir, InfPath))
     {

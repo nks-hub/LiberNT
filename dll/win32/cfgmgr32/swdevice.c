@@ -101,15 +101,16 @@ static HRESULT
 CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source, _Out_ DEVPROPERTY **Copy)
 {
     DEVPROPERTY *Properties;
-    ULONG i;
+    ULONG i, Size;
 
     *Copy = NULL;
     if (!Count)
         return S_OK;
-    if (!Source)
+    if (!Source || Count > MAXDWORD / sizeof(*Properties))
         return E_INVALIDARG;
+    Size = Count * sizeof(*Properties);
 
-    Properties = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Count * sizeof(*Properties));
+    Properties = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Size);
     if (!Properties)
         return E_OUTOFMEMORY;
 
@@ -949,7 +950,86 @@ SwDevicePropertySet(
     return hr;
 }
 
-/* TODO: device interfaces of software devices need a bus driver that registers them */
+static LSTATUS
+SetInterfaceProperty(_In_ HKEY ReferenceKey, _In_ const DEVPROPERTY *Property)
+{
+    const DEVPROPKEY *PropKey = &Property->CompKey.Key;
+    PCWSTR Name = NULL;
+    DWORD Type = 0xffff0000 | (Property->Type & 0xffff);
+    WCHAR Path[64];
+    LSTATUS Error;
+    HKEY Key;
+
+    if (!memcmp(PropKey, &DEVPKEY_DeviceInterface_FriendlyName, sizeof(*PropKey)))
+    {
+        if (Property->Type == DEVPROP_TYPE_EMPTY)
+            return RegDeleteKeyValueW(ReferenceKey, L"Device Parameters", L"FriendlyName");
+        if (Property->Type != DEVPROP_TYPE_STRING)
+            return ERROR_INVALID_PARAMETER;
+        wcscpy(Path, L"Device Parameters");
+        Name = L"FriendlyName";
+        Type = REG_SZ;
+    }
+    else
+    {
+        _snwprintf(Path, ARRAYSIZE(Path), L"Properties\\{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\\%04lX",
+                   PropKey->fmtid.Data1, PropKey->fmtid.Data2, PropKey->fmtid.Data3,
+                   PropKey->fmtid.Data4[0], PropKey->fmtid.Data4[1], PropKey->fmtid.Data4[2], PropKey->fmtid.Data4[3],
+                   PropKey->fmtid.Data4[4], PropKey->fmtid.Data4[5], PropKey->fmtid.Data4[6], PropKey->fmtid.Data4[7],
+                   PropKey->pid);
+        if (Property->Type == DEVPROP_TYPE_EMPTY)
+            return RegDeleteKeyW(ReferenceKey, Path);
+    }
+
+    Error = RegCreateKeyExW(ReferenceKey, Path, 0, NULL, 0, KEY_SET_VALUE, NULL, &Key, NULL);
+    if (!Error)
+    {
+        Error = RegSetValueExW(Key, Name, 0, Type, Property->Buffer, Property->BufferSize);
+        RegCloseKey(Key);
+    }
+    return Error;
+}
+
+static HRESULT
+SetInterfaceProperties(
+    _In_ PSW_DEVICE Device,
+    _In_ PCWSTR InterfaceId,
+    _In_ ULONG Count,
+    _In_reads_opt_(Count) const DEVPROPERTY *Properties)
+{
+    struct device_interface Interface;
+    WCHAR Instance[MAX_DEVICE_ID_LEN];
+    DWORD Size = sizeof(Instance);
+    HKEY InterfaceKey, ReferenceKey;
+    LSTATUS Error = ERROR_SUCCESS;
+    ULONG i;
+
+    if (wcslen(InterfaceId) >= MAX_PATH || init_device_interface(&Interface, InterfaceId) ||
+        open_device_interface_key(&Interface, KEY_QUERY_VALUE, TRUE, &InterfaceKey))
+    {
+        return E_INVALIDARG;
+    }
+    if (RegGetValueW(InterfaceKey, NULL, L"DeviceInstance", RRF_RT_REG_SZ, NULL, Instance, &Size) ||
+        _wcsicmp(Instance, Device->InstanceId) ||
+        RegOpenKeyExW(InterfaceKey, Interface.refstr, 0, KEY_ALL_ACCESS, &ReferenceKey))
+    {
+        RegCloseKey(InterfaceKey);
+        return E_INVALIDARG;
+    }
+    RegCloseKey(InterfaceKey);
+
+    for (i = 0; !Error && i < Count; i++)
+    {
+        if (Properties[i].CompKey.Store != DEVPROP_STORE_SYSTEM || (Properties[i].BufferSize && !Properties[i].Buffer))
+            Error = ERROR_INVALID_PARAMETER;
+        else
+            Error = SetInterfaceProperty(ReferenceKey, &Properties[i]);
+    }
+    RegCloseKey(ReferenceKey);
+    return HRESULT_FROM_WIN32(Error);
+}
+
+/* TODO: enabling a device interface needs a plug and play control that reaches IoSetDeviceInterfaceState */
 HRESULT
 WINAPI
 SwDeviceInterfaceRegister(
@@ -961,10 +1041,55 @@ SwDeviceInterfaceRegister(
     _In_ BOOL fEnabled,
     _Out_opt_ PWSTR *ppszDeviceInterfaceId)
 {
-    FIXME("%p %s %s not supported\n", hSwDevice, debugstr_guid(pInterfaceClassGuid), debugstr_w(pszReferenceString));
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    WCHAR Link[2 * MAX_PATH];
+    ULONG Length = ARRAYSIZE(Link);
+    PWSTR InterfaceId;
+    HRESULT hr;
+
+    TRACE("%p %s %s %lu %p %d %p\n", hSwDevice, debugstr_guid(pInterfaceClassGuid), debugstr_w(pszReferenceString),
+          cPropertyCount, pProperties, fEnabled, ppszDeviceInterfaceId);
+
     if (ppszDeviceInterfaceId)
         *ppszDeviceInterfaceId = NULL;
-    return E_NOTIMPL;
+    if (!Device || !pInterfaceClassGuid || (cPropertyCount && !pProperties))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    /* The interface functions of this library hold an interface path in MAX_PATH characters */
+    if (!Device->DevInst ||
+        4 + wcslen(Device->InstanceId) + 1 + 38 + (pszReferenceString ? 1 + wcslen(pszReferenceString) : 0) >= MAX_PATH)
+    {
+        hr = E_INVALIDARG;
+    }
+    else if (fEnabled)
+    {
+        FIXME("Enabling an interface of %s is not supported\n", debugstr_w(Device->InstanceId));
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    }
+    else
+    {
+        hr = CrToHresult(CM_Register_Device_InterfaceW(Device->DevInst, (LPGUID)pInterfaceClassGuid, pszReferenceString,
+                                                       Link, &Length, 0));
+    }
+    if (SUCCEEDED(hr))
+    {
+        /* The kernel returns the \??\ form of the link */
+        Link[1] = L'\\';
+        hr = SetInterfaceProperties(Device, Link, cPropertyCount, pProperties);
+    }
+    if (SUCCEEDED(hr) && ppszDeviceInterfaceId)
+    {
+        InterfaceId = DupBuffer(Link, (wcslen(Link) + 1) * sizeof(WCHAR));
+        if (InterfaceId)
+            *ppszDeviceInterfaceId = InterfaceId;
+        else
+            hr = E_OUTOFMEMORY;
+    }
+
+    LeaveSwDevice(Device);
+    return hr;
 }
 
 VOID
@@ -982,8 +1107,16 @@ SwDeviceInterfaceSetState(
     _In_ PCWSTR pszDeviceInterfaceId,
     _In_ BOOL fEnabled)
 {
-    FIXME("%p %s not supported\n", hSwDevice, debugstr_w(pszDeviceInterfaceId));
-    return E_NOTIMPL;
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+
+    if (!Device || !pszDeviceInterfaceId)
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+    LeaveSwDevice(Device);
+
+    FIXME("%p %s %d not supported\n", hSwDevice, debugstr_w(pszDeviceInterfaceId), fEnabled);
+    return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 }
 
 HRESULT
@@ -994,6 +1127,17 @@ SwDeviceInterfacePropertySet(
     _In_ ULONG cPropertyCount,
     _In_reads_(cPropertyCount) const DEVPROPERTY *pProperties)
 {
-    FIXME("%p %s not supported\n", hSwDevice, debugstr_w(pszDeviceInterfaceId));
-    return E_NOTIMPL;
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    HRESULT hr;
+
+    TRACE("%p %s %lu %p\n", hSwDevice, debugstr_w(pszDeviceInterfaceId), cPropertyCount, pProperties);
+
+    if (!Device || !pszDeviceInterfaceId || (cPropertyCount && !pProperties))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    hr = Device->DevInst ? SetInterfaceProperties(Device, pszDeviceInterfaceId, cPropertyCount, pProperties) : E_INVALIDARG;
+    LeaveSwDevice(Device);
+    return hr;
 }

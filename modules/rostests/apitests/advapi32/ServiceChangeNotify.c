@@ -504,6 +504,16 @@ test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
     WCHAR Path[MAX_PATH];
     DWORD Error, Start;
 
+    /* A service deleted by an earlier test is reported when its last handle goes, which can be later */
+    for (Start = GetTickCount(); GetTickCount() - Start < 5000; Sleep(50))
+    {
+        First = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        if (!First)
+            break;
+        CloseServiceHandle(First);
+    }
+    ok(GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST, "The test service of an earlier test is still there (%lu)\n", GetLastError());
+
     GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     DatabaseCalls = 0;
     DatabaseSeen = 0;

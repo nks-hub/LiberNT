@@ -8,6 +8,7 @@
 #include "precomp.h"
 #include <setupapi.h>
 #include <winnls.h>
+#include <sddl.h>
 
 extern const WCHAR wszCurrentEnvironment[];
 
@@ -168,10 +169,66 @@ IsDriverPackageInUse(PCWSTR InfPath)
     return hr;
 }
 
+/* Any process can create a global name first and hold it; only administrators can open this namespace */
+static BOOL
+AcquirePackageLock(PHANDLE Namespace, PHANDLE Lock)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD Size = sizeof(Admins), Wait;
+    HANDLE Boundary;
+    ULONG Try;
+
+    *Namespace = NULL;
+    *Lock = NULL;
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+                                                              &Security.lpSecurityDescriptor, NULL))
+    {
+        return FALSE;
+    }
+    Boundary = CreateBoundaryDescriptorW(L"PrinterDriverPackages", 0);
+    if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
+    {
+        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        for (Try = 0; !*Namespace && Try < 3; Try++)
+        {
+            *Namespace = CreatePrivateNamespaceW(&Security, Boundary, L"PrinterDriverPackages");
+            if (!*Namespace)
+                *Namespace = OpenPrivateNamespaceW(Boundary, L"PrinterDriverPackages");
+        }
+    }
+    if (Boundary)
+        DeleteBoundaryDescriptor(Boundary);
+    if (*Namespace)
+        *Lock = CreateMutexW(&Security, FALSE, L"PrinterDriverPackages\\Lock");
+    LocalFree(Security.lpSecurityDescriptor);
+
+    if (*Lock)
+    {
+        Wait = WaitForSingleObject(*Lock, INFINITE);
+        if (Wait == WAIT_OBJECT_0 || Wait == WAIT_ABANDONED)
+            return TRUE;
+        CloseHandle(*Lock);
+    }
+    if (*Namespace)
+        ClosePrivateNamespace(*Namespace, 0);
+    return FALSE;
+}
+
+static VOID
+ReleasePackageLock(HANDLE Namespace, HANDLE Lock)
+{
+    ReleaseMutex(Lock);
+    CloseHandle(Lock);
+    ClosePrivateNamespace(Namespace, 0);
+}
+
 HRESULT WINAPI
 DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEnvironment)
 {
     WCHAR Package[MAX_PATH];
+    HANDLE Namespace, Lock;
     HRESULT hr;
 
     TRACE("DeletePrinterDriverPackageW(%S, %S, %S)\n", pszServer, pszInfPath, pszEnvironment);
@@ -187,13 +244,17 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (!*Package)
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
-    hr = IsDriverPackageInUse(Package);
-    if (FAILED(hr))
-        return hr;
-    if (hr == S_OK)
-        return HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 
-    return DriverStoreDeleteDriverPackageW(Package, NULL, NULL);
+    hr = IsDriverPackageInUse(Package);
+    if (hr == S_OK)
+        hr = HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
+    else if (hr == S_FALSE)
+        hr = DriverStoreDeleteDriverPackageW(Package, NULL, NULL);
+
+    ReleasePackageLock(Namespace, Lock);
+    return hr;
 }
 
 static BOOL
@@ -441,6 +502,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
+    HANDLE Namespace, Lock;
     HINF hInf;
     HRESULT hr;
 
@@ -468,9 +530,16 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)wszCurrentEnvironment, 1, (PBYTE)DriverDir, Size, &Size))
         return HRESULT_FROM_WIN32(GetLastError());
 
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+
     hInf = SetupOpenInfFileW(pszInfPath, NULL, INF_STYLE_WIN4, NULL);
     if (hInf == INVALID_HANDLE_VALUE)
-        return HRESULT_FROM_WIN32(GetLastError());
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        ReleasePackageLock(Namespace, Lock);
+        return hr;
+    }
 
     if (!FindModelSection(hInf, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
         !SetupDiGetActualSectionToInstallW(hInf, InstallSection, ActualSection, ARRAYSIZE(ActualSection),
@@ -642,6 +711,7 @@ Cleanup:
     for (i = 1; i < SectionCount; i++)
         DllFreeSplStr((PWSTR)Sections[i]);
     SetupCloseInfFile(hInf);
+    ReleasePackageLock(Namespace, Lock);
     return hr;
 }
 

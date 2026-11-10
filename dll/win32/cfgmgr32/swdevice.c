@@ -7,7 +7,6 @@
 
 #include "cfgmgr32_private.h"
 #include <devpkey.h>
-#include <intsafe.h>
 #include <newdev.h>
 #include <sddl.h>
 #include <swdevice.h>
@@ -107,8 +106,9 @@ CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source
     *Copy = NULL;
     if (!Count)
         return S_OK;
-    if (!Source || FAILED(ULongMult(Count, sizeof(*Properties), &Size)))
+    if (!Source || Count > MAXULONG / sizeof(*Properties))
         return E_INVALIDARG;
+    Size = Count * sizeof(*Properties);
 
     Properties = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Size);
     if (!Properties)

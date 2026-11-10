@@ -10,6 +10,18 @@
 #define NDEBUG
 #include <debug.h>
 
+static VOID
+SmpTerminateUpdate(HANDLE ProcessHandle, NTSTATUS ExitStatus)
+{
+    NTSTATUS Status;
+
+    Status = NtTerminateProcess(ProcessHandle, ExitStatus);
+    if (NT_SUCCESS(Status))
+        Status = NtWaitForSingleObject(ProcessHandle, FALSE, NULL);
+    if (!NT_SUCCESS(Status))
+        DPRINT1("SMSS: UpdateExecute cannot terminate its process: %lx\n", Status);
+}
+
 static NTSTATUS NTAPI
 SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                  ULONG ValueLength, PVOID Context, PVOID EntryContext)
@@ -57,7 +69,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                     }
                     else
                     {
-                        NtTerminateProcess(ProcessInfo.ProcessHandle, Status);
+                        SmpTerminateUpdate(ProcessInfo.ProcessHandle, Status);
                         if (NT_SUCCESS(Status))
                             Status = STATUS_UNSUCCESSFUL;
                     }
@@ -65,16 +77,19 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                 else
                 {
                     Status = STATUS_INVALID_IMAGE_FORMAT;
-                    NtTerminateProcess(ProcessInfo.ProcessHandle, Status);
+                    SmpTerminateUpdate(ProcessInfo.ProcessHandle, Status);
                 }
                 NtClose(ProcessInfo.ThreadHandle);
                 NtClose(ProcessInfo.ProcessHandle);
             }
         }
     }
-    if (FileName.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
-    if (Directory.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
-    if (Arguments.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
+    if (FileName.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
+    if (Directory.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
+    if (Arguments.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
     if (!NT_SUCCESS(Status))
         DPRINT1("SMSS: UpdateExecute failed for %wZ: %lx\n", &Command, Status);
     /* The updater journal owns recovery; a missing updater must not stop boot. */
@@ -119,6 +134,7 @@ SmpInitializeUpdateRegistry(VOID)
     Query[0].Name = L"UpdateExecute";
     Status = RtlQueryRegistryValues(RTL_REGISTRY_CONTROL,
                                     L"Session Manager", Query, NULL, NULL);
-    if (!NT_SUCCESS(Status)) DPRINT1("SMSS: UpdateExecute query failed: %lx\n", Status);
+    if (!NT_SUCCESS(Status))
+        DPRINT1("SMSS: UpdateExecute query failed: %lx\n", Status);
     return STATUS_SUCCESS;
 }

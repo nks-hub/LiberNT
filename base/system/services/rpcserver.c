@@ -7036,7 +7036,7 @@ RNotifyServiceStatusChange(
         dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
         if (pNotify->bSubscription && dwSequence != 0 && dwSequence != ScmDatabaseNotifySequence)
         {
-            ScmFillNotify(pNotify, NULL, dwMask, NULL);
+            ScmFillNotify(pNotify, NULL, 0, NULL);
         }
         else
         {

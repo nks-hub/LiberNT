@@ -471,13 +471,14 @@ test_ChangeDuringCallback(PCSTR NameA, PCWSTR NameW, void *Param)
     CloseServiceHandle(Manager);
 }
 
-static volatile LONG DatabaseCalls;
+static volatile LONG DatabaseCalls, DatabaseSeen;
 
 static VOID CALLBACK
 DatabaseChangedGated(DWORD Notify, PVOID Context)
 {
     UNREFERENCED_PARAMETER(Context);
     trace("Database callback 0x%lx\n", Notify);
+    InterlockedOr(&DatabaseSeen, Notify);
     if (InterlockedIncrement(&DatabaseCalls) == 1)
         WaitForSingleObject(GateEvent, 30000);
 }
@@ -493,6 +494,7 @@ test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
 
     GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     DatabaseCalls = 0;
+    DatabaseSeen = 0;
     Error = pSubscribe(Manager, SC_EVENT_DATABASE_CHANGE, DatabaseChangedGated, NULL, &Subscription);
     ok(Error == ERROR_SUCCESS, "Database subscription returned %lu\n", Error);
     if (Error != ERROR_SUCCESS)
@@ -517,6 +519,7 @@ test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
     for (Start = GetTickCount(); DatabaseCalls < 2 && GetTickCount() - Start < 5000; )
         Sleep(50);
     ok(DatabaseCalls >= 2, "No callback for the second service after %ld callbacks\n", DatabaseCalls);
+    ok(!(DatabaseSeen & SERVICE_NOTIFY_DELETED), "A deleted service was reported (0x%lx), none was deleted\n", DatabaseSeen);
 
     pUnsubscribe(Subscription);
     if (First)

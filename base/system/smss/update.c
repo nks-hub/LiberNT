@@ -71,10 +71,10 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                 NtClose(ProcessInfo.ProcessHandle);
             }
         }
-        if (FileName.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
-        if (Directory.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
-        if (Arguments.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
     }
+    if (FileName.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, FileName.Buffer);
+    if (Directory.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Directory.Buffer);
+    if (Arguments.Buffer) RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
     if (!NT_SUCCESS(Status))
         DPRINT1("SMSS: UpdateExecute failed for %wZ: %lx\n", &Command, Status);
     /* The updater journal owns recovery; a missing updater must not stop boot. */

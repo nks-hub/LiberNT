@@ -6,6 +6,8 @@
  */
 
 #include <kmt_test.h>
+#include <ndk/kefuncs.h>
+#include <ndk/psfuncs.h>
 
 #include "IoCancelSync.h"
 

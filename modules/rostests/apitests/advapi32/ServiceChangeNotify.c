@@ -172,6 +172,10 @@ test_Masks(SC_HANDLE Manager)
         ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a manager handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_INVALID_HANDLE, "State mask on a manager handle returned %lu\n", Error);
+        Error = NotifyServiceStatusChangeW(Own, 0x00010000, &Notify);
+        ok(Error == ERROR_INVALID_PARAMETER, "Unknown mask on a manager handle returned %lu\n", Error);
+        Error = NotifyServiceStatusChangeW(Own, SERVICE_NOTIFY_CREATED | 0x00010000, &Notify);
+        ok(Error == ERROR_SUCCESS, "Database mask with an unknown bit on a manager handle returned %lu\n", Error);
         CloseServiceHandle(Own);
     }
 
@@ -183,6 +187,10 @@ test_Masks(SC_HANDLE Manager)
         ok(Error == ERROR_INVALID_HANDLE, "Database mask on a service handle returned %lu\n", Error);
         Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_INVALID_PARAMETER, "Mixed mask on a service handle returned %lu\n", Error);
+        Error = NotifyServiceStatusChangeW(Service, 0x00010000, &Notify);
+        ok(Error == ERROR_INVALID_PARAMETER, "Unknown mask on a service handle returned %lu\n", Error);
+        Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_RUNNING | 0x00010000, &Notify);
+        ok(Error == ERROR_SUCCESS, "State mask with an unknown bit on a service handle returned %lu\n", Error);
         DeleteService(Service);
         CloseServiceHandle(Service);
     }
@@ -491,6 +499,16 @@ test_DatabaseChangeDuringCallback(SC_HANDLE Manager)
     SC_HANDLE First, Second;
     WCHAR Path[MAX_PATH];
     DWORD Error, Start;
+
+    /* A service deleted by an earlier test is reported when its last handle goes, which can be later */
+    for (Start = GetTickCount(); GetTickCount() - Start < 5000; Sleep(50))
+    {
+        First = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        if (!First)
+            break;
+        CloseServiceHandle(First);
+    }
+    ok(GetLastError() == ERROR_SERVICE_DOES_NOT_EXIST, "The test service of an earlier test is still there (%lu)\n", GetLastError());
 
     GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     DatabaseCalls = 0;

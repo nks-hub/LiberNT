@@ -120,7 +120,16 @@ SmpExecuteImage(IN PUNICODE_STRING FileName,
     Status = SmpSetProcessMuSessionId(ProcessInfo->ProcessHandle, MuSessionId);
 
     /* If the application is deferred (suspended), there's nothing to do */
-    if (Flags & SMP_DEFERRED_FLAG) return Status;
+    if (Flags & SMP_DEFERRED_FLAG)
+    {
+        if (!NT_SUCCESS(Status))
+        {
+            NtTerminateProcess(ProcessInfo->ProcessHandle, Status);
+            NtClose(ProcessInfo->ThreadHandle);
+            NtClose(ProcessInfo->ProcessHandle);
+        }
+        return Status;
+    }
 
     /* Otherwise, get ready to start it, but make sure it's a native app */
     if (ProcessInfo->ImageInformation.SubSystemType == IMAGE_SUBSYSTEM_NATIVE)

@@ -37,8 +37,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
             Status = STATUS_INVALID_PARAMETER;
         else
         {
-            /* Started suspended, so that the wait below covers the whole process
-             * and not only its first thread */
+            /* Started suspended so the wait covers the whole process, not only its first thread */
             Status = SmpExecuteImage(&FileName, &Directory, &Command, 0,
                                      Flags | SMP_DEFERRED_FLAG, &ProcessInfo);
             if (NT_SUCCESS(Status))

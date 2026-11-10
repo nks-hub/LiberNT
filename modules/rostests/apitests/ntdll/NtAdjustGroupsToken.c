@@ -283,6 +283,87 @@ Cleanup:
 
 static
 VOID
+AdjustAndResetWithPreviousState(VOID)
+{
+    static SID Absent = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_ANONYMOUS_LOGON_RID } };
+    NTSTATUS Status;
+    HANDLE Token;
+    PTOKEN_GROUPS Before, Previous = NULL;
+    struct
+    {
+        ULONG GroupCount;
+        SID_AND_ATTRIBUTES Groups[2];
+    } Disable;
+    ULONG Index, Target, Length, Expected;
+
+    Token = DuplicateProcessToken();
+    if (!Token)
+        return;
+    Before = QueryGroups(Token);
+    Target = FindDefaultOptionalGroup(Before);
+    if (Target == MAXULONG)
+        goto Cleanup;
+    for (Index = 0; Index < Before->GroupCount; Index++)
+    {
+        if (RtlEqualSid(Before->Groups[Index].Sid, &Absent))
+        {
+            skip("The anonymous logon SID is group %lu of the token\n", Index);
+            goto Cleanup;
+        }
+    }
+
+    Expected = FIELD_OFFSET(TOKEN_GROUPS, Groups[1]) + RtlLengthSid(Before->Groups[Target].Sid);
+    Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Expected);
+    if (!Previous)
+    {
+        skip("Out of memory\n");
+        goto Cleanup;
+    }
+
+    Disable.GroupCount = 2;
+    Disable.Groups[0].Sid = Before->Groups[Target].Sid;
+    Disable.Groups[0].Attributes = 0;
+    Disable.Groups[1].Sid = &Absent;
+    Disable.Groups[1].Attributes = 0;
+    Length = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, (PTOKEN_GROUPS)&Disable, Expected, Previous, &Length);
+    ok_hex(Status, STATUS_NOT_ALL_ASSIGNED);
+    if (Status != STATUS_NOT_ALL_ASSIGNED)
+        goto Cleanup;
+    ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
+    ok(Previous->GroupCount == 1, "GroupCount is %lu\n", Previous->GroupCount);
+    if (Previous->GroupCount == 1)
+    {
+        ok(RtlEqualSid(Previous->Groups[0].Sid, Before->Groups[Target].Sid), "The previous SID differs\n");
+        ok(Previous->Groups[0].Attributes == Before->Groups[Target].Attributes,
+           "The previous attributes are 0x%lx, expected 0x%lx\n",
+           Previous->Groups[0].Attributes, Before->Groups[Target].Attributes);
+    }
+
+    Length = 0;
+    Status = NtAdjustGroupsToken(Token, TRUE, NULL, Expected, Previous, &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto Cleanup;
+    ok(Length == Expected, "ReturnLength is %lu after the reset, expected %lu\n", Length, Expected);
+    ok(Previous->GroupCount == 1, "GroupCount is %lu after the reset\n", Previous->GroupCount);
+    if (Previous->GroupCount == 1)
+    {
+        ok(RtlEqualSid(Previous->Groups[0].Sid, Before->Groups[Target].Sid), "The SID before the reset differs\n");
+        ok(Previous->Groups[0].Attributes == (Before->Groups[Target].Attributes & ~SE_GROUP_ENABLED),
+           "The attributes before the reset are 0x%lx, expected 0x%lx\n",
+           Previous->Groups[0].Attributes, Before->Groups[Target].Attributes & ~SE_GROUP_ENABLED);
+    }
+    CheckGroupsUnchanged(Token, Before);
+
+Cleanup:
+    if (Previous) RtlFreeHeap(RtlGetProcessHeap(), 0, Previous);
+    if (Before) RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+    CloseHandle(Token);
+}
+
+static
+VOID
 AdjustUserSid(VOID)
 {
     NTSTATUS Status;
@@ -401,5 +482,6 @@ START_TEST(NtAdjustGroupsToken)
     AdjustOneGroup();
     AdjustMandatoryGroup();
     AdjustWithPreviousState();
+    AdjustAndResetWithPreviousState();
     AdjustUserSid();
 }

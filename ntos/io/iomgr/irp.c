@@ -18,7 +18,70 @@
 PIRP IopDeadIrp;
 RESERVE_IRP_ALLOCATOR IopReserveIrpAllocator;
 
+/* Requests whose thread CancelSynchronousIo alerted, until the alert is taken or the request ends */
+typedef struct _IOP_CANCEL_ALERT
+{
+    LIST_ENTRY ListEntry;
+    PIRP Irp;
+} IOP_CANCEL_ALERT, *PIOP_CANCEL_ALERT;
+
+static LIST_ENTRY IopCancelAlertList = { &IopCancelAlertList, &IopCancelAlertList };
+static KSPIN_LOCK IopCancelAlertLock;
+static LONG IopCancelAlertCount;
+
 /* PRIVATE FUNCTIONS  ********************************************************/
+
+BOOLEAN
+NTAPI
+IopRecordCancelAlert(
+    _In_ PIRP Irp)
+{
+    PIOP_CANCEL_ALERT Alert;
+    KIRQL OldIrql;
+
+    Alert = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Alert), TAG_IO);
+    if (!Alert)
+        return FALSE;
+
+    Alert->Irp = Irp;
+    KeAcquireSpinLock(&IopCancelAlertLock, &OldIrql);
+    InsertTailList(&IopCancelAlertList, &Alert->ListEntry);
+    IopCancelAlertCount++;
+    KeReleaseSpinLock(&IopCancelAlertLock, OldIrql);
+    return TRUE;
+}
+
+BOOLEAN
+NTAPI
+IopForgetCancelAlert(
+    _In_ PIRP Irp)
+{
+    PIOP_CANCEL_ALERT Alert = NULL;
+    PLIST_ENTRY Entry;
+    KIRQL OldIrql;
+
+    /* Nearly always empty; a record added right now is not of a request that ends now */
+    if (!IopCancelAlertCount)
+        return FALSE;
+
+    KeAcquireSpinLock(&IopCancelAlertLock, &OldIrql);
+    for (Entry = IopCancelAlertList.Flink; Entry != &IopCancelAlertList; Entry = Entry->Flink)
+    {
+        if (CONTAINING_RECORD(Entry, IOP_CANCEL_ALERT, ListEntry)->Irp == Irp)
+        {
+            Alert = CONTAINING_RECORD(Entry, IOP_CANCEL_ALERT, ListEntry);
+            RemoveEntryList(Entry);
+            IopCancelAlertCount--;
+            break;
+        }
+    }
+    KeReleaseSpinLock(&IopCancelAlertLock, OldIrql);
+
+    if (!Alert)
+        return FALSE;
+    ExFreePoolWithTag(Alert, TAG_IO);
+    return TRUE;
+}
 
 VOID
 NTAPI
@@ -98,6 +161,10 @@ IopAbortInterruptedIrp(IN PKEVENT EventObject,
     /* Check if nobody completed it yet */
     if (!KeReadStateEvent(EventObject))
     {
+        /* The interrupted wait took the alert of CancelSynchronousIo; one sent later is not ours to drop */
+        if (!KeGetCurrentThread()->Alerted[UserMode])
+            IopForgetCancelAlert(Irp);
+
         /* First, cancel it */
         CancelResult = IoCancelIrp(Irp);
         KeLowerIrql(OldIrql);
@@ -458,14 +525,12 @@ IopCompleteRequest(IN PKAPC Apc,
     IopCheckUnwoundCompletionTarget(Irp);
 
     /*
-     * CancelSynchronousIo alerts the thread of a request it could not cancel;
-     * that alert must not outlive the request. Checking Alerted first keeps
-     * KeTestAlertThread from setting UserApcPending.
-     * FIXME: this drops a pending NtAlertThread alert whenever any cancelled
-     * synchronous request completes (CancelIoEx, a driver cancel routine, an
-     * aborted alertable wait), not only after a CancelSynchronousIo alert.
+     * CancelSynchronousIo alerted the thread for this request and no wait took
+     * the alert; it must not outlive the request. Checking Alerted first keeps
+     * KeTestAlertThread from setting UserApcPending. An NtAlertThread alert
+     * sent on top of that one cannot be told apart and goes with it.
      */
-    if (Irp->Cancel && IsIrpSynchronous(Irp, FileObject) && KeGetCurrentThread()->Alerted[UserMode])
+    if (IopForgetCancelAlert(Irp) && KeGetCurrentThread()->Alerted[UserMode])
         KeTestAlertThread(UserMode);
 
     /* Check if we have a file object */
@@ -2019,6 +2084,8 @@ IoFreeIrp(IN PIRP Irp)
     ASSERT(IsListEmpty(&Irp->ThreadListEntry));
     ASSERT(Irp->CurrentLocation >= Irp->StackCount);
 
+    /* A request that left its thread does not end in IopCompleteRequest */
+    IopForgetCancelAlert(Irp);
     IopFreeIrpExtension(Irp);
 
     /* Get the PRCB */

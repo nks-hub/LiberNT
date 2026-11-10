@@ -343,6 +343,114 @@ TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Prese
     RemoveDirectoryW(Dir);
 }
 
+static const char PlainInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Plain Printer\"=TESTPLAIN,LiberNT_Package_Plain\r\n"
+    "\r\n"
+    "[TESTPLAIN]\r\n"
+    "CopyFiles=TESTPLAIN_FILES\r\n"
+    "DriverFile=TESTPLAIN.DLL\r\n"
+    "ConfigFile=TESTPLAIN.DLL\r\n"
+    "DataFile=TESTPLAIN.GPD\r\n"
+    "\r\n"
+    "[TESTPLAIN_FILES]\r\n"
+    "TESTPLAIN.DLL\r\n"
+    "TESTPLAIN.GPD\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTPLAIN.DLL=1\r\n"
+    "TESTPLAIN.GPD=1\r\n";
+
+static VOID
+TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSize, PCWSTR DriverFile,
+                   PCWSTR FilePattern, UINT FileCount)
+{
+    WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR DriverDir[MAX_PATH] = L"";
+    DWORD Size = sizeof(DriverDir);
+    ULONG Length = ARRAYSIZE(StoreInf);
+    BOOL Created;
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, Name);
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfName, ARRAYSIZE(InfName), L"%s.inf", Name);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, InfName);
+
+    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
+    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\%s", Dir, DriverFile);
+    Created = CopyFileW(Path, File, FALSE) && WriteTestFile(Dir, InfName, Inf, InfSize);
+    for (i = 0; Created && i < FileCount; i++)
+    {
+        StringCchPrintfW(File, ARRAYSIZE(File), FilePattern, i);
+        Created = WriteTestFile(Dir, File, Text, sizeof(Text) - 1);
+    }
+
+    if (Created)
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
+        if (hr == S_OK)
+        {
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, DriverName, NULL, 0);
+            ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", DriverName, hr);
+            hKey = OpenDriverKey(DriverName);
+            ok(hKey != NULL, "Driver %S is not registered\n", DriverName);
+            if (hKey)
+                RegCloseKey(hKey);
+
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", TEST_DRIVERS_KEY, DriverName);
+            RegDeleteKeyW(HKEY_LOCAL_MACHINE, Path);
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", StoreInf, hr);
+        }
+    }
+    else
+    {
+        skip("Failed to create the package %S (%lu)\n", InfName, GetLastError());
+    }
+
+    if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+        DriverDir[0] = UNICODE_NULL;
+    for (i = 0; i <= FileCount; i++)
+    {
+        if (i < FileCount)
+            StringCchPrintfW(File, ARRAYSIZE(File), FilePattern, i);
+        else
+            StringCchCopyW(File, ARRAYSIZE(File), DriverFile);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, File);
+        DeleteFileW(Path);
+        if (DriverDir[0])
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", DriverDir, File);
+            DeleteFileW(Path);
+        }
+    }
+    DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -365,6 +473,8 @@ START_TEST(DriverPackage)
 
     TestMissingPackageFile(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT");
     TestMissingPackageFile(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT");
+    TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
+                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1);
 
     if (!CreateTestPackage(Dir, InfPath))
     {

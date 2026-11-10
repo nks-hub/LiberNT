@@ -394,8 +394,13 @@ FindModelSection(HINF hInf, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
 
     do
     {
-        if (!SetupDiGetActualModelsSectionW(&MfgContext, NULL, Models, ARRAYSIZE(Models), NULL, NULL))
+        /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
+        if (SetupGetFieldCount(&MfgContext) < 2
+                ? !SetupGetStringFieldW(&MfgContext, 1, Models, ARRAYSIZE(Models), NULL)
+                : !SetupDiGetActualModelsSectionW(&MfgContext, NULL, Models, ARRAYSIZE(Models), NULL, NULL))
+        {
             continue;
+        }
 
         if (SetupFindFirstLineW(hInf, Models, DriverName, &ModelContext) &&
             SetupGetStringFieldW(&ModelContext, 1, Section, SectionSize, NULL))

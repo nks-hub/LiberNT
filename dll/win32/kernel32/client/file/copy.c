@@ -274,7 +274,6 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
     BOOL RC = FALSE;
     BOOL KeepDestOnError = FALSE;
     BOOL NoDeleteAccess = FALSE;
-    DWORD SystemError;
 
     FileHandleSource = CreateFileW(lpExistingFileName,
                                    GENERIC_READ,
@@ -362,14 +361,26 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                             RC = TRUE;
                         }
                     }
-                    NtClose(FileHandleDest);
                     if (! RC && ! KeepDestOnError && ! NoDeleteAccess)
                     {
-                        SystemError = GetLastError();
-                        SetFileAttributesW(lpNewFileName, FILE_ATTRIBUTE_NORMAL);
-                        DeleteFileW(lpNewFileName);
-                        SetLastError(SystemError);
+                        FILE_DISPOSITION_INFORMATION FileDisposition;
+
+                        /* By handle: the progress routine may have put another file at lpNewFileName */
+                        RtlZeroMemory(&FileBasic, sizeof(FileBasic));
+                        FileBasic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+                        NtSetInformationFile(FileHandleDest,
+                                             &IoStatusBlock,
+                                             &FileBasic,
+                                             sizeof(FileBasic),
+                                             FileBasicInformation);
+                        FileDisposition.DeleteFile = TRUE;
+                        NtSetInformationFile(FileHandleDest,
+                                             &IoStatusBlock,
+                                             &FileDisposition,
+                                             sizeof(FileDisposition),
+                                             FileDispositionInformation);
                     }
+                    NtClose(FileHandleDest);
                 }
                 else
                 {

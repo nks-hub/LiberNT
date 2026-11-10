@@ -461,7 +461,9 @@ IopCompleteRequest(IN PKAPC Apc,
      * CancelSynchronousIo alerts the thread of a request it could not cancel;
      * that alert must not outlive the request. Checking Alerted first keeps
      * KeTestAlertThread from setting UserApcPending.
-     * FIXME: this also drops an NtAlertThread alert pending at this point.
+     * FIXME: this drops a pending NtAlertThread alert whenever any cancelled
+     * synchronous request completes (CancelIoEx, a driver cancel routine, an
+     * aborted alertable wait), not only after a CancelSynchronousIo alert.
      */
     if (Irp->Cancel && IsIrpSynchronous(Irp, FileObject) && KeGetCurrentThread()->Alerted[UserMode])
         KeTestAlertThread(UserMode);

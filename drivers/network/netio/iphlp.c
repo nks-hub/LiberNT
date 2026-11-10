@@ -17,7 +17,7 @@
 #include <tcpip_undoc.h>
 
 #define NETIO_IPHLP_TAG 'hIeN'
-#define NETIO_MAX_ENTITIES 256
+#define NETIO_INITIAL_ENTITIES 256
 #define NETIO_MAX_ROUTES 128
 #define NETIO_MAX_ADDRESSES 64
 
@@ -234,6 +234,48 @@ NetioTcpQuery(
     return Status;
 }
 
+C_ASSERT(NETIO_INITIAL_ENTITIES <= MAX_TDI_ENTITIES);
+C_ASSERT(MAX_TDI_ENTITIES <= MAXULONG32 / 2 / sizeof(TDIEntityID));
+
+static
+NTSTATUS
+NetioQueryEntities(
+    _In_ HANDLE Tcp,
+    _Outptr_result_maybenull_ TDIEntityID **Entities,
+    _Out_ PULONG Count)
+{
+    TDIEntityID *List;
+    ULONG Capacity = NETIO_INITIAL_ENTITIES, Returned;
+    NTSTATUS Status;
+
+    *Entities = NULL;
+    *Count = 0;
+
+    for (;;)
+    {
+        ASSERT(Capacity <= MAX_TDI_ENTITIES);
+
+        List = ExAllocatePoolWithTag(PagedPool, Capacity * sizeof(TDIEntityID), NETIO_IPHLP_TAG);
+        if (List == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+
+        Status = NetioTcpQuery(Tcp, GENERIC_ENTITY, 0, INFO_CLASS_GENERIC, ENTITY_LIST_ID,
+                               List, Capacity * sizeof(TDIEntityID), &Returned);
+        if (NT_SUCCESS(Status))
+        {
+            ASSERT(Returned <= Capacity * sizeof(TDIEntityID));
+            *Entities = List;
+            *Count = Returned / sizeof(TDIEntityID);
+            return STATUS_SUCCESS;
+        }
+
+        ExFreePoolWithTag(List, NETIO_IPHLP_TAG);
+        if ((Status != STATUS_BUFFER_TOO_SMALL && Status != STATUS_BUFFER_OVERFLOW) || Capacity == MAX_TDI_ENTITIES)
+            return Status;
+        Capacity = min(Capacity * 2, MAX_TDI_ENTITIES);
+    }
+}
+
 static
 ULONG
 NetioPrefixLength(
@@ -319,7 +361,7 @@ GetBestRoute2(
     OBJECT_ATTRIBUTES Attributes;
     IO_STATUS_BLOCK Io;
     HANDLE Tcp;
-    TDIEntityID *Entities;
+    TDIEntityID *Entities = NULL;
     PNETIO_TDI_ROUTE Routes;
     IPAddrEntry *Addresses;
     IPAddrEntry Address;
@@ -369,20 +411,17 @@ GetBestRoute2(
         }
     }
 
-    Entities = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), NETIO_IPHLP_TAG);
     Routes = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ROUTES * sizeof(NETIO_TDI_ROUTE), NETIO_IPHLP_TAG);
     Addresses = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ADDRESSES * sizeof(IPAddrEntry), NETIO_IPHLP_TAG);
-    if (Entities == NULL || Routes == NULL || Addresses == NULL)
+    if (Routes == NULL || Addresses == NULL)
     {
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto Done;
     }
 
-    Status = NetioTcpQuery(Tcp, GENERIC_ENTITY, 0, INFO_CLASS_GENERIC, ENTITY_LIST_ID,
-                           Entities, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), &Returned);
+    Status = NetioQueryEntities(Tcp, &Entities, &EntityCount);
     if (!NT_SUCCESS(Status))
         goto Done;
-    EntityCount = Returned / sizeof(TDIEntityID);
 
     for (i = 0; i < EntityCount; i++)
     {
@@ -642,18 +681,9 @@ NetioQueryInterfaces(
     if (!NT_SUCCESS(Status))
         return Status;
 
-    Entities = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), NETIO_IPHLP_TAG);
-    if (Entities == NULL)
-    {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto Done;
-    }
-
-    Status = NetioTcpQuery(Tcp, GENERIC_ENTITY, 0, INFO_CLASS_GENERIC, ENTITY_LIST_ID,
-                           Entities, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), &Returned);
+    Status = NetioQueryEntities(Tcp, &Entities, &EntityCount);
     if (!NT_SUCCESS(Status))
         goto Done;
-    EntityCount = Returned / sizeof(TDIEntityID);
 
     Buffer = ExAllocatePoolWithTag(PagedPool, max(EntityCount, 1) * NETIO_IF_ENTRY_SIZE, NETIO_IPHLP_TAG);
     if (Buffer == NULL)
@@ -1249,17 +1279,9 @@ NetioQueryRoutes4(
     if (!NT_SUCCESS(Status))
         return Status;
 
-    Entities = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), NETIO_IPHLP_TAG);
-    if (Entities == NULL)
-    {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto Done;
-    }
-    Status = NetioTcpQuery(Tcp, GENERIC_ENTITY, 0, INFO_CLASS_GENERIC, ENTITY_LIST_ID,
-                           Entities, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), &Returned);
+    Status = NetioQueryEntities(Tcp, &Entities, &EntityCount);
     if (!NT_SUCCESS(Status))
         goto Done;
-    EntityCount = Returned / sizeof(TDIEntityID);
 
     for (i = 0; i < EntityCount; i++)
     {

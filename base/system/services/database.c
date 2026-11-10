@@ -634,7 +634,8 @@ ScmApplyServiceSid(
         }
         return ERROR_SUCCESS;
     }
-    if (dwSidType != SERVICE_SID_TYPE_UNRESTRICTED)
+    /* NtFilterToken ignores WRITE_RESTRICTED: the restricted SID list of SERVICE_SID_TYPE_RESTRICTED would deny reads too */
+    if (dwSidType != SERVICE_SID_TYPE_UNRESTRICTED && dwSidType != SERVICE_SID_TYPE_RESTRICTED)
         return ERROR_SUCCESS;
 
     if (hBaseToken == NULL &&

@@ -5290,9 +5290,10 @@ ScmSetDwordConfig(HKEY hServiceKey, DWORD dwInfoLevel, const DWORD *lpValue)
     dwValue = *lpValue;
     if (dwInfoLevel == SERVICE_CONFIG_SERVICE_SID_INFO &&
         dwValue != SERVICE_SID_TYPE_NONE &&
-        dwValue != SERVICE_SID_TYPE_UNRESTRICTED)
+        dwValue != SERVICE_SID_TYPE_UNRESTRICTED &&
+        dwValue != SERVICE_SID_TYPE_RESTRICTED)
     {
-        return (dwValue == SERVICE_SID_TYPE_RESTRICTED) ? ERROR_NOT_SUPPORTED : ERROR_INVALID_PARAMETER;
+        return ERROR_INVALID_PARAMETER;
     }
     if (dwInfoLevel == SERVICE_CONFIG_DELAYED_AUTO_START_INFO &&
         dwValue != FALSE && dwValue != TRUE)

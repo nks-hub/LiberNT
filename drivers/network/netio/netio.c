@@ -53,7 +53,6 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 #include <tdi.h>
 #include <tcpioctl.h>
-#include <tcpip_undoc.h>
 #include <tdikrnl.h>
 #include <tdiinfo.h>
 #include <tdi_proto.h>
@@ -171,9 +170,6 @@ typedef struct _WSK_SOCKET_INTERNAL
     PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
     LONG DeferredSends;            /* queued sends; the close takes one off, so below zero means none are left */
     KEVENT SendsIdle;
-    ERESOURCE SendLock;            /* shared by the sends, exclusive to change SendInterface */
-    ULONG SendInterface;           /* what AO_OPTION_IP_UCASTIF is set to on the address file */
-    ULONG BoundAddress;
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
 
 typedef struct _NETIO_CONTEXT
@@ -348,8 +344,6 @@ SocketDestroy(_In_ PWSK_SOCKET_INTERNAL Socket)
         ZwClose(Socket->LocalAddressHandle);
         Socket->LocalAddressHandle = NULL;
     }
-    if (Socket->type == SOCK_DGRAM)
-        ExDeleteResourceLite(&Socket->SendLock);
     ExFreePoolWithTag(Socket, TAG_NETIO);
     if (Client)
         NetioRemoveClientUser(Client);
@@ -1184,7 +1178,6 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
 
     if (NT_SUCCESS(status) && Socket->type == SOCK_DGRAM)
     {
-        Socket->BoundAddress = ((PSOCKADDR_IN)LocalAddress)->sin_addr.s_addr;
         if (Socket->PktInfo)
             status = NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, TRUE);
         if (NT_SUCCESS(status) && Socket->ReceiveEvents)
@@ -1203,143 +1196,6 @@ enum direction
     DIR_SEND,
     DIR_RECEIVE
 };
-
-static NTSTATUS
-NetioParseSendControl(
-    _In_ ULONG ControlInfoLength,
-    _In_reads_bytes_opt_(ControlInfoLength) PCMSGHDR ControlInfo,
-    _Out_ PIN_PKTINFO PktInfo)
-{
-    ULONG Offset = 0;
-
-    RtlZeroMemory(PktInfo, sizeof(*PktInfo));
-    if (ControlInfoLength != 0 && ControlInfo == NULL)
-        return STATUS_INVALID_PARAMETER;
-
-    while (ControlInfoLength - Offset >= sizeof(CMSGHDR))
-    {
-        PCMSGHDR Header = (PCMSGHDR)((PUCHAR)ControlInfo + Offset);
-
-        if (Header->cmsg_len < WSA_CMSG_LEN(0) || Header->cmsg_len > ControlInfoLength - Offset)
-            return STATUS_INVALID_PARAMETER;
-        if (Header->cmsg_level != IPPROTO_IP || Header->cmsg_type != IP_PKTINFO)
-            return STATUS_NOT_SUPPORTED;
-        if (Header->cmsg_len < WSA_CMSG_LEN(sizeof(IN_PKTINFO)))
-            return STATUS_INVALID_PARAMETER;
-        RtlCopyMemory(PktInfo, WSA_CMSG_DATA(Header), sizeof(*PktInfo));
-
-        if (WSA_CMSGHDR_ALIGN(Header->cmsg_len) >= ControlInfoLength - Offset)
-            break;
-        Offset += (ULONG)WSA_CMSGHDR_ALIGN(Header->cmsg_len);
-    }
-    return STATUS_SUCCESS;
-}
-
-static NTSTATUS
-NetioBestSource(
-    _In_ PFILE_OBJECT AddressFile,
-    _Inout_ PIP_BEST_SOURCE Best)
-{
-    PDEVICE_OBJECT DeviceObject = IoGetRelatedDeviceObject(AddressFile);
-    IO_STATUS_BLOCK Io;
-    KEVENT Event;
-    NTSTATUS Status;
-    PIRP Irp;
-
-    KeInitializeEvent(&Event, NotificationEvent, FALSE);
-    Irp = IoBuildDeviceIoControlRequest(IOCTL_IP_GET_BEST_SOURCE, DeviceObject, Best, sizeof(*Best),
-                                        Best, sizeof(*Best), FALSE, &Event, &Io);
-    if (Irp == NULL)
-        return STATUS_INSUFFICIENT_RESOURCES;
-    IoGetNextIrpStackLocation(Irp)->FileObject = AddressFile;
-    Status = IoCallDriver(DeviceObject, Irp);
-    if (Status == STATUS_PENDING)
-    {
-        KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
-        Status = Io.Status;
-    }
-    return Status;
-}
-
-static VOID
-NetioEndSend(
-    _In_ PWSK_SOCKET_INTERNAL Socket)
-{
-    ExReleaseResourceLite(&Socket->SendLock);
-    KeLeaveCriticalRegion();
-    DereferenceSocket(Socket);
-}
-
-static NTSTATUS
-NetioBeginSend(
-    _In_ PWSK_SOCKET_INTERNAL Socket,
-    _In_opt_ PSOCKADDR RemoteAddress,
-    _In_ ULONG ControlInfoLength,
-    _In_reads_bytes_opt_(ControlInfoLength) PCMSGHDR ControlInfo)
-{
-    PSOCKADDR_IN Remote = (PSOCKADDR_IN)RemoteAddress;
-    IP_BEST_SOURCE Best;
-    IN_PKTINFO PktInfo;
-    ULONG Selector;
-    NTSTATUS Status;
-
-    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
-    ASSERT(Socket->type == SOCK_DGRAM);
-
-    Status = NetioParseSendControl(ControlInfoLength, ControlInfo, &PktInfo);
-    if (!NT_SUCCESS(Status))
-        return Status;
-
-    if (PktInfo.ipi_addr.s_addr != 0 || PktInfo.ipi_ifindex != 0)
-    {
-        if (Socket->LocalAddressFile == NULL)
-            return STATUS_INVALID_DEVICE_STATE;
-        if (Remote == NULL || Remote->sin_family != AF_INET)
-            return STATUS_INVALID_PARAMETER;
-        /* tcpip routes a multicast datagram by the multicast interface of the socket alone */
-        if ((Remote->sin_addr.s_addr & RtlUlongByteSwap(0xf0000000)) == RtlUlongByteSwap(0xe0000000))
-            return STATUS_NOT_SUPPORTED;
-    }
-    Selector = RtlUlongByteSwap(PktInfo.ipi_ifindex);
-
-    ReferenceSocket(Socket);
-    KeEnterCriticalRegion();
-    ExAcquireResourceSharedLite(&Socket->SendLock, TRUE);
-    if (Socket->SendInterface != Selector)
-    {
-        ExReleaseResourceLite(&Socket->SendLock);
-        ExAcquireResourceExclusiveLite(&Socket->SendLock, TRUE);
-        if (Socket->SendInterface != Selector)
-        {
-            ASSERT(Socket->LocalAddressFile != NULL);
-            Status = NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_UCASTIF, Selector);
-            if (NT_SUCCESS(Status))
-                Socket->SendInterface = Selector;
-        }
-        ExConvertExclusiveToSharedLite(&Socket->SendLock);
-    }
-
-    if (NT_SUCCESS(Status) && PktInfo.ipi_addr.s_addr != 0 && PktInfo.ipi_addr.s_addr != Socket->BoundAddress)
-    {
-        if (Socket->BoundAddress != 0)
-        {
-            Status = STATUS_INVALID_ADDRESS;
-        }
-        else
-        {
-            RtlZeroMemory(&Best, sizeof(Best));
-            Best.Destination = Remote->sin_addr.s_addr;
-            Best.InterfaceIndex = PktInfo.ipi_ifindex;
-            Status = NetioBestSource(Socket->LocalAddressFile, &Best);
-            if (NT_SUCCESS(Status) && Best.Source != PktInfo.ipi_addr.s_addr)
-                Status = STATUS_INVALID_ADDRESS;
-        }
-    }
-
-    if (!NT_SUCCESS(Status))
-        NetioEndSend(Socket);
-    return Status;
-}
 
 static NTSTATUS
 NetioDeferSend(
@@ -1371,8 +1227,8 @@ WskSendTo(
 
     FUNCTION_TRACE;
 
-    /* tcpip waits for each sent fragment at PASSIVE_LEVEL; a send made from inside another one would deadlock on the lock */
-    if (KeGetCurrentIrql() > PASSIVE_LEVEL || ExIsResourceAcquiredSharedLite(&Socket->SendLock))
+    /* tcpip waits for each sent fragment, which it can only do at PASSIVE_LEVEL */
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL)
         return NetioDeferSend(SocketParam, Buffer, NULL, Flags, RemoteAddress, ControlInfoLength, ControlInfo, Irp);
 
     IoSetNextIrpStackLocation(Irp);
@@ -1401,19 +1257,12 @@ WskSendTo(
         goto err_out_free_nc_and_tci;
     }
 
-    status = NetioBeginSend(Socket, RemoteAddress, ControlInfoLength, ControlInfo);
-    if (!NT_SUCCESS(status))
-    {
-        goto err_out_free_nc_and_tci;
-    }
-
     IoMarkIrpPending(Irp);
     ReferenceSocket(Socket);
 
     /* This will create a tdiIrp */
     status = TdiSendDatagram(&tdiIrp, Socket->LocalAddressFile, ((char *)BufferData) + Buffer->Offset,
                         Buffer->Length, TargetConnectionInfo, NetioComplete, NetioContext);
-    NetioEndSend(Socket);
 
     /* If allocating tdiIrp fails we get here.
      * Call the IoCompletion of the application's Irp so this Irp
@@ -2028,8 +1877,10 @@ WskSendMessages(
     NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(Flags);
+    UNREFERENCED_PARAMETER(ControlInfoLength);
+    UNREFERENCED_PARAMETER(ControlInfo);
 
-    if (KeGetCurrentIrql() > PASSIVE_LEVEL || ExIsResourceAcquiredSharedLite(&Socket->SendLock))
+    if (KeGetCurrentIrql() > PASSIVE_LEVEL)
         return NetioDeferSend(SocketParam, NULL, BufferList, Flags, RemoteAddress, ControlInfoLength, ControlInfo, Irp);
 
     IoSetNextIrpStackLocation(Irp);
@@ -2040,21 +1891,15 @@ WskSendMessages(
         goto Fail;
     }
 
-    Status = NetioBeginSend(Socket, RemoteAddress, ControlInfoLength, ControlInfo);
-    if (!NT_SUCCESS(Status))
-        goto Fail;
-
     Batch = ExAllocatePoolZero(NonPagedPool, sizeof(*Batch), TAG_NETIO);
     if (Batch == NULL)
     {
-        NetioEndSend(Socket);
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto Fail;
     }
     Batch->Target = TdiConnectionInfoFromSocketAddress(RemoteAddress);
     if (Batch->Target == NULL)
     {
-        NetioEndSend(Socket);
         ExFreePoolWithTag(Batch, TAG_NETIO);
         Status = STATUS_INSUFFICIENT_RESOURCES;
         goto Fail;
@@ -2138,7 +1983,6 @@ WskSendMessages(
         }
     }
 
-    NetioEndSend(Socket);
     NetioSendItemDone(Batch);
     return STATUS_PENDING;
 
@@ -2649,7 +2493,6 @@ WskSocket(
             KeInitializeSpinLock(&Socket->ReceiveLock);
             KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
             KeInitializeEvent(&Socket->SendsIdle, NotificationEvent, FALSE);
-            ExInitializeResourceLite(&Socket->SendLock);
             Socket->ReceiveEvents = Client != NULL &&
                                     (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
             Socket->ReceiveEventsStatic = Socket->ReceiveEvents;

@@ -445,6 +445,29 @@ START_TEST(DriverPackage)
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
     ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE), "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
+    {
+        WCHAR Other[MAX_PATH];
+        PWSTR Last = wcsrchr(StoreInf, L'\\');
+
+        if (Last && SUCCEEDED(StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\.%s", (int)(Last - StoreInf), StoreInf, Last)))
+        {
+            hr = DeletePrinterDriverPackageW(NULL, Other, NULL);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE),
+               "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", Other, hr);
+        }
+
+        StringCchCopyW(Other, ARRAYSIZE(Other), StoreInf);
+        _wcsupr(Other);
+        hr = DeletePrinterDriverPackageW(NULL, Other, NULL);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE),
+           "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", Other, hr);
+
+        hr = DeletePrinterDriverPackageW(NULL, InfPath, NULL);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE),
+           "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", InfPath, hr);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted while in use\n", StoreInf);
+    }
+
     DeleteTestDriver();
 
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);

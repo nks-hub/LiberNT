@@ -39,6 +39,11 @@ IopRecordCancelAlert(
     PIOP_CANCEL_ALERT Alert;
     KIRQL OldIrql;
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+    ASSERT(Irp->Type == IO_TYPE_IRP);
+    ASSERT(Irp->Tail.Overlay.Thread == PsGetCurrentThread());
+    ASSERT(!IsListEmpty(&Irp->ThreadListEntry));
+
     Alert = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Alert), TAG_IO);
     if (!Alert)
         return FALSE;
@@ -60,6 +65,8 @@ IopForgetCancelAlert(
     PLIST_ENTRY Entry;
     KIRQL OldIrql;
 
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
     /* Nearly always empty; a record added right now is not of a request that ends now */
     if (!IopCancelAlertCount)
         return FALSE;
@@ -72,6 +79,7 @@ IopForgetCancelAlert(
             Alert = CONTAINING_RECORD(Entry, IOP_CANCEL_ALERT, ListEntry);
             RemoveEntryList(Entry);
             IopCancelAlertCount--;
+            ASSERT(IopCancelAlertCount >= 0);
             break;
         }
     }
@@ -524,12 +532,7 @@ IopCompleteRequest(IN PKAPC Apc,
 
     IopCheckUnwoundCompletionTarget(Irp);
 
-    /*
-     * CancelSynchronousIo alerted the thread for this request and no wait took
-     * the alert; it must not outlive the request. Checking Alerted first keeps
-     * KeTestAlertThread from setting UserApcPending. An NtAlertThread alert
-     * sent on top of that one cannot be told apart and goes with it.
-     */
+    /* FIXME: an NtAlertThread alert sent on top of the CancelSynchronousIo one is dropped with it */
     if (IopForgetCancelAlert(Irp) && KeGetCurrentThread()->Alerted[UserMode])
         KeTestAlertThread(UserMode);
 

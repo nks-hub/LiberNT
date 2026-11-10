@@ -106,7 +106,7 @@ CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source
     *Copy = NULL;
     if (!Count)
         return S_OK;
-    if (!Source || Count > MAXULONG / sizeof(*Properties))
+    if (!Source || Count > MAXDWORD / sizeof(*Properties))
         return E_INVALIDARG;
     Size = Count * sizeof(*Properties);
 

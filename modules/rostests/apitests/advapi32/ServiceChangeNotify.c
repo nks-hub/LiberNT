@@ -7,6 +7,7 @@
 
 #include "precomp.h"
 #include <tlhelp32.h>
+#include "svchlp.h"
 
 #define TEST_SERVICE L"LntChangeNotifyTest"
 
@@ -347,10 +348,141 @@ test_ServiceStatus(SC_HANDLE Manager)
     CloseServiceHandle(Service);
 }
 
+static SERVICE_STATUS_HANDLE StatusHandle;
+static HANDLE StopEvent;
+
+static VOID
+ReportState(DWORD State)
+{
+    SERVICE_STATUS Status = { 0 };
+
+    Status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    Status.dwCurrentState = State;
+    if (State == SERVICE_RUNNING)
+        Status.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+    SetServiceStatus(StatusHandle, &Status);
+}
+
+static VOID WINAPI
+ServiceHandler(DWORD Control)
+{
+    if (Control == SERVICE_CONTROL_STOP)
+        SetEvent(StopEvent);
+}
+
+static VOID WINAPI
+ServiceMain(DWORD Argc, LPWSTR *Argv)
+{
+    UNREFERENCED_PARAMETER(Argc);
+
+    StopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    StatusHandle = RegisterServiceCtrlHandlerW(Argv[0], ServiceHandler);
+    if (!StatusHandle)
+        return;
+    ReportState(SERVICE_RUNNING);
+    WaitForSingleObject(StopEvent, 60000);
+    ReportState(SERVICE_STOPPED);
+}
+
+static BOOL
+StartTestService(PCSTR NameA, PCWSTR NameW)
+{
+    SERVICE_TABLE_ENTRYW Table[] = { { (PWSTR)NameW, ServiceMain }, { NULL, NULL } };
+
+    UNREFERENCED_PARAMETER(NameA);
+    return StartServiceCtrlDispatcherW(Table);
+}
+
+static HANDLE GateEvent;
+static volatile LONG StatusCalls, RunningSeen;
+
+static VOID CALLBACK
+StatusChanged(DWORD Notify, PVOID Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    trace("Status callback 0x%lx\n", Notify);
+    if (Notify & SERVICE_NOTIFY_RUNNING)
+        InterlockedExchange(&RunningSeen, 1);
+    if (InterlockedIncrement(&StatusCalls) == 1)
+        WaitForSingleObject(GateEvent, 30000);
+}
+
+static BOOL
+WaitState(SC_HANDLE Service, DWORD State)
+{
+    SERVICE_STATUS Status = { 0 };
+    DWORD Start = GetTickCount();
+
+    while (QueryServiceStatus(Service, &Status) && Status.dwCurrentState != State && GetTickCount() - Start < 10000)
+        Sleep(100);
+    return Status.dwCurrentState == State;
+}
+
+/* The service is already running when the callback for an earlier change returns */
+static void
+test_ChangeDuringCallback(PCSTR NameA, PCWSTR NameW, void *Param)
+{
+    PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
+    SC_HANDLE Manager, Service;
+    SERVICE_STATUS Status;
+    DWORD Error, Start;
+
+    UNREFERENCED_PARAMETER(NameA);
+    UNREFERENCED_PARAMETER(Param);
+
+    Manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!Manager)
+    {
+        skip("Cannot open the service manager (%lu)\n", GetLastError());
+        return;
+    }
+    Service = register_serviceW(Manager, L"ServiceChangeNotify", NameW, NULL);
+    if (!Service)
+    {
+        skip("Cannot create the test service (%lu)\n", GetLastError());
+        CloseServiceHandle(Manager);
+        return;
+    }
+
+    GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, StatusChanged, NULL, &Subscription);
+    ok(Error == ERROR_SUCCESS, "Status subscription returned %lu\n", Error);
+    if (Error == ERROR_SUCCESS)
+    {
+        ok(StartServiceW(Service, 0, NULL), "StartServiceW failed (%lu)\n", GetLastError());
+        ok(WaitState(Service, SERVICE_RUNNING), "The service is not running\n");
+        for (Start = GetTickCount(); !StatusCalls && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(StatusCalls != 0, "No callback for the started service\n");
+
+        SetEvent(GateEvent);
+        for (Start = GetTickCount(); !RunningSeen && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(RunningSeen, "No callback for SERVICE_RUNNING after %ld callbacks\n", StatusCalls);
+
+        ControlService(Service, SERVICE_CONTROL_STOP, &Status);
+        ok(WaitState(Service, SERVICE_STOPPED), "The service did not stop\n");
+        pUnsubscribe(Subscription);
+    }
+
+    CloseHandle(GateEvent);
+    DeleteService(Service);
+    CloseServiceHandle(Service);
+    CloseServiceHandle(Manager);
+}
+
 START_TEST(ServiceChangeNotify)
 {
     HMODULE hSechost = LoadLibraryW(L"sechost.dll");
     SC_HANDLE Manager, Service;
+    char **Argv;
+    int Argc = winetest_get_mainargs(&Argv);
+
+    if (Argc >= 3)
+    {
+        service_process(StartTestService, Argc, Argv);
+        return;
+    }
 
     pSubscribe = hSechost ? (PFN_SUBSCRIBE)GetProcAddress(hSechost, "SubscribeServiceChangeNotifications") : NULL;
     pUnsubscribe = hSechost ? (PFN_UNSUBSCRIBE)GetProcAddress(hSechost, "UnsubscribeServiceChangeNotifications") : NULL;
@@ -374,6 +506,7 @@ START_TEST(ServiceChangeNotify)
     {
         test_Subscribe(Manager);
         test_SubscribeCleanup(Manager);
+        test_runner(test_ChangeDuringCallback, NULL);
     }
     else
         skip("SubscribeServiceChangeNotifications is missing\n");

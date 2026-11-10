@@ -89,6 +89,7 @@ typedef struct _SERVICE
     BOOLEAN ServiceVisited;
 
     LIST_ENTRY HandleListHead;
+    DWORD dwNotifySequence;
 
     WCHAR szServiceName[1];
 } SERVICE, *PSERVICE;

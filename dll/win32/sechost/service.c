@@ -52,7 +52,7 @@ struct notify_data
     SERVICE_NOTIFYW *notify_buffer;
     HANDLE calling_thread, ready_evt;
 #ifdef __REACTOS__
-    void (*done)( void *context );
+    void (*done)( void *context, DWORD sequence );
     BOOL (*wanted)( void *context );
     void *done_context;
 #endif
@@ -1298,6 +1298,9 @@ static DWORD WINAPI notify_thread(void *user)
     SC_RPC_NOTIFY_PARAMS_LIST *list = NULL;
     SERVICE_NOTIFY_STATUS_CHANGE_PARAMS_2 *cparams;
     BOOL dummy;
+#ifdef __REACTOS__
+    DWORD sequence = 0;
+#endif
 
     SetThreadDescription(GetCurrentThread(), L"wine_sechost_notify_service_status");
 
@@ -1335,6 +1338,7 @@ static DWORD WINAPI notify_thread(void *user)
         data->notify_buffer->dwNotificationTriggered = cparams->dwNotificationTriggered;
         data->notify_buffer->pszServiceNames = NULL;
 #ifdef __REACTOS__
+        sequence = cparams->dwSequence;
         if (cparams->pszServiceNames)
         {
             SIZE_T len = wcslen(cparams->pszServiceNames);
@@ -1380,7 +1384,7 @@ static DWORD WINAPI notify_thread(void *user)
     CloseHandle(data->calling_thread);
 #ifdef __REACTOS__
     if (data->done)
-        data->done(data->done_context);
+        data->done(data->done_context, sequence);
     free(data);
 #else
     HeapFree(GetProcessHeap(), 0, data);
@@ -1390,8 +1394,8 @@ static DWORD WINAPI notify_thread(void *user)
 }
 
 #ifdef __REACTOS__
-static DWORD notify_status_change( SC_HANDLE service, DWORD mask, SERVICE_NOTIFYW *notify_buffer,
-                                   void (*done)( void * ), BOOL (*wanted)( void * ), void *done_context );
+static DWORD notify_status_change( SC_HANDLE service, DWORD mask, DWORD sequence, SERVICE_NOTIFYW *notify_buffer,
+                                   void (*done)( void *, DWORD ), BOOL (*wanted)( void * ), void *done_context );
 
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
@@ -1401,11 +1405,11 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
 {
     TRACE( "%p 0x%lx %p\n", service, mask, notify_buffer );
 
-    return notify_status_change( service, mask, notify_buffer, NULL, NULL, NULL );
+    return notify_status_change( service, mask, 0, notify_buffer, NULL, NULL, NULL );
 }
 
-static DWORD notify_status_change( SC_HANDLE service, DWORD mask, SERVICE_NOTIFYW *notify_buffer,
-                                   void (*done)( void * ), BOOL (*wanted)( void * ), void *done_context )
+static DWORD notify_status_change( SC_HANDLE service, DWORD mask, DWORD sequence, SERVICE_NOTIFYW *notify_buffer,
+                                   void (*done)( void *, DWORD ), BOOL (*wanted)( void * ), void *done_context )
 #else
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
@@ -1445,6 +1449,9 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
     data->params.params = &data->cparams;
 
     data->cparams.dwNotifyMask = mask;
+#ifdef __REACTOS__
+    data->cparams.dwSequence = sequence;
+#endif
 
     EnterCriticalSection( &service_cs );
 
@@ -1495,6 +1502,7 @@ struct subscription_request
     HANDLE done_event;
     LONG refs;
     BOOL fired;
+    DWORD sequence;
     volatile LONG abandoned;
 };
 
@@ -1527,10 +1535,11 @@ static BOOL request_wanted( void *param )
     return !req->abandoned;
 }
 
-static void request_finished( void *param )
+static void request_finished( void *param, DWORD sequence )
 {
     struct subscription_request *req = param;
 
+    req->sequence = sequence;
     SetEvent( req->done_event );
     release_request( req );
 }
@@ -1556,7 +1565,7 @@ static DWORD WINAPI subscription_thread( void *param )
     struct _SC_NOTIFICATION_REGISTRATION *sub = param;
     struct subscription_request *req;
     BOOL first = TRUE;
-    DWORD err;
+    DWORD err, sequence = 0;
 
     SetThreadDescription( GetCurrentThread(), L"sechost_service_subscription" );
 
@@ -1571,7 +1580,8 @@ static DWORD WINAPI subscription_thread( void *param )
             req->notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
             req->notify.pfnNotifyCallback = subscription_notified;
             req->notify.pContext = sub->context;
-            err = notify_status_change( sub->handle, sub->mask | SERVICE_NOTIFY_SUBSCRIPTION, &req->notify,
+            /* The server reports at once a status change made after the one with this sequence */
+            err = notify_status_change( sub->handle, sub->mask | SERVICE_NOTIFY_SUBSCRIPTION, sequence, &req->notify,
                                         request_finished, request_wanted, req );
         }
         if (first)
@@ -1595,7 +1605,10 @@ static DWORD WINAPI subscription_thread( void *param )
         {
             WaitForSingleObject( req->done_event, INFINITE );
             if (req->notify.dwNotificationStatus == ERROR_SUCCESS)
+            {
+                sequence = req->sequence;
                 sub->callback( req->notify.dwNotificationTriggered, sub->context );
+            }
         }
         InterlockedExchange( &req->abandoned, TRUE );
         release_request( req );

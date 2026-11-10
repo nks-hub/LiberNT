@@ -169,6 +169,8 @@ typedef struct _WSK_SOCKET_INTERNAL
     KEVENT ReceivesIdle;
     KSPIN_LOCK ReceiveLock;
     PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
+    LONG DeferredSends;            /* queued sends; the close takes one off, so below zero means none are left */
+    KEVENT SendsIdle;
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
 
 typedef struct _NETIO_CONTEXT
@@ -1108,6 +1110,10 @@ NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp)
     ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     IoSetNextIrpStackLocation(Irp);
+
+    /* A send deferred from DISPATCH_LEVEL must go out before the close completes */
+    if (InterlockedDecrement(&Socket->DeferredSends) >= 0)
+        KeWaitForSingleObject(&Socket->SendsIdle, Executive, KernelMode, FALSE, NULL);
 
     /* There might be a reference from (for example) a pending
      * receive. Shutdown the socket here explicitly. We expect
@@ -2057,6 +2063,8 @@ NetioDeferredSendWorker(
         WskSendTo(Send->Socket, &Send->Buffer, Send->Flags, Send->RemoteAddress,
                   Send->ControlInfoLength, Send->ControlInfo, Send->Irp);
 
+    if (InterlockedDecrement(&Socket->DeferredSends) < 0)
+        KeSetEvent(&Socket->SendsIdle, IO_NO_INCREMENT, FALSE);
     DereferenceSocket(Socket);
     ExFreePoolWithTag(Send, TAG_NETIO);
 }
@@ -2092,6 +2100,7 @@ NetioDeferSend(
     Send->ControlInfo = ControlInfo;
     Send->Irp = Irp;
     ReferenceSocket(CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket));
+    InterlockedIncrement(&CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket)->DeferredSends);
     ExInitializeWorkItem(&Send->WorkItem, NetioDeferredSendWorker, Send);
     ExQueueWorkItem(&Send->WorkItem, CriticalWorkQueue);
     return STATUS_PENDING;
@@ -2525,6 +2534,7 @@ WskSocket(
             Socket->DatagramDispatch = Dispatch;
             KeInitializeSpinLock(&Socket->ReceiveLock);
             KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
+            KeInitializeEvent(&Socket->SendsIdle, NotificationEvent, FALSE);
             Socket->ReceiveEvents = Client != NULL &&
                                     (((PNETIO_WSK_CLIENT)Client)->EventMask & WSK_EVENT_RECEIVE_FROM) != 0;
             Socket->ReceiveEventsStatic = Socket->ReceiveEvents;
@@ -2637,13 +2647,21 @@ WskRegister(_In_ PWSK_CLIENT_NPI client_npi, _Out_ PWSK_REGISTRATION reg)
 NTSTATUS WSKAPI
 WskCaptureProviderNPI(_In_ PWSK_REGISTRATION reg, _In_ ULONG wait, _Out_ PWSK_PROVIDER_NPI npi)
 {
-    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+    PNETIO_WSK_CLIENT Client;
+    KIRQL OldIrql;
 
     FUNCTION_TRACE;
 
     UNREFERENCED_PARAMETER(wait);
 
-    if (Client == NULL || !NetioAddClientUser(Client))
+    /* WskDeregister detaches the client under this lock before it frees it */
+    KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
+    Client = reg->ReservedRegistrationContext;
+    if (Client != NULL && !NetioAddClientUser(Client))
+        Client = NULL;
+    KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
+
+    if (Client == NULL)
         return STATUS_DEVICE_NOT_READY;
     npi->Client = (PWSK_CLIENT)Client;
     npi->Dispatch = &provider_dispatch;
@@ -2661,24 +2679,35 @@ WskReleaseProviderNPI(_In_ PWSK_REGISTRATION reg)
 VOID WSKAPI
 WskDeregister(_In_ PWSK_REGISTRATION reg)
 {
-    PNETIO_WSK_CLIENT Client = reg->ReservedRegistrationContext;
+    PNETIO_WSK_CLIENT Client;
     KIRQL OldIrql;
 
     FUNCTION_TRACE;
 
+    KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
+    Client = reg->ReservedRegistrationContext;
+    if (Client != NULL)
+    {
+        KeAcquireSpinLockAtDpcLevel(&Client->Lock);
+        Client->Deregistering = TRUE;
+        KeReleaseSpinLockFromDpcLevel(&Client->Lock);
+    }
+    KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
+
     if (Client == NULL)
         return;
 
-    KeAcquireSpinLock(&Client->Lock, &OldIrql);
-    Client->Deregistering = TRUE;
-    KeReleaseSpinLock(&Client->Lock, OldIrql);
     KeWaitForSingleObject(&Client->Idle, Executive, KernelMode, FALSE, NULL);
 
+    /* WskReleaseProviderNPI still reads the client from the registration, so detach it only now */
+    KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
+    reg->ReservedRegistrationState = 0;
+    reg->ReservedRegistrationContext = NULL;
+    KeReleaseSpinLock(&reg->ReservedRegistrationLock, OldIrql);
+
     KeAcquireSpinLock(&Client->Lock, &OldIrql);
     KeReleaseSpinLock(&Client->Lock, OldIrql);
 
-    reg->ReservedRegistrationState = 0;
-    reg->ReservedRegistrationContext = NULL;
     ExFreePoolWithTag(Client, TAG_NETIO);
     StopSocketDereferenceThread();
 }

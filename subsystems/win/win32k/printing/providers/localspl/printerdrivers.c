@@ -8,6 +8,7 @@
 
 #include "precomp.h"
 #include <strsafe.h>
+#include <drvpkglock.h>
 
 typedef struct {
     WCHAR   src[MAX_PATH+MAX_PATH];
@@ -935,7 +936,7 @@ static inline WCHAR *get_file_part( WCHAR *name )
  * and a special mode with lazy error checking.
  *
  */
-BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags, BOOL lazy)
+static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags, BOOL lazy)
 {
     const PRINTENV_T *env;
     apd_data_t apd;
@@ -1122,6 +1123,39 @@ BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags
 
     FIXME("=> TRUE with %u\n", GetLastError());
     return TRUE;
+}
+
+BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags, BOOL lazy)
+{
+    const DRIVER_INFO_8W *di = (const DRIVER_INFO_8W *)pDriverInfo;
+    HANDLE hNamespace, hLock;
+    DWORD error;
+    BOOL res;
+
+    if (level != 8 || !di || !di->pszInfPath || !*di->pszInfPath)
+        return add_printer_driver(level, pDriverInfo, dwFileCopyFlags, lazy);
+
+    /* DeletePrinterDriverPackage holds this lock from looking for a driver of the package until it is deleted */
+    if (!AcquirePackageLock(&hNamespace, &hLock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    if (GetFileAttributesW(di->pszInfPath) == INVALID_FILE_ATTRIBUTES)
+    {
+        res = FALSE;
+        error = ERROR_FILE_NOT_FOUND;
+    }
+    else
+    {
+        res = add_printer_driver(level, pDriverInfo, dwFileCopyFlags, lazy);
+        error = GetLastError();
+    }
+
+    ReleasePackageLock(hNamespace, hLock);
+    SetLastError(error);
+    return res;
 }
 
 /******************************************************************************

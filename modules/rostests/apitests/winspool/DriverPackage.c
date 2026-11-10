@@ -14,12 +14,14 @@
 #include <winreg.h>
 #include <winspool.h>
 #include <strsafe.h>
+#include <drvpkglock.h>
 
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
 
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"
 #define NEEDS_DRIVER_NAME L"LiberNT Package Needs Printer"
 #define BROKEN_DRIVER_NAME L"LiberNT Package Broken Printer"
+#define LOCK_DRIVER_NAME L"LiberNT Package Lock Printer"
 
 #if defined(_M_AMD64)
 #define TEST_ENVIRONMENT L"Windows x64"
@@ -213,7 +215,7 @@ DeleteTestDriver(VOID)
 {
     static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT",
                                     L"TESTREN.DAT" };
-    static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME };
+    static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME, LOCK_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
     UINT i;
@@ -533,6 +535,114 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
     RemoveDirectoryW(Dir);
 }
 
+typedef struct _LOCK_TEST
+{
+    DRIVER_INFO_8W Info;
+    PCWSTR UploadInf;
+    DWORD Error;
+} LOCK_TEST, *PLOCK_TEST;
+
+static DWORD WINAPI
+LockTestThread(PVOID Parameter)
+{
+    PLOCK_TEST Test = Parameter;
+    WCHAR StoreInf[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+
+    if (Test->UploadInf)
+        Test->Error = UploadPrinterDriverPackageW(NULL, Test->UploadInf, NULL, UPDP_CHECK_DRIVERSTORE, NULL, StoreInf, &Length);
+    else if (AddPrinterDriverExW(NULL, 8, (PBYTE)&Test->Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY))
+        Test->Error = ERROR_SUCCESS;
+    else
+        Test->Error = GetLastError();
+    return 0;
+}
+
+static VOID
+RunWhileLocked(PLOCK_TEST Test, PCSTR What)
+{
+    HANDLE Namespace, Lock, hThread;
+    HKEY hKey;
+
+    if (!AcquirePackageLock(&Namespace, &Lock))
+    {
+        skip("Cannot take the package lock (%lu)\n", GetLastError());
+        return;
+    }
+
+    Test->Error = 0xdeadbeef;
+    hThread = CreateThread(NULL, 0, LockTestThread, Test, 0, NULL);
+    ok(hThread != NULL, "CreateThread failed with %lu\n", GetLastError());
+    if (hThread)
+    {
+        ok(WaitForSingleObject(hThread, 2000) == WAIT_TIMEOUT, "%s did not wait for the package lock\n", What);
+        hKey = OpenDriverKey(LOCK_DRIVER_NAME);
+        ok(hKey == NULL || Test->UploadInf, "%s registered the driver while the package lock was held\n", What);
+        if (hKey)
+            RegCloseKey(hKey);
+    }
+
+    ReleasePackageLock(Namespace, Lock);
+    if (hThread)
+    {
+        ok(WaitForSingleObject(hThread, 60000) == WAIT_OBJECT_0, "%s did not finish\n", What);
+        CloseHandle(hThread);
+    }
+}
+
+static VOID
+TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
+{
+    WCHAR Driver[MAX_PATH], Config[MAX_PATH], Data[MAX_PATH], Missing[MAX_PATH], Value[MAX_PATH];
+    int DirLength = (int)(wcsrchr(StoreInf, L'\\') - StoreInf);
+    LOCK_TEST Test = { { 0 } };
+    DWORD Size;
+    HRESULT hr;
+    HKEY hKey;
+
+    StringCchPrintfW(Driver, ARRAYSIZE(Driver), L"%.*s\\TESTDRV.DLL", DirLength, StoreInf);
+    StringCchPrintfW(Config, ARRAYSIZE(Config), L"%.*s\\TESTUI.DLL", DirLength, StoreInf);
+    StringCchPrintfW(Data, ARRAYSIZE(Data), L"%.*s\\TESTPKG.GPD", DirLength, StoreInf);
+    StringCchPrintfW(Missing, ARRAYSIZE(Missing), L"%.*s\\TESTNONE.INF", DirLength, StoreInf);
+
+    Test.UploadInf = InfPath;
+    RunWhileLocked(&Test, "UploadPrinterDriverPackageW");
+    ok(Test.Error == (DWORD)S_OK, "UploadPrinterDriverPackageW returned 0x%lx\n", Test.Error);
+
+    Test.UploadInf = NULL;
+    Test.Info.cVersion = 3;
+    Test.Info.pName = (PWSTR)LOCK_DRIVER_NAME;
+    Test.Info.pDriverPath = Driver;
+    Test.Info.pConfigFile = Config;
+    Test.Info.pDataFile = Data;
+
+    Test.Info.pszInfPath = Missing;
+    SetLastError(0xdeadbeef);
+    ok(!AddPrinterDriverExW(NULL, 8, (PBYTE)&Test.Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+       "AddPrinterDriverExW succeeded for the package %S\n", Missing);
+    ok(GetLastError() == ERROR_FILE_NOT_FOUND, "AddPrinterDriverExW failed with %lu\n", GetLastError());
+    hKey = OpenDriverKey(LOCK_DRIVER_NAME);
+    ok(hKey == NULL, "Driver %S is registered for a package that does not exist\n", LOCK_DRIVER_NAME);
+    if (hKey)
+        RegCloseKey(hKey);
+
+    Test.Info.pszInfPath = (PWSTR)StoreInf;
+    RunWhileLocked(&Test, "AddPrinterDriverExW");
+    ok(Test.Error == ERROR_SUCCESS, "AddPrinterDriverExW failed with %lu\n", Test.Error);
+    hKey = OpenDriverKey(LOCK_DRIVER_NAME);
+    ok(hKey != NULL, "Driver %S is not registered\n", LOCK_DRIVER_NAME);
+    if (hKey)
+    {
+        Size = sizeof(Value);
+        ok(RegQueryValueExW(hKey, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+           !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
+        RegCloseKey(hKey);
+
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE), "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+    }
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -830,6 +940,8 @@ START_TEST(DriverPackage)
             ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted through %S\n", StoreInf, Other);
         }
     }
+
+    TestPackageLock(InfPath, StoreInf);
 
     DeleteTestDriver();
 

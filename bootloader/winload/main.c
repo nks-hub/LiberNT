@@ -406,8 +406,7 @@ OslMain(VOID)
                               OslParameters.KernelFile,
                               OSL_KERNEL_MODULE,
                               LoaderSystemCode);
-    /* Entries of systems installed before the SMP kernel became the default still name
-     * ntkrnlmp.exe and an SMP HAL that updates have since removed */
+    /* Entries of systems installed before the SMP kernel became the default name files that updates have since removed */
     if (!Kernel && _wcsicmp(OslParameters.KernelFile, L"ntkrnlmp.exe") == 0)
     {
         Kernel = OslLoadCoreImage(LoaderBlock,

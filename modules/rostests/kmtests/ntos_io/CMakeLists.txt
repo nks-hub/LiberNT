@@ -17,6 +17,20 @@ target_compile_definitions(iocreatefile_drv PRIVATE KMT_STANDALONE_DRIVER)
 add_rostests_file(TARGET iocreatefile_drv)
 
 #
+# IoCancelSync
+#
+list(APPEND IOCANCELSYNC_DRV_SOURCE
+    ../kmtest_drv/kmtest_standalone.c
+    IoCancelSync_drv.c)
+
+add_library(iocancelsync_drv MODULE ${IOCANCELSYNC_DRV_SOURCE})
+set_module_type(iocancelsync_drv kernelmodedriver)
+target_link_libraries(iocancelsync_drv kmtest_printf ${PSEH_LIB})
+add_importlibs(iocancelsync_drv ntoskrnl hal)
+target_compile_definitions(iocancelsync_drv PRIVATE KMT_STANDALONE_DRIVER)
+add_rostests_file(TARGET iocancelsync_drv)
+
+#
 # IoDeviceObject
 #
 list(APPEND IODEVICEOBJECT_DRV_SOURCE

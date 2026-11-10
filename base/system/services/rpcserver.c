@@ -305,6 +305,7 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
         RtlCopyMemory(&pParams->ServiceStatus, &lpService->Status, sizeof(SERVICE_STATUS));
         if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
             pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
+        pParams->dwSequence = lpService->dwNotifySequence;
     }
     if (lpServiceName != NULL)
     {
@@ -367,6 +368,8 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
 
     EnterCriticalSection(&ScmNotifyLock);
+
+    lpService->dwNotifySequence++;
 
     for (Entry = lpService->HandleListHead.Flink;
          Entry != &lpService->HandleListHead;
@@ -6990,7 +6993,8 @@ RNotifyServiceStatusChange(
     PSERVICE_HANDLE hSvc;
     PSERVICE lpService;
     PNOTIFY_HANDLE pNotify;
-    DWORD dwMask;
+    DWORD dwMask, dwSequence;
+    BOOL bReport;
 
     DPRINT("RNotifyServiceStatusChange() called\n");
 
@@ -7065,10 +7069,18 @@ RNotifyServiceStatusChange(
     }
 
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
-    if (!pNotify->bSubscription && !hSvc->bStatusNotified && (pNotify->dwNotifyMask & dwMask))
+    /* A renewed subscription names the last change it saw, so one made since is not lost */
+    dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
+    if (pNotify->bSubscription)
+        bReport = dwSequence != 0 && dwSequence != lpService->dwNotifySequence;
+    else
+        bReport = !hSvc->bStatusNotified;
+
+    if (bReport && (pNotify->dwNotifyMask & dwMask))
     {
         ScmFillNotify(pNotify, lpService, dwMask, NULL);
-        hSvc->bStatusNotified = TRUE;
+        if (!pNotify->bSubscription)
+            hSvc->bStatusNotified = TRUE;
     }
     else
     {

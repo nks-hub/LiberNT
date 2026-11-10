@@ -10,6 +10,18 @@
 #define NDEBUG
 #include <debug.h>
 
+static VOID
+SmpTerminateUpdate(HANDLE ProcessHandle, NTSTATUS ExitStatus)
+{
+    NTSTATUS Status;
+
+    Status = NtTerminateProcess(ProcessHandle, ExitStatus);
+    if (NT_SUCCESS(Status))
+        Status = NtWaitForSingleObject(ProcessHandle, FALSE, NULL);
+    if (!NT_SUCCESS(Status))
+        DPRINT1("SMSS: UpdateExecute cannot terminate its process: %lx\n", Status);
+}
+
 static NTSTATUS NTAPI
 SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                  ULONG ValueLength, PVOID Context, PVOID EntryContext)
@@ -57,7 +69,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                     }
                     else
                     {
-                        NtTerminateProcess(ProcessInfo.ProcessHandle, Status);
+                        SmpTerminateUpdate(ProcessInfo.ProcessHandle, Status);
                         if (NT_SUCCESS(Status))
                             Status = STATUS_UNSUCCESSFUL;
                     }
@@ -65,7 +77,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                 else
                 {
                     Status = STATUS_INVALID_IMAGE_FORMAT;
-                    NtTerminateProcess(ProcessInfo.ProcessHandle, Status);
+                    SmpTerminateUpdate(ProcessInfo.ProcessHandle, Status);
                 }
                 NtClose(ProcessInfo.ThreadHandle);
                 NtClose(ProcessInfo.ProcessHandle);

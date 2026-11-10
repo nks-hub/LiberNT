@@ -124,7 +124,12 @@ SmpExecuteImage(IN PUNICODE_STRING FileName,
     {
         if (!NT_SUCCESS(Status))
         {
-            NtTerminateProcess(ProcessInfo->ProcessHandle, Status);
+            NTSTATUS TerminateStatus = NtTerminateProcess(ProcessInfo->ProcessHandle, Status);
+
+            if (NT_SUCCESS(TerminateStatus))
+                TerminateStatus = NtWaitForSingleObject(ProcessInfo->ProcessHandle, FALSE, NULL);
+            if (!NT_SUCCESS(TerminateStatus))
+                DPRINT1("SMSS: Cannot terminate %wZ: %lx\n", FileName, TerminateStatus);
             NtClose(ProcessInfo->ThreadHandle);
             NtClose(ProcessInfo->ProcessHandle);
         }

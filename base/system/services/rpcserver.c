@@ -305,6 +305,7 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
         RtlCopyMemory(&pParams->ServiceStatus, &lpService->Status, sizeof(SERVICE_STATUS));
         if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
             pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
+        pParams->dwSequence = lpService->dwNotifySequence;
     }
     if (lpServiceName != NULL)
     {
@@ -367,6 +368,9 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
 
     EnterCriticalSection(&ScmNotifyLock);
+
+    if (++lpService->dwNotifySequence == 0)
+        lpService->dwNotifySequence = 1;
 
     for (Entry = lpService->HandleListHead.Flink;
          Entry != &lpService->HandleListHead;
@@ -7100,7 +7104,8 @@ RNotifyServiceStatusChange(
     PSERVICE_HANDLE hSvc;
     PSERVICE lpService;
     PNOTIFY_HANDLE pNotify;
-    DWORD dwMask;
+    DWORD dwMask, dwSequence;
+    BOOL bReport;
 
     DPRINT("RNotifyServiceStatusChange() called\n");
 
@@ -7166,7 +7171,16 @@ RNotifyServiceStatusChange(
     ScmLockDatabaseShared();
     EnterCriticalSection(&ScmNotifyLock);
 
-    if (lpService->bDeleted)
+    dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
+    /* A renewed subscription names the last change it saw, so one made since is not lost */
+    dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
+    if (pNotify->bSubscription)
+        bReport = dwSequence != 0 && dwSequence != lpService->dwNotifySequence;
+    else
+        bReport = !hSvc->bStatusNotified;
+
+    /* A subscription gets the change it missed before it learns that the service is deleted */
+    if (lpService->bDeleted && !(pNotify->bSubscription && bReport))
     {
         LeaveCriticalSection(&ScmNotifyLock);
         ScmUnlockDatabase();
@@ -7174,11 +7188,11 @@ RNotifyServiceStatusChange(
         return ERROR_SERVICE_MARKED_FOR_DELETE;
     }
 
-    dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
-    if (!pNotify->bSubscription && !hSvc->bStatusNotified && (pNotify->dwNotifyMask & dwMask))
+    if (bReport && (pNotify->dwNotifyMask & dwMask))
     {
         ScmFillNotify(pNotify, lpService, dwMask, NULL);
-        hSvc->bStatusNotified = TRUE;
+        if (!pNotify->bSubscription)
+            hSvc->bStatusNotified = TRUE;
     }
     else
     {

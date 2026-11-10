@@ -516,10 +516,11 @@ VOID
 TestRegisterAgain(VOID)
 {
     WSK_CLIENT_NPI ClientNpi;
-    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_PROVIDER_NPI ProviderNpi, DispatchNpi;
     WSK_REGISTRATION Registration;
     PWSK_SOCKET Receiver = NULL, Sender = NULL;
     NTSTATUS Status;
+    KIRQL OldIrql;
     ULONG Round;
     LONG Count;
 
@@ -546,6 +547,13 @@ TestRegisterAgain(VOID)
     ok_eq_hex(Status, STATUS_SUCCESS);
     if (!NT_SUCCESS(Status))
         goto deregister;
+
+    KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+    Status = WskCaptureProviderNPI(&Registration, WSK_NO_WAIT, &DispatchNpi);
+    if (NT_SUCCESS(Status))
+        WskReleaseProviderNPI(&Registration);
+    KeLowerIrql(OldIrql);
+    ok_eq_hex(Status, STATUS_SUCCESS);
 
     Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 2);
     Sender = OpenSocket(&ProviderNpi, 0);

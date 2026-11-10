@@ -304,8 +304,16 @@ static const char NeedsMissingInf[] =
     "TESTNM.DAT=1\r\n"
     "TESTNMGONE.DLL=1\r\n";
 
+static const char MalformedInf[] =
+    "[Version]\r\n"
+    "Signature=\"$LiberNT$\"\r\n"
+    "Class=Printer\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n";
+
 static VOID
-TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present)
+TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, HRESULT Expected)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
@@ -324,7 +332,7 @@ TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Prese
         WriteTestFile(Dir, Present, Text, sizeof(Text) - 1))
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
-        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
+        ok(Expected == S_OK ? FAILED(hr) : hr == Expected, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
         if (hr == S_OK)
             DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
 
@@ -339,7 +347,7 @@ TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Prese
     }
     else
     {
-        skip("Failed to create the package %S with a missing file (%lu)\n", InfName, GetLastError());
+        skip("Failed to create the package %S (%lu)\n", InfName, GetLastError());
     }
 
     StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Present);
@@ -661,8 +669,9 @@ START_TEST(DriverPackage)
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
     ok(hr == E_INVALIDARG, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
-    TestMissingPackageFile(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT");
-    TestMissingPackageFile(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT");
+    TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnbad", MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
                        L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL);
     TestInstallPackage(L"lntprnbig", L"LiberNT Package Big Printer", BigInf, BuildBigInf(),

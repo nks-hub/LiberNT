@@ -957,6 +957,11 @@ StageDriverPackage(
         FreeNameList(&Package.Includes);
         SetupCloseInfFile(hInf);
     }
+    else if (Staged)
+    {
+        Error = GetLastError();
+        Staged = FALSE;
+    }
 
     if (Staged)
     {

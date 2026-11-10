@@ -2,7 +2,7 @@
  * PROJECT:     LiberNT kernel-mode tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
- *              requests made at DISPATCH_LEVEL, repeated registration
+ *              requests made at DISPATCH_LEVEL, repeated registration, control messages on a send
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -22,6 +22,8 @@ static volatile LONG ReceiveCount;
 static volatile BOOLEAN Refuse;
 static CHAR Seen[MAX_SEEN][9];
 static ULONG LastControlLength;
+static SOCKADDR_IN LastRemote;
+static IN_PKTINFO LastPktInfo;
 
 static
 NTSTATUS
@@ -40,7 +42,15 @@ ReceiveFromEvent(
     if (DataIndication == NULL)
         return STATUS_SUCCESS;
 
-    Index = InterlockedIncrement(&ReceiveCount) - 1;
+    if (DataIndication->RemoteAddress != NULL)
+        RtlCopyMemory(&LastRemote, DataIndication->RemoteAddress, sizeof(LastRemote));
+    if (DataIndication->ControlInfo != NULL && DataIndication->ControlInfoLength >= WSA_CMSG_LEN(sizeof(IN_PKTINFO)) &&
+        DataIndication->ControlInfo->cmsg_level == IPPROTO_IP && DataIndication->ControlInfo->cmsg_type == IP_PKTINFO)
+    {
+        RtlCopyMemory(&LastPktInfo, WSA_CMSG_DATA(DataIndication->ControlInfo), sizeof(LastPktInfo));
+    }
+
+    Index =InterlockedIncrement(&ReceiveCount) - 1;
     Data = MmGetSystemAddressForMdlSafe(DataIndication->Buffer.Mdl, NormalPagePriority);
     if (Index < MAX_SEEN && Data != NULL && DataIndication->Buffer.Length >= 8)
         RtlCopyMemory(Seen[Index], Data + DataIndication->Buffer.Offset, 8);
@@ -93,8 +103,9 @@ WaitIrp(
 
 static
 PWSK_SOCKET
-OpenSocket(
+OpenSocketAt(
     _In_ PWSK_PROVIDER_NPI Provider,
+    _In_ ULONG LocalAddress,
     _In_ USHORT Port)
 {
     PWSK_SOCKET Socket = NULL;
@@ -120,7 +131,7 @@ OpenSocket(
     RtlZeroMemory(&Address, sizeof(Address));
     Address.sin_family = AF_INET;
     Address.sin_port = RtlUshortByteSwap(Port);
-    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(LocalAddress);
     Irp = NewIrp(&Event);
     if (Irp != NULL)
     {
@@ -130,6 +141,15 @@ OpenSocket(
         IoFreeIrp(Irp);
     }
     return Socket;
+}
+
+static
+PWSK_SOCKET
+OpenSocket(
+    _In_ PWSK_PROVIDER_NPI Provider,
+    _In_ USHORT Port)
+{
+    return OpenSocketAt(Provider, 0x7f000001, Port);
 }
 
 static
@@ -177,6 +197,91 @@ SetReceiveEvent(
         Socket, WskSetOption, SO_WSK_EVENT_CALLBACK, SOL_SOCKET, sizeof(Control), &Control, 0, NULL, NULL, Irp);
     Status = WaitIrp(Irp, &Event, Status);
     IoFreeIrp(Irp);
+    return Status;
+}
+
+#define NO_CONTROL (-1)
+
+/* Sends with WskSendMessages when Messages is set and with a control message of the given type unless Level is NO_CONTROL */
+static
+NTSTATUS
+SendControl(
+    _In_ PWSK_SOCKET Socket,
+    _In_ PCSTR Payload,
+    _In_ USHORT Port,
+    _In_ BOOLEAN Messages,
+    _In_ INT Level,
+    _In_ INT Type,
+    _In_ ULONG SourceAddress,
+    _In_ ULONG SourceInterface)
+{
+    PWSK_PROVIDER_DATAGRAM_DISPATCH Dispatch = (PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch;
+    union
+    {
+        CMSGHDR Header;
+        UCHAR Space[64];
+    } Control;
+    ULONG ControlLength = 0;
+    IN_PKTINFO PktInfo;
+    SOCKADDR_IN Address;
+    WSK_BUF_LIST List;
+    KEVENT Event;
+    NTSTATUS Status;
+    PCHAR Data;
+    PIRP Irp;
+
+    if (Level != NO_CONTROL)
+    {
+        RtlZeroMemory(&Control, sizeof(Control));
+        Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo));
+        Control.Header.cmsg_level = Level;
+        Control.Header.cmsg_type = Type;
+        PktInfo.ipi_addr.s_addr = SourceAddress;
+        PktInfo.ipi_ifindex = SourceInterface;
+        RtlCopyMemory(WSA_CMSG_DATA(&Control.Header), &PktInfo, sizeof(PktInfo));
+        ControlLength = (ULONG)WSA_CMSG_SPACE(sizeof(PktInfo));
+        ASSERT(ControlLength <= sizeof(Control));
+    }
+
+    Data = ExAllocatePoolWithTag(NonPagedPool, 8, 'tEsW');
+    if (Data == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    RtlCopyMemory(Data, Payload, 8);
+    List.Next = NULL;
+    List.Buffer.Mdl = IoAllocateMdl(Data, 8, FALSE, FALSE, NULL);
+    if (List.Buffer.Mdl == NULL)
+    {
+        ExFreePoolWithTag(Data, 'tEsW');
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    MmBuildMdlForNonPagedPool(List.Buffer.Mdl);
+    List.Buffer.Offset = 0;
+    List.Buffer.Length = 8;
+
+    RtlZeroMemory(&Address, sizeof(Address));
+    Address.sin_family = AF_INET;
+    Address.sin_port = RtlUshortByteSwap(Port);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+
+    Status = STATUS_INSUFFICIENT_RESOURCES;
+    Irp = NewIrp(&Event);
+    if (Irp != NULL)
+    {
+        if (Messages)
+        {
+            Status = Dispatch->WskSendMessages(Socket, &List, 0, (PSOCKADDR)&Address, ControlLength,
+                                               ControlLength ? &Control.Header : NULL, Irp);
+        }
+        else
+        {
+            Status = Dispatch->WskSendTo(Socket, &List.Buffer, 0, (PSOCKADDR)&Address, ControlLength,
+                                         ControlLength ? &Control.Header : NULL, Irp);
+        }
+        Status = WaitIrp(Irp, &Event, Status);
+        IoFreeIrp(Irp);
+    }
+    IoFreeMdl(List.Buffer.Mdl);
+    ExFreePoolWithTag(Data, 'tEsW');
     return Status;
 }
 
@@ -570,6 +675,123 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+VOID
+TestSendControl(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver = NULL, Senders[2] = { NULL, NULL };
+    ULONG Loopback = RtlUlongByteSwap(0x7f000001), Foreign = RtlUlongByteSwap(0xc0000201);
+    ULONG PktInfo = 1, Interface, Sender, Messages;
+    LONG Count, Expected = 0;
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+    RtlZeroMemory(&LastPktInfo, sizeof(LastPktInfo));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 3);
+    Senders[0] = OpenSocket(&ProviderNpi, 0);
+    Senders[1] = OpenSocketAt(&ProviderNpi, 0, 0);
+    if (Receiver == NULL || Senders[0] == NULL || Senders[1] == NULL)
+        goto close;
+
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Irp = NewIrp(&Event);
+    if (Irp != NULL)
+    {
+        Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Receiver->Dispatch)->WskControlSocket(
+            Receiver, WskSetOption, IP_PKTINFO, IPPROTO_IP, sizeof(PktInfo), &PktInfo, 0, NULL, NULL, Irp);
+        Status = WaitIrp(Irp, &Event, Status);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        IoFreeIrp(Irp);
+    }
+
+    /* The interface a datagram arrived on is the one a reply names, as a tunnel does */
+    Status = SendControl(Senders[1], "CTRL0000", WSKEVENTS_PORT + 3, FALSE, NO_CONTROL, 0, 0, 0);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(++Expected, 2000);
+    ok_eq_long(Count, Expected);
+    ok_eq_hex(LastPktInfo.ipi_addr.s_addr, Loopback);
+    Interface = LastPktInfo.ipi_ifindex;
+
+    for (Sender = 0; Sender < 2; Sender++)
+    {
+        for (Messages = 0; Messages < 2; Messages++)
+        {
+            RtlZeroMemory(&LastRemote, sizeof(LastRemote));
+            Status = SendControl(Senders[Sender], "CTRL0001", WSKEVENTS_PORT + 3, (BOOLEAN)Messages,
+                                 IPPROTO_IP, IP_PKTINFO, Loopback, 0);
+            ok(Status == STATUS_SUCCESS, "Sender %lu, messages %lu: source address alone returned 0x%lx\n",
+               Sender, Messages, Status);
+            Count = WaitReceives(++Expected, 2000);
+            ok(Count == Expected, "Sender %lu, messages %lu: %ld datagrams instead of %ld\n",
+               Sender, Messages, Count, Expected);
+            ok(LastRemote.sin_addr.s_addr == Loopback, "Sender %lu, messages %lu: sent from 0x%lx\n",
+               Sender, Messages, LastRemote.sin_addr.s_addr);
+
+            RtlZeroMemory(&LastRemote, sizeof(LastRemote));
+            Status = SendControl(Senders[Sender], "CTRL0002", WSKEVENTS_PORT + 3, (BOOLEAN)Messages,
+                                 IPPROTO_IP, IP_PKTINFO, Loopback, Interface);
+            ok(Status == STATUS_SUCCESS, "Sender %lu, messages %lu: source address and interface %lu returned 0x%lx\n",
+               Sender, Messages, Interface, Status);
+            Count = WaitReceives(++Expected, 2000);
+            ok(Count == Expected, "Sender %lu, messages %lu: %ld datagrams instead of %ld\n",
+               Sender, Messages, Count, Expected);
+            ok(LastRemote.sin_addr.s_addr == Loopback, "Sender %lu, messages %lu: sent from 0x%lx\n",
+               Sender, Messages, LastRemote.sin_addr.s_addr);
+
+            Status = SendControl(Senders[Sender], "CTRL0003", WSKEVENTS_PORT + 3, (BOOLEAN)Messages,
+                                 NO_CONTROL, 0, 0, 0);
+            ok(Status == STATUS_SUCCESS, "Sender %lu, messages %lu: a send after a steered one returned 0x%lx\n",
+               Sender, Messages, Status);
+            Count = WaitReceives(++Expected, 2000);
+            ok(Count == Expected, "Sender %lu, messages %lu: %ld datagrams instead of %ld\n",
+               Sender, Messages, Count, Expected);
+
+            Status = SendControl(Senders[Sender], "CTRL0004", WSKEVENTS_PORT + 3, (BOOLEAN)Messages,
+                                 IPPROTO_IP, IP_PKTINFO, Foreign, 0);
+            ok(!NT_SUCCESS(Status), "Sender %lu, messages %lu: a source address that is not local returned 0x%lx\n",
+               Sender, Messages, Status);
+            Status = SendControl(Senders[Sender], "CTRL0005", WSKEVENTS_PORT + 3, (BOOLEAN)Messages,
+                                 SOL_SOCKET, 0x7fff, 0, 0);
+            ok(!NT_SUCCESS(Status), "Sender %lu, messages %lu: an unknown control message returned 0x%lx\n",
+               Sender, Messages, Status);
+            Count = WaitReceives(Expected + 1, 500);
+            ok(Count == Expected, "Sender %lu, messages %lu: a refused send was delivered, %ld datagrams instead of %ld\n",
+               Sender, Messages, Count, Expected);
+        }
+    }
+
+close:
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Senders[0] != NULL)
+        CloseSocket(Senders[0]);
+    if (Senders[1] != NULL)
+        CloseSocket(Senders[1]);
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -617,5 +839,6 @@ TestMessageHandler(
     TestRun();
     TestStaticCallbacks();
     TestRegisterAgain();
+    TestSendControl();
     return STATUS_SUCCESS;
 }

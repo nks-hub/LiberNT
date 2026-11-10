@@ -362,7 +362,7 @@ static PWSK_SOCKET_INTERNAL SocketsToDereference = NULL;
 static KSPIN_LOCK SocketsToDereferenceListLock = 0;
 static volatile BOOLEAN DereferenceSocketsThreadShouldRun = FALSE;
 static KEVENT DereferenceSocketsEvent;
-static HANDLE DereferenceSocketsThreadHandle;
+static PKTHREAD DereferenceSocketsThreadObject;
 
 static VOID NTAPI DereferenceSocketsThread(_In_opt_ void *p)
 {
@@ -411,7 +411,10 @@ static volatile LONG DereferenceSocketsThreadLockState;
 static NTSTATUS StartSocketDereferenceThread(void)
 {
     OBJECT_ATTRIBUTES Attributes;
+    HANDLE ThreadHandle;
     NTSTATUS status = STATUS_SUCCESS;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     if (InterlockedCompareExchange(&DereferenceSocketsThreadLockState, 1, 0) == 0)
     {
@@ -426,13 +429,26 @@ static NTSTATUS StartSocketDereferenceThread(void)
     KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
     if (DereferenceSocketsThreadUsers == 0)
     {
+        ASSERT(DereferenceSocketsThreadObject == NULL);
         DereferenceSocketsThreadShouldRun = TRUE;
         InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
-        status = PsCreateSystemThread(&DereferenceSocketsThreadHandle, THREAD_ALL_ACCESS, &Attributes, NULL, NULL,
+        status = PsCreateSystemThread(&ThreadHandle, THREAD_ALL_ACCESS, &Attributes, NULL, NULL,
                                       DereferenceSocketsThread, NULL);
         if (!NT_SUCCESS(status))
         {
             DPRINT1("Could not start put sockets thread, status is %x\n", status);
+        }
+        else
+        {
+            status = ObReferenceObjectByHandle(ThreadHandle, SYNCHRONIZE, *PsThreadType, KernelMode,
+                                               (PVOID *)&DereferenceSocketsThreadObject, NULL);
+            if (!NT_SUCCESS(status))
+            {
+                DereferenceSocketsThreadShouldRun = FALSE;
+                KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
+                ZwWaitForSingleObject(ThreadHandle, FALSE, NULL);
+            }
+            ZwClose(ThreadHandle);
         }
     }
     if (NT_SUCCESS(status))
@@ -443,17 +459,20 @@ static NTSTATUS StartSocketDereferenceThread(void)
 
 static void StopSocketDereferenceThread(void)
 {
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     ASSERT(DereferenceSocketsThreadLockState == 2);
     KeWaitForSingleObject(&DereferenceSocketsThreadLock, Executive, KernelMode, FALSE, NULL);
     ASSERT(DereferenceSocketsThreadUsers > 0);
     if (--DereferenceSocketsThreadUsers == 0)
     {
+        ASSERT(DereferenceSocketsThreadObject != NULL);
         DereferenceSocketsThreadShouldRun = FALSE;
         KeSetEvent(&DereferenceSocketsEvent, IO_NO_INCREMENT, FALSE);
 
-        /* eventually it will terminate, no need to wait for that. */
-        ZwClose(DereferenceSocketsThreadHandle);
-        DereferenceSocketsThreadHandle = NULL;
+        /* A registration that follows must not find this thread still running */
+        KeWaitForSingleObject(DereferenceSocketsThreadObject, Executive, KernelMode, FALSE, NULL);
+        ObDereferenceObject(DereferenceSocketsThreadObject);
+        DereferenceSocketsThreadObject = NULL;
     }
     KeReleaseMutex(&DereferenceSocketsThreadLock, FALSE);
 }
@@ -2622,6 +2641,8 @@ WskDeregister(_In_ PWSK_REGISTRATION reg)
     KIRQL OldIrql;
 
     FUNCTION_TRACE;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     KeAcquireSpinLock(&reg->ReservedRegistrationLock, &OldIrql);
     Client = reg->ReservedRegistrationContext;

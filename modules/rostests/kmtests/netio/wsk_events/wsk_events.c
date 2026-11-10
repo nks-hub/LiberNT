@@ -2,7 +2,7 @@
  * PROJECT:     LiberNT kernel-mode tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
- *              requests made at DISPATCH_LEVEL
+ *              requests made at DISPATCH_LEVEL, repeated registration
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -511,6 +511,65 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+VOID
+TestRegisterAgain(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver = NULL, Sender = NULL;
+    NTSTATUS Status;
+    ULONG Round;
+    LONG Count;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    for (Round = 0; Round < 64; Round++)
+    {
+        Status = WskRegister(&ClientNpi, &Registration);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        if (!NT_SUCCESS(Status))
+            return;
+        WskDeregister(&Registration);
+    }
+
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 2);
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Receiver == NULL || Sender == NULL)
+        goto close;
+
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = SendTo(Sender, "REGI0001", WSKEVENTS_PORT + 2);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(1, 2000);
+    ok_eq_long(Count, 1L);
+    ok(WasSeen("REGI0001"), "REGI0001 was not indicated after registering again\n");
+
+close:
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -557,5 +616,6 @@ TestMessageHandler(
 
     TestRun();
     TestStaticCallbacks();
+    TestRegisterAgain();
     return STATUS_SUCCESS;
 }

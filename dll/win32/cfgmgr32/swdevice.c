@@ -409,7 +409,7 @@ GetOwner(_In_ PCWSTR InstanceId)
     return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
 }
 
-static HANDLE SwDeviceOwnersLock;
+static HANDLE SwDeviceOwnersLock, SwDeviceOwnersNamespace;
 
 /* Any process can create a global name first and hold it; only administrators can open this namespace */
 static BOOL
@@ -449,11 +449,28 @@ CreateSwDeviceOwnersLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _
     {
         /* The namespace stays open as long as the lock */
         SwDeviceOwnersLock = CreateMutexW(&Security, FALSE, L"SoftwareDeviceOwners\\Lock");
-        if (!SwDeviceOwnersLock)
+        if (SwDeviceOwnersLock)
+            SwDeviceOwnersNamespace = Namespace;
+        else
             ClosePrivateNamespace(Namespace, 0);
     }
     LocalFree(Security.lpSecurityDescriptor);
     return SwDeviceOwnersLock != NULL;
+}
+
+BOOL
+WINAPI
+DllMain(_In_ HINSTANCE Instance, _In_ DWORD Reason, _In_opt_ PVOID Reserved)
+{
+    UNREFERENCED_PARAMETER(Instance);
+
+    /* Only FreeLibrary; a process that ends frees its handles itself */
+    if (Reason == DLL_PROCESS_DETACH && Reserved == NULL && SwDeviceOwnersLock)
+    {
+        CloseHandle(SwDeviceOwnersLock);
+        ClosePrivateNamespace(SwDeviceOwnersNamespace, 0);
+    }
+    return TRUE;
 }
 
 static HANDLE

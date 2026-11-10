@@ -3065,11 +3065,13 @@ ScmPreshutdownServices(VOID)
     {
         Running = 0;
         Now = GetTickCount64();
+        ScmLockDatabaseShared();
         for (i = 0; i < Count; i++)
         {
             if (Waits[i].Service->Status.dwCurrentState != SERVICE_STOPPED && Now < Waits[i].Deadline)
                 Running++;
         }
+        ScmUnlockDatabase();
         if (Running)
             Sleep(100);
     } while (Running);

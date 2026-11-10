@@ -8,6 +8,8 @@
 #include <apitest.h>
 #include <windows.h>
 #include <cfgmgr32.h>
+#include <initguid.h>
+#include <devpkey.h>
 #include <sddl.h>
 #include <swdevice.h>
 #include <stdio.h>
@@ -247,6 +249,81 @@ test_PropertyCountOverflow(CREATED *State)
 }
 
 static void
+test_Interface(CREATED *State)
+{
+    static const GUID Class = { 0x4c6e7449, 0x6e74, 0x6572, { 0x66, 0x61, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } };
+    static const DEVPROPKEY Key = { { 0x4c6e7453, 0x7754, 0x4465, { 0x76, 0x69, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } }, 3 };
+    static const WCHAR FriendlyName[] = L"LiberNT software device test interface";
+    DEVPROP_BOOLEAN Enabled = DEVPROP_FALSE;
+    DEVPROPERTY Properties[2];
+    PWSTR InterfaceId = NULL;
+    ULONG Value = 0x1234, Read = 0, Size;
+    DEVPROPTYPE Type = DEVPROP_TYPE_EMPTY;
+    WCHAR Name[64] = L"";
+    HSWDEVICE Device;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = Create(L"Interface", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+
+    ZeroMemory(Properties, sizeof(Properties));
+    Properties[0].CompKey.Key = Key;
+    Properties[0].CompKey.Store = DEVPROP_STORE_SYSTEM;
+    Properties[0].Type = DEVPROP_TYPE_UINT32;
+    Properties[0].BufferSize = sizeof(Value);
+    Properties[0].Buffer = &Value;
+    Properties[1].CompKey.Key = DEVPKEY_DeviceInterface_FriendlyName;
+    Properties[1].CompKey.Store = DEVPROP_STORE_SYSTEM;
+    Properties[1].Type = DEVPROP_TYPE_STRING;
+    Properties[1].BufferSize = sizeof(FriendlyName);
+    Properties[1].Buffer = (PVOID)FriendlyName;
+
+    hr = SwDeviceInterfaceRegister(Device, &Class, L"Ref", 2, Properties, FALSE, &InterfaceId);
+    ok(hr == S_OK, "SwDeviceInterfaceRegister returned 0x%08lx\n", hr);
+    ok(InterfaceId != NULL, "SwDeviceInterfaceRegister returned no interface\n");
+    if (SUCCEEDED(hr) && InterfaceId)
+    {
+        trace("The interface is %S\n", InterfaceId);
+        ok(!wcsncmp(InterfaceId, L"\\\\?\\", 4), "The interface %S does not start with \\\\?\\\n", InterfaceId);
+
+        Size = sizeof(Read);
+        Cr = CM_Get_Device_Interface_PropertyW(InterfaceId, &Key, &Type, (PBYTE)&Read, &Size, 0);
+        ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_UINT32 && Read == Value,
+           "The registered property is CR %lu, type 0x%lx, value 0x%lx\n", Cr, Type, Read);
+
+        Size = sizeof(Name);
+        Cr = CM_Get_Device_Interface_PropertyW(InterfaceId, &DEVPKEY_DeviceInterface_FriendlyName, &Type, (PBYTE)Name, &Size, 0);
+        ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_STRING && !wcscmp(Name, FriendlyName),
+           "The friendly name is CR %lu, type 0x%lx, %S\n", Cr, Type, Name);
+
+        Value = 0x5678;
+        hr = SwDeviceInterfacePropertySet(Device, InterfaceId, 1, Properties);
+        ok(hr == S_OK, "SwDeviceInterfacePropertySet returned 0x%08lx\n", hr);
+        Size = sizeof(Read);
+        Cr = CM_Get_Device_Interface_PropertyW(InterfaceId, &Key, &Type, (PBYTE)&Read, &Size, 0);
+        ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_UINT32 && Read == Value,
+           "The property set again is CR %lu, type 0x%lx, value 0x%lx\n", Cr, Type, Read);
+
+        hr = SwDeviceInterfaceSetState(Device, InterfaceId, TRUE);
+        trace("SwDeviceInterfaceSetState returned 0x%08lx\n", hr);
+        Size = sizeof(Enabled);
+        Cr = CM_Get_Device_Interface_PropertyW(InterfaceId, &DEVPKEY_DeviceInterface_Enabled, &Type, (PBYTE)&Enabled, &Size, 0);
+        ok(Cr == CR_SUCCESS, "Reading the state of the interface returned CR %lu\n", Cr);
+        ok((hr == S_OK) == (Enabled == DEVPROP_TRUE),
+           "SwDeviceInterfaceSetState returned 0x%08lx and the interface is %s\n", hr, Enabled == DEVPROP_TRUE ? "enabled" : "disabled");
+
+        SwMemFree(InterfaceId);
+    }
+
+    SwDeviceClose(Device);
+    WaitGone(State->InstanceId);
+}
+
+static void
 RunChild(void)
 {
     CREATED State;
@@ -300,6 +377,7 @@ START_TEST(SwDevice)
     test_DriverRequiredNoIds(&State);
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);
+    test_Interface(&State);
     test_ProcessEnd();
     CloseHandle(State.Event);
 }

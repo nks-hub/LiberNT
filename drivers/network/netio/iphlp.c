@@ -1024,7 +1024,7 @@ GetIfEntry2(
     Row->PhysicalMediumType = (NDIS_PHYSICAL_MEDIUM)Info.PhysicalMedium;
     Row->AccessType = Loopback ? NET_IF_ACCESS_LOOPBACK : (NET_IF_ACCESS_TYPE)Info.AccessType;
     Row->DirectionType = NET_IF_DIRECTION_SENDRECEIVE;
-    Row->InterfaceAndOperStatusFlags.HardwareInterface = !Loopback;
+    Row->InterfaceAndOperStatusFlags.HardwareInterface = !Loopback && Info.ConnectorPresent;
     Row->InterfaceAndOperStatusFlags.ConnectorPresent = Info.ConnectorPresent;
     Row->OperStatus = NetioOperStatus(Entry->if_operstatus);
     Row->InterfaceAndOperStatusFlags.NotMediaConnected = Row->OperStatus != IfOperStatusUp;

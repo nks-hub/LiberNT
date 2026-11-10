@@ -706,8 +706,10 @@ FindStoreInf(
     IN PCWSTR RequiredName,
     OUT PWSTR StoreInfFileName)
 {
-    WCHAR Root[MAX_PATH], Pattern[MAX_PATH], Candidate[MAX_PATH], Suffix[64];
+    WCHAR Root[MAX_PATH], Pattern[MAX_PATH], Candidate[MAX_PATH], Suffix[64], Long[MAX_PATH];
     WIN32_FIND_DATAW FindData;
+    PCWSTR Directory, Name;
+    DWORD Length, Attributes;
     ULONGLONG Hash;
     HANDLE hFind;
     BOOL Found = FALSE;
@@ -715,9 +717,27 @@ FindStoreInf(
     if (!GetRepositoryRoot(Root, ARRAY_SIZE(Root)))
         return FALSE;
 
-    if (_wcsnicmp(Published, Root, lstrlenW(Root)) == 0)
+    Length = GetLongPathNameW(Published, Long, ARRAY_SIZE(Long));
+    if (Length != 0 && Length < ARRAY_SIZE(Long))
+        Published = Long;
+
+    Length = lstrlenW(Root);
+    if (_wcsnicmp(Published, Root, Length) == 0 && Published[Length] == L'\\')
     {
-        if (GetFileAttributesW(Published) == INVALID_FILE_ATTRIBUTES)
+        /* Only <name>.inf in a directory <name>.inf_<suffix> names a package, no other file, stream or directory */
+        Directory = Published + Length + 1;
+        Name = wcschr(Directory, L'\\');
+        if (!Name || wcschr(Name + 1, L'\\') || wcschr(Directory, L':'))
+            return FALSE;
+        Name++;
+        Length = lstrlenW(Name);
+        if (Length < 4 || _wcsicmp(Name + Length - 4, L".inf") != 0 ||
+            _wcsnicmp(Directory, Name, Length) != 0 || Directory[Length] != L'_')
+        {
+            return FALSE;
+        }
+        Attributes = GetFileAttributesW(Published);
+        if (Attributes == INVALID_FILE_ATTRIBUTES || (Attributes & FILE_ATTRIBUTE_DIRECTORY))
             return FALSE;
         lstrcpyW(StoreInfFileName, Published);
         return TRUE;

@@ -1730,19 +1730,23 @@ NetioCompareInterfaces(
 {
     ULONG i, j;
 
-    for (i = 0; i < NewCount; i++)
-    {
-        for (j = 0; j < OldCount && Old[j].InterfaceIndex != New[i].InterfaceIndex; j++);
-        if (j == OldCount)
-            NetioNotify(NETIO_CHANGE_INTERFACE, New[i].Family, &New[i], MibAddInstance, FALSE);
-        else if (NetioInterfaceChanged(&New[i], &Old[j]))
-            NetioNotify(NETIO_CHANGE_INTERFACE, New[i].Family, &New[i], MibParameterNotification, FALSE);
-    }
     for (j = 0; j < OldCount; j++)
     {
-        for (i = 0; i < NewCount && Old[j].InterfaceIndex != New[i].InterfaceIndex; i++);
+        for (i = 0; i < NewCount && Old[j].InterfaceLuid.Value != New[i].InterfaceLuid.Value; i++);
         if (i == NewCount)
             NetioNotify(NETIO_CHANGE_INTERFACE, Old[j].Family, &Old[j], MibDeleteInstance, FALSE);
+    }
+    for (i = 0; i < NewCount; i++)
+    {
+        for (j = 0; j < OldCount && Old[j].InterfaceLuid.Value != New[i].InterfaceLuid.Value; j++);
+        if (j == OldCount)
+        {
+            NetioNotify(NETIO_CHANGE_INTERFACE, New[i].Family, &New[i], MibAddInstance, FALSE);
+            continue;
+        }
+        ASSERT(Old[j].Family == New[i].Family);
+        if (NetioInterfaceChanged(&New[i], &Old[j]))
+            NetioNotify(NETIO_CHANGE_INTERFACE, New[i].Family, &New[i], MibParameterNotification, FALSE);
     }
 }
 

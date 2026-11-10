@@ -12,6 +12,7 @@
 #include <ipifcons.h>
 #include <ntddndis.h>
 #include <devpropdef.h>
+#include <sddl.h>
 
 typedef struct _NET_INF_KEYWORDS
 {
@@ -1005,6 +1006,57 @@ GetSuggestedInstanceId(
     return !Used;
 }
 
+static HANDLE InstanceIdLock;
+
+/* Any process can create a global name first and hold it; only administrators can open this namespace */
+static
+BOOL
+CALLBACK
+CreateInstanceIdLock(
+    _Inout_ PINIT_ONCE Once,
+    _Inout_opt_ PVOID Parameter,
+    _Out_opt_ PVOID *Context)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD dwSize = sizeof(Admins);
+    HANDLE hBoundary, hNamespace = NULL;
+    DWORD Try;
+
+    UNREFERENCED_PARAMETER(Once);
+    UNREFERENCED_PARAMETER(Parameter);
+    UNREFERENCED_PARAMETER(Context);
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &dwSize) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+                                                              &Security.lpSecurityDescriptor, NULL))
+    {
+        return FALSE;
+    }
+    hBoundary = CreateBoundaryDescriptorW(L"NetCfgxInstanceId", 0);
+    if (hBoundary && AddSIDToBoundaryDescriptor(&hBoundary, Admins))
+    {
+        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        for (Try = 0; !hNamespace && Try < 3; Try++)
+        {
+            hNamespace = CreatePrivateNamespaceW(&Security, hBoundary, L"NetCfgxInstanceId");
+            if (!hNamespace)
+                hNamespace = OpenPrivateNamespaceW(hBoundary, L"NetCfgxInstanceId");
+        }
+    }
+    if (hBoundary)
+        DeleteBoundaryDescriptor(hBoundary);
+    if (hNamespace)
+    {
+        /* The namespace stays open as long as the lock */
+        InstanceIdLock = CreateMutexW(&Security, FALSE, L"NetCfgxInstanceId\\Lock");
+        if (!InstanceIdLock)
+            ClosePrivateNamespace(hNamespace, 0);
+    }
+    LocalFree(Security.lpSecurityDescriptor);
+    return InstanceIdLock != NULL;
+}
+
 static
 DWORD
 InstallNetClient(VOID)
@@ -1052,6 +1104,7 @@ NetClassInstaller(
     LPWSTR UuidRpcString = NULL;
     LPWSTR UuidString = NULL;
     HKEY hDriverKey;
+    static INIT_ONCE InstanceIdLockOnce = INIT_ONCE_STATIC_INIT;
     HANDLE hInstanceIdLock = NULL;
     LONG rc;
     DWORD dwLength, dwWait;
@@ -1177,15 +1230,11 @@ NetClassInstaller(
     /* Two installs must not pick the same suggested GUID before InstallNetDevice publishes it */
     if (IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET))
     {
-        hInstanceIdLock = CreateMutexW(NULL, FALSE, L"Global\\NetCfgxInstanceId");
-        if (hInstanceIdLock)
+        if (InitOnceExecuteOnce(&InstanceIdLockOnce, CreateInstanceIdLock, NULL, NULL))
         {
-            dwWait = WaitForSingleObject(hInstanceIdLock, INFINITE);
-            if (dwWait != WAIT_OBJECT_0 && dwWait != WAIT_ABANDONED)
-            {
-                CloseHandle(hInstanceIdLock);
-                hInstanceIdLock = NULL;
-            }
+            dwWait = WaitForSingleObject(InstanceIdLock, INFINITE);
+            if (dwWait == WAIT_OBJECT_0 || dwWait == WAIT_ABANDONED)
+                hInstanceIdLock = InstanceIdLock;
         }
         if (!hInstanceIdLock)
             WARN("Cannot lock the instance IDs (error %lu)\n", GetLastError());
@@ -1242,10 +1291,7 @@ NetClassInstaller(
 
 cleanup:
     if (hInstanceIdLock)
-    {
         ReleaseMutex(hInstanceIdLock);
-        CloseHandle(hInstanceIdLock);
-    }
     if (hInf != INVALID_HANDLE_VALUE)
         SetupCloseInfFile(hInf);
     if (UuidRpcString != NULL)

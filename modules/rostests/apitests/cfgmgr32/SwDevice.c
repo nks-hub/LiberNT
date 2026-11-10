@@ -36,6 +36,13 @@ Created(HSWDEVICE hSwDevice, HRESULT CreateResult, PVOID Context, PCWSTR DeviceI
     SetEvent(State->Event);
 }
 
+static VOID WINAPI
+CreatedAndClosed(HSWDEVICE hSwDevice, HRESULT CreateResult, PVOID Context, PCWSTR DeviceInstanceId)
+{
+    SwDeviceClose(hSwDevice);
+    Created(NULL, CreateResult, Context, DeviceInstanceId);
+}
+
 static HRESULT
 Create(PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State, HSWDEVICE *Device)
 {
@@ -158,6 +165,31 @@ test_DriverRequiredNoIds(CREATED *State)
     ok(IsPresent(State->InstanceId), "%S is not present\n", State->InstanceId);
     SwDeviceClose(Device);
     WaitGone(State->InstanceId);
+}
+
+static void
+test_CloseInCallback(CREATED *State)
+{
+    static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\CloseInCallback";
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    Info.pszInstanceId = L"CloseInCallback";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+    State->Result = E_PENDING;
+    ResetEvent(State->Event);
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, CreatedAndClosed, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(WaitForSingleObject(State->Event, 30000) == WAIT_OBJECT_0, "The creation did not complete\n");
+    ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+    ok(!_wcsicmp(State->InstanceId, InstanceId), "The callback read %S after closing its device\n", State->InstanceId);
+    ok(WaitGone(InstanceId), "%S stayed after its callback closed it\n", InstanceId);
 }
 
 static void
@@ -375,6 +407,7 @@ START_TEST(SwDevice)
     test_Lifetime(&State);
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
+    test_CloseInCallback(&State);
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);
     test_Interface(&State);

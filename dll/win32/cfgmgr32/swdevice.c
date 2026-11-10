@@ -662,6 +662,7 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     PSW_DEVICE Device = Parameter;
     SW_DEVICE_CREATE_CALLBACK Callback = Device->Callback;
     PVOID Context = Device->Context;
+    WCHAR InstanceId[MAX_DEVICE_ID_LEN];
     HRESULT hr;
 
     hr = CreateSwDeviceNode(Device);
@@ -677,7 +678,8 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     }
 
     /* The callback may close the handle; nothing touches Device afterwards */
-    Callback((HSWDEVICE)Device, hr, Context, SUCCEEDED(hr) ? Device->InstanceId : NULL);
+    wcscpy(InstanceId, Device->InstanceId);
+    Callback((HSWDEVICE)Device, hr, Context, SUCCEEDED(hr) ? InstanceId : NULL);
     return 0;
 }
 

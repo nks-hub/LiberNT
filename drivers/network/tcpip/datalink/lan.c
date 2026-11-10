@@ -1489,6 +1489,7 @@ BOOLEAN BindAdapter(
     BindInfo.MTU           = Adapter->MTU;
     BindInfo.Address       = (PUCHAR)&Adapter->HWAddress;
     BindInfo.AddressLength = Adapter->HWAddressLength;
+    BindInfo.LinkType      = Adapter->Media == NdisMediumIP ? IP_LINK_RAW_IP : IP_LINK_ETHERNET;
     BindInfo.Transmit      = LANTransmit;
 
     IF = IPCreateInterface(&BindInfo);

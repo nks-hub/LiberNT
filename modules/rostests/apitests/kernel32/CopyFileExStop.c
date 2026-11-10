@@ -11,10 +11,43 @@
 #define STOP_AT (2 * 1024 * 1024)
 #define LOCK_AT (3 * 1024 * 1024 + 4096)
 
-static WCHAR Source[MAX_PATH], Dest[MAX_PATH];
+static WCHAR Source[MAX_PATH], Dest[MAX_PATH], Renamed[MAX_PATH];
 static LONGLONG StopAt, StoppedAt;
 static LONGLONG FirstReport, FirstChunk;
 static DWORD StopAction;
+static BOOL (WINAPI *pSetFileInformationByHandle)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, void *, DWORD);
+static BOOL RenamedDest, ReplacedDest;
+static DWORD RenameError;
+
+static DWORD CALLBACK
+RenameProgress(LARGE_INTEGER TotalFileSize, LARGE_INTEGER TotalBytesTransferred, LARGE_INTEGER StreamSize,
+               LARGE_INTEGER StreamBytesTransferred, DWORD StreamNumber, DWORD Reason, HANDLE SourceFile,
+               HANDLE DestFile, LPVOID Data)
+{
+    union
+    {
+        FILE_RENAME_INFO Info;
+        UCHAR Buffer[sizeof(FILE_RENAME_INFO) + MAX_PATH * sizeof(WCHAR)];
+    } Rename;
+    HANDLE File;
+
+    if (TotalBytesTransferred.QuadPart < STOP_AT)
+        return PROGRESS_CONTINUE;
+
+    memset(&Rename, 0, sizeof(Rename));
+    Rename.Info.FileNameLength = (DWORD)(wcslen(Renamed) * sizeof(WCHAR));
+    memcpy(Rename.Info.FileName, Renamed, Rename.Info.FileNameLength + sizeof(WCHAR));
+    RenamedDest = pSetFileInformationByHandle(DestFile, FileRenameInfo, &Rename, sizeof(Rename));
+    RenameError = GetLastError();
+    if (RenamedDest)
+    {
+        File = CreateFileW(Dest, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+        ReplacedDest = File != INVALID_HANDLE_VALUE;
+        if (ReplacedDest)
+            CloseHandle(File);
+    }
+    return PROGRESS_STOP;
+}
 
 static DWORD CALLBACK
 Progress(LARGE_INTEGER TotalFileSize, LARGE_INTEGER TotalBytesTransferred, LARGE_INTEGER StreamSize,
@@ -126,6 +159,41 @@ test_FailedRead(DWORD Flags)
     ok(SameAsSource(), "Flags 0x%lx: the destination differs from the source\n", Flags);
 }
 
+static void
+test_StopAfterRename(void)
+{
+    BOOL Ret;
+
+    pSetFileInformationByHandle = (void *)GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetFileInformationByHandle");
+    if (!pSetFileInformationByHandle)
+    {
+        skip("SetFileInformationByHandle is not available\n");
+        return;
+    }
+
+    DeleteFileW(Dest);
+    DeleteFileW(Renamed);
+    RenamedDest = ReplacedDest = FALSE;
+    RenameError = 0;
+    SetLastError(0xdeadbeef);
+    Ret = CopyFileExW(Source, Dest, RenameProgress, NULL, NULL, 0);
+    ok(!Ret && GetLastError() == ERROR_REQUEST_ABORTED, "Copy stopped after a rename returned %d (%lu)\n", Ret, GetLastError());
+    if (!RenamedDest || !ReplacedDest)
+    {
+        skip("Cannot replace the destination during the copy (renamed %d, error %lu, replaced %d)\n",
+             RenamedDest, RenameError, ReplacedDest);
+    }
+    else
+    {
+        ok(GetFileAttributesW(Dest) != INVALID_FILE_ATTRIBUTES,
+           "The stopped copy deleted the file that replaced its destination (%lu)\n", GetLastError());
+        trace("The renamed destination %s after the stop\n",
+              GetFileAttributesW(Renamed) == INVALID_FILE_ATTRIBUTES ? "is gone" : "is still there");
+    }
+    DeleteFileW(Renamed);
+    DeleteFileW(Dest);
+}
+
 START_TEST(CopyFileExStop)
 {
     static UCHAR Chunk[65536];
@@ -147,6 +215,7 @@ START_TEST(CopyFileExStop)
     trace("Copying in %S on %S\n", Dir, FileSystem);
     StringCchPrintfW(Source, ARRAYSIZE(Source), L"%sCopyFileExStop-src.bin", Dir);
     StringCchPrintfW(Dest, ARRAYSIZE(Dest), L"%sCopyFileExStop-dst.bin", Dir);
+    StringCchPrintfW(Renamed, ARRAYSIZE(Renamed), L"%sCopyFileExStop-renamed.bin", Dir);
 
     File = CreateFileW(Source, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
     ok(File != INVALID_HANDLE_VALUE, "Cannot create the source (%lu)\n", GetLastError());
@@ -176,6 +245,7 @@ START_TEST(CopyFileExStop)
     test_Stop(COPY_FILE_RESTARTABLE, PROGRESS_CANCEL);
     test_FailedRead(0);
     test_FailedRead(COPY_FILE_RESTARTABLE);
+    test_StopAfterRename();
 
     DeleteFileW(Dest);
     DeleteFileW(Source);

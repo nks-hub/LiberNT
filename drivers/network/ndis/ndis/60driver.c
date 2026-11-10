@@ -1036,25 +1036,32 @@ Ndis6FindDriverBlock(_In_ PDRIVER_OBJECT DriverObject)
 /* TRUE if DeviceObject is one of the bridge's adapter FDOs (PnP or IM
  * instance). KMDF's device objects share the driver object on hybrid
  * drivers, so DeviceExtension can only be trusted after this check. */
-PLOGICAL_ADAPTER
-Ndis6FindAdapterByFdo(_In_ PDEVICE_OBJECT DeviceObject)
+static PLOGICAL_ADAPTER
+Ndis6FindAdapterByFdoLocked(_In_ PDEVICE_OBJECT DeviceObject)
 {
     PLIST_ENTRY entry;
-    PLOGICAL_ADAPTER found = NULL;
-    KIRQL       oldIrql;
     extern LIST_ENTRY AdapterListHead;
-    extern KSPIN_LOCK AdapterListLock;
 
-    KeAcquireSpinLock(&AdapterListLock, &oldIrql);
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     for (entry = AdapterListHead.Flink; entry != &AdapterListHead; entry = entry->Flink)
     {
         PLOGICAL_ADAPTER adapter = CONTAINING_RECORD(entry, LOGICAL_ADAPTER, ListEntry);
         if (adapter->NdisMiniportBlock.DeviceObject == DeviceObject)
-        {
-            found = adapter;
-            break;
-        }
+            return adapter;
     }
+    return NULL;
+}
+
+PLOGICAL_ADAPTER
+Ndis6FindAdapterByFdo(_In_ PDEVICE_OBJECT DeviceObject)
+{
+    PLOGICAL_ADAPTER found;
+    KIRQL       oldIrql;
+    extern KSPIN_LOCK AdapterListLock;
+
+    KeAcquireSpinLock(&AdapterListLock, &oldIrql);
+    found = Ndis6FindAdapterByFdoLocked(DeviceObject);
     KeReleaseSpinLock(&AdapterListLock, oldIrql);
     return found;
 }
@@ -1133,10 +1140,26 @@ Ndis6TryDispatchAdapterFdoIrp(
     PIO_STACK_LOCATION Stack;
     NTSTATUS           Status;
     ULONG              Written = 0;
+    BOOLEAN            Referenced;
+    KIRQL              OldIrql;
+    extern KSPIN_LOCK  AdapterListLock;
 
-    Adapter = Ndis6FindAdapterByFdo(DeviceObject);
+    KeAcquireSpinLock(&AdapterListLock, &OldIrql);
+    Adapter = Ndis6FindAdapterByFdoLocked(DeviceObject);
+    Referenced = Adapter != NULL && Ndis6ReferenceAdapterLifecycle(Adapter);
+    KeReleaseSpinLock(&AdapterListLock, OldIrql);
+
     if (Adapter == NULL)
         return FALSE;
+
+    if (!Referenced)
+    {
+        Irp->IoStatus.Status = STATUS_DELETE_PENDING;
+        Irp->IoStatus.Information = 0;
+        IoCompleteRequest(Irp, IO_NO_INCREMENT);
+        *OutStatus = STATUS_DELETE_PENDING;
+        return TRUE;
+    }
 
     Stack   = IoGetCurrentIrpStackLocation(Irp);
 
@@ -1170,6 +1193,7 @@ Ndis6TryDispatchAdapterFdoIrp(
                     OutLength = 0;
                 }
 
+                ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
                 Status = MiniQueryInformation(Adapter, *(PNDIS_OID)Irp->AssociatedIrp.SystemBuffer, OutLength, OutBuffer, &Written);
             }
             else
@@ -1183,6 +1207,8 @@ Ndis6TryDispatchAdapterFdoIrp(
             Status = STATUS_NOT_SUPPORTED;
             break;
     }
+
+    Ndis6DereferenceAdapterLifecycle(Adapter);
 
     /* Complete preserving the bytes-written count (Ndis6CompleteIrp
      * zeroes Information, so it can't be used here). */

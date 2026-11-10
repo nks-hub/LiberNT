@@ -369,7 +369,8 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
     EnterCriticalSection(&ScmNotifyLock);
 
-    lpService->dwNotifySequence++;
+    if (++lpService->dwNotifySequence == 0)
+        lpService->dwNotifySequence = 1;
 
     for (Entry = lpService->HandleListHead.Flink;
          Entry != &lpService->HandleListHead;
@@ -7060,14 +7061,6 @@ RNotifyServiceStatusChange(
     ScmLockDatabaseShared();
     EnterCriticalSection(&ScmNotifyLock);
 
-    if (lpService->bDeleted)
-    {
-        LeaveCriticalSection(&ScmNotifyLock);
-        ScmUnlockDatabase();
-        ScmReleaseNotify(pNotify);
-        return ERROR_SERVICE_MARKED_FOR_DELETE;
-    }
-
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
     /* A renewed subscription names the last change it saw, so one made since is not lost */
     dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
@@ -7075,6 +7068,15 @@ RNotifyServiceStatusChange(
         bReport = dwSequence != 0 && dwSequence != lpService->dwNotifySequence;
     else
         bReport = !hSvc->bStatusNotified;
+
+    /* A subscription gets the change it missed before it learns that the service is deleted */
+    if (lpService->bDeleted && !(pNotify->bSubscription && bReport))
+    {
+        LeaveCriticalSection(&ScmNotifyLock);
+        ScmUnlockDatabase();
+        ScmReleaseNotify(pNotify);
+        return ERROR_SERVICE_MARKED_FOR_DELETE;
+    }
 
     if (bReport && (pNotify->dwNotifyMask & dwMask))
     {

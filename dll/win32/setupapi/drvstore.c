@@ -554,17 +554,19 @@ StageModelCopyFiles(
 {
     WCHAR Models[LINE_LEN + 1], Install[LINE_LEN], Actual[LINE_LEN + 16];
     INFCONTEXT Manufacturer, Model;
+    BOOL Found;
 
     if (!SetupFindFirstLineW(hInf, L"Manufacturer", NULL, &Manufacturer))
         return TRUE;
 
     do
     {
-        if (!SetupDiGetActualModelsSectionW(&Manufacturer, NULL, Models, ARRAY_SIZE(Models), NULL, NULL) ||
-            !SetupFindFirstLineW(hInf, Models, NULL, &Model))
-        {
+        /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
+        Found = SetupGetFieldCount(&Manufacturer) < 2
+                    ? SetupGetStringFieldW(&Manufacturer, 1, Models, ARRAY_SIZE(Models), NULL)
+                    : SetupDiGetActualModelsSectionW(&Manufacturer, NULL, Models, ARRAY_SIZE(Models), NULL, NULL);
+        if (!Found || !SetupFindFirstLineW(hInf, Models, NULL, &Model))
             continue;
-        }
 
         do
         {

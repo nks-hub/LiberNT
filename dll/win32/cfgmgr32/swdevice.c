@@ -8,6 +8,7 @@
 #include "cfgmgr32_private.h"
 #include <devpkey.h>
 #include <newdev.h>
+#include <sddl.h>
 #include <swdevice.h>
 
 WINE_DEFAULT_DEBUG_CHANNEL(cfgmgr32);
@@ -408,29 +409,78 @@ GetOwner(_In_ PCWSTR InstanceId)
     return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
 }
 
+static HANDLE SwDeviceOwnersLock;
+
+/* Any process can create a global name first and hold it; only administrators can open this namespace */
+static BOOL
+CALLBACK
+CreateSwDeviceOwnersLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ PVOID *Context)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD Size = sizeof(Admins);
+    HANDLE Boundary, Namespace = NULL;
+    ULONG Try;
+
+    UNREFERENCED_PARAMETER(Once);
+    UNREFERENCED_PARAMETER(Parameter);
+    UNREFERENCED_PARAMETER(Context);
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+                                                              &Security.lpSecurityDescriptor, NULL))
+    {
+        return FALSE;
+    }
+    Boundary = CreateBoundaryDescriptorW(L"SoftwareDeviceOwners", 0);
+    if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
+    {
+        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        for (Try = 0; !Namespace && Try < 3; Try++)
+        {
+            Namespace = CreatePrivateNamespaceW(&Security, Boundary, L"SoftwareDeviceOwners");
+            if (!Namespace)
+                Namespace = OpenPrivateNamespaceW(Boundary, L"SoftwareDeviceOwners");
+        }
+    }
+    if (Boundary)
+        DeleteBoundaryDescriptor(Boundary);
+    if (Namespace)
+    {
+        /* The namespace stays open as long as the lock */
+        SwDeviceOwnersLock = CreateMutexW(&Security, FALSE, L"SoftwareDeviceOwners\\Lock");
+        if (!SwDeviceOwnersLock)
+            ClosePrivateNamespace(Namespace, 0);
+    }
+    LocalFree(Security.lpSecurityDescriptor);
+    return SwDeviceOwnersLock != NULL;
+}
+
 static HANDLE
 LockSwDeviceOwners(VOID)
 {
-    HANDLE Lock = CreateMutexW(NULL, FALSE, L"Global\\SoftwareDeviceOwners");
+    static INIT_ONCE Once = INIT_ONCE_STATIC_INIT;
     DWORD Wait;
 
-    if (!Lock)
+    if (!InitOnceExecuteOnce(&Once, CreateSwDeviceOwnersLock, NULL, NULL))
+    {
+        if (GetLastError() == ERROR_SUCCESS)
+            SetLastError(ERROR_GEN_FAILURE);
         return NULL;
-    Wait = WaitForSingleObject(Lock, INFINITE);
+    }
+    Wait = WaitForSingleObject(SwDeviceOwnersLock, INFINITE);
     if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
     {
-        CloseHandle(Lock);
         SetLastError(ERROR_GEN_FAILURE);
         return NULL;
     }
-    return Lock;
+    return SwDeviceOwnersLock;
 }
 
 static VOID
 UnlockSwDeviceOwners(_In_ HANDLE Lock)
 {
     ReleaseMutex(Lock);
-    CloseHandle(Lock);
 }
 
 static VOID

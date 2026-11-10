@@ -984,6 +984,23 @@ START_TEST(DriverPackage)
 
     DeleteTestDriver();
 
+    {
+        WCHAR Other[MAX_PATH];
+
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%s\\TESTPKG.GPD", Dir);
+        if (CopyFileW(Other, StoreInf, FALSE))
+        {
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(FAILED(hr), "DeletePrinterDriverPackageW returned 0x%lx for an INF that is not the one the directory is named after\n", hr);
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted\n", StoreInf);
+            ok(CopyFileW(InfPath, StoreInf, FALSE), "Restoring %S failed with %lu\n", StoreInf, GetLastError());
+        }
+        else
+        {
+            skip("Cannot replace %S (%lu)\n", StoreInf, GetLastError());
+        }
+    }
+
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
     ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
     ok(GetFileAttributesW(StoreInf) == INVALID_FILE_ATTRIBUTES, "%S still exists\n", StoreInf);

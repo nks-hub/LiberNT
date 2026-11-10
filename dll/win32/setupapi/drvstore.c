@@ -50,6 +50,17 @@ GetArchitectureName(
     }
 }
 
+static const WORD StoreArchitectures[] =
+{
+    PROCESSOR_ARCHITECTURE_INTEL,
+    PROCESSOR_ARCHITECTURE_AMD64,
+    PROCESSOR_ARCHITECTURE_ARM,
+    PROCESSOR_ARCHITECTURE_ARM64,
+    PROCESSOR_ARCHITECTURE_IA64,
+    PROCESSOR_ARCHITECTURE_RISCV64,
+    PROCESSOR_ARCHITECTURE_PPC,
+};
+
 static BOOL
 GetRepositoryRoot(
     OUT PWSTR Buffer,
@@ -1036,6 +1047,11 @@ FindStoreInf(
     if (Length != 0 && Length < ARRAY_SIZE(Long))
         Published = Long;
 
+    if (!HashFileContents(Published, &Hash))
+        return FALSE;
+
+    swprintf(Suffix, ARRAY_SIZE(Suffix), L"_%s_%016I64x", GetArchitectureName(Architecture), Hash);
+
     Length = lstrlenW(Root);
     if (_wcsnicmp(Published, Root, Length) == 0 && Published[Length] == L'\\')
     {
@@ -1054,14 +1070,15 @@ FindStoreInf(
         Attributes = GetFileAttributesW(Published);
         if (Attributes == INVALID_FILE_ATTRIBUTES || (Attributes & FILE_ATTRIBUTE_DIRECTORY))
             return FALSE;
+        if (_wcsnicmp(Directory + Length, Suffix, lstrlenW(Suffix)) != 0 ||
+            Directory + Length + lstrlenW(Suffix) + 1 != Name)
+        {
+            return FALSE;
+        }
         lstrcpyW(StoreInfFileName, Published);
         return TRUE;
     }
 
-    if (!HashFileContents(Published, &Hash))
-        return FALSE;
-
-    swprintf(Suffix, ARRAY_SIZE(Suffix), L"_%s_%016I64x", GetArchitectureName(Architecture), Hash);
     if (lstrlenW(Root) + 2 + lstrlenW(Suffix) >= MAX_PATH)
         return FALSE;
 
@@ -1100,6 +1117,25 @@ FindStoreInf(
     return Found;
 }
 
+static BOOL
+FindStoreInfOfAnyArchitecture(
+    IN PCWSTR Published,
+    IN PCWSTR RequiredName,
+    OUT PWSTR StoreInfFileName)
+{
+    DWORD i;
+
+    if (FindStoreInf(Published, RequiredName, GetNativeArchitecture(), StoreInfFileName))
+        return TRUE;
+
+    for (i = 0; i < ARRAY_SIZE(StoreArchitectures); i++)
+    {
+        if (FindStoreInf(Published, RequiredName, StoreArchitectures[i], StoreInfFileName))
+            return TRUE;
+    }
+    return FALSE;
+}
+
 BOOL
 SETUPAPI_FindDriverStoreInf(
     IN PCWSTR FileName,
@@ -1109,7 +1145,7 @@ SETUPAPI_FindDriverStoreInf(
 
     if (!GetPublishedInfPath(FileName, Published))
         return FALSE;
-    return FindStoreInf(Published, NULL, GetNativeArchitecture(), StoreInfFileName);
+    return FindStoreInfOfAnyArchitecture(Published, NULL, StoreInfFileName);
 }
 
 PCWSTR
@@ -1438,10 +1474,12 @@ DriverStoreDeleteDriverPackageW(
     IN PVOID Reserved2)
 {
     WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
-    PWSTR Last;
+    PWSTR Last, BaseName;
+    DWORD Length;
 
-    if (!FindSourceStoreInf(InfPath, GetNativeArchitecture(), Source, StoreInf) &&
-        !FindSourceStoreInf(InfPath, GetProcessArchitecture(), Source, StoreInf))
+    Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
+    if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName ||
+        !FindStoreInfOfAnyArchitecture(Source, BaseName, StoreInf))
     {
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     }

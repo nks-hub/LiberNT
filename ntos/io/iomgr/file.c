@@ -4656,6 +4656,7 @@ typedef struct _IOP_CANCEL_IO_APC_CONTEXT
     BOOLEAN Found;
     BOOLEAN SynchronousOnly;
     BOOLEAN PortOnly;
+    PVOID CancelAlert;
 } IOP_CANCEL_IO_APC_CONTEXT, *PIOP_CANCEL_IO_APC_CONTEXT;
 
 static
@@ -4763,10 +4764,13 @@ IopCancelIoFileExKernelApc(
 
     if (Context->SynchronousOnly && NotCancelled && Thread->Alertable && Thread->WaitMode == UserMode)
     {
-        /* An alert that was already pending belongs to its sender and is not recorded as ours */
-        BOOLEAN Recorded = IopRecordCancelAlert(NotCancelled);
+        ASSERT(Context->CancelAlert != NULL);
 
-        if (KeAlertThread(Thread, UserMode) && Recorded)
+        IopRecordCancelAlert(Context->CancelAlert, NotCancelled);
+        Context->CancelAlert = NULL;
+
+        /* An alert that was already pending belongs to its sender and is not recorded as ours */
+        if (KeAlertThread(Thread, UserMode))
             IopForgetCancelAlert(NotCancelled);
     }
     Context->Status = STATUS_SUCCESS;
@@ -4815,11 +4819,24 @@ IopCancelIoFileExInThread(
     Context.Found = FALSE;
     Context.SynchronousOnly = SynchronousOnly;
     Context.PortOnly = PortOnly;
+    Context.CancelAlert = NULL;
+
+    if (SynchronousOnly)
+    {
+        /* The APC cannot fail, so the record of the alert it may send exists before it runs */
+        Context.CancelAlert = IopAllocateCancelAlert();
+        if (!Context.CancelAlert)
+            return STATUS_INSUFFICIENT_RESOURCES;
+    }
 
     KeInitializeApc(&Context.Apc, &Thread->Tcb, OriginalApcEnvironment, IopCancelIoFileExKernelApc, IopCancelIoFileExRundownApc, NULL, KernelMode, NULL);
 
     if (!KeInsertQueueApc(&Context.Apc, &Context, NULL, IO_NO_INCREMENT))
+    {
+        if (Context.CancelAlert)
+            IopFreeCancelAlert(Context.CancelAlert);
         return STATUS_SUCCESS;
+    }
 
     /*
      * Thread IRP lists are synchronized by disabling special kernel APCs in
@@ -4827,6 +4844,10 @@ IopCancelIoFileExInThread(
      * until the APC has either run or been rundown.
      */
     Status = KeWaitForSingleObject(&Context.Event, Executive, KernelMode, FALSE, NULL);
+    ASSERT(Status == STATUS_SUCCESS);
+
+    if (Context.CancelAlert)
+        IopFreeCancelAlert(Context.CancelAlert);
 
     if (NT_SUCCESS(Status))
     {

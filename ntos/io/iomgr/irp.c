@@ -31,29 +31,45 @@ static LONG IopCancelAlertCount;
 
 /* PRIVATE FUNCTIONS  ********************************************************/
 
-BOOLEAN
+PVOID
+NTAPI
+IopAllocateCancelAlert(VOID)
+{
+    PAGED_CODE();
+
+    return ExAllocatePoolWithTag(NonPagedPool, sizeof(IOP_CANCEL_ALERT), TAG_IO);
+}
+
+VOID
+NTAPI
+IopFreeCancelAlert(
+    _In_ PVOID Record)
+{
+    ASSERT(Record != NULL);
+
+    ExFreePoolWithTag(Record, TAG_IO);
+}
+
+VOID
 NTAPI
 IopRecordCancelAlert(
+    _In_ PVOID Record,
     _In_ PIRP Irp)
 {
-    PIOP_CANCEL_ALERT Alert;
+    PIOP_CANCEL_ALERT Alert = Record;
     KIRQL OldIrql;
 
     ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+    ASSERT(Alert != NULL);
     ASSERT(Irp->Type == IO_TYPE_IRP);
     ASSERT(Irp->Tail.Overlay.Thread == PsGetCurrentThread());
     ASSERT(!IsListEmpty(&Irp->ThreadListEntry));
-
-    Alert = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Alert), TAG_IO);
-    if (!Alert)
-        return FALSE;
 
     Alert->Irp = Irp;
     KeAcquireSpinLock(&IopCancelAlertLock, &OldIrql);
     InsertTailList(&IopCancelAlertList, &Alert->ListEntry);
     IopCancelAlertCount++;
     KeReleaseSpinLock(&IopCancelAlertLock, OldIrql);
-    return TRUE;
 }
 
 BOOLEAN
@@ -169,9 +185,8 @@ IopAbortInterruptedIrp(IN PKEVENT EventObject,
     /* Check if nobody completed it yet */
     if (!KeReadStateEvent(EventObject))
     {
-        /* The interrupted wait took the alert of CancelSynchronousIo; one sent later is not ours to drop */
-        if (!KeGetCurrentThread()->Alerted[UserMode])
-            IopForgetCancelAlert(Irp);
+        /* The interrupted wait took the alert of CancelSynchronousIo; one pending now was sent later */
+        IopForgetCancelAlert(Irp);
 
         /* First, cancel it */
         CancelResult = IoCancelIrp(Irp);

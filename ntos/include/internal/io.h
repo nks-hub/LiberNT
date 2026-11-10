@@ -1233,9 +1233,22 @@ IopAbortInterruptedIrp(
     IN PIRP Irp
 );
 
-BOOLEAN
+PVOID
+NTAPI
+IopAllocateCancelAlert(
+    VOID
+);
+
+VOID
+NTAPI
+IopFreeCancelAlert(
+    _In_ PVOID Record
+);
+
+VOID
 NTAPI
 IopRecordCancelAlert(
+    _In_ PVOID Record,
     _In_ PIRP Irp
 );
 

@@ -226,7 +226,7 @@ static VOID
 DeleteTestDriver(VOID)
 {
     static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT",
-                                    L"TESTREN.DAT" };
+                                    L"TESTREN.DAT", L"TESTROLL.DAT" };
     static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME, LOCK_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
@@ -836,6 +836,7 @@ static VOID
 TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
 {
     WCHAR Driver[MAX_PATH], Config[MAX_PATH], Data[MAX_PATH], Missing[MAX_PATH], Value[MAX_PATH];
+    WCHAR SourceDir[MAX_PATH], Fresh[MAX_PATH], Gone[MAX_PATH];
     int DirLength = (int)(wcsrchr(StoreInf, L'\\') - StoreInf);
     LOCK_TEST Test = { { 0 } };
     DWORD Size;
@@ -867,6 +868,29 @@ TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
         RegCloseKey(hKey);
 
     Test.Info.pszInfPath = (PWSTR)StoreInf;
+    StringCchPrintfW(SourceDir, ARRAYSIZE(SourceDir), L"%.*s", (int)(wcsrchr(InfPath, L'\\') - InfPath), InfPath);
+    StringCchPrintfW(Fresh, ARRAYSIZE(Fresh), L"%s\\TESTROLL.DAT", SourceDir);
+    StringCchPrintfW(Gone, ARRAYSIZE(Gone), L"%.*s\\TESTGONE.DLL", DirLength, StoreInf);
+    if (WriteTestFile(SourceDir, L"TESTROLL.DAT", "rollback\r\n", 10))
+    {
+        Test.Info.pDataFile = Fresh;
+        Test.Info.pConfigFile = Gone;
+        ok(!AddPrinterDriverExW(NULL, 8, (PBYTE)&Test.Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+           "AddPrinterDriverExW succeeded although %S does not exist\n", Gone);
+        hKey = OpenDriverKey(LOCK_DRIVER_NAME);
+        ok(hKey == NULL, "Driver %S is registered without %S\n", LOCK_DRIVER_NAME, Gone);
+        if (hKey)
+            RegCloseKey(hKey);
+        ok(!DriverFileExists(L"TESTROLL.DAT"), "TESTROLL.DAT was left in the driver directory\n");
+        Test.Info.pDataFile = Data;
+        Test.Info.pConfigFile = Config;
+        DeleteFileW(Fresh);
+    }
+    else
+    {
+        skip("Cannot write %S (%lu)\n", Fresh, GetLastError());
+    }
+
     RunWhileLocked(&Test, "AddPrinterDriverExW");
     ok(Test.Error == ERROR_SUCCESS, "AddPrinterDriverExW failed with %lu\n", Test.Error);
     hKey = OpenDriverKey(LOCK_DRIVER_NAME);

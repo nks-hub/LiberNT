@@ -24,7 +24,11 @@ typedef struct {
 } job_info;
 
 NTSTATUS do_read_job(PIRP Irp) {
+#ifdef __REACTOS__
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+#endif
     ULONG bytes_read;
     bool top_level = is_top_level(Irp);
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
@@ -67,7 +71,11 @@ NTSTATUS do_read_job(PIRP Irp) {
 
 NTSTATUS do_write_job(device_extension* Vcb, PIRP Irp) {
     bool top_level = is_top_level(Irp);
+#ifdef __REACTOS__
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+#endif
 
     _SEH2_TRY {
         Status = write_file(Vcb, Irp, true, true);

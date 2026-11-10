@@ -15,13 +15,29 @@ static BOOL
 DeleteDirectoryTree(
     IN PCWSTR Directory);
 
-static PCWSTR
-GetStoreArchitecture(VOID)
+static WORD
+GetNativeArchitecture(VOID)
 {
     SYSTEM_INFO SystemInfo;
 
     GetNativeSystemInfo(&SystemInfo);
-    switch (SystemInfo.wProcessorArchitecture)
+    return SystemInfo.wProcessorArchitecture;
+}
+
+static WORD
+GetProcessArchitecture(VOID)
+{
+    SYSTEM_INFO SystemInfo;
+
+    GetSystemInfo(&SystemInfo);
+    return SystemInfo.wProcessorArchitecture;
+}
+
+static PCWSTR
+GetArchitectureName(
+    IN WORD Architecture)
+{
+    switch (Architecture)
     {
         case PROCESSOR_ARCHITECTURE_INTEL: return L"x86";
         case PROCESSOR_ARCHITECTURE_AMD64: return L"amd64";
@@ -715,10 +731,11 @@ StageCatalogFiles(
     return TRUE;
 }
 
-BOOL
-SETUPAPI_GetDriverPackageId(
+static BOOL
+GetDriverPackageId(
     IN PCWSTR InfFileName,
     IN PCWSTR InfBaseName,
+    IN WORD Architecture,
     OUT PWSTR PackageId,
     IN DWORD PackageIdSize)
 {
@@ -733,21 +750,32 @@ SETUPAPI_GetDriverPackageId(
         return FALSE;
     }
 
-    swprintf(PackageId, PackageIdSize, L"%s_%s_%016I64x", InfBaseName, GetStoreArchitecture(), Hash);
+    swprintf(PackageId, PackageIdSize, L"%s_%s_%016I64x", InfBaseName, GetArchitectureName(Architecture), Hash);
     CharLowerW(PackageId);
     return TRUE;
+}
+
+BOOL
+SETUPAPI_GetDriverPackageId(
+    IN PCWSTR InfFileName,
+    IN PCWSTR InfBaseName,
+    OUT PWSTR PackageId,
+    IN DWORD PackageIdSize)
+{
+    return GetDriverPackageId(InfFileName, InfBaseName, GetNativeArchitecture(), PackageId, PackageIdSize);
 }
 
 static BOOL
 BuildStoreDirectory(
     IN PCWSTR InfFileName,
     IN PCWSTR InfBaseName,
+    IN WORD Architecture,
     OUT PWSTR StoreDirectory)
 {
     WCHAR Root[MAX_PATH], Name[MAX_PATH];
 
     if (!GetRepositoryRoot(Root, ARRAY_SIZE(Root)) ||
-        !SETUPAPI_GetDriverPackageId(InfFileName, InfBaseName, Name, ARRAY_SIZE(Name)))
+        !GetDriverPackageId(InfFileName, InfBaseName, Architecture, Name, ARRAY_SIZE(Name)))
     {
         return FALSE;
     }
@@ -878,9 +906,10 @@ ReplaceStoreDirectory(
     return TRUE;
 }
 
-BOOL
-SETUPAPI_StageDriverPackage(
-    IN PCWSTR SourceInfFileName)
+static BOOL
+StageDriverPackage(
+    IN PCWSTR SourceInfFileName,
+    IN WORD Architecture)
 {
     WCHAR Source[MAX_PATH], SourceRoot[MAX_PATH], Root[MAX_PATH], Store[MAX_PATH], Staging[MAX_PATH], Target[MAX_PATH];
     STAGE_PACKAGE_CONTEXT Package;
@@ -903,7 +932,7 @@ SETUPAPI_StageDriverPackage(
     if (_wcsnicmp(SourceRoot, Root, lstrlenW(Root)) == 0 || IsSystemInfDirectory(SourceRoot))
         return TRUE;
 
-    if (!BuildStoreDirectory(Source, BaseName, Store) ||
+    if (!BuildStoreDirectory(Source, BaseName, Architecture, Store) ||
         !CreateDirectoryPath(Root) ||
         !CreateStagingDirectory(Store, Staging))
     {
@@ -942,6 +971,13 @@ SETUPAPI_StageDriverPackage(
     return Staged;
 }
 
+BOOL
+SETUPAPI_StageDriverPackage(
+    IN PCWSTR SourceInfFileName)
+{
+    return StageDriverPackage(SourceInfFileName, GetNativeArchitecture());
+}
+
 static BOOL
 GetPublishedInfPath(
     IN PCWSTR FileName,
@@ -968,6 +1004,7 @@ static BOOL
 FindStoreInf(
     IN PCWSTR Published,
     IN PCWSTR RequiredName,
+    IN WORD Architecture,
     OUT PWSTR StoreInfFileName)
 {
     WCHAR Root[MAX_PATH], Pattern[MAX_PATH], Candidate[MAX_PATH], Suffix[64], Long[MAX_PATH];
@@ -1010,7 +1047,7 @@ FindStoreInf(
     if (!HashFileContents(Published, &Hash))
         return FALSE;
 
-    swprintf(Suffix, ARRAY_SIZE(Suffix), L"_%s_%016I64x", GetStoreArchitecture(), Hash);
+    swprintf(Suffix, ARRAY_SIZE(Suffix), L"_%s_%016I64x", GetArchitectureName(Architecture), Hash);
     if (lstrlenW(Root) + 2 + lstrlenW(Suffix) >= MAX_PATH)
         return FALSE;
 
@@ -1058,7 +1095,7 @@ SETUPAPI_FindDriverStoreInf(
 
     if (!GetPublishedInfPath(FileName, Published))
         return FALSE;
-    return FindStoreInf(Published, NULL, StoreInfFileName);
+    return FindStoreInf(Published, NULL, GetNativeArchitecture(), StoreInfFileName);
 }
 
 PCWSTR
@@ -1126,7 +1163,7 @@ SETUPAPI_GetOriginalInfName(
         return FALSE;
     *Last = UNICODE_NULL;
     if (!IsSystemInfDirectory(Directory) ||
-        !FindStoreInf(PublishedInfFileName, NULL, StoreInf))
+        !FindStoreInf(PublishedInfFileName, NULL, GetNativeArchitecture(), StoreInf))
     {
         return FALSE;
     }
@@ -1227,13 +1264,10 @@ CheckStoreRequest(
     IN WORD Architecture,
     IN PDWORD ReturnLength)
 {
-    SYSTEM_INFO SystemInfo;
-
     if (*ReturnLength < MAX_PATH)
         return E_INVALIDARG;
 
-    GetNativeSystemInfo(&SystemInfo);
-    if (Architecture != SystemInfo.wProcessorArchitecture)
+    if (Architecture != GetNativeArchitecture() && Architecture != GetProcessArchitecture())
         return E_INVALIDARG;
 
     return S_OK;
@@ -1261,6 +1295,7 @@ ReturnStorePath(
 static BOOL
 FindSourceStoreInf(
     IN PCWSTR InfPath,
+    IN WORD Architecture,
     OUT PWSTR Source,
     OUT PWSTR StoreInfFileName)
 {
@@ -1271,7 +1306,7 @@ FindSourceStoreInf(
     if (Length == 0 || Length >= MAX_PATH || !BaseName)
         return FALSE;
 
-    return FindStoreInf(Source, BaseName, StoreInfFileName);
+    return FindStoreInf(Source, BaseName, Architecture, StoreInfFileName);
 }
 
 static VOID
@@ -1336,7 +1371,7 @@ DriverStoreFindDriverPackageW(
         return hr;
 
     Source[0] = UNICODE_NULL;
-    if (FindSourceStoreInf(InfPath, Source, StoreInf))
+    if (FindSourceStoreInf(InfPath, Architecture, Source, StoreInf))
         return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
 
     *ReturnPath = UNICODE_NULL;
@@ -1357,21 +1392,26 @@ DriverStoreAddDriverPackageW(
     IN OUT PDWORD ReturnLength)
 {
     WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
+    DWORD Length;
     HRESULT hr;
 
     hr = CheckStoreRequest(Architecture, ReturnLength);
     if (FAILED(hr))
         return hr;
 
-    if (!FindSourceStoreInf(InfPath, Source, StoreInf))
+    Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, NULL);
+    if (Length == 0 || Length >= ARRAY_SIZE(Source) || GetFileAttributesW(Source) == INVALID_FILE_ATTRIBUTES)
+        return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+
+    /* SetupCopyOEMInfW publishes for the native architecture only */
+    if (!(Architecture == GetNativeArchitecture()
+              ? SetupCopyOEMInfW(Source, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL)
+              : StageDriverPackage(Source, Architecture)))
     {
-        if (GetFileAttributesW(Source) == INVALID_FILE_ATTRIBUTES)
-            return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-        if (!SetupCopyOEMInfW(Source, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL))
-            return HRESULT_FROM_WIN32(GetLastError());
-        if (!FindSourceStoreInf(Source, Source, StoreInf))
-            return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+        return HRESULT_FROM_WIN32(GetLastError());
     }
+    if (!FindSourceStoreInf(Source, Architecture, Source, StoreInf))
+        return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
 }
@@ -1386,8 +1426,11 @@ DriverStoreDeleteDriverPackageW(
     WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
     PWSTR Last;
 
-    if (!FindSourceStoreInf(InfPath, Source, StoreInf))
+    if (!FindSourceStoreInf(InfPath, GetNativeArchitecture(), Source, StoreInf) &&
+        !FindSourceStoreInf(InfPath, GetProcessArchitecture(), Source, StoreInf))
+    {
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    }
 
     DeletePublishedInfs(StoreInf);
 

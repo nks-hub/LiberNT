@@ -28,14 +28,40 @@ typedef struct _PACKAGE_FILES
     PWSTR *Sources;
 } PACKAGE_FILES, *PPACKAGE_FILES;
 
+static const struct
+{
+    PCWSTR Environment;
+    WORD Architecture;
+}
+EnvironmentArchitectures[] =
+{
+    { L"Windows NT x86", PROCESSOR_ARCHITECTURE_INTEL },
+    { L"Windows x64", PROCESSOR_ARCHITECTURE_AMD64 },
+    { L"Windows ARM64", PROCESSOR_ARCHITECTURE_ARM64 },
+    { L"Windows ARM", PROCESSOR_ARCHITECTURE_ARM },
+    { L"ReactOS RISC-V64", PROCESSOR_ARCHITECTURE_RISCV64 },
+    { L"Windows NT PowerPC", PROCESSOR_ARCHITECTURE_PPC },
+};
+
 static HRESULT
-CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment)
+CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment, PWORD Architecture)
 {
     WCHAR ComputerName[MAX_COMPUTERNAME_LENGTH + 1];
-    DWORD Size = ARRAYSIZE(ComputerName);
+    DWORD Size = ARRAYSIZE(ComputerName), i;
 
-    if (pszEnvironment && *pszEnvironment && _wcsicmp(pszEnvironment, wszCurrentEnvironment) != 0)
+    if (!pszEnvironment || !*pszEnvironment)
+        pszEnvironment = wszCurrentEnvironment;
+    else if (_wcsicmp(pszEnvironment, wszCurrentEnvironment) != 0)
         return HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT);
+
+    for (i = 0; i < ARRAYSIZE(EnvironmentArchitectures); i++)
+    {
+        if (_wcsicmp(pszEnvironment, EnvironmentArchitectures[i].Environment) == 0)
+            break;
+    }
+    if (i == ARRAYSIZE(EnvironmentArchitectures))
+        return HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT);
+    *Architecture = EnvironmentArchitectures[i].Architecture;
 
     if (!pszServer || !*pszServer)
         return S_OK;
@@ -47,15 +73,6 @@ CheckLocalRequest(PCWSTR pszServer, PCWSTR pszEnvironment)
         return S_OK;
 
     return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
-}
-
-static WORD
-GetNativeArchitecture(VOID)
-{
-    SYSTEM_INFO SystemInfo;
-
-    GetNativeSystemInfo(&SystemInfo);
-    return SystemInfo.wProcessorArchitecture;
 }
 
 static HRESULT
@@ -80,6 +97,7 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 {
     WCHAR StoreInf[MAX_PATH];
     DWORD Length = ARRAYSIZE(StoreInf);
+    WORD Architecture;
     HRESULT hr;
 
     TRACE("UploadPrinterDriverPackageW(%S, %S, %S, 0x%lx, %p, %p, %p)\n",
@@ -93,16 +111,17 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
         return E_INVALIDARG;
     }
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
     if (FAILED(hr))
         return hr;
 
-    if ((dwFlags & UPDP_UPLOAD_ALWAYS) &&
-        !SetupCopyOEMInfW(pszInfPath, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL))
+    if (!(dwFlags & UPDP_UPLOAD_ALWAYS))
+        hr = DriverStoreFindDriverPackageW(pszInfPath, NULL, NULL, Architecture, NULL, StoreInf, &Length);
+    if ((dwFlags & UPDP_UPLOAD_ALWAYS) || FAILED(hr))
     {
-        return HRESULT_FROM_WIN32(GetLastError());
+        Length = ARRAYSIZE(StoreInf);
+        hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, Architecture, StoreInf, &Length);
     }
-    hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, GetNativeArchitecture(), StoreInf, &Length);
     if (FAILED(hr))
         return hr;
 
@@ -110,21 +129,22 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 }
 
 /* Gives the store INF that a path names, however it is spelled, or the full path when the store has none */
-static VOID
-ResolvePackageInf(PCWSTR InfPath, PWSTR Resolved)
+static BOOL
+ResolvePackageInf(PCWSTR InfPath, WORD Architecture, PWSTR Resolved)
 {
     DWORD Length = MAX_PATH;
 
-    if (SUCCEEDED(DriverStoreFindDriverPackageW(InfPath, NULL, NULL, GetNativeArchitecture(), NULL, Resolved, &Length)))
-        return;
+    if (SUCCEEDED(DriverStoreFindDriverPackageW(InfPath, NULL, NULL, Architecture, NULL, Resolved, &Length)))
+        return TRUE;
 
     Length = GetFullPathNameW(InfPath, MAX_PATH, Resolved, NULL);
     if (Length == 0 || Length >= MAX_PATH)
         *Resolved = UNICODE_NULL;
+    return FALSE;
 }
 
 static HRESULT
-IsDriverPackageInUse(PCWSTR InfPath)
+IsDriverPackageInUse(PCWSTR InfPath, WORD Architecture)
 {
     WCHAR Key[MAX_PATH], Name[MAX_PATH], Value[MAX_PATH], Used[MAX_PATH];
     HRESULT hr = S_FALSE;
@@ -159,7 +179,7 @@ IsDriverPackageInUse(PCWSTR InfPath)
             hr = HRESULT_FROM_WIN32(Error);
         else
         {
-            ResolvePackageInf(Value, Used);
+            ResolvePackageInf(Value, Architecture, Used);
             if (CompareStringOrdinal(Used, -1, InfPath, -1, TRUE) == CSTR_EQUAL)
                 hr = S_OK;
         }
@@ -229,6 +249,8 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 {
     WCHAR Package[MAX_PATH];
     HANDLE Namespace, Lock;
+    WORD Architecture;
+    BOOL Stored;
     HRESULT hr;
 
     TRACE("DeletePrinterDriverPackageW(%S, %S, %S)\n", pszServer, pszInfPath, pszEnvironment);
@@ -236,22 +258,22 @@ DeletePrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (!pszInfPath)
         return E_INVALIDARG;
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
     if (FAILED(hr))
         return hr;
 
-    ResolvePackageInf(pszInfPath, Package);
+    Stored = ResolvePackageInf(pszInfPath, Architecture, Package);
     if (!*Package)
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     if (!AcquirePackageLock(&Namespace, &Lock))
         return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 
-    hr = IsDriverPackageInUse(Package);
+    hr = IsDriverPackageInUse(Package, Architecture);
     if (hr == S_OK)
         hr = HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE);
     else if (hr == S_FALSE)
-        hr = DriverStoreDeleteDriverPackageW(Package, NULL, NULL);
+        hr = Stored ? DriverStoreDeleteDriverPackageW(Package, NULL, NULL) : HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     ReleasePackageLock(Namespace, Lock);
     return hr;
@@ -531,6 +553,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DRIVER_INFO_8W DriverInfo = { 0 };
     INFCONTEXT Context;
     HANDLE Namespace, Lock;
+    WORD Architecture;
     HINF hInf;
     HRESULT hr;
 
@@ -543,7 +566,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!pszInfPath)
         return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
 
-    hr = CheckLocalRequest(pszServer, pszEnvironment);
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Architecture);
     if (FAILED(hr))
         return hr;
 
@@ -707,7 +730,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
-    ResolvePackageInf(pszInfPath, RecordedInf);
+    ResolvePackageInf(pszInfPath, Architecture, RecordedInf);
     DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : (PWSTR)pszInfPath;
 
     if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,

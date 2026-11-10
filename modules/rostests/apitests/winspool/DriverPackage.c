@@ -23,10 +23,13 @@
 
 #if defined(_M_AMD64)
 #define TEST_ENVIRONMENT L"Windows x64"
+#define TEST_STORE_ARCHITECTURE L"amd64"
 #elif defined(_M_ARM64)
 #define TEST_ENVIRONMENT L"Windows ARM64"
+#define TEST_STORE_ARCHITECTURE L"arm64"
 #else
 #define TEST_ENVIRONMENT L"Windows NT x86"
+#define TEST_STORE_ARCHITECTURE L"x86"
 #endif
 #define TEST_DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\" TEST_ENVIRONMENT L"\\Drivers\\Version-3"
 
@@ -593,6 +596,14 @@ START_TEST(DriverPackage)
         ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
         if (hr == S_OK)
             ok(_wcsicmp(Again, StoreInf) == 0, "Second upload returned %S\n", Again);
+
+        ok(wcsstr(StoreInf, L"\\lntprnpkg.inf_" TEST_STORE_ARCHITECTURE L"_") != NULL,
+           "%S is not a package of %S\n", StoreInf, TEST_ENVIRONMENT);
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, TEST_ENVIRONMENT, UPDP_CHECK_DRIVERSTORE, NULL, Again, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", TEST_ENVIRONMENT, hr);
+        if (hr == S_OK)
+            ok(_wcsicmp(Again, StoreInf) == 0, "Upload for %S returned %S\n", TEST_ENVIRONMENT, Again);
     }
 
     {

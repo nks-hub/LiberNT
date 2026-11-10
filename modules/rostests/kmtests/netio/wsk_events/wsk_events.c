@@ -298,6 +298,64 @@ TestDispatchLevel(
     }
 }
 
+/* Closes the socket */
+static
+VOID
+TestCloseAfterDispatchSend(
+    _In_ PWSK_SOCKET Socket,
+    _In_ USHORT Port)
+{
+    PWSK_PROVIDER_DATAGRAM_DISPATCH Dispatch = (PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch;
+    SOCKADDR_IN Address;
+    WSK_BUF Buffer;
+    KEVENT SendEvent, CloseEvent;
+    PIRP SendIrp, CloseIrp;
+    KIRQL OldIrql;
+    PCHAR Data;
+
+    Data = ExAllocatePoolWithTag(NonPagedPool, 8, 'tEsW');
+    Buffer.Mdl = Data ? IoAllocateMdl(Data, 8, FALSE, FALSE, NULL) : NULL;
+    SendIrp = NewIrp(&SendEvent);
+    CloseIrp = NewIrp(&CloseEvent);
+    if (Buffer.Mdl == NULL || SendIrp == NULL || CloseIrp == NULL)
+    {
+        ok(FALSE, "Out of memory\n");
+        if (CloseIrp != NULL)
+            IoFreeIrp(CloseIrp);
+        CloseSocket(Socket);
+        goto cleanup;
+    }
+    RtlCopyMemory(Data, "DATA0007", 8);
+    MmBuildMdlForNonPagedPool(Buffer.Mdl);
+    Buffer.Offset = 0;
+    Buffer.Length = 8;
+
+    RtlZeroMemory(&Address, sizeof(Address));
+    Address.sin_family = AF_INET;
+    Address.sin_port = RtlUshortByteSwap(Port);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+
+    KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+    Dispatch->WskSendTo(Socket, &Buffer, 0, (PSOCKADDR)&Address, 0, NULL, SendIrp);
+    Dispatch->WskCloseSocket(Socket, CloseIrp);
+    KeLowerIrql(OldIrql);
+
+    KeWaitForSingleObject(&CloseEvent, Executive, KernelMode, FALSE, NULL);
+    ok(KeReadStateEvent(&SendEvent) != 0, "The close completed before the send made at DISPATCH_LEVEL\n");
+    KeWaitForSingleObject(&SendEvent, Executive, KernelMode, FALSE, NULL);
+    ok_eq_hex(SendIrp->IoStatus.Status, STATUS_SUCCESS);
+    ok_eq_hex(CloseIrp->IoStatus.Status, STATUS_SUCCESS);
+    IoFreeIrp(CloseIrp);
+
+cleanup:
+    if (SendIrp != NULL)
+        IoFreeIrp(SendIrp);
+    if (Buffer.Mdl != NULL)
+        IoFreeMdl(Buffer.Mdl);
+    if (Data != NULL)
+        ExFreePoolWithTag(Data, 'tEsW');
+}
+
 static
 VOID
 TestStaticCallbacks(VOID)
@@ -436,6 +494,12 @@ TestRun(VOID)
     Count = WaitReceives(6, 2000);
     ok_eq_long(Count, 6L);
     ok(LastControlLength != 0, "No IP_PKTINFO control data after enabling it at DISPATCH_LEVEL\n");
+
+    TestCloseAfterDispatchSend(Sender, WSKEVENTS_PORT);
+    Sender = NULL;
+    Count = WaitReceives(7, 2000);
+    ok_eq_long(Count, 7L);
+    ok(WasSeen("DATA0007"), "DATA0007 was not sent before its socket closed\n");
 
 close:
     if (Receiver != NULL)

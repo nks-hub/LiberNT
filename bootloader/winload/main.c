@@ -408,7 +408,7 @@ OslMain(VOID)
                               LoaderSystemCode);
     /* Entries of systems installed before the SMP kernel became the default still name
      * ntkrnlmp.exe and an SMP HAL that updates have since removed */
-    if (!Kernel && _wcsicmp(OslParameters.KernelFile, L"ntoskrnl.exe") != 0)
+    if (!Kernel && _wcsicmp(OslParameters.KernelFile, L"ntkrnlmp.exe") == 0)
     {
         Kernel = OslLoadCoreImage(LoaderBlock,
                                   &OsDevice,
@@ -424,7 +424,7 @@ OslMain(VOID)
                                     OSL_HAL_MODULE,
                                     LoaderHalCode)
                  : NULL;
-    if (Kernel && !Hal && _wcsicmp(OslParameters.HalFile, L"hal.dll") != 0)
+    if (Kernel && !Hal && _wcsicmp(OslParameters.HalFile, L"halmacpi.dll") == 0)
     {
         Hal = OslLoadCoreImage(LoaderBlock,
                                &OsDevice,

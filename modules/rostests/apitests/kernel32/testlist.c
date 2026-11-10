@@ -3,6 +3,7 @@
 #include <apitest.h>
 
 extern void func_ActCtxWithXmlNamespaces(void);
+extern void func_ActCtxDependencyVersions(void);
 extern void func_ApiSetCoreSynch(void);
 extern void func_BaseSetLastNTError(void);
 extern void func_BaseThreadInitThunk(void);
@@ -58,6 +59,7 @@ extern void func_JapaneseCalendar(void);
 extern void func_JobObject(void);
 extern void func_JobObjectUI(void);
 extern void func_KernelBaseModuleHandle(void);
+extern void func_KnownDlls(void);
 extern void func_LCMapString(void);
 extern void func_LoadLibraryExW(void);
 extern void func_LockFileEx(void);
@@ -123,6 +125,7 @@ const struct test winetest_testlist[] =
 {
     { "SetFileAllocationInfo", func_SetFileAllocationInfo },
     { "ActCtxWithXmlNamespaces",     func_ActCtxWithXmlNamespaces },
+    { "ActCtxDependencyVersions",    func_ActCtxDependencyVersions },
     { "ApiSetCoreSynch",             func_ApiSetCoreSynch },
     { "BaseSetLastNTError",          func_BaseSetLastNTError },
     { "BaseThreadInitThunk",         func_BaseThreadInitThunk },
@@ -178,6 +181,7 @@ const struct test winetest_testlist[] =
     { "JobObject",                   func_JobObject },
     { "JobObjectUI",                 func_JobObjectUI },
     { "KernelBaseModuleHandle",      func_KernelBaseModuleHandle },
+    { "KnownDlls",                   func_KnownDlls },
     { "LCMapString",                 func_LCMapString },
     { "LoadLibraryExW",              func_LoadLibraryExW },
     { "LockFileEx",                  func_LockFileEx },

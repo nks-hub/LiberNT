@@ -1508,6 +1508,7 @@ typedef struct _NETIO_CHANGE_NOTIFY
     BOOLEAN Linked;
     BOOLEAN InitialPending;
     BOOLEAN FreeOnRelease;
+    BOOLEAN Running;
     KEVENT Released;
 } NETIO_CHANGE_NOTIFY, *PNETIO_CHANGE_NOTIFY;
 
@@ -1549,6 +1550,7 @@ NetioNotify(
     ULONG Count = 0, Capacity = 0, i;
     MIB_IPFORWARD_ROW2 Route;
     MIB_IPINTERFACE_ROW Interface;
+    BOOLEAN Invoke;
     KIRQL OldIrql;
 
     ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
@@ -1591,6 +1593,16 @@ NetioNotify(
 
     for (i = 0; i < Count; i++)
     {
+        KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+        ASSERT(!Targets[i]->Running);
+        Invoke = Targets[i]->Running = Targets[i]->Linked;
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+        if (!Invoke)
+        {
+            NetioReleaseNotify(Targets[i]);
+            continue;
+        }
+
         if (InitialOnly)
         {
             if (Targets[i]->Kind == NETIO_CHANGE_ROUTE)
@@ -1608,6 +1620,11 @@ NetioNotify(
             Interface = *(const MIB_IPINTERFACE_ROW *)Row;
             ((PIPINTERFACE_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, &Interface, Type);
         }
+
+        ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+        KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+        Targets[i]->Running = FALSE;
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
         NetioReleaseNotify(Targets[i]);
     }
 
@@ -1967,6 +1984,7 @@ CancelMibChangeNotify2(
 {
     PNETIO_CHANGE_NOTIFY Notify = NULL;
     PLIST_ENTRY Entry;
+    BOOLEAN Wait = FALSE;
     KIRQL OldIrql;
 
     if (NotificationHandle == NULL)
@@ -1982,24 +2000,22 @@ CancelMibChangeNotify2(
         Notify = NotificationHandle;
         RemoveEntryList(&Notify->Link);
         Notify->Linked = FALSE;
+        ASSERT(Notify->References > 0);
+        /* Only a callback running on another thread is waited for; the worker skips an unlinked registration */
+        Wait = Notify->Running && PsGetCurrentThread() != NetioChangeThread;
+        Notify->FreeOnRelease = !Wait;
         break;
     }
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
     if (Notify == NULL)
         return STATUS_INVALID_HANDLE;
 
-    ASSERT(Notify->References > 0);
-
-    if (PsGetCurrentThread() == NetioChangeThread)
-    {
-        Notify->FreeOnRelease = TRUE;
-        if (InterlockedDecrement(&Notify->References) == 0)
-            ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
-        return STATUS_SUCCESS;
-    }
-
     if (InterlockedDecrement(&Notify->References) != 0)
+    {
+        if (!Wait)
+            return STATUS_SUCCESS;
         KeWaitForSingleObject(&Notify->Released, Executive, KernelMode, FALSE, NULL);
+    }
     ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
     return STATUS_SUCCESS;
 }

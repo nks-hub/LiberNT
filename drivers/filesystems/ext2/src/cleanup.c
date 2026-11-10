@@ -21,18 +21,33 @@ NTSTATUS
 Ext2Cleanup (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT  DeviceObject;
+#ifdef __REACTOS__
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PEXT2_VCB       _SEH2_VOLATILE Vcb = NULL;
+#else
+    NTSTATUS        Status = STATUS_SUCCESS;
+    PEXT2_VCB       Vcb = NULL;
+#endif
     PFILE_OBJECT    FileObject;
+#ifdef __REACTOS__
     PEXT2_FCB       _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB       Fcb = NULL;
+#endif
     PEXT2_CCB       Ccb = NULL;
     PIRP            Irp = NULL;
     PEXT2_MCB       Mcb = NULL;
 
 
+#ifdef __REACTOS__
     BOOLEAN         _SEH2_VOLATILE VcbResourceAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE FcbResourceAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE FcbPagingIoResourceAcquired = FALSE;
+#else
+    BOOLEAN         VcbResourceAcquired = FALSE;
+    BOOLEAN         FcbResourceAcquired = FALSE;
+    BOOLEAN         FcbPagingIoResourceAcquired = FALSE;
+#endif
     BOOLEAN         SymLinkDelete = FALSE;
 
     _SEH2_TRY {

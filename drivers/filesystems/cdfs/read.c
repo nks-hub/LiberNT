@@ -65,12 +65,21 @@ __pragma(warning(suppress: 6320))                           \
 
 
 
+#ifdef __REACTOS__
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 CdCommonRead (
     _Inout_ PIRP_CONTEXT _SEH2_VOLATILE IrpContext,
     _Inout_ PIRP Irp
     )
+#else
+_Requires_lock_held_(_Global_critical_region_)
+NTSTATUS
+CdCommonRead (
+    _Inout_ PIRP_CONTEXT IrpContext,
+    _Inout_ PIRP Irp
+    )
+#endif
 
 /*++
 
@@ -113,7 +122,11 @@ Return Value:
 
     PVOID SystemBuffer;
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE ReleaseFile = TRUE;
+#else
+    BOOLEAN ReleaseFile = TRUE;
+#endif
 
     CD_IO_CONTEXT LocalIoContext;
 

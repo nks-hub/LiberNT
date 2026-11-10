@@ -2194,12 +2194,22 @@ void get_raid56_lock_range(chunk* c, uint64_t address, uint64_t length, uint64_t
 
 __attribute__((nonnull(1,3)))
 NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data, uint32_t length, PIRP Irp, chunk* c, bool file_write, uint64_t irp_offset, ULONG priority) {
+#ifdef __REACTOS__
     write_data_context _SEH2_VOLATILE wtc;
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    write_data_context wtc;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+#endif
     uint64_t lockaddr, locklen;
 
+#ifdef __REACTOS__
     KeInitializeEvent((PRKEVENT)&wtc.Event, NotificationEvent, false);
     InitializeListHead((PLIST_ENTRY)&wtc.stripes);
+#else
+    KeInitializeEvent(&wtc.Event, NotificationEvent, false);
+    InitializeListHead(&wtc.stripes);
+#endif
     wtc.stripes_left = 0;
     wtc.parity1 = wtc.parity2 = wtc.scratch = NULL;
     wtc.mdl = wtc.parity1_mdl = wtc.parity2_mdl = NULL;
@@ -2218,7 +2228,11 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
     }
 
     _SEH2_TRY {
+#ifdef __REACTOS__
         Status = write_data(Vcb, address, data, length, (write_data_context *)&wtc, Irp, c, file_write, irp_offset, priority);
+#else
+        Status = write_data(Vcb, address, data, length, &wtc, Irp, c, file_write, irp_offset, priority);
+#endif
     } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
         Status = _SEH2_GetExceptionCode();
     } _SEH2_END;
@@ -2229,7 +2243,11 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
         if (c->chunk_item->type & BLOCK_FLAG_RAID5 || c->chunk_item->type & BLOCK_FLAG_RAID6)
             chunk_unlock_range(Vcb, c, lockaddr, locklen);
 
+#ifdef __REACTOS__
         free_write_data_stripes((write_data_context *)&wtc);
+#else
+        free_write_data_stripes(&wtc);
+#endif
         return Status;
     }
 
@@ -2249,8 +2267,13 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
             le = le->Flink;
         }
 
+#ifdef __REACTOS__
         if (!no_wait)
             KeWaitForSingleObject((PVOID)&wtc.Event, Executive, KernelMode, false, NULL);
+#else
+        if (!no_wait)
+            KeWaitForSingleObject(&wtc.Event, Executive, KernelMode, false, NULL);
+#endif
 
         le = wtc.stripes.Flink;
         while (le != &wtc.stripes) {
@@ -2266,7 +2289,11 @@ NTSTATUS write_data_complete(device_extension* Vcb, uint64_t address, void* data
             le = le->Flink;
         }
 
+#ifdef __REACTOS__
         free_write_data_stripes((write_data_context *)&wtc);
+#else
+        free_write_data_stripes(&wtc);
+#endif
     }
 
     if (c->chunk_item->type & BLOCK_FLAG_RAID5 || c->chunk_item->type & BLOCK_FLAG_RAID6)
@@ -4107,7 +4134,11 @@ NTSTATUS write_file2(device_extension* Vcb, PIRP Irp, LARGE_INTEGER offset, void
     bool make_inline;
     INODE_ITEM* origii;
     bool changed_length = false;
+#ifdef __REACTOS__
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+#endif
     LARGE_INTEGER time;
     BTRFS_TIME now;
     fcb* fcb;
@@ -4665,7 +4696,11 @@ _Dispatch_type_(IRP_MJ_WRITE)
 _Function_class_(DRIVER_DISPATCH)
 __attribute__((nonnull(1,2)))
 NTSTATUS __stdcall drv_write(IN PDEVICE_OBJECT DeviceObject, IN PIRP Irp) {
+#ifdef __REACTOS__
     NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+#endif
     bool top_level;
     PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
     device_extension* Vcb = DeviceObject->DeviceExtension;

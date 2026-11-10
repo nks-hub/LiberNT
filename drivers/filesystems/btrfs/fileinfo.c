@@ -3783,7 +3783,11 @@ static NTSTATUS set_valid_data_length_information(device_extension* Vcb, PIRP Ir
     file_ref* fileref = ccb ? ccb->fileref : NULL;
     NTSTATUS Status;
     LARGE_INTEGER time;
+#ifdef __REACTOS__
     CC_FILE_SIZES _SEH2_VOLATILE ccfs;
+#else
+    CC_FILE_SIZES ccfs;
+#endif
     LIST_ENTRY rollback;
     bool set_size = false;
     ULONG filter;
@@ -3854,7 +3858,11 @@ end:
 
     if (set_size) {
         _SEH2_TRY {
+#ifdef __REACTOS__
             CcSetFileSizes(FileObject, (PCC_FILE_SIZES)&ccfs);
+#else
+            CcSetFileSizes(FileObject, &ccfs);
+#endif
         } _SEH2_EXCEPT (EXCEPTION_EXECUTE_HANDLER) {
             Status = _SEH2_GetExceptionCode();
         } _SEH2_END;

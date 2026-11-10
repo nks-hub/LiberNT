@@ -137,9 +137,15 @@ Ext2LockVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PIO_STACK_LOCATION IrpSp;
     PDEVICE_OBJECT  DeviceObject;
+#ifdef __REACTOS__
     PEXT2_VCB       _SEH2_VOLATILE Vcb = NULL;
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     BOOLEAN _SEH2_VOLATILE VcbResourceAcquired = FALSE;
+#else
+    PEXT2_VCB       Vcb = NULL;
+    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN VcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -244,9 +250,15 @@ Ext2UnlockVolume (
 {
     PIO_STACK_LOCATION IrpSp = NULL;
     PDEVICE_OBJECT  DeviceObject = NULL;
+#ifdef __REACTOS__
     PEXT2_VCB       _SEH2_VOLATILE Vcb = NULL;
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     BOOLEAN         _SEH2_VOLATILE VcbResourceAcquired = FALSE;
+#else
+    PEXT2_VCB       Vcb = NULL;
+    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    BOOLEAN         VcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -295,7 +307,11 @@ Ext2UnlockVolume (
 NTSTATUS
 Ext2InvalidateVolumes ( IN PEXT2_IRP_CONTEXT IrpContext )
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
     PIRP                Irp;
     PIO_STACK_LOCATION  IrpSp;
 
@@ -308,7 +324,11 @@ Ext2InvalidateVolumes ( IN PEXT2_IRP_CONTEXT IrpContext )
     ULONG               InputLength = 0;
     PFILE_OBJECT        FileObject;
     PDEVICE_OBJECT      DeviceObject;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE GlobalResourceAcquired = FALSE;
+#else
+    BOOLEAN             GlobalResourceAcquired = FALSE;
+#endif
 
     LUID Privilege = {SE_TCB_PRIVILEGE, 0};
 
@@ -452,7 +472,11 @@ Ext2OplockRequest (
     IN PEXT2_IRP_CONTEXT IrpContext
 )
 {
+#ifdef __REACTOS__
     NTSTATUS    _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS    Status = STATUS_UNSUCCESSFUL;
+#endif
 
     ULONG       FsCtrlCode;
     PDEVICE_OBJECT DeviceObject;
@@ -462,14 +486,24 @@ Ext2OplockRequest (
     PIO_STACK_LOCATION IrpSp;
     PEXTENDED_IO_STACK_LOCATION EIrpSp;
 
+#ifdef __REACTOS__
     PEXT2_VCB   _SEH2_VOLATILE Vcb = NULL;
     PEXT2_FCB   _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_VCB   Vcb = NULL;
+    PEXT2_FCB   Fcb = NULL;
+#endif
     PEXT2_CCB   Ccb = NULL;
 
     ULONG OplockCount = 0;
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE VcbResourceAcquired = FALSE;
     BOOLEAN _SEH2_VOLATILE FcbResourceAcquired = FALSE;
+#else
+    BOOLEAN VcbResourceAcquired = FALSE;
+    BOOLEAN FcbResourceAcquired = FALSE;
+#endif
 
     ASSERT(IrpContext);
 
@@ -619,7 +653,11 @@ Ext2IsVolumeDirty (
     IN PEXT2_IRP_CONTEXT IrpContext
 )
 {
+#ifdef __REACTOS__
     NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
+#else
+    NTSTATUS status = STATUS_SUCCESS;
+#endif
     PIRP  Irp;
     PEXTENDED_IO_STACK_LOCATION IrpSp;
     PULONG VolumeState;
@@ -675,17 +713,29 @@ Ext2QueryExtentMappings(
     OUT PLARGE_INTEGER *   pMappedRuns
 )
 {
+#ifdef __REACTOS__
     PLARGE_INTEGER      _SEH2_VOLATILE MappedRuns = NULL;
+#else
+    PLARGE_INTEGER      MappedRuns = NULL;
+#endif
     PLARGE_INTEGER      PartialRuns = NULL;
 
+#ifdef __REACTOS__
     PEXT2_EXTENT        _SEH2_VOLATILE Chain = NULL;
+#else
+    PEXT2_EXTENT        Chain = NULL;
+#endif
     PEXT2_EXTENT        Extent = NULL;
 
     LONGLONG            Vbn = 0;
     ULONG               Length = 0;
     ULONG               i = 0;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_SUCCESS;
+#else
+    NTSTATUS            Status = STATUS_SUCCESS;
+#endif
 
     _SEH2_TRY {
 
@@ -783,7 +833,11 @@ Ext2QueryRetrievalPointers (
     PFILE_OBJECT        FileObject;
 
     PEXT2_VCB           Vcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
 
     PLARGE_INTEGER      RequestVbn;
@@ -792,9 +846,17 @@ Ext2QueryRetrievalPointers (
     ULONG               InputSize;
     ULONG               OutputSize;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_SUCCESS;
+#else
+    NTSTATUS            Status = STATUS_SUCCESS;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE FcbResourceAcquired = FALSE;
+#else
+    BOOLEAN FcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -920,13 +982,21 @@ Ext2GetRetrievalPointers (
     PFILE_OBJECT        FileObject;
 
     PEXT2_VCB           Vcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
 
     PSTARTING_VCN_INPUT_BUFFER  SVIB;
     PRETRIEVAL_POINTERS_BUFFER  RPSB;
 
+#ifdef __REACTOS__
     PEXT2_EXTENT        _SEH2_VOLATILE Chain = NULL;
+#else
+    PEXT2_EXTENT        Chain = NULL;
+#endif
     PEXT2_EXTENT        Extent = NULL;
 
     LONGLONG            Vbn = 0;
@@ -937,9 +1007,17 @@ Ext2GetRetrievalPointers (
     ULONG               InputSize;
     ULONG               OutputSize;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_SUCCESS;
+#else
+    NTSTATUS            Status = STATUS_SUCCESS;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE FcbResourceAcquired = FALSE;
+#else
+    BOOLEAN FcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -1050,6 +1128,7 @@ Ext2GetRetrievalPointers (
             }
 
             /* build extents for sub-range */
+#ifdef __REACTOS__
             Status = Ext2BuildExtents(
                          IrpContext,
                          Vcb,
@@ -1058,6 +1137,16 @@ Ext2GetRetrievalPointers (
                          Length,
                          FALSE,
                          (PEXT2_EXTENT *)&Chain);
+#else
+            Status = Ext2BuildExtents(
+                         IrpContext,
+                         Vcb,
+                         Fcb->Mcb,
+                         Vbn,
+                         Length,
+                         FALSE,
+                         &Chain);
+#endif
 
             if (!NT_SUCCESS(Status)) {
                 DbgBreak();
@@ -1169,16 +1258,28 @@ Ext2GetRetrievalPointerBase (
     PFILE_OBJECT        FileObject;
 
     PEXT2_VCB           Vcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
 
     PLARGE_INTEGER      FileAreaOffset;
 
     ULONG               OutputSize;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_SUCCESS;
+#else
+    NTSTATUS            Status = STATUS_SUCCESS;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE FcbResourceAcquired = FALSE;
+#else
+    BOOLEAN FcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -1395,7 +1496,11 @@ Ext2GetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
     PEXT2_CCB           Ccb = NULL;
     PEXT2_MCB           Mcb = NULL;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
     BOOLEAN             MainResourceAcquired = FALSE;
 
     PVOID               OutputBuffer;
@@ -1407,7 +1512,11 @@ Ext2GetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
     UNICODE_STRING  UniName;
     OEM_STRING      OemName;
 
+#ifdef __REACTOS__
     PCHAR           _SEH2_VOLATILE OemNameBuffer = NULL;
+#else
+    PCHAR           OemNameBuffer = NULL;
+#endif
     int             OemNameLength = 0, i;
 
     Ccb = IrpContext->Ccb;
@@ -1576,18 +1685,35 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
 
     PDEVICE_OBJECT      DeviceObject;
 
+#ifdef __REACTOS__
     PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_VCB           Vcb = NULL;
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
+#ifdef __REACTOS__
     PEXT2_MCB           _SEH2_VOLATILE Mcb = NULL;
+#else
+    PEXT2_MCB           Mcb = NULL;
+#endif
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
     PVOID               InputBuffer;
     ULONG               InputBufferLength;
     ULONG               BytesWritten = 0;
 
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE ParentDcb = NULL;   /* Dcb of it's current parent */
+#else
+    PEXT2_FCB           ParentDcb = NULL;   /* Dcb of it's current parent */
+#endif
     PEXT2_MCB           ParentMcb = NULL;
 
     PREPARSE_DATA_BUFFER RDB;
@@ -1595,11 +1721,20 @@ Ext2SetReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
     UNICODE_STRING      UniName;
     OEM_STRING          OemName;
 
+#ifdef __REACTOS__
     PCHAR               _SEH2_VOLATILE OemNameBuffer = NULL;
+#else
+    PCHAR               OemNameBuffer = NULL;
+#endif
     int                 OemNameLength = 0, i;
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
     BOOLEAN             _SEH2_VOLATILE FcbLockAcquired = FALSE;
+#else
+    BOOLEAN             MainResourceAcquired = FALSE;
+    BOOLEAN             FcbLockAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -1787,18 +1922,40 @@ Ext2DeleteReparsePoint (IN PEXT2_IRP_CONTEXT IrpContext)
 
     PDEVICE_OBJECT      DeviceObject;
 
+#ifdef __REACTOS__
     PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_VCB           Vcb = NULL;
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
+#ifdef __REACTOS__
     PEXT2_MCB           _SEH2_VOLATILE Mcb = NULL;
+#else
+    PEXT2_MCB           Mcb = NULL;
+#endif
 
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE ParentDcb = NULL;   /* Dcb of it's current parent */
+#else
+    PEXT2_FCB           ParentDcb = NULL;   /* Dcb of it's current parent */
+#endif
     PEXT2_MCB           ParentMcb = NULL;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE FcbLockAcquired = FALSE;
     BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
+#else
+    BOOLEAN             FcbLockAcquired = FALSE;
+    BOOLEAN             MainResourceAcquired = FALSE;
+#endif
 
 
     _SEH2_TRY {
@@ -2050,15 +2207,27 @@ NTSTATUS
 Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT              MainDeviceObject;
+#ifdef __REACTOS__
     BOOLEAN                     _SEH2_VOLATILE GlobalDataResourceAcquired = FALSE;
+#else
+    BOOLEAN                     GlobalDataResourceAcquired = FALSE;
+#endif
     PIRP                        Irp;
     PIO_STACK_LOCATION          IoStackLocation;
     PDEVICE_OBJECT              TargetDeviceObject;
+#ifdef __REACTOS__
     NTSTATUS                    _SEH2_VOLATILE Status = STATUS_UNRECOGNIZED_VOLUME;
     PDEVICE_OBJECT              _SEH2_VOLATILE VolumeDeviceObject = NULL;
     PEXT2_VCB                   _SEH2_VOLATILE Vcb = NULL, OldVcb = NULL;
     PVPB _SEH2_VOLATILE OldVpb = NULL, Vpb = NULL;
     PEXT2_SUPER_BLOCK           _SEH2_VOLATILE Ext2Sb = NULL;
+#else
+    NTSTATUS                    Status = STATUS_UNRECOGNIZED_VOLUME;
+    PDEVICE_OBJECT              VolumeDeviceObject = NULL;
+    PEXT2_VCB                   Vcb = NULL, OldVcb = NULL;
+    PVPB                        OldVpb = NULL, Vpb = NULL;
+    PEXT2_SUPER_BLOCK           Ext2Sb = NULL;
+#endif
     ULONG                       dwBytes;
     DISK_GEOMETRY               DiskGeometry;
 
@@ -2116,6 +2285,7 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             _SEH2_LEAVE;
         }
 
+#ifdef __REACTOS__
         Status = IoCreateDevice(
                      MainDeviceObject->DriverObject,
                      sizeof(EXT2_VCB),
@@ -2124,6 +2294,16 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                      0,
                      FALSE,
                      (PDEVICE_OBJECT *)&VolumeDeviceObject );
+#else
+        Status = IoCreateDevice(
+                     MainDeviceObject->DriverObject,
+                     sizeof(EXT2_VCB),
+                     NULL,
+                     FILE_DEVICE_DISK_FILE_SYSTEM,
+                     0,
+                     FALSE,
+                     &VolumeDeviceObject );
+#endif
 
         if (!NT_SUCCESS(Status)) {
             _SEH2_LEAVE;
@@ -2170,7 +2350,11 @@ Ext2MountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
         Vcb->DiskGeometry = DiskGeometry;
         InitializeListHead(&Vcb->Next);
 
+#ifdef __REACTOS__
         Status = Ext2LoadSuper(Vcb, FALSE, (PEXT2_SUPER_BLOCK *)&Ext2Sb);
+#else
+        Status = Ext2LoadSuper(Vcb, FALSE, &Ext2Sb);
+#endif
         if (!NT_SUCCESS(Status)) {
             Vcb = NULL;
             Status = STATUS_UNRECOGNIZED_VOLUME;
@@ -2378,10 +2562,17 @@ NTSTATUS
 Ext2VerifyVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
+#ifdef __REACTOS__
     NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PEXT2_SUPER_BLOCK       _SEH2_VOLATILE ext2_sb = NULL;
     PEXT2_VCB               _SEH2_VOLATILE Vcb = NULL;
     BOOLEAN                 _SEH2_VOLATILE VcbResourceAcquired = FALSE;
+#else
+    NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+    PEXT2_SUPER_BLOCK       ext2_sb = NULL;
+    PEXT2_VCB               Vcb = NULL;
+    BOOLEAN                 VcbResourceAcquired = FALSE;
+#endif
     PIRP                    Irp;
     ULONG                   ChangeCount = 0;
     ULONG                   dwBytes;
@@ -2440,7 +2631,11 @@ Ext2VerifyVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
         Irp = IrpContext->Irp;
 
+#ifdef __REACTOS__
         Status = Ext2LoadSuper(Vcb, TRUE, (PEXT2_SUPER_BLOCK *)&ext2_sb);
+#else
+        Status = Ext2LoadSuper(Vcb, TRUE, &ext2_sb);
+#endif
 
         if (!NT_SUCCESS(Status)) {
             _SEH2_LEAVE;
@@ -2521,9 +2716,15 @@ NTSTATUS
 Ext2DismountVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT  DeviceObject;
+#ifdef __REACTOS__
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PEXT2_VCB       _SEH2_VOLATILE Vcb = NULL;
     BOOLEAN         _SEH2_VOLATILE VcbResourceAcquired = FALSE;
+#else
+    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+    PEXT2_VCB       Vcb = NULL;
+    BOOLEAN         VcbResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 
@@ -2707,9 +2908,15 @@ Ext2PurgeVolume (IN PEXT2_VCB Vcb,
     PEXT2_FCB       Fcb;
     LIST_ENTRY      List, *Next;
 
+#ifdef __REACTOS__
     BOOLEAN         _SEH2_VOLATILE VcbResourceAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE FcbResourceAcquired = FALSE;
     BOOLEAN         _SEH2_VOLATILE gdResourceAcquired = FALSE;
+#else
+    BOOLEAN         VcbResourceAcquired = FALSE;
+    BOOLEAN         FcbResourceAcquired = FALSE;
+    BOOLEAN         gdResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 

@@ -133,17 +133,31 @@ Return Value:
 {
     BOOLEAN FirstPass = TRUE;
     ULONG McbEntryOffset;
+#ifdef __REACTOS__
     PFCB _SEH2_VOLATILE ParentFcb = NULL;
     BOOLEAN _SEH2_VOLATILE CleanupParent = FALSE;
+#else
+    PFCB ParentFcb = NULL;
+    BOOLEAN CleanupParent = FALSE;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN _SEH2_VOLATILE UnlockFcb = FALSE;
+#else
+    BOOLEAN UnlockFcb = FALSE;
+#endif
 
     LONGLONG CurrentFileOffset;
     ULONG CurrentMcbOffset;
     PCD_MCB_ENTRY CurrentMcbEntry;
 
+#ifdef __REACTOS__
     DIRENT_ENUM_CONTEXT _SEH2_VOLATILE DirContext = {0};
     DIRENT _SEH2_VOLATILE Dirent = {0};
+#else
+    DIRENT_ENUM_CONTEXT DirContext = {0};
+    DIRENT Dirent = {0};
+#endif
 
     PAGED_CODE();
 
@@ -215,8 +229,13 @@ Return Value:
             //  Initialize the search dirent structures.
             //
 
+#ifdef __REACTOS__
             CdInitializeDirContext( IrpContext, (PDIRENT_ENUM_CONTEXT)&DirContext );
             CdInitializeDirent( IrpContext, (PDIRENT)&Dirent );
+#else
+            CdInitializeDirContext( IrpContext, &DirContext );
+            CdInitializeDirent( IrpContext, &Dirent );
+#endif
 
             //
             //  Otherwise we need to walk the dirents for this file until we find
@@ -242,10 +261,17 @@ Return Value:
             CurrentFileOffset = 0;
             CurrentMcbOffset = 0;
 
+#ifdef __REACTOS__
             CdLookupDirent( IrpContext,
                             ParentFcb,
                             CdQueryFidDirentOffset( Fcb->FileId ),
                             (PDIRENT_ENUM_CONTEXT)&DirContext );
+#else
+            CdLookupDirent( IrpContext,
+                            ParentFcb,
+                            CdQueryFidDirentOffset( Fcb->FileId ),
+                            &DirContext );
+#endif
 
             //
             //  If we are adding allocation to the Mcb then add all of it.
@@ -257,7 +283,11 @@ Return Value:
                 //  Update the dirent from the on-disk dirent.
                 //
 
+#ifdef __REACTOS__
                 CdUpdateDirentFromRawDirent( IrpContext, ParentFcb, (PDIRENT_ENUM_CONTEXT)&DirContext, (PDIRENT)&Dirent );
+#else
+                CdUpdateDirentFromRawDirent( IrpContext, ParentFcb, &DirContext, &Dirent );
+#endif
 
                 //
                 //  Add this dirent to the Mcb if not already present.
@@ -268,7 +298,11 @@ Return Value:
 
                 if (CurrentMcbOffset >= Fcb->Mcb.CurrentEntryCount) {
 
+#ifdef __REACTOS__
                     CdAddAllocationFromDirent( IrpContext, Fcb, CurrentMcbOffset, CurrentFileOffset, (PDIRENT)&Dirent );
+#else
+                    CdAddAllocationFromDirent( IrpContext, Fcb, CurrentMcbOffset, CurrentFileOffset, &Dirent );
+#endif
                 }
 
                 CdUnlockFcb( IrpContext, Fcb );
@@ -288,7 +322,11 @@ Return Value:
                 //  the last dirent for a file doesn't exist.
                 //
 
+#ifdef __REACTOS__
                 if (!CdLookupNextDirent( IrpContext, ParentFcb, (PDIRENT_ENUM_CONTEXT)&DirContext, (PDIRENT_ENUM_CONTEXT)&DirContext )) {
+#else
+                if (!CdLookupNextDirent( IrpContext, ParentFcb, &DirContext, &DirContext )) {
+#endif
 
                     CdRaiseStatus( IrpContext, STATUS_DISK_CORRUPT_ERROR );
                 }

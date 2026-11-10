@@ -63,25 +63,55 @@ Ext2CompleteIrpContext (
 NTSTATUS
 Ext2ReadVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
+#ifdef __REACTOS__
     PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
+#else
+    PEXT2_VCB           Vcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
     PEXT2_FCBVCB        FcbOrVcb = NULL;
+#ifdef __REACTOS__
     PFILE_OBJECT        _SEH2_VOLATILE FileObject = NULL;
+#else
+    PFILE_OBJECT        FileObject = NULL;
+#endif
 
     PDEVICE_OBJECT      DeviceObject = NULL;
 
+#ifdef __REACTOS__
     PIRP                _SEH2_VOLATILE Irp = NULL;
+#else
+    PIRP                Irp = NULL;
+#endif
     PIO_STACK_LOCATION  IoStackLocation = NULL;
 
+#ifdef __REACTOS__
     ULONG               _SEH2_VOLATILE Length;
     LARGE_INTEGER       _SEH2_VOLATILE ByteOffset;
+#else
+    ULONG               Length;
+    LARGE_INTEGER       ByteOffset;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE PagingIo;
+#else
+    BOOLEAN             PagingIo;
+#endif
     BOOLEAN             Nocache;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE SynchronousIo;
     BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
+#else
+    BOOLEAN             SynchronousIo;
+    BOOLEAN             MainResourceAcquired = FALSE;
+#endif
 
     PUCHAR              Buffer = NULL;
     EXT2_EXTENT         BlockArray;
@@ -184,12 +214,21 @@ Ext2ReadVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (IsFlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
 
+#ifdef __REACTOS__
                 CcMdlRead(
                     Vcb->Volume,
                     (PLARGE_INTEGER)&ByteOffset,
                     Length,
                     &Irp->MdlAddress,
                     &Irp->IoStatus );
+#else
+                CcMdlRead(
+                    Vcb->Volume,
+                    &ByteOffset,
+                    Length,
+                    &Irp->MdlAddress,
+                    &Irp->IoStatus );
+#endif
 
                 Status = Irp->IoStatus.Status;
 
@@ -202,6 +241,7 @@ Ext2ReadVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                     _SEH2_LEAVE;
                 }
 
+#ifdef __REACTOS__
                 if (!CcCopyRead(
                             Vcb->Volume,
                             (PLARGE_INTEGER)&ByteOffset,
@@ -209,6 +249,15 @@ Ext2ReadVolume (IN PEXT2_IRP_CONTEXT IrpContext)
                             Ext2CanIWait(),
                             Buffer,
                             &Irp->IoStatus )) {
+#else
+                if (!CcCopyRead(
+                            Vcb->Volume,
+                            &ByteOffset,
+                            Length,
+                            Ext2CanIWait(),
+                            Buffer,
+                            &Irp->IoStatus )) {
+#endif
                     Status = STATUS_PENDING;
                     _SEH2_LEAVE;
                 }
@@ -319,7 +368,11 @@ Ext2ReadInode (
     OUT PULONG              BytesRead
 )
 {
+#ifdef __REACTOS__
     PEXT2_EXTENT    _SEH2_VOLATILE Chain = NULL;
+#else
+    PEXT2_EXTENT    Chain = NULL;
+#endif
     PEXT2_EXTENT    Extent = NULL, Prev = NULL;
 
     IO_STATUS_BLOCK IoStatus;
@@ -376,6 +429,7 @@ Ext2ReadInode (
             RealSize = Size;
         }
 
+#ifdef __REACTOS__
         Status = Ext2BuildExtents(
                      IrpContext,
                      Vcb,
@@ -385,6 +439,17 @@ Ext2ReadInode (
                      FALSE,
                      (PEXT2_EXTENT *)&Chain
                  );
+#else
+        Status = Ext2BuildExtents(
+                     IrpContext,
+                     Vcb,
+                     Mcb,
+                     Offset,
+                     RealSize,
+                     FALSE,
+                     &Chain
+                 );
+#endif
 
         if (!NT_SUCCESS(Status)) {
             _SEH2_LEAVE;
@@ -470,28 +535,63 @@ Ext2ReadInode (
 NTSTATUS
 Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
     PEXT2_VCB           Vcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
+#ifdef __REACTOS__
     PFILE_OBJECT        _SEH2_VOLATILE FileObject = NULL;
+#else
+    PFILE_OBJECT        FileObject = NULL;
+#endif
 
     PDEVICE_OBJECT      DeviceObject = NULL;
 
+#ifdef __REACTOS__
     PIRP                _SEH2_VOLATILE Irp = NULL;
+#else
+    PIRP                Irp = NULL;
+#endif
     PIO_STACK_LOCATION  IoStackLocation = NULL;
 
+#ifdef __REACTOS__
     ULONG               _SEH2_VOLATILE Length = 0;
+#else
+    ULONG               Length = 0;
+#endif
     ULONG               ReturnedLength = 0;
+#ifdef __REACTOS__
     LARGE_INTEGER       _SEH2_VOLATILE ByteOffset = {0};
+#else
+    LARGE_INTEGER       ByteOffset = {0};
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE OpPostIrp = FALSE;
     BOOLEAN             _SEH2_VOLATILE PagingIo = FALSE;
+#else
+    BOOLEAN             OpPostIrp = FALSE;
+    BOOLEAN             PagingIo = FALSE;
+#endif
     BOOLEAN             Nocache = FALSE;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE SynchronousIo;
     BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
     BOOLEAN             _SEH2_VOLATILE PagingIoResourceAcquired = FALSE;
+#else
+    BOOLEAN             SynchronousIo;
+    BOOLEAN             MainResourceAcquired = FALSE;
+    BOOLEAN             PagingIoResourceAcquired = FALSE;
+#endif
 
     PUCHAR              Buffer;
 
@@ -592,10 +692,17 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 }
                 MainResourceAcquired = TRUE;
 
+#ifdef __REACTOS__
                 CcFlushCache(&Fcb->SectionObject,
                              (PLARGE_INTEGER)&ByteOffset,
                               Length,
                              &Irp->IoStatus );
+#else
+                CcFlushCache(&Fcb->SectionObject,
+                             &ByteOffset,
+                              Length,
+                             &Irp->IoStatus );
+#endif
                 if (!NT_SUCCESS(Irp->IoStatus.Status))
                     _SEH2_LEAVE;
                 ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
@@ -677,12 +784,21 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
             }
 
             if (FlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
+#ifdef __REACTOS__
                 CcMdlRead(
                     FileObject,
                     (PLARGE_INTEGER)&ByteOffset,
                     ReturnedLength,
                     &Irp->MdlAddress,
                     &Irp->IoStatus );
+#else
+                CcMdlRead(
+                    FileObject,
+                    (&ByteOffset),
+                    ReturnedLength,
+                    &Irp->MdlAddress,
+                    &Irp->IoStatus );
+#endif
 
                 Status = Irp->IoStatus.Status;
 
@@ -695,12 +811,23 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     _SEH2_LEAVE;
                 }
 
+#ifdef __REACTOS__
                 if (!CcCopyRead(FileObject, (PLARGE_INTEGER)&ByteOffset, ReturnedLength,
                                 Ext2CanIWait(), Buffer, &Irp->IoStatus)) {
+#else
+                if (!CcCopyRead(FileObject, &ByteOffset, ReturnedLength,
+                                Ext2CanIWait(), Buffer, &Irp->IoStatus)) {
+#endif
 
+#ifdef __REACTOS__
                     if (Ext2CanIWait() || !CcCopyRead(FileObject, (PLARGE_INTEGER)&ByteOffset,
                                                       ReturnedLength, TRUE,
                                                       Buffer, &Irp->IoStatus)) {
+#else
+                    if (Ext2CanIWait() || !CcCopyRead(FileObject, &ByteOffset,
+                                                      ReturnedLength, TRUE,
+                                                      Buffer, &Irp->IoStatus)) {
+#endif
                         Status = STATUS_PENDING;
                         DbgBreak();
                         _SEH2_LEAVE;
@@ -832,7 +959,11 @@ Ext2ReadFile(IN PEXT2_IRP_CONTEXT IrpContext)
 NTSTATUS
 Ext2ReadComplete (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+#endif
     PFILE_OBJECT    FileObject;
     PIRP            Irp;
 
@@ -863,12 +994,20 @@ Ext2ReadComplete (IN PEXT2_IRP_CONTEXT IrpContext)
 NTSTATUS
 Ext2Read (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
     PEXT2_VCB           Vcb;
     PEXT2_FCBVCB        FcbOrVcb;
     PDEVICE_OBJECT      DeviceObject;
     PFILE_OBJECT        FileObject;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE bCompleteRequest = FALSE;
+#else
+    BOOLEAN             bCompleteRequest = FALSE;
+#endif
 
     ASSERT(IrpContext);
 

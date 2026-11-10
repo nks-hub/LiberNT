@@ -199,7 +199,11 @@ Ext2ZeroData (
     PBCB            Bcb;
     PVOID           Ptr;
     ULONG           Size;
+#ifdef __REACTOS__
     BOOLEAN         _SEH2_VOLATILE rc = TRUE;
+#else
+    BOOLEAN         rc = TRUE;
+#endif
 
     ASSERT (End && Start && End->QuadPart > Start->QuadPart);
     Fcb = (PEXT2_FCB) FileObject->FsContext;
@@ -243,30 +247,68 @@ Ext2DeferWrite(IN PEXT2_IRP_CONTEXT IrpContext, PIRP Irp)
 NTSTATUS
 Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
+#ifdef __REACTOS__
     PEXT2_VCB           _SEH2_VOLATILE Vcb = NULL;
+#else
+    PEXT2_VCB           Vcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
     PEXT2_FCBVCB        FcbOrVcb = NULL;
+#ifdef __REACTOS__
     PFILE_OBJECT        _SEH2_VOLATILE FileObject = NULL;
+#else
+    PFILE_OBJECT        FileObject = NULL;
+#endif
 
     PDEVICE_OBJECT      DeviceObject = NULL;
 
+#ifdef __REACTOS__
     PIRP                _SEH2_VOLATILE Irp = NULL;
+#else
+    PIRP                Irp = NULL;
+#endif
     PIO_STACK_LOCATION  IoStackLocation = NULL;
 
+#ifdef __REACTOS__
     ULONG               _SEH2_VOLATILE Length;
     LARGE_INTEGER       _SEH2_VOLATILE ByteOffset;
+#else
+    ULONG               Length;
+    LARGE_INTEGER       ByteOffset;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE PagingIo = FALSE;
+#else
+    BOOLEAN             PagingIo = FALSE;
+#endif
     BOOLEAN             Nocache = FALSE;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE SynchronousIo = FALSE;
     BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
+#else
+    BOOLEAN             SynchronousIo = FALSE;
+    BOOLEAN             MainResourceAcquired = FALSE;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE bDeferred = FALSE;
+#else
+    BOOLEAN             bDeferred = FALSE;
+#endif
 
     PUCHAR              Buffer = NULL;
+#ifdef __REACTOS__
     PEXT2_EXTENT        _SEH2_VOLATILE Chain = NULL;
+#else
+    PEXT2_EXTENT        Chain = NULL;
+#endif
     EXT2_EXTENT         BlockArray;
 
     _SEH2_TRY {
@@ -396,10 +438,17 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
             ExAcquireSharedStarveExclusive(&Vcb->PagingIoResource, TRUE);
             ExReleaseResourceLite(&Vcb->PagingIoResource);
 
+#ifdef __REACTOS__
             CcFlushCache( &(Vcb->SectionObject),
                           (PLARGE_INTEGER)&ByteOffset,
                           Length,
                           &(Irp->IoStatus));
+#else
+            CcFlushCache( &(Vcb->SectionObject),
+                          &ByteOffset,
+                          Length,
+                          &(Irp->IoStatus));
+#endif
 
             if (!NT_SUCCESS(Irp->IoStatus.Status))  {
                 Status = Irp->IoStatus.Status;
@@ -426,12 +475,21 @@ Ext2WriteVolume (IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (FlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
 
+#ifdef __REACTOS__
                 CcPrepareMdlWrite (
                     Vcb->Volume,
                     (PLARGE_INTEGER)&ByteOffset,
                     Length,
                     &Irp->MdlAddress,
                     &Irp->IoStatus );
+#else
+                CcPrepareMdlWrite (
+                    Vcb->Volume,
+                    &ByteOffset,
+                    Length,
+                    &Irp->MdlAddress,
+                    &Irp->IoStatus );
+#endif
 
                 Status = Irp->IoStatus.Status;
 
@@ -684,8 +742,13 @@ Ext2WriteInode (
     OUT PULONG              BytesWritten
     )
 {
+#ifdef __REACTOS__
     PEXT2_EXTENT    _SEH2_VOLATILE Chain = NULL;
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    PEXT2_EXTENT    Chain = NULL;
+    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+#endif
 
     _SEH2_TRY {
 
@@ -693,6 +756,7 @@ Ext2WriteInode (
             *BytesWritten = 0;
         }
 
+#ifdef __REACTOS__
         Status = Ext2BuildExtents (
                      IrpContext,
                      Vcb,
@@ -702,6 +766,17 @@ Ext2WriteInode (
                      S_ISDIR(Mcb->Inode.i_mode) ? FALSE : TRUE,
                      (PEXT2_EXTENT *)&Chain
                  );
+#else
+        Status = Ext2BuildExtents (
+                     IrpContext,
+                     Vcb,
+                     Mcb,
+                     Offset,
+                     Size,
+                     S_ISDIR(Mcb->Inode.i_mode) ? FALSE : TRUE,
+                     &Chain
+                 );
+#endif
 
         if (!NT_SUCCESS(Status)) {
             _SEH2_LEAVE;
@@ -771,32 +846,70 @@ NTSTATUS
 Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PEXT2_VCB           Vcb = NULL;
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
+    PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
+#ifdef __REACTOS__
     PFILE_OBJECT        _SEH2_VOLATILE FileObject = NULL;
+#else
+    PFILE_OBJECT        FileObject = NULL;
+#endif
 
     PDEVICE_OBJECT      DeviceObject = NULL;
 
+#ifdef __REACTOS__
     PIRP                _SEH2_VOLATILE Irp = NULL;
+#else
+    PIRP                Irp = NULL;
+#endif
     PIO_STACK_LOCATION  IoStackLocation = NULL;
     PUCHAR              Buffer = NULL;
 
+#ifdef __REACTOS__
     LARGE_INTEGER       _SEH2_VOLATILE ByteOffset;
+#else
+    LARGE_INTEGER       ByteOffset;
+#endif
     ULONG               ReturnedLength = 0;
     ULONG               Length;
 
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE OpPostIrp = FALSE;
     BOOLEAN             _SEH2_VOLATILE PagingIo = FALSE;
+#else
+    BOOLEAN             OpPostIrp = FALSE;
+    BOOLEAN             PagingIo = FALSE;
+#endif
     BOOLEAN             Nocache = FALSE;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE SynchronousIo = FALSE;
+#else
+    BOOLEAN             SynchronousIo = FALSE;
+#endif
 
     BOOLEAN             RecursiveWriteThrough = FALSE;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE MainResourceAcquired = FALSE;
     BOOLEAN             _SEH2_VOLATILE PagingIoResourceAcquired = FALSE;
+#else
+    BOOLEAN             MainResourceAcquired = FALSE;
+    BOOLEAN             PagingIoResourceAcquired = FALSE;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE bDeferred = FALSE;
+#else
+    BOOLEAN             bDeferred = FALSE;
+#endif
 #ifndef __REACTOS__
     BOOLEAN             UpdateFileValidSize = FALSE;
 #endif
@@ -990,10 +1103,17 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 ExAcquireSharedStarveExclusive( &Fcb->PagingIoResource, TRUE);
                 ExReleaseResourceLite(&Fcb->PagingIoResource);
 
+#ifdef __REACTOS__
                 CcFlushCache( &(Fcb->SectionObject),
                               (PLARGE_INTEGER)&ByteOffset,
                               CEILING_ALIGNED(ULONG, Length, BLOCK_SIZE),
                               &(Irp->IoStatus));
+#else
+                CcFlushCache( &(Fcb->SectionObject),
+                              &ByteOffset,
+                              CEILING_ALIGNED(ULONG, Length, BLOCK_SIZE),
+                              &(Irp->IoStatus));
+#endif
                 ClearLongFlag(Fcb->Flags, FCB_FILE_MODIFIED);
 
                 if (!NT_SUCCESS(Irp->IoStatus.Status)) {
@@ -1004,10 +1124,17 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                 ExAcquireSharedStarveExclusive( &Fcb->PagingIoResource, TRUE);
                 ExReleaseResourceLite(&Fcb->PagingIoResource);
 
+#ifdef __REACTOS__
                 CcPurgeCacheSection( &(Fcb->SectionObject),
                                      (PLARGE_INTEGER)&ByteOffset,
                                      CEILING_ALIGNED(ULONG, Length, BLOCK_SIZE),
                                      FALSE );
+#else
+                CcPurgeCacheSection( &(Fcb->SectionObject),
+                                     &(ByteOffset),
+                                     CEILING_ALIGNED(ULONG, Length, BLOCK_SIZE),
+                                     FALSE );
+#endif
             }
 
             if (!FsRtlCheckLockForWriteAccess(&Fcb->FileLockAnchor, Irp)) {
@@ -1122,12 +1249,21 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 
             if (FlagOn(IrpContext->MinorFunction, IRP_MN_MDL)) {
 
+#ifdef __REACTOS__
                 CcPrepareMdlWrite(
                     FileObject,
                     (PLARGE_INTEGER)&ByteOffset,
                     Length,
                     &Irp->MdlAddress,
                     &Irp->IoStatus );
+#else
+                CcPrepareMdlWrite(
+                    FileObject,
+                    &ByteOffset,
+                    Length,
+                    &Irp->MdlAddress,
+                    &Irp->IoStatus );
+#endif
 
                 Status = Irp->IoStatus.Status;
 
@@ -1145,8 +1281,13 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     /* let this irp wait, since it has to be synchronous */
                     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
 
+#ifdef __REACTOS__
                     rc = Ext2ZeroData(IrpContext, Vcb, FileObject,
                                       &Fcb->Header.ValidDataLength, (PLARGE_INTEGER)&ByteOffset);
+#else
+                    rc = Ext2ZeroData(IrpContext, Vcb, FileObject,
+                                      &Fcb->Header.ValidDataLength, &ByteOffset);
+#endif
                     if (!rc) {
                         Status = STATUS_PENDING;
                         DbgBreak();
@@ -1154,9 +1295,15 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
                     }
                 }
 
+#ifdef __REACTOS__
                 if (!CcCopyWrite(FileObject, (PLARGE_INTEGER)&ByteOffset, Length, Ext2CanIWait(), Buffer)) {
                     if (Ext2CanIWait() ||
                         !CcCopyWrite(FileObject,  (PLARGE_INTEGER)&ByteOffset, Length, TRUE, Buffer)) {
+#else
+                if (!CcCopyWrite(FileObject, &ByteOffset, Length, Ext2CanIWait(), Buffer)) {
+                    if (Ext2CanIWait() ||
+                        !CcCopyWrite(FileObject,  &ByteOffset, Length, TRUE, Buffer)) {
+#endif
                         Status = STATUS_PENDING;
                         DbgBreak();
                         _SEH2_LEAVE;
@@ -1194,9 +1341,15 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 
                     /* let this irp wait, since it has to be synchronous */
                     SetFlag(IrpContext->Flags, IRP_CONTEXT_FLAG_WAIT);
+#ifdef __REACTOS__
                     rc = Ext2ZeroData(IrpContext, Vcb, FileObject,
                                       &Fcb->Header.ValidDataLength,
                                       (PLARGE_INTEGER)&ByteOffset);
+#else
+                    rc = Ext2ZeroData(IrpContext, Vcb, FileObject,
+                                      &Fcb->Header.ValidDataLength,
+                                      &ByteOffset);
+#endif
                     if (!rc) {
                         Status = STATUS_PENDING;
                         DbgBreak();
@@ -1328,7 +1481,11 @@ Ext2WriteFile(IN PEXT2_IRP_CONTEXT IrpContext)
 NTSTATUS
 Ext2WriteComplete (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS        Status = STATUS_UNSUCCESSFUL;
+#endif
     PFILE_OBJECT    FileObject;
     PIRP            Irp;
     PIO_STACK_LOCATION IrpSp;
@@ -1362,12 +1519,20 @@ Ext2WriteComplete (IN PEXT2_IRP_CONTEXT IrpContext)
 NTSTATUS
 Ext2Write (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
     PEXT2_FCBVCB        FcbOrVcb;
     PDEVICE_OBJECT      DeviceObject;
     PFILE_OBJECT        FileObject;
     PEXT2_VCB           Vcb;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE bCompleteRequest = TRUE;
+#else
+    BOOLEAN             bCompleteRequest = TRUE;
+#endif
 
     ASSERT(IrpContext);
 

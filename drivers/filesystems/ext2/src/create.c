@@ -74,9 +74,15 @@ Ext2FollowLink (
 {
     NTSTATUS        Status = STATUS_LINK_FAILED;
 
+#ifdef __REACTOS__
     UNICODE_STRING  _SEH2_VOLATILE UniName;
     OEM_STRING      _SEH2_VOLATILE OemName;
     BOOLEAN         _SEH2_VOLATILE bOemBuffer = FALSE;
+#else
+    UNICODE_STRING  UniName;
+    OEM_STRING      OemName;
+    BOOLEAN         bOemBuffer = FALSE;
+#endif
 
     PEXT2_MCB       Target = NULL;
 
@@ -84,8 +90,13 @@ Ext2FollowLink (
 
     _SEH2_TRY {
 
+#ifdef __REACTOS__
         RtlZeroMemory((void *)&UniName, sizeof(UNICODE_STRING));
         RtlZeroMemory((void *)&OemName, sizeof(OEM_STRING));
+#else
+        RtlZeroMemory(&UniName, sizeof(UNICODE_STRING));
+        RtlZeroMemory(&OemName, sizeof(OEM_STRING));
+#endif
 
         /* exit if we jump into a possible symlink forever loop */
         if ((Linkdep + 1) > EXT2_MAX_NESTED_LINKS ||
@@ -134,7 +145,11 @@ Ext2FollowLink (
         }
 
         /* convert oem string to unicode string */
+#ifdef __REACTOS__
         UniName.MaximumLength = (USHORT)Ext2OEMToUnicodeSize(Vcb, (PANSI_STRING)&OemName);
+#else
+        UniName.MaximumLength = (USHORT)Ext2OEMToUnicodeSize(Vcb, &OemName);
+#endif
         if (UniName.MaximumLength <= 0) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
             _SEH2_LEAVE;
@@ -149,13 +164,18 @@ Ext2FollowLink (
             _SEH2_LEAVE;
         }
         RtlZeroMemory(UniName.Buffer, UniName.MaximumLength);
+#ifdef __REACTOS__
         Status = Ext2OEMToUnicode(Vcb, (PUNICODE_STRING)&UniName, (POEM_STRING)&OemName);
+#else
+        Status = Ext2OEMToUnicode(Vcb, &UniName, &OemName);
+#endif
         if (!NT_SUCCESS(Status)) {
             Status = STATUS_INSUFFICIENT_RESOURCES;
             _SEH2_LEAVE;
         }
 
         /* search the real target */
+#ifdef __REACTOS__
         Status = Ext2LookupFile(
                      IrpContext,
                      Vcb,
@@ -164,6 +184,16 @@ Ext2FollowLink (
                      &Target,
                      Linkdep
                  );
+#else
+        Status = Ext2LookupFile(
+                     IrpContext,
+                     Vcb,
+                     &UniName,
+                     Parent,
+                     &Target,
+                     Linkdep
+                 );
+#endif
         if (Target == NULL) {
             Status = STATUS_LINK_FAILED;
         }
@@ -279,17 +309,31 @@ Ext2LookupFile (
     IN ULONG                Linkdep
 )
 {
+#ifdef __REACTOS__
     NTSTATUS        _SEH2_VOLATILE Status = STATUS_OBJECT_NAME_NOT_FOUND;
+#else
+    NTSTATUS        Status = STATUS_OBJECT_NAME_NOT_FOUND;
+#endif
     UNICODE_STRING  FileName;
+#ifdef __REACTOS__
     PEXT2_MCB       _SEH2_VOLATILE Mcb = NULL;
     struct dentry  * _SEH2_VOLATILE de = NULL;
+#else
+    PEXT2_MCB       Mcb = NULL;
+    struct dentry  *de = NULL;
+#endif
 
     USHORT          i = 0, End;
     ULONG           Inode;
 
     BOOLEAN         bParent = FALSE;
+#ifdef __REACTOS__
     BOOLEAN         _SEH2_VOLATILE bDirectory = FALSE;
     BOOLEAN         _SEH2_VOLATILE LockAcquired = FALSE;
+#else
+    BOOLEAN         bDirectory = FALSE;
+    BOOLEAN         LockAcquired = FALSE;
+#endif
     BOOLEAN         bNotFollow = FALSE;
 
     _SEH2_TRY {
@@ -428,6 +472,7 @@ Ext2LookupFile (
 
                     /* seach the disk */
                     de = NULL;
+#ifdef __REACTOS__
                     Status = Ext2ScanDir (
                                  IrpContext,
                                  Vcb,
@@ -435,6 +480,15 @@ Ext2LookupFile (
                                  &FileName,
                                  &Inode,
                                  (struct dentry **)&de);
+#else
+                    Status = Ext2ScanDir (
+                                 IrpContext,
+                                 Vcb,
+                                 Parent,
+                                 &FileName,
+                                 &Inode,
+                                 &de);
+#endif
 
                     if (NT_SUCCESS(Status)) {
 
@@ -566,6 +620,7 @@ Ext2LookupFile (
 }
 
 
+#ifdef __REACTOS__
 NTSTATUS
 Ext2ScanDir (
     IN PEXT2_IRP_CONTEXT    IrpContext,
@@ -575,12 +630,32 @@ Ext2ScanDir (
     OUT PULONG              Inode,
     OUT struct dentry     **dentry
 )
+#else
+NTSTATUS
+Ext2ScanDir (
+    IN PEXT2_IRP_CONTEXT    IrpContext,
+    IN PEXT2_VCB            Vcb,
+    IN PEXT2_MCB            Parent,
+    IN PUNICODE_STRING      FileName,
+    OUT PULONG              Inode,
+    OUT struct dentry     **dentry
+)
+#endif
 {
     struct ext3_dir_entry_2 *dir_entry = NULL;
+#ifdef __REACTOS__
     struct buffer_head     * _SEH2_VOLATILE bh = NULL;
     struct dentry          * _SEH2_VOLATILE de = NULL;
+#else
+    struct buffer_head     *bh = NULL;
+    struct dentry          *de = NULL;
+#endif
 
+#ifdef __REACTOS__
     NTSTATUS                _SEH2_VOLATILE Status = STATUS_NO_SUCH_FILE;
+#else
+    NTSTATUS                Status = STATUS_NO_SUCH_FILE;
+#endif
 
     DEBUG(DL_RES, ("Ext2ScanDir: %wZ\\%wZ\n", &Parent->FullName, FileName));
 
@@ -692,9 +767,15 @@ Ext2OverwriteEa(
     PIRP				  Irp;
     PIO_STACK_LOCATION  IrpSp;
 
+#ifdef __REACTOS__
     struct ext4_xattr_ref _SEH2_VOLATILE xattr_ref;
     BOOLEAN             _SEH2_VOLATILE XattrRefAcquired = FALSE;
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    struct ext4_xattr_ref xattr_ref;
+    BOOLEAN             XattrRefAcquired = FALSE;
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
 
     PFILE_FULL_EA_INFORMATION FullEa;
     PCHAR EaBuffer;
@@ -738,7 +819,11 @@ Ext2OverwriteEa(
         if (!NT_SUCCESS(Status))
             _SEH2_LEAVE;
 
+#ifdef __REACTOS__
         Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, (struct ext4_xattr_ref *)&xattr_ref));
+#else
+        Status = Ext2WinntError(ext4_fs_get_xattr_ref(IrpContext, Vcb, Fcb->Mcb, &xattr_ref));
+#endif
         if (!NT_SUCCESS(Status)) {
             DbgPrint("ext4_fs_get_xattr_ref() failed!\n");
             _SEH2_LEAVE;
@@ -749,7 +834,11 @@ Ext2OverwriteEa(
         //
         // Remove all existing EA entries.
         //
+#ifdef __REACTOS__
         ext4_xattr_purge_items((struct ext4_xattr_ref *)&xattr_ref);
+#else
+        ext4_xattr_purge_items(&xattr_ref);
+#endif
         xattr_ref.dirty = TRUE;
         Status = STATUS_SUCCESS;
 
@@ -785,6 +874,7 @@ Ext2OverwriteEa(
             EaName.MaximumLength = EaName.Length = FullEa->EaNameLength;
             EaName.Buffer = &FullEa->EaName[0];
 
+#ifdef __REACTOS__
             Status = Ext2WinntError(ret =
                 ext4_fs_set_xattr((struct ext4_xattr_ref *)&xattr_ref,
                     EXT4_XATTR_INDEX_USER,
@@ -793,10 +883,21 @@ Ext2OverwriteEa(
                     &FullEa->EaName[0] + FullEa->EaNameLength + 1,
                     FullEa->EaValueLength,
                     TRUE));
+#else
+            Status = Ext2WinntError(ret =
+                ext4_fs_set_xattr(&xattr_ref,
+                    EXT4_XATTR_INDEX_USER,
+                    EaName.Buffer,
+                    EaName.Length,
+                    &FullEa->EaName[0] + FullEa->EaNameLength + 1,
+                    FullEa->EaValueLength,
+                    TRUE));
+#endif
             if (!NT_SUCCESS(Status) && ret != -ENODATA)
                 _SEH2_LEAVE;
 
             if (ret == -ENODATA) {
+#ifdef __REACTOS__
                 Status = Ext2WinntError(
                     ext4_fs_set_xattr((struct ext4_xattr_ref *)&xattr_ref,
                         EXT4_XATTR_INDEX_USER,
@@ -805,6 +906,16 @@ Ext2OverwriteEa(
                         &FullEa->EaName[0] + FullEa->EaNameLength + 1,
                         FullEa->EaValueLength,
                         FALSE));
+#else
+                Status = Ext2WinntError(
+                    ext4_fs_set_xattr(&xattr_ref,
+                        EXT4_XATTR_INDEX_USER,
+                        EaName.Buffer,
+                        EaName.Length,
+                        &FullEa->EaName[0] + FullEa->EaNameLength + 1,
+                        FullEa->EaValueLength,
+                        FALSE));
+#endif
                 if (!NT_SUCCESS(Status))
                     _SEH2_LEAVE;
 
@@ -816,9 +927,17 @@ Ext2OverwriteEa(
         if (XattrRefAcquired) {
             if (!NT_SUCCESS(Status)) {
                 xattr_ref.dirty = FALSE;
+#ifdef __REACTOS__
                 ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref);
+#else
+                ext4_fs_put_xattr_ref(&xattr_ref);
+#endif
 			} else {
+#ifdef __REACTOS__
 				Status = Ext2WinntError(ext4_fs_put_xattr_ref((struct ext4_xattr_ref *)&xattr_ref));
+#else
+				Status = Ext2WinntError(ext4_fs_put_xattr_ref(&xattr_ref));
+#endif
 			}
         }
     } _SEH2_END;
@@ -832,15 +951,31 @@ Ext2CreateFile(
     PBOOLEAN          OpPostIrp
 )
 {
+#ifdef __REACTOS__
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
+    NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
     PIO_STACK_LOCATION  IrpSp;
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
     PEXT2_MCB           _SEH2_VOLATILE Mcb = NULL;
     PEXT2_MCB           _SEH2_VOLATILE SymLink = NULL;
     PEXT2_CCB           _SEH2_VOLATILE Ccb = NULL;
+#else
+    PEXT2_FCB           Fcb = NULL;
+    PEXT2_MCB           Mcb = NULL;
+    PEXT2_MCB           SymLink = NULL;
+    PEXT2_CCB           Ccb = NULL;
+#endif
 
+#ifdef __REACTOS__
     PEXT2_FCB           _SEH2_VOLATILE ParentFcb = NULL;
     PEXT2_MCB           _SEH2_VOLATILE ParentMcb = NULL;
+#else
+    PEXT2_FCB           ParentFcb = NULL;
+    PEXT2_MCB           ParentMcb = NULL;
+#endif
 
     UNICODE_STRING      FileName;
     PIRP                Irp;
@@ -853,10 +988,19 @@ Ext2CreateFile(
     BOOLEAN             bDir = FALSE;
 #endif
     BOOLEAN             bFcbAllocated = FALSE;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE bCreated = FALSE;
+#else
+    BOOLEAN             bCreated = FALSE;
+#endif
 
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE bMainResourceAcquired = FALSE;
     BOOLEAN             _SEH2_VOLATILE bFcbLockAcquired = FALSE;
+#else
+    BOOLEAN             bMainResourceAcquired = FALSE;
+    BOOLEAN             bFcbLockAcquired = FALSE;
+#endif
 
     BOOLEAN             OpenDirectory;
     BOOLEAN             OpenTargetDirectory;
@@ -1004,6 +1148,7 @@ Ext2CreateFile(
 
         DEBUG(DL_RES, ("Ext2CreateFile: Lookup 1st: %wZ at %S\n",
                        &FileName, ParentMcb ? ParentMcb->FullName.Buffer : L" "));
+#ifdef __REACTOS__
         Status = Ext2LookupFile(
                      IrpContext,
                      Vcb,
@@ -1012,6 +1157,16 @@ Ext2CreateFile(
                      (PEXT2_MCB *)&Mcb,
                      0  /* always follow link */
                     );
+#else
+        Status = Ext2LookupFile(
+                     IrpContext,
+                     Vcb,
+                     &FileName,
+                     ParentMcb,
+                     &Mcb,
+                     0  /* always follow link */
+                    );
+#endif
 McbExisting:
 
         if (!NT_SUCCESS(Status)) {
@@ -1187,6 +1342,7 @@ Dissecting:
                                &ParentMcb->FullName, &RealName));
 
                 Irp->IoStatus.Information = FILE_CREATED;
+#ifdef __REACTOS__
                 Status = Ext2LookupFile (
                              IrpContext,
                              Vcb,
@@ -1194,6 +1350,15 @@ Dissecting:
                              ParentMcb,
                              (PEXT2_MCB *)&Mcb,
                              0);
+#else
+                Status = Ext2LookupFile (
+                             IrpContext,
+                             Vcb,
+                             &RealName,
+                             ParentMcb,
+                             &Mcb,
+                             0);
+#endif
                 if (!NT_SUCCESS(Status)) {
                     DbgBreak();
                 }
@@ -1953,11 +2118,21 @@ Ext2Create (IN PEXT2_IRP_CONTEXT IrpContext)
     PDEVICE_OBJECT      DeviceObject;
     PIRP                Irp;
     PIO_STACK_LOCATION  IrpSp;
+#ifdef __REACTOS__
     PEXT2_VCB           _SEH2_VOLATILE Vcb = 0;
     NTSTATUS            _SEH2_VOLATILE Status = STATUS_OBJECT_NAME_NOT_FOUND;
+#else
+    PEXT2_VCB           Vcb = 0;
+    NTSTATUS            Status = STATUS_OBJECT_NAME_NOT_FOUND;
+#endif
     PEXT2_FCBVCB        Xcb = NULL;
+#ifdef __REACTOS__
     BOOLEAN             _SEH2_VOLATILE PostIrp = FALSE;
     BOOLEAN             _SEH2_VOLATILE VcbResourceAcquired = FALSE;
+#else
+    BOOLEAN             PostIrp = FALSE;
+    BOOLEAN             VcbResourceAcquired = FALSE;
+#endif
 
     DeviceObject = IrpContext->DeviceObject;
     Irp = IrpContext->Irp;
@@ -2016,7 +2191,11 @@ Ext2Create (IN PEXT2_IRP_CONTEXT IrpContext)
             Status = Ext2CreateVolume(IrpContext, Vcb);
         } else {
 
+#ifdef __REACTOS__
             Status = Ext2CreateFile(IrpContext, Vcb, (PBOOLEAN)&PostIrp);
+#else
+            Status = Ext2CreateFile(IrpContext, Vcb, &PostIrp);
+#endif
         }
 
     } _SEH2_FINALLY {

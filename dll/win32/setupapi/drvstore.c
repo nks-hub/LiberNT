@@ -381,11 +381,16 @@ StagePackageFile(
     PWSTR Last;
     DWORD Error;
 
-    if (!IsSafeRelativePath(Relative) ||
+    Error = IsSafeRelativePath(Relative) ? ERROR_FILENAME_EXCED_RANGE : ERROR_BAD_PATHNAME;
+    if (Error == ERROR_BAD_PATHNAME ||
         !CombinePath(Source, SourceRoot, Relative) ||
         !CombinePath(Target, StoreRoot, Relative))
     {
-        return TRUE;
+        if (!Required)
+            return TRUE;
+        ERR("Package file %s cannot be taken from the package directory\n", debugstr_w(Relative));
+        SetLastError(Error);
+        return FALSE;
     }
 
     Compressed[0] = UNICODE_NULL;
@@ -487,7 +492,11 @@ StageCopyFile(
     if (!CombinePath(Relative, DiskPath, SubDir) ||
         lstrlenW(Relative) + 1 + lstrlenW(FileName) >= MAX_PATH)
     {
-        return TRUE;
+        if (!Package->Required)
+            return TRUE;
+        ERR("The source path of package file %s is too long\n", debugstr_w(FileName));
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
     }
     if (Relative[0] && Relative[lstrlenW(Relative) - 1] != L'\\')
         lstrcatW(Relative, L"\\");

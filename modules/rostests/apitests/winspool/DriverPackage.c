@@ -304,6 +304,37 @@ static const char NeedsMissingInf[] =
     "TESTNM.DAT=1\r\n"
     "TESTNMGONE.DLL=1\r\n";
 
+static const char EscapeInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Escape Printer\"=TESTESC,LiberNT_Package_Escape\r\n"
+    "\r\n"
+    "[TESTESC]\r\n"
+    "CopyFiles=TESTESC_FILES\r\n"
+    "\r\n"
+    "[TESTESC_FILES]\r\n"
+    "TESTESC.DAT\r\n"
+    "..\\lntprnesc.dll\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTESC.DAT=1\r\n"
+    "..\\lntprnesc.dll=1\r\n";
+
 static const char MalformedInf[] =
     "[Version]\r\n"
     "Signature=\"$LiberNT$\"\r\n"
@@ -672,6 +703,7 @@ START_TEST(DriverPackage)
     TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     TestRefusedPackage(L"lntprnbad", MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
+    TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
                        L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL);
     TestInstallPackage(L"lntprnbig", L"LiberNT Package Big Printer", BigInf, BuildBigInf(),

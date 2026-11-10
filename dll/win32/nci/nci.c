@@ -6,6 +6,7 @@
  */
 
 #include <windows.h>
+#include <sddl.h>
 #include <strsafe.h>
 
 #define NETWORK_CLASS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}"
@@ -51,17 +52,83 @@ CheckNameIsFree(_In_ HKEY Network, _In_ PCWSTR Self, _In_ PCWSTR Name)
     }
 }
 
+static INIT_ONCE NamesLockOnce = INIT_ONCE_STATIC_INIT;
+static HANDLE NamesNamespace, NamesLock;
+
+/* Any process can create a global name first and hold it; only administrators can open this namespace */
+static BOOL
+CALLBACK
+CreateNamesLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ PVOID *Context)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD Size = sizeof(Admins);
+    HANDLE Boundary;
+    ULONG Try;
+
+    UNREFERENCED_PARAMETER(Once);
+    UNREFERENCED_PARAMETER(Parameter);
+    UNREFERENCED_PARAMETER(Context);
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+                                                              &Security.lpSecurityDescriptor, NULL))
+    {
+        return FALSE;
+    }
+    Boundary = CreateBoundaryDescriptorW(L"NetworkConnectionNames", 0);
+    if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
+    {
+        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        for (Try = 0; !NamesNamespace && Try < 3; Try++)
+        {
+            NamesNamespace = CreatePrivateNamespaceW(&Security, Boundary, L"NetworkConnectionNames");
+            if (!NamesNamespace)
+                NamesNamespace = OpenPrivateNamespaceW(Boundary, L"NetworkConnectionNames");
+        }
+    }
+    if (Boundary)
+        DeleteBoundaryDescriptor(Boundary);
+    if (NamesNamespace)
+    {
+        NamesLock = CreateMutexW(&Security, FALSE, L"NetworkConnectionNames\\Lock");
+        if (!NamesLock)
+        {
+            ClosePrivateNamespace(NamesNamespace, 0);
+            NamesNamespace = NULL;
+        }
+    }
+    LocalFree(Security.lpSecurityDescriptor);
+    return NamesLock != NULL;
+}
+
+BOOL
+WINAPI
+DllMain(_In_ HINSTANCE Instance, _In_ DWORD Reason, _In_opt_ PVOID Reserved)
+{
+    if (Reason == DLL_PROCESS_ATTACH)
+    {
+        DisableThreadLibraryCalls(Instance);
+    }
+    else if (Reason == DLL_PROCESS_DETACH && Reserved == NULL && NamesLock)
+    {
+        CloseHandle(NamesLock);
+        ClosePrivateNamespace(NamesNamespace, 0);
+    }
+    return TRUE;
+}
+
 DWORD
 WINAPI
 NciSetConnectionName(
     _In_ const GUID *Guid,
     _In_z_ LPCWSTR NewName)
 {
-    WCHAR Id[39], Path[64], OldName[MAX_CONNECTION_NAME];
-    DWORD OldType, OldSize = sizeof(OldName);
+    WCHAR Id[39], Path[64];
     HKEY Network, Connection;
     size_t Length;
-    LSTATUS Error, OldError;
+    LSTATUS Error;
+    DWORD Wait;
 
     if (Guid == NULL || NewName == NULL ||
         FAILED(StringCchLengthW(NewName, MAX_CONNECTION_NAME, &Length)) || Length == 0)
@@ -76,37 +143,27 @@ NciSetConnectionName(
     if (Error != ERROR_SUCCESS)
         return Error;
 
+    /* Two renames must not both find the same name free; whoever may write the key may take the lock */
+    Wait = WAIT_FAILED;
+    if (InitOnceExecuteOnce(&NamesLockOnce, CreateNamesLock, NULL, NULL))
+        Wait = WaitForSingleObject(NamesLock, INFINITE);
+    if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
+    {
+        RegCloseKey(Network);
+        return ERROR_ACCESS_DENIED;
+    }
+
     Error = CheckNameIsFree(Network, Id, NewName);
     if (Error == ERROR_SUCCESS)
-    {
-        Error = RegCreateKeyExW(Network, Path, 0, NULL, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, NULL, &Connection,
-                                NULL);
-    }
+        Error = RegCreateKeyExW(Network, Path, 0, NULL, 0, KEY_SET_VALUE, NULL, &Connection, NULL);
     if (Error == ERROR_SUCCESS)
     {
-        OldError = RegQueryValueExW(Connection, L"Name", NULL, &OldType, (BYTE *)OldName, &OldSize);
-        if (OldError != ERROR_SUCCESS && OldError != ERROR_FILE_NOT_FOUND)
-            Error = OldError;
-        if (Error == ERROR_SUCCESS)
-        {
-            Error = RegSetValueExW(Connection, L"Name", 0, REG_SZ, (const BYTE *)NewName,
-                                   (DWORD)((Length + 1) * sizeof(WCHAR)));
-        }
-        if (Error == ERROR_SUCCESS)
-        {
-            /* Two renames that both found the name free see each other now, and at least one takes its name back */
-            Error = CheckNameIsFree(Network, Id, NewName);
-            if (Error != ERROR_SUCCESS)
-            {
-                if (OldError == ERROR_SUCCESS)
-                    RegSetValueExW(Connection, L"Name", 0, OldType, (const BYTE *)OldName, OldSize);
-                else
-                    RegDeleteValueW(Connection, L"Name");
-            }
-        }
+        Error = RegSetValueExW(Connection, L"Name", 0, REG_SZ, (const BYTE *)NewName,
+                               (DWORD)((Length + 1) * sizeof(WCHAR)));
         RegCloseKey(Connection);
     }
 
+    ReleaseMutex(NamesLock);
     RegCloseKey(Network);
     return Error;
 }

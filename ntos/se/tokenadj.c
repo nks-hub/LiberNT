@@ -285,7 +285,7 @@ SepAdjustGroups(
     SidsLength = 0;
 
     /* Begin looping all the groups in the token, the first entry is the user */
-    for (GroupsInToken = 1;GroupsInToken < Token->UserAndGroupCount; GroupsInToken++)
+    for (GroupsInToken = 1; GroupsInToken <Token->UserAndGroupCount; GroupsInToken++)
     {
         Attributes = Token->UserAndGroups[GroupsInToken].Attributes;
 

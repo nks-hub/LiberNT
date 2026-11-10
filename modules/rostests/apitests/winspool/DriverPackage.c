@@ -23,17 +23,29 @@
 #define BROKEN_DRIVER_NAME L"LiberNT Package Broken Printer"
 #define LOCK_DRIVER_NAME L"LiberNT Package Lock Printer"
 
+#define CROSS_DRIVER_NAME L"LiberNT Package Cross Printer"
+
 #if defined(_M_AMD64)
 #define TEST_ENVIRONMENT L"Windows x64"
 #define TEST_STORE_ARCHITECTURE L"amd64"
+#define OTHER_ENVIRONMENT L"Windows NT x86"
+#define OTHER_STORE_ARCHITECTURE L"x86"
+#define OTHER_DRIVER_FILE L"TESTX86.DLL"
 #elif defined(_M_ARM64)
 #define TEST_ENVIRONMENT L"Windows ARM64"
 #define TEST_STORE_ARCHITECTURE L"arm64"
+#define OTHER_ENVIRONMENT L"Windows NT x86"
+#define OTHER_STORE_ARCHITECTURE L"x86"
+#define OTHER_DRIVER_FILE L"TESTX86.DLL"
 #else
 #define TEST_ENVIRONMENT L"Windows NT x86"
 #define TEST_STORE_ARCHITECTURE L"x86"
+#define OTHER_ENVIRONMENT L"Windows x64"
+#define OTHER_STORE_ARCHITECTURE L"amd64"
+#define OTHER_DRIVER_FILE L"TESTA64.DLL"
 #endif
 #define TEST_DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\" TEST_ENVIRONMENT L"\\Drivers\\Version-3"
+#define OTHER_DRIVER_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\" OTHER_ENVIRONMENT L"\\Drivers\\Version-3\\" CROSS_DRIVER_NAME
 
 #define TEST_MODELS \
     "\"LiberNT Package Test Printer\"=TESTPKG.GPD,LiberNT_Package_Test\r\n" \
@@ -214,7 +226,7 @@ static VOID
 DeleteTestDriver(VOID)
 {
     static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT",
-                                    L"TESTREN.DAT" };
+                                    L"TESTREN.DAT", L"TESTROLL.DAT" };
     static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME, LOCK_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
@@ -304,8 +316,47 @@ static const char NeedsMissingInf[] =
     "TESTNM.DAT=1\r\n"
     "TESTNMGONE.DLL=1\r\n";
 
+static const char EscapeInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Escape Printer\"=TESTESC,LiberNT_Package_Escape\r\n"
+    "\r\n"
+    "[TESTESC]\r\n"
+    "CopyFiles=TESTESC_FILES\r\n"
+    "\r\n"
+    "[TESTESC_FILES]\r\n"
+    "TESTESC.DAT\r\n"
+    "..\\lntprnesc.dll\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTESC.DAT=1\r\n"
+    "..\\lntprnesc.dll=1\r\n";
+
+static const char MalformedInf[] =
+    "[Version]\r\n"
+    "Signature=\"$LiberNT$\"\r\n"
+    "Class=Printer\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n";
+
 static VOID
-TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present)
+TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, HRESULT Expected)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
@@ -324,7 +375,7 @@ TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Prese
         WriteTestFile(Dir, Present, Text, sizeof(Text) - 1))
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
-        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
+        ok(Expected == S_OK ? FAILED(hr) : hr == Expected, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
         if (hr == S_OK)
             DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
 
@@ -339,7 +390,7 @@ TestMissingPackageFile(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Prese
     }
     else
     {
-        skip("Failed to create the package %S with a missing file (%lu)\n", InfName, GetLastError());
+        skip("Failed to create the package %S (%lu)\n", InfName, GetLastError());
     }
 
     StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Present);
@@ -449,11 +500,59 @@ BuildBigInf(VOID)
     return (DWORD)strlen(BigInf);
 }
 
+static const char IncludeInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Include Printer\"=TESTINC,LiberNT_Package_Include\r\n"
+    "\r\n"
+    "[TESTINC]\r\n"
+    "Include=lntprncmn.inf\r\n"
+    "Needs=TESTINC_COMMON\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTINC.DLL=1\r\n"
+    "TESTINC0.DAT=1\r\n"
+    "TESTINC1.DAT=1\r\n";
+
+#define INCLUDED_INF(Files) \
+    "[Version]\r\n" \
+    "Signature=\"$Windows NT$\"\r\n" \
+    "\r\n" \
+    "[TESTINC_COMMON]\r\n" \
+    "CopyFiles=TESTINC_FILES\r\n" \
+    "DriverFile=TESTINC.DLL\r\n" \
+    "ConfigFile=TESTINC.DLL\r\n" \
+    "DataFile=TESTINC0.DAT\r\n" \
+    "\r\n" \
+    "[TESTINC_FILES]\r\n" \
+    "TESTINC.DLL\r\n" \
+    "TESTINC0.DAT\r\n" \
+    Files
+
+static const char IncludedInf[] = INCLUDED_INF("TESTINC1.DAT\r\n");
+static const char SystemIncludedInf[] = INCLUDED_INF("");
+
 static VOID
 TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSize, PCWSTR DriverFile,
-                   PCWSTR FilePattern, UINT FileCount, PCWSTR Dependent)
+                   PCWSTR FilePattern, UINT FileCount, PCWSTR Dependent, PCWSTR IncludeName)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
+    WCHAR SystemInfDir[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
     static WCHAR Value[4096];
     WCHAR DriverDir[MAX_PATH] = L"";
@@ -479,6 +578,14 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
     {
         StringCchPrintfW(File, ARRAYSIZE(File), FilePattern, i);
         Created = WriteTestFile(Dir, File, Text, sizeof(Text) - 1);
+    }
+
+    GetWindowsDirectoryW(SystemInfDir, ARRAYSIZE(SystemInfDir));
+    StringCchCatW(SystemInfDir, ARRAYSIZE(SystemInfDir), L"\\inf");
+    if (Created && IncludeName)
+    {
+        Created = WriteTestFile(Dir, IncludeName, IncludedInf, sizeof(IncludedInf) - 1) &&
+                  WriteTestFile(SystemInfDir, IncludeName, SystemIncludedInf, sizeof(SystemIncludedInf) - 1);
     }
 
     if (Created)
@@ -531,7 +638,142 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
             DeleteFileW(Path);
         }
     }
+    if (IncludeName)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, IncludeName);
+        DeleteFileW(Path);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", SystemInfDir, IncludeName);
+        DeleteFileW(Path);
+    }
     DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+}
+
+#define CROSS_INSTALL(Section, File) \
+    "[" Section "]\r\n" \
+    "CopyFiles=@" File ",@TESTCROSS.GPD\r\n" \
+    "DriverFile=" File "\r\n" \
+    "ConfigFile=" File "\r\n" \
+    "DataFile=TESTCROSS.GPD\r\n" \
+    "\r\n"
+
+static const char CrossInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
+    "\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Cross Printer\"=TESTCROSS_A64,LiberNT_Package_Cross\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Cross Printer\"=TESTCROSS_X86,LiberNT_Package_Cross\r\n"
+    "[Models.NTarm64]\r\n"
+    "\"LiberNT Package Cross Printer\"=TESTCROSS_ARM,LiberNT_Package_Cross\r\n"
+    "\r\n"
+    CROSS_INSTALL("TESTCROSS_A64", "TESTA64.DLL")
+    CROSS_INSTALL("TESTCROSS_X86", "TESTX86.DLL")
+    CROSS_INSTALL("TESTCROSS_ARM", "TESTARM.DLL")
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTA64.DLL=1\r\n"
+    "TESTX86.DLL=1\r\n"
+    "TESTARM.DLL=1\r\n"
+    "TESTCROSS.GPD=1\r\n";
+
+static VOID
+TestOtherEnvironment(VOID)
+{
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], Value[MAX_PATH];
+    static const PCWSTR Names[] = { L"lntprncross.inf", OTHER_DRIVER_FILE, L"TESTCROSS.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR DriverDir[MAX_PATH] = L"";
+    ULONG Length = ARRAYSIZE(StoreInf);
+    DWORD Size;
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprncross");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprncross.inf", Dir);
+
+    if (WriteTestFile(Dir, L"lntprncross.inf", CrossInf, sizeof(CrossInf) - 1) &&
+        WriteTestFile(Dir, OTHER_DRIVER_FILE, Text, sizeof(Text) - 1) &&
+        WriteTestFile(Dir, L"TESTCROSS.GPD", Text, sizeof(Text) - 1))
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, OTHER_ENVIRONMENT, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+        if (hr == S_OK)
+        {
+            ok(wcsstr(StoreInf, L"\\lntprncross.inf_" OTHER_STORE_ARCHITECTURE L"_") != NULL,
+               "%S is not a package of %S\n", StoreInf, OTHER_ENVIRONMENT);
+
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, CROSS_DRIVER_NAME, OTHER_ENVIRONMENT, 0);
+            ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+
+            hKey = OpenDriverKey(CROSS_DRIVER_NAME);
+            ok(hKey == NULL, "Driver %S is registered for %S\n", CROSS_DRIVER_NAME, TEST_ENVIRONMENT);
+            if (hKey)
+                RegCloseKey(hKey);
+
+            hKey = NULL;
+            ok(RegOpenKeyExW(HKEY_LOCAL_MACHINE, OTHER_DRIVER_KEY, 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS,
+               "Driver %S is not registered for %S\n", CROSS_DRIVER_NAME, OTHER_ENVIRONMENT);
+            if (hKey)
+            {
+                Size = sizeof(Value);
+                ok(RegQueryValueExW(hKey, L"Driver", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+                   !_wcsicmp(Value, OTHER_DRIVER_FILE), "Driver is %S\n", Value);
+                Size = sizeof(Value);
+                ok(RegQueryValueExW(hKey, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+                   !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
+                RegCloseKey(hKey);
+
+                hr = DeletePrinterDriverPackageW(NULL, StoreInf, OTHER_ENVIRONMENT);
+                ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE),
+                   "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+            }
+
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, TEST_ENVIRONMENT);
+            ok(FAILED(hr), "DeletePrinterDriverPackageW(%S) returned 0x%lx for a package of %S\n",
+               TEST_ENVIRONMENT, hr, OTHER_ENVIRONMENT);
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted\n", StoreInf);
+
+            RegDeleteKeyW(HKEY_LOCAL_MACHINE, OTHER_DRIVER_KEY);
+            RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\" CROSS_DRIVER_NAME);
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, OTHER_ENVIRONMENT);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+        }
+    }
+    else
+    {
+        skip("Failed to create the package for %S (%lu)\n", OTHER_ENVIRONMENT, GetLastError());
+    }
+
+    Size = sizeof(DriverDir);
+    if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)OTHER_ENVIRONMENT, 1, (PBYTE)DriverDir, Size, &Size))
+        DriverDir[0] = UNICODE_NULL;
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+        if (DriverDir[0])
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", DriverDir, Names[i]);
+            DeleteFileW(Path);
+        }
+    }
     RemoveDirectoryW(Dir);
 }
 
@@ -594,6 +836,7 @@ static VOID
 TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
 {
     WCHAR Driver[MAX_PATH], Config[MAX_PATH], Data[MAX_PATH], Missing[MAX_PATH], Value[MAX_PATH];
+    WCHAR SourceDir[MAX_PATH], Fresh[MAX_PATH], Gone[MAX_PATH];
     int DirLength = (int)(wcsrchr(StoreInf, L'\\') - StoreInf);
     LOCK_TEST Test = { { 0 } };
     DWORD Size;
@@ -625,6 +868,29 @@ TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
         RegCloseKey(hKey);
 
     Test.Info.pszInfPath = (PWSTR)StoreInf;
+    StringCchPrintfW(SourceDir, ARRAYSIZE(SourceDir), L"%.*s", (int)(wcsrchr(InfPath, L'\\') - InfPath), InfPath);
+    StringCchPrintfW(Fresh, ARRAYSIZE(Fresh), L"%s\\TESTROLL.DAT", SourceDir);
+    StringCchPrintfW(Gone, ARRAYSIZE(Gone), L"%.*s\\TESTGONE.DLL", DirLength, StoreInf);
+    if (WriteTestFile(SourceDir, L"TESTROLL.DAT", "rollback\r\n", 10))
+    {
+        Test.Info.pDataFile = Fresh;
+        Test.Info.pConfigFile = Gone;
+        ok(!AddPrinterDriverExW(NULL, 8, (PBYTE)&Test.Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+           "AddPrinterDriverExW succeeded although %S does not exist\n", Gone);
+        hKey = OpenDriverKey(LOCK_DRIVER_NAME);
+        ok(hKey == NULL, "Driver %S is registered without %S\n", LOCK_DRIVER_NAME, Gone);
+        if (hKey)
+            RegCloseKey(hKey);
+        ok(!DriverFileExists(L"TESTROLL.DAT"), "TESTROLL.DAT was left in the driver directory\n");
+        Test.Info.pDataFile = Data;
+        Test.Info.pConfigFile = Config;
+        DeleteFileW(Fresh);
+    }
+    else
+    {
+        skip("Cannot write %S (%lu)\n", Fresh, GetLastError());
+    }
+
     RunWhileLocked(&Test, "AddPrinterDriverExW");
     ok(Test.Error == ERROR_SUCCESS, "AddPrinterDriverExW failed with %lu\n", Test.Error);
     hKey = OpenDriverKey(LOCK_DRIVER_NAME);
@@ -661,12 +927,17 @@ START_TEST(DriverPackage)
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
     ok(hr == E_INVALIDARG, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
-    TestMissingPackageFile(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT");
-    TestMissingPackageFile(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT");
+    TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnbad", MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
+    TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
-                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL);
+                       L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL, NULL);
     TestInstallPackage(L"lntprnbig", L"LiberNT Package Big Printer", BigInf, BuildBigInf(),
-                       L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT");
+                       L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT", NULL);
+    TestInstallPackage(L"lntprninc", L"LiberNT Package Include Printer", IncludeInf, sizeof(IncludeInf) - 1,
+                       L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"lntprncmn.inf");
+    TestOtherEnvironment();
 
     if (!CreateTestPackage(Dir, InfPath))
     {
@@ -942,6 +1213,23 @@ START_TEST(DriverPackage)
     TestPackageLock(InfPath, StoreInf);
 
     DeleteTestDriver();
+
+    {
+        WCHAR Other[MAX_PATH];
+
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%s\\TESTPKG.GPD", Dir);
+        if (CopyFileW(Other, StoreInf, FALSE))
+        {
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(FAILED(hr), "DeletePrinterDriverPackageW returned 0x%lx for an INF that is not the one the directory is named after\n", hr);
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted\n", StoreInf);
+            ok(CopyFileW(InfPath, StoreInf, FALSE), "Restoring %S failed with %lu\n", StoreInf, GetLastError());
+        }
+        else
+        {
+            skip("Cannot replace %S (%lu)\n", StoreInf, GetLastError());
+        }
+    }
 
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
     ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);

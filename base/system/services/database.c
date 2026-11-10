@@ -615,8 +615,38 @@ done:
     return NT_SUCCESS(Status) ? ERROR_SUCCESS : RtlNtStatusToDosError(Status);
 }
 
+static BOOL
+ScmSharesServiceImage(
+    _In_ PSERVICE pService,
+    _In_ PSERVICE_IMAGE pImage)
+{
+    RTL_QUERY_REGISTRY_TABLE QueryTable[3];
+    UNICODE_STRING ImagePath;
+    UNICODE_STRING ObjectName;
+    NTSTATUS Status;
+    BOOL bShares;
+
+    RtlInitUnicodeString(&ImagePath, NULL);
+    RtlInitUnicodeString(&ObjectName, NULL);
+    RtlZeroMemory(&QueryTable, sizeof(QueryTable));
+    QueryTable[0].Name = L"ImagePath";
+    QueryTable[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_REQUIRED;
+    QueryTable[0].EntryContext = &ImagePath;
+    QueryTable[1].Name = L"ObjectName";
+    QueryTable[1].Flags = RTL_QUERY_REGISTRY_DIRECT;
+    QueryTable[1].EntryContext = &ObjectName;
+
+    Status = RtlQueryRegistryValues(RTL_REGISTRY_SERVICES, pService->lpServiceName, QueryTable, NULL, NULL);
+    bShares = NT_SUCCESS(Status) && ImagePath.Buffer != NULL &&
+              _wcsicmp(ImagePath.Buffer, pImage->pszImagePath) == 0 &&
+              ScmIsSameServiceAccount(pImage->pszAccountName, ObjectName.Buffer);
+    RtlFreeUnicodeString(&ObjectName);
+    RtlFreeUnicodeString(&ImagePath);
+    return bShares;
+}
+
 static DWORD
-ScmApplyServiceSid(
+ScmAddServiceSid(
     _In_ PSERVICE pService,
     _Inout_ PSERVICE_IMAGE pImage)
 {
@@ -625,15 +655,6 @@ ScmApplyServiceSid(
     DWORD dwError;
 
     dwSidType = ScmGetServiceDword(pService, L"ServiceSidType", SERVICE_SID_TYPE_NONE);
-    if (!(pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS))
-    {
-        if (dwSidType != SERVICE_SID_TYPE_NONE)
-        {
-            DPRINT1("%S runs in a shared process and cannot have its service SID\n", pService->lpServiceName);
-            return ERROR_NOT_SUPPORTED;
-        }
-        return ERROR_SUCCESS;
-    }
     /* NtFilterToken ignores WRITE_RESTRICTED: the restricted SID list of SERVICE_SID_TYPE_RESTRICTED would deny reads too */
     if (dwSidType != SERVICE_SID_TYPE_UNRESTRICTED && dwSidType != SERVICE_SID_TYPE_RESTRICTED)
         return ERROR_SUCCESS;
@@ -659,6 +680,36 @@ ScmApplyServiceSid(
     return ERROR_SUCCESS;
 }
 
+static DWORD
+ScmApplyServiceSid(
+    _In_ PSERVICE pService,
+    _Inout_ PSERVICE_IMAGE pImage)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService;
+    DWORD dwError = ERROR_SUCCESS;
+
+    if (pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS)
+        return ScmAddServiceSid(pService, pImage);
+
+    /* The token of a started process cannot get a SID later, so it takes the SID of every service that can join the process */
+    ScmLockDatabaseShared();
+    for (ServiceEntry = ServiceListHead.Flink;
+         ServiceEntry != &ServiceListHead && dwError == ERROR_SUCCESS;
+         ServiceEntry = ServiceEntry->Flink)
+    {
+        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+        if ((CurrentService->Status.dwServiceType & SERVICE_WIN32_SHARE_PROCESS) &&
+            !CurrentService->bDeleted &&
+            ScmSharesServiceImage(CurrentService, pImage))
+        {
+            dwError = ScmAddServiceSid(CurrentService, pImage);
+        }
+    }
+    ScmUnlockDatabase();
+    return dwError;
+}
+
 
 static
 DWORD
@@ -678,7 +729,15 @@ ScmLogonService(
 
     if (ScmIsLocalSystemAccount(pImage->pszAccountName) ||
         ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName)))
-        return ScmApplyServiceSid(pService, pImage);
+    {
+        dwError = ScmApplyServiceSid(pService, pImage);
+        if (dwError != ERROR_SUCCESS && pImage->hToken != NULL)
+        {
+            CloseHandle(pImage->hToken);
+            pImage->hToken = NULL;
+        }
+        return dwError;
+    }
 
     /* Get the user and domain names */
     ptr = wcschr(pImage->pszAccountName, L'\\');

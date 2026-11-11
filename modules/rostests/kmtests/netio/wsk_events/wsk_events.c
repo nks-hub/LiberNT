@@ -942,6 +942,18 @@ TestSendControl(VOID)
     Status = SendToControl(Sender, "CTRL0009", WSKEVENTS_PORT + 5, FALSE, ControlLength, NULL);
     ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
 
+    Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo));
+    Status = SendToControl(Sender, "CTRL0010", WSKEVENTS_PORT + 5, FALSE, (ULONG)sizeof(CMSGHDR) - 1, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+    Status = SendToControl(Sender, "CTRL0011", WSKEVENTS_PORT + 5, TRUE, (ULONG)sizeof(CMSGHDR) - 1, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+
+    ASSERT(ControlLength + 4 <= sizeof(Control));
+    Status = SendToControl(Sender, "CTRL0012", WSKEVENTS_PORT + 5, FALSE, ControlLength + 4, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+    Status = SendToControl(Sender, "CTRL0013", WSKEVENTS_PORT + 5, TRUE, ControlLength + 4, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+
     Count = WaitReceives(3, 500);
     ok_eq_long(Count, 2L);
 

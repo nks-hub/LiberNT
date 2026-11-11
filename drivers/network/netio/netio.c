@@ -1178,12 +1178,15 @@ NetioBuildSendControl(
     if (ControlInfoLength != 0 && ControlInfo == NULL)
         return STATUS_INVALID_PARAMETER;
 
-    while (ControlInfoLength - Offset >= sizeof(WSACMSGHDR))
+    while (Offset < ControlInfoLength)
     {
         PCMSGHDR Header = (PCMSGHDR)((PUCHAR)ControlInfo + Offset);
 
-        if (Header->cmsg_len < WSA_CMSG_LEN(0) || Header->cmsg_len > ControlInfoLength - Offset)
+        if (ControlInfoLength - Offset < sizeof(WSACMSGHDR) ||
+            Header->cmsg_len < WSA_CMSG_LEN(0) || Header->cmsg_len > ControlInfoLength - Offset)
+        {
             return STATUS_INVALID_PARAMETER;
+        }
 
         if (Header->cmsg_level == IPPROTO_IP && Header->cmsg_type == IP_PKTINFO)
         {

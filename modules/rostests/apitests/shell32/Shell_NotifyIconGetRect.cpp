@@ -91,8 +91,9 @@ START_TEST(Shell_NotifyIconGetRect)
         Identifier.uID = Icon.uID;
         Rect = g_SentinelRect;
         Result = GetRect(&Identifier, &Rect);
-        ok(Result == S_OK || Result == E_FAIL, "unexpected result 0x%08lx\n", Result);
-        if (Result == S_OK)
+        /* S_FALSE comes with the rectangle of the overflow button when the new icon is in the closed overflow area */
+        ok(Result == S_OK || Result == S_FALSE || Result == E_FAIL, "unexpected result 0x%08lx\n", Result);
+        if (SUCCEEDED(Result))
         {
             ok(Rect.right > Rect.left && Rect.bottom > Rect.top,
                "invalid successful rect (%ld,%ld)-(%ld,%ld)\n",

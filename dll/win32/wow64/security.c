@@ -157,7 +157,7 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     if (!(prev64 = Wow64AllocateTemp( len ))) return STATUS_NO_MEMORY;
     status = NtAdjustGroupsToken( handle, reset, groups64, len, prev64, retlen ? &ret_size : NULL );
     if (status == STATUS_BUFFER_TOO_SMALL && retlen) *retlen = ret_size;
-    if (NT_ERROR( status )) return status;
+    if (status < 0) return status;
 
     count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );
     sid_off = offsetof( TOKEN_GROUPS32, Groups[prev64->GroupCount] );

@@ -1805,6 +1805,50 @@ PiControlSetDeviceInterfaceState(
     return Status;
 }
 
+static
+NTSTATUS
+PiControlSetDeviceCapabilities(
+    _In_ PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA ControlData)
+{
+    BOOLEAN Removable = FALSE, SilentInstall = FALSE, NoDisplayInUI = FALSE;
+    DEVICE_CAPABILITIES DeviceCapabilities;
+    UNICODE_STRING DeviceInstance;
+    PDEVICE_OBJECT DeviceObject;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(KeGetPreviousMode() == UserMode);
+
+    _SEH2_TRY
+    {
+        Removable = ControlData->Removable;
+        SilentInstall = ControlData->SilentInstall;
+        NoDisplayInUI = ControlData->NoDisplayInUI;
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        _SEH2_YIELD(return _SEH2_GetExceptionCode());
+    }
+    _SEH2_END;
+
+    Status = IopCaptureUnicodeString(&DeviceInstance, &ControlData->DeviceInstance);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    DeviceObject = IopGetDeviceObjectFromDeviceInstance(&DeviceInstance);
+    if (DeviceInstance.Buffer != NULL)
+        ExFreePool(DeviceInstance.Buffer);
+    if (DeviceObject == NULL)
+        return STATUS_NO_SUCH_DEVICE;
+
+    Status = PnpRootSetDeviceCapabilities(DeviceObject, Removable != FALSE, SilentInstall != FALSE, NoDisplayInUI != FALSE);
+    if (NT_SUCCESS(Status))
+        Status = IopQueryDeviceCapabilities(IopGetDeviceNode(DeviceObject), &DeviceCapabilities);
+
+    ObDereferenceObject(DeviceObject);
+    return Status;
+}
+
 
 /* PUBLIC FUNCTIONS **********************************************************/
 
@@ -2146,6 +2190,11 @@ NtPlugPlayControl(IN PLUGPLAY_CONTROL_CLASS PlugPlayControlClass,
             if (!Buffer || BufferLength < sizeof(PLUGPLAY_CONTROL_INTERFACE_STATE_DATA))
                 return STATUS_INVALID_PARAMETER;
             return PiControlSetDeviceInterfaceState((PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA)Buffer);
+
+        case PlugPlayControlSetDeviceCapabilities:
+            if (!Buffer || BufferLength < sizeof(PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA))
+                return STATUS_INVALID_PARAMETER;
+            return PiControlSetDeviceCapabilities((PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA)Buffer);
 
 //        case PlugPlayControlTargetDeviceRelation:
 //        case PlugPlayControlQueryConflictList:

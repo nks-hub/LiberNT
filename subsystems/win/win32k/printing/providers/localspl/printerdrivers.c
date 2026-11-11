@@ -851,12 +851,36 @@ BOOL WINAPI LocalGetPrinterDriverDirectory(PWSTR pName, PWSTR pEnvironment, DWOR
 
 static BOOL apd_same_file( const WCHAR *first, const WCHAR *second )
 {
-    WIN32_FILE_ATTRIBUTE_DATA a, b;
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    BYTE a[4096], b[4096];
+    DWORD read_a, read_b;
+    HANDLE ha, hb;
+    BOOL same = FALSE;
 
-    return GetFileAttributesExW( first, GetFileExInfoStandard, &a ) &&
-           GetFileAttributesExW( second, GetFileExInfoStandard, &b ) &&
-           a.nFileSizeHigh == b.nFileSizeHigh && a.nFileSizeLow == b.nFileSizeLow &&
-           CompareFileTime( &a.ftLastWriteTime, &b.ftLastWriteTime ) == 0;
+    ha = CreateFileW( first, GENERIC_READ, share, NULL, OPEN_EXISTING, 0, NULL );
+    if (ha == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    hb = CreateFileW( second, GENERIC_READ, share, NULL, OPEN_EXISTING, 0, NULL );
+    if (hb == INVALID_HANDLE_VALUE)
+    {
+        CloseHandle( ha );
+        return FALSE;
+    }
+
+    while (ReadFile( ha, a, sizeof(a), &read_a, NULL ) && ReadFile( hb, b, sizeof(b), &read_b, NULL ) &&
+           read_a == read_b && !memcmp( a, b, read_a ))
+    {
+        if (!read_a)
+        {
+            same = TRUE;
+            break;
+        }
+    }
+
+    CloseHandle( hb );
+    CloseHandle( ha );
+    return same;
 }
 
 static BOOL apd_remember( apd_data_t *apd )
@@ -941,7 +965,7 @@ static BOOL apd_copyfile( WCHAR *pathname, WCHAR *file_part, apd_data_t *apd )
     error = GetLastError();
     FIXME("got %d with %u\n", res, error);
 
-    /* The destination can be in use or be the source itself; it is the wanted file when it matches the source */
+    /* The destination can be in use or be the source itself; it is the wanted file when it has the content of the source */
     if (!res && apd->strict && apd_same_file(srcname, apd->dst))
         res = TRUE;
 

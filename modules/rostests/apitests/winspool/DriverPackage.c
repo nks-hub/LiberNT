@@ -917,6 +917,81 @@ RunWhileLocked(PLOCK_TEST Test, PCSTR What)
     }
 }
 
+static BOOL
+DriverFileIs(PCWSTR Name, PCSTR Text)
+{
+    WCHAR Dir[MAX_PATH], Path[MAX_PATH];
+    DWORD Size = sizeof(Dir), Read = 0;
+    char Buffer[64];
+    HANDLE hFile;
+
+    if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Dir, Size, &Size))
+        return FALSE;
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", Dir, Name);
+    hFile = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return FALSE;
+    ReadFile(hFile, Buffer, sizeof(Buffer), &Read, NULL);
+    CloseHandle(hFile);
+    return Read == strlen(Text) && !memcmp(Buffer, Text, Read);
+}
+
+/* The driver directory holds a file of the size and the write time of the source, with other content, that cannot be replaced */
+static VOID
+TestLockedDestination(PLOCK_TEST Test, PCWSTR SourceDir)
+{
+    static const char Wanted[] = "the package file\r\n";
+    static const char Locked[] = "another file 123\r\n";
+    WCHAR DriverDir[MAX_PATH], Source[MAX_PATH], Installed[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA Data;
+    DWORD Size = sizeof(DriverDir);
+    PWSTR ConfigFile = Test->Info.pConfigFile;
+    HANDLE hFile;
+
+    C_ASSERT(sizeof(Wanted) == sizeof(Locked));
+
+    if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+    {
+        skip("No printer driver directory (%lu)\n", GetLastError());
+        return;
+    }
+    StringCchCatW(DriverDir, ARRAYSIZE(DriverDir), L"\\3");
+    StringCchPrintfW(Source, ARRAYSIZE(Source), L"%s\\TESTSAME.DAT", SourceDir);
+    StringCchPrintfW(Installed, ARRAYSIZE(Installed), L"%s\\TESTSAME.DAT", DriverDir);
+
+    if (!WriteTestFile(SourceDir, L"TESTSAME.DAT", Wanted, sizeof(Wanted) - 1) ||
+        !WriteTestFile(DriverDir, L"TESTSAME.DAT", Locked, sizeof(Locked) - 1) ||
+        !GetFileAttributesExW(Source, GetFileExInfoStandard, &Data))
+    {
+        skip("Cannot write TESTSAME.DAT (%lu)\n", GetLastError());
+        DeleteFileW(Source);
+        DeleteFileW(Installed);
+        return;
+    }
+
+    hFile = CreateFileW(Installed, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile != INVALID_HANDLE_VALUE)
+    {
+        SetFileTime(hFile, NULL, NULL, &Data.ftLastWriteTime);
+        CloseHandle(hFile);
+    }
+
+    hFile = CreateFileW(Installed, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(hFile != INVALID_HANDLE_VALUE, "Cannot open %S (%lu)\n", Installed, GetLastError());
+
+    Test->Info.pConfigFile = Source;
+    ok(!AddPrinterDriverExW(NULL, 8, (PBYTE)&Test->Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+       "AddPrinterDriverExW took the locked %S for the file of the package\n", Installed);
+    Test->Info.pConfigFile = ConfigFile;
+
+    if (hFile != INVALID_HANDLE_VALUE)
+        CloseHandle(hFile);
+    ok(DriverFileIs(L"TESTSAME.DAT", Locked), "%S was changed\n", Installed);
+
+    DeleteFileW(Source);
+    DeleteFileW(Installed);
+}
+
 static VOID
 TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
 {
@@ -990,6 +1065,8 @@ TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
         hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
         ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE), "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
     }
+
+    TestLockedDestination(&Test, SourceDir);
 }
 
 START_TEST(DriverPackage)

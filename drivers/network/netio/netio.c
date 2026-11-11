@@ -82,18 +82,25 @@ struct _WSK_SOCKET_INTERNAL;
 
 typedef struct _NETIO_RECEIVE
 {
-    WSK_DATAGRAM_INDICATION Indication;
     struct _WSK_SOCKET_INTERNAL *Socket;
     PIRP Irp;
     PMDL Mdl;
     volatile BOOLEAN InFlight;
-    BOOLEAN Held;
-    SIZE_T Length;
-    SOCKADDR_IN Remote;
     ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
     DECLSPEC_ALIGN(8) UCHAR Control[64];
     UCHAR Data[NETIO_RECEIVE_SIZE];
 } NETIO_RECEIVE, *PNETIO_RECEIVE;
+
+typedef struct _NETIO_DATAGRAM
+{
+    WSK_DATAGRAM_INDICATION Indication;
+    LIST_ENTRY Entry;
+    struct _WSK_SOCKET_INTERNAL *Socket;
+    PMDL Mdl;
+    SOCKADDR_IN Remote;
+    DECLSPEC_ALIGN(8) UCHAR Control[64];
+    UCHAR Data[ANYSIZE_ARRAY];
+} NETIO_DATAGRAM, *PNETIO_DATAGRAM;
 
 typedef struct _NETIO_WSK_CLIENT
 {
@@ -169,6 +176,8 @@ typedef struct _WSK_SOCKET_INTERNAL
     KEVENT ReceivesIdle;
     KSPIN_LOCK ReceiveLock;
     PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT];
+    LIST_ENTRY ReceiveQueue;
+    ULONG ReceiveQueued;
     LONG DeferredSends;            /* queued sends; the close takes one off, so below zero means none are left */
     KEVENT SendsIdle;
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
@@ -212,7 +221,7 @@ NetioCloseSocket(_In_ PWSK_SOCKET_INTERNAL Socket, _Inout_ PIRP Irp);
 static VOID
 NetioReceivesReleased(_In_ PWSK_SOCKET_INTERNAL Socket);
 static VOID
-NetioResumeReceives(_In_ PWSK_SOCKET_INTERNAL Socket);
+NetioIndicateQueued(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
 NetioEnableReceiveEvent(_In_ PWSK_SOCKET_INTERNAL Socket);
 static NTSTATUS
@@ -466,7 +475,7 @@ NetioPassiveWorker(
             break;
 
         case NetioPassiveResumeReceives:
-            NetioResumeReceives(Socket);
+            NetioIndicateQueued(Socket);
             NetioReceivesReleased(Socket);
             break;
 
@@ -1450,7 +1459,6 @@ NetioPostReceive(
         return;
     }
     ASSERT(!Receive->InFlight);
-    ASSERT(!Receive->Held);
     Receive->InFlight = TRUE;
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
@@ -1474,54 +1482,131 @@ NetioCompleteDisable(
 }
 
 static VOID
-NetioIndicateReceive(
-    _In_ PNETIO_RECEIVE Receive)
+NetioFreeDatagram(
+    _In_ PNETIO_DATAGRAM Datagram)
+{
+    PWSK_SOCKET_INTERNAL Socket = Datagram->Socket;
+
+    IoFreeMdl(Datagram->Mdl);
+    ExFreePoolWithTag(Datagram, TAG_NETIO);
+    NetioReceivesReleased(Socket);
+}
+
+static VOID
+NetioQueueDatagram(
+    _In_ PNETIO_RECEIVE Receive,
+    _In_ SIZE_T Length)
 {
     PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
     PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
     PTA_IP_ADDRESS Source = (PTA_IP_ADDRESS)ConnInfo->RemoteAddress;
-    PIRP DisableIrp = NULL;
-    BOOLEAN Held = FALSE;
-    NTSTATUS Status;
+    SIZE_T Size = Length != 0 ? Length : 1;
+    PNETIO_DATAGRAM Datagram;
+    BOOLEAN Queued;
     KIRQL OldIrql;
 
-    RtlZeroMemory(&Receive->Remote, sizeof(Receive->Remote));
-    Receive->Remote.sin_family = AF_INET;
-    Receive->Remote.sin_port = Source->Address[0].Address[0].sin_port;
-    Receive->Remote.sin_addr.s_addr = Source->Address[0].Address[0].in_addr;
+    ASSERT(Length <= NETIO_RECEIVE_SIZE);
 
-    Receive->Indication.Next = NULL;
-    Receive->Indication.Buffer.Mdl = Receive->Mdl;
-    Receive->Indication.Buffer.Offset = 0;
-    Receive->Indication.Buffer.Length = Receive->Length;
-    Receive->Indication.ControlInfoLength = Socket->PktInfo ? (ULONG)ConnInfo->OptionsLength : 0;
-    Receive->Indication.ControlInfo = Receive->Indication.ControlInfoLength ? (PCMSGHDR)Receive->Control : NULL;
-    Receive->Indication.RemoteAddress = (PSOCKADDR)&Receive->Remote;
+    Datagram = ExAllocatePoolZero(NonPagedPool, FIELD_OFFSET(NETIO_DATAGRAM, Data) + Size, TAG_NETIO);
+    if (Datagram == NULL)
+        return;
+    Datagram->Mdl = IoAllocateMdl(Datagram->Data, (ULONG)Size, FALSE, FALSE, NULL);
+    if (Datagram->Mdl == NULL)
+    {
+        ExFreePoolWithTag(Datagram, TAG_NETIO);
+        return;
+    }
+    MmBuildMdlForNonPagedPool(Datagram->Mdl);
+    RtlCopyMemory(Datagram->Data, Receive->Data, Length);
+    Datagram->Socket = Socket;
 
-    Status = Socket->DatagramDispatch->WskReceiveFromEvent(
-        Socket->user_context,
-        KeGetCurrentIrql() == DISPATCH_LEVEL ? WSK_FLAG_AT_DISPATCH_LEVEL : 0,
-        &Receive->Indication);
+    Datagram->Remote.sin_family = AF_INET;
+    Datagram->Remote.sin_port = Source->Address[0].Address[0].sin_port;
+    Datagram->Remote.sin_addr.s_addr = Source->Address[0].Address[0].in_addr;
+
+    Datagram->Indication.Buffer.Mdl = Datagram->Mdl;
+    Datagram->Indication.Buffer.Length = Length;
+    if (Socket->PktInfo)
+        Datagram->Indication.ControlInfoLength = min((ULONG)ConnInfo->OptionsLength, (ULONG)sizeof(Datagram->Control));
+    if (Datagram->Indication.ControlInfoLength != 0)
+    {
+        RtlCopyMemory(Datagram->Control, Receive->Control, Datagram->Indication.ControlInfoLength);
+        Datagram->Indication.ControlInfo = (PCMSGHDR)Datagram->Control;
+    }
+    Datagram->Indication.RemoteAddress = (PSOCKADDR)&Datagram->Remote;
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
-    if (Status == STATUS_DATA_NOT_ACCEPTED && !Socket->ReceiveEventsStatic && !Socket->ReceiveClosing)
+    Queued = !Socket->ReceiveClosing && (Socket->ReceiveEvents || Socket->ReceiveQueued < NETIO_RECEIVE_COUNT);
+    if (Queued)
     {
-        Socket->ReceiveEvents = FALSE;
-        Receive->Held = Held = TRUE;
-    }
-    ASSERT(Socket->ReceiveCallbacks > 0);
-    if (--Socket->ReceiveCallbacks == 0)
-    {
-        DisableIrp = Socket->DisableIrp;
-        Socket->DisableIrp = NULL;
+        InsertTailList(&Socket->ReceiveQueue, &Datagram->Entry);
+        Socket->ReceiveQueued++;
+        ASSERT(Socket->ReceivesBusy > 0);
+        InterlockedIncrement(&Socket->ReceivesBusy);
     }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
-    NetioCompleteDisable(DisableIrp);
 
-    /* The client keeps the data until it calls WskRelease */
-    if (Held || Status == STATUS_PENDING)
-        return;
-    NetioPostReceive(Receive);
+    if (!Queued)
+    {
+        IoFreeMdl(Datagram->Mdl);
+        ExFreePoolWithTag(Datagram, TAG_NETIO);
+    }
+}
+
+static VOID
+NetioIndicateQueued(
+    _In_ PWSK_SOCKET_INTERNAL Socket)
+{
+    PNETIO_DATAGRAM Datagram;
+    PIRP DisableIrp;
+    NTSTATUS Status;
+    BOOLEAN Keep;
+    KIRQL OldIrql;
+
+    /* The caller holds a busy count: freeing the last datagram here would otherwise let the close free the socket */
+    ASSERT(Socket->ReceivesBusy > 0);
+
+    for (;;)
+    {
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        if (Socket->ReceiveCallbacks != 0 || !Socket->ReceiveEvents || Socket->ReceiveClosing ||
+            IsListEmpty(&Socket->ReceiveQueue))
+        {
+            KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+            return;
+        }
+        Datagram = CONTAINING_RECORD(RemoveHeadList(&Socket->ReceiveQueue), NETIO_DATAGRAM, Entry);
+        ASSERT(Socket->ReceiveQueued > 0);
+        Socket->ReceiveQueued--;
+        Socket->ReceiveCallbacks++;
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+        Status = Socket->DatagramDispatch->WskReceiveFromEvent(
+            Socket->user_context,
+            KeGetCurrentIrql() == DISPATCH_LEVEL ? WSK_FLAG_AT_DISPATCH_LEVEL : 0,
+            &Datagram->Indication);
+
+        /* The client keeps the data until it calls WskRelease */
+        Keep = Status == STATUS_PENDING;
+
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        if (Status == STATUS_DATA_NOT_ACCEPTED && !Socket->ReceiveEventsStatic && !Socket->ReceiveClosing)
+        {
+            Socket->ReceiveEvents = FALSE;
+            InsertHeadList(&Socket->ReceiveQueue, &Datagram->Entry);
+            Socket->ReceiveQueued++;
+            Keep = TRUE;
+        }
+        ASSERT(Socket->ReceiveCallbacks == 1);
+        Socket->ReceiveCallbacks--;
+        DisableIrp = Socket->DisableIrp;
+        Socket->DisableIrp = NULL;
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+        NetioCompleteDisable(DisableIrp);
+
+        if (!Keep)
+            NetioFreeDatagram(Datagram);
+    }
 }
 
 static NTSTATUS NTAPI
@@ -1533,36 +1618,20 @@ NetioReceiveComplete(
     PNETIO_RECEIVE Receive = Context;
     PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
     NTSTATUS Status = Irp->IoStatus.Status;
-    BOOLEAN Indicate = FALSE, Hold = FALSE;
     KIRQL OldIrql;
 
     UNREFERENCED_PARAMETER(DeviceObject);
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     ASSERT(Receive->InFlight);
-    ASSERT(!Receive->Held);
     Receive->InFlight = FALSE;
-    if (NT_SUCCESS(Status) && !Socket->ReceiveClosing)
-    {
-        Receive->Length = (SIZE_T)Irp->IoStatus.Information;
-        if (Socket->ReceiveEvents)
-        {
-            Socket->ReceiveCallbacks++;
-            Indicate = TRUE;
-        }
-        else
-        {
-            Receive->Held = Hold = TRUE;
-        }
-    }
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
-    if (Indicate)
+    if (NT_SUCCESS(Status) && !Socket->ReceiveClosing)
     {
-        NetioIndicateReceive(Receive);
-    }
-    else if (Hold)
-    {
+        NetioQueueDatagram(Receive, (SIZE_T)Irp->IoStatus.Information);
+        NetioIndicateQueued(Socket);
+        NetioPostReceive(Receive);
     }
     else if (Status == STATUS_BUFFER_OVERFLOW && !Socket->ReceiveClosing)
     {
@@ -1586,47 +1655,19 @@ NetioReceivesReleased(
         KeSetEvent(&Socket->ReceivesIdle, IO_NO_INCREMENT, FALSE);
 }
 
-static VOID
-NetioResumeReceives(
-    _In_ PWSK_SOCKET_INTERNAL Socket)
-{
-    KIRQL OldIrql;
-    ULONG i;
-
-    for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
-    {
-        PNETIO_RECEIVE Receive = Socket->Receives[i];
-        BOOLEAN Indicate = FALSE;
-
-        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
-        if (Receive->Held && Socket->ReceiveEvents && !Socket->ReceiveClosing)
-        {
-            Receive->Held = FALSE;
-            Socket->ReceiveCallbacks++;
-            Indicate = TRUE;
-        }
-        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
-
-        if (Indicate)
-            NetioIndicateReceive(Receive);
-    }
-}
-
 static NTSTATUS
 NetioEnableReceiveEvent(
     _In_ PWSK_SOCKET_INTERNAL Socket)
 {
     NTSTATUS Status;
     KIRQL OldIrql;
-    ULONG i;
     BOOLEAN Resume = FALSE;
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveEvents = TRUE;
     if (Socket->ReceiveStarted && !Socket->ReceiveClosing)
     {
-        for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
-            Resume |= Socket->Receives[i]->Held;
+        Resume = !IsListEmpty(&Socket->ReceiveQueue);
         if (Resume)
         {
             ASSERT(Socket->ReceivesBusy > 0);
@@ -1771,14 +1812,9 @@ NetioStopReceives(
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
     Socket->ReceiveClosing = TRUE;
     Started = Socket->ReceiveStarted;
-    for (i = 0; Started && i < NETIO_RECEIVE_COUNT; i++)
-    {
-        if (Socket->Receives[i]->Held)
-        {
-            Socket->Receives[i]->Held = FALSE;
-            NetioReceiveDone(Socket->Receives[i]);
-        }
-    }
+    while (!IsListEmpty(&Socket->ReceiveQueue))
+        NetioFreeDatagram(CONTAINING_RECORD(RemoveHeadList(&Socket->ReceiveQueue), NETIO_DATAGRAM, Entry));
+    Socket->ReceiveQueued = 0;
     KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
     if (!Started)
@@ -1816,7 +1852,7 @@ WskReleaseUdp(_In_ PWSK_SOCKET SocketParam, _In_ PWSK_DATAGRAM_INDICATION Datagr
     for (; DatagramIndication != NULL; DatagramIndication = Next)
     {
         Next = DatagramIndication->Next;
-        NetioPostReceive(CONTAINING_RECORD(DatagramIndication, NETIO_RECEIVE, Indication));
+        NetioFreeDatagram(CONTAINING_RECORD(DatagramIndication, NETIO_DATAGRAM, Indication));
     }
     return STATUS_SUCCESS;
 }
@@ -2590,6 +2626,7 @@ WskSocket(
             RtlInitUnicodeString(&Socket->TdiName, L"\\Device\\Udp");
             Socket->DatagramDispatch = Dispatch;
             KeInitializeSpinLock(&Socket->ReceiveLock);
+            InitializeListHead(&Socket->ReceiveQueue);
             KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);
             KeInitializeEvent(&Socket->SendsIdle, NotificationEvent, FALSE);
             Socket->ReceiveEvents = Client != NULL &&

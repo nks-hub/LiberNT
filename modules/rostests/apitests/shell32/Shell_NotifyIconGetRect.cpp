@@ -30,6 +30,41 @@ CheckQueryResult(SHELL_NOTIFYICONGETRECT GetRect, const NOTIFYICONIDENTIFIER& Id
     CheckRect(Rect, 0, 0, 0, 0);
 }
 
+/* The shell handles a new icon and a click on its own time */
+static HRESULT
+QueryUntil(SHELL_NOTIFYICONGETRECT GetRect, const NOTIFYICONIDENTIFIER& Identifier, HRESULT First, HRESULT Second, RECT *Rect)
+{
+    HRESULT Result = E_FAIL;
+
+    for (int Try = 0; Try < 30; Try++)
+    {
+        MSG Msg;
+
+        while (PeekMessageW(&Msg, NULL, 0, 0, PM_REMOVE))
+            DispatchMessageW(&Msg);
+        *Rect = g_SentinelRect;
+        Result = GetRect(&Identifier, Rect);
+        if (Result == First || Result == Second)
+            break;
+        Sleep(100);
+    }
+    return Result;
+}
+
+static void
+Click(const RECT& Rect)
+{
+    INPUT Input[3] = { { 0 } };
+
+    Input[0].type = Input[1].type = Input[2].type = INPUT_MOUSE;
+    Input[0].mi.dx = (Rect.left + Rect.right) / 2 * 65535 / (GetSystemMetrics(SM_CXSCREEN) - 1);
+    Input[0].mi.dy = (Rect.top + Rect.bottom) / 2 * 65535 / (GetSystemMetrics(SM_CYSCREEN) - 1);
+    Input[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    Input[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    Input[2].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    ok(SendInput(3, Input, sizeof(INPUT)) == 3, "SendInput failed with %lu\n", GetLastError());
+}
+
 START_TEST(Shell_NotifyIconGetRect)
 {
     HMODULE Shell32 = GetModuleHandleW(L"shell32.dll");
@@ -86,22 +121,30 @@ START_TEST(Shell_NotifyIconGetRect)
 
     if (Added)
     {
-        Sleep(250);
         Identifier.hWnd = Window;
         Identifier.uID = Icon.uID;
-        Rect = g_SentinelRect;
-        Result = GetRect(&Identifier, &Rect);
-        /* S_FALSE comes with the rectangle of the overflow button when the new icon is in the closed overflow area */
-        ok(Result == S_OK || Result == S_FALSE || Result == E_FAIL, "unexpected result 0x%08lx\n", Result);
-        if (SUCCEEDED(Result))
+        Result = QueryUntil(GetRect, Identifier, S_OK, S_FALSE, &Rect);
+        ok(Result == S_OK || Result == S_FALSE, "unexpected result 0x%08lx\n", Result);
+        ok(Rect.right > Rect.left && Rect.bottom > Rect.top, "invalid rect (%ld,%ld)-(%ld,%ld)\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
+
+        /* S_FALSE comes with the rectangle of the overflow button: the new icon is in the closed overflow area */
+        if (Result == S_FALSE)
         {
-            ok(Rect.right > Rect.left && Rect.bottom > Rect.top,
-               "invalid successful rect (%ld,%ld)-(%ld,%ld)\n",
+            RECT Button = Rect;
+
+            Click(Button);
+            Result = QueryUntil(GetRect, Identifier, S_OK, S_OK, &Rect);
+            ok_hex(Result, S_OK);
+            ok(!EqualRect(&Rect, &Button), "the open overflow area still gives the button (%ld,%ld)-(%ld,%ld)\n",
                Rect.left, Rect.top, Rect.right, Rect.bottom);
-        }
-        else
-        {
-            CheckRect(Rect, 0, 0, 0, 0);
+            ok(Rect.right - Rect.left >= GetSystemMetrics(SM_CXSMICON) && Rect.bottom - Rect.top >= GetSystemMetrics(SM_CYSMICON),
+               "the rect (%ld,%ld)-(%ld,%ld) is smaller than the icon\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
+
+            Click(Button);
+            Result = QueryUntil(GetRect, Identifier, S_FALSE, S_FALSE, &Rect);
+            ok_hex(Result, S_FALSE);
+            ok(EqualRect(&Rect, &Button), "the closed overflow area gives (%ld,%ld)-(%ld,%ld), not the button\n",
+               Rect.left, Rect.top, Rect.right, Rect.bottom);
         }
 
         Identifier.uID++;

@@ -433,7 +433,7 @@ GetBestRoute2(
     {
         return STATUS_NOT_SUPPORTED;
     }
-    if (InterfaceLuid != NULL && InterfaceIndex == 0 && InterfaceLuid->Value != 0)
+    if (InterfaceLuid != NULL && InterfaceLuid->Value != 0)
     {
         InterfaceIndex = NetioLuidIndex(InterfaceLuid);
         if (InterfaceIndex == 0)

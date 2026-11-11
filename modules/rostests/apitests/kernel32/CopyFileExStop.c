@@ -283,8 +283,8 @@ test_MoveToOtherVolume(LPCWSTR Root)
     {
         if (!(Drives & (1 << (Other[0] - L'A'))) || Other[0] == towupper(Root[0]) || GetDriveTypeW(Other) != DRIVE_FIXED)
             continue;
-        StringCchPrintfW(Moved, ARRAYSIZE(Moved), L"%sCopyFileExStop-moved.bin", Other);
-        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        StringCchPrintfW(Moved, ARRAYSIZE(Moved), L"%sCopyFileExStop-%lu-%lu.bin", Other, GetCurrentProcessId(), GetTickCount());
+        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_FLAG_DELETE_ON_CLOSE, NULL);
         if (File != INVALID_HANDLE_VALUE)
             break;
     }
@@ -309,7 +309,7 @@ test_MoveToOtherVolume(LPCWSTR Root)
         DeleteFileW(Moved);
 
         /* The file that the move was to replace is gone as well */
-        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
         ok(File != INVALID_HANDLE_VALUE, "Action %lu: cannot create %S (%lu)\n", Action, Moved, GetLastError());
         if (File == INVALID_HANDLE_VALUE)
             continue;

@@ -14,7 +14,9 @@
 typedef enum _CANCEL_KIND
 {
     CancelSynchronous,
-    CancelHandle
+    CancelHandle,
+    CancelSynchronousTwice,
+    CancelHandleThenSynchronous
 } CANCEL_KIND;
 
 typedef struct _WORKER
@@ -83,11 +85,13 @@ RunWorker(DWORD ControlCode, BOOL AlertFirst, CANCEL_KIND Kind, WORKER *Worker)
         /* The request may not be in the driver yet */
         for (Try = 0; !Cancelled && Try < 20; Try++)
         {
-            Cancelled = Kind == CancelHandle ? CancelIoEx(Worker->Device, NULL) : CancelSynchronousIo(Thread);
+            Cancelled = Kind == CancelHandle || Kind == CancelHandleThenSynchronous ? CancelIoEx(Worker->Device, NULL) : CancelSynchronousIo(Thread);
             if (!Cancelled)
                 Sleep(20);
         }
         ok(Cancelled, "The request was not found: %lu\n", GetLastError());
+        if (Kind == CancelSynchronousTwice || Kind == CancelHandleThenSynchronous)
+            CancelSynchronousIo(Thread);
 
         ok_eq_ulong(WaitForSingleObject(Thread, 3 * IOCANCELSYNC_ALERTABLE_TIMEOUT_MS), WAIT_OBJECT_0);
         CloseHandle(Thread);
@@ -100,6 +104,7 @@ RunWorker(DWORD ControlCode, BOOL AlertFirst, CANCEL_KIND Kind, WORKER *Worker)
 START_TEST(IoCancelSync)
 {
     WORKER Worker;
+    CANCEL_KIND Kind;
     DWORD Error;
 
     Error = KmtLoadDriver(L"IoCancelSync", TRUE);
@@ -139,6 +144,17 @@ START_TEST(IoCancelSync)
     ok_eq_hex(Worker.TestAlert, STATUS_ALERTED);
     ok_eq_hex(Worker.Waits[0], STATUS_ALERTED);
     ok_eq_hex(Worker.Waits[1], STATUS_SUCCESS);
+
+    /* Not part of that measurement: the cancel routine of a request runs once and no cancel call leaves the thread alerted */
+    for (Kind = CancelSynchronous; Kind <= CancelHandleThenSynchronous; Kind++)
+    {
+        RunWorker(IOCTL_IOCANCELSYNC_WAIT_CANCELLABLE, FALSE, Kind, &Worker);
+        ok_eq_int(Worker.Result, TRUE);
+        ok_eq_ulong(Worker.WaitStatus, 1UL);
+        ok_eq_hex(Worker.TestAlert, STATUS_SUCCESS);
+        ok_eq_hex(Worker.Waits[0], STATUS_SUCCESS);
+        ok_eq_hex(Worker.Waits[1], STATUS_SUCCESS);
+    }
 
     KmtUnloadDriver();
 }

@@ -5,11 +5,11 @@ LANGUAGE LANG_JAPANESE, SUBLANG_DEFAULT
 /* Default settings */
 STRINGTABLE
 BEGIN
-    IDS_APPTITLE "LiberNT - Welcome"
+    IDS_APPTITLE "LiberNT - ようこそ"
     IDS_DEFAULT_TOPIC_TITLE "LiberNT"
     IDS_DEFAULT_TOPIC_DESC "LiberNT へようこそ。\n\n左側のトピックをクリックしてください。"
     IDS_FONTNAME "MS UI Gothic"
-    IDS_CHECKTEXT "&Show this dialog again"
+    IDS_CHECKTEXT "次回もこのダイアログを表示する(&S)"
     IDS_CLOSETEXT "終了(&Q)"
 END
 
@@ -32,7 +32,7 @@ END
 /* Topic descriptions */
 STRINGTABLE
 BEGIN
-    IDS_TOPIC_DESC0 "コンピュータに新しく LiberNT をインストールしたり、既存の LiberNT をアップグレードします。"
+    IDS_TOPIC_DESC0 "コンピューターに新しく LiberNT をインストールしたり、既存の LiberNT をアップグレードします。"
     IDS_TOPIC_DESC1 "CD の内容を参照します。"
     IDS_TOPIC_DESC2 "クリックするとこのアプリケーションを終了します。"
 END

@@ -26,10 +26,10 @@ static NTSTATUS NTAPI
 SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
                  ULONG ValueLength, PVOID Context, PVOID EntryContext)
 {
-    UNICODE_STRING Command, FileName, Directory, Arguments;
+    UNICODE_STRING Command, Expanded = {0}, FileName = {0}, Directory = {0}, Arguments = {0};
     RTL_USER_PROCESS_INFORMATION ProcessInfo;
     PROCESS_BASIC_INFORMATION BasicInfo;
-    ULONG Flags = 0;
+    ULONG Flags = 0, Length = 0;
     NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(ValueName);
@@ -41,7 +41,26 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
         return STATUS_INVALID_PARAMETER;
 
     RtlInitUnicodeString(&Command, ValueData);
-    Status = SmpParseCommandLine(&Command, &Flags, &FileName, &Directory, &Arguments);
+    /* RtlQueryRegistryValues does not expand the strings of a REG_MULTI_SZ value */
+    Status = RtlExpandEnvironmentStrings_U(SmpDefaultEnvironment, &Command, &Expanded, &Length);
+    if (Status == STATUS_BUFFER_TOO_SMALL && Length <= MAXUSHORT)
+    {
+        Expanded.Buffer = RtlAllocateHeap(RtlGetProcessHeap(), 0, Length);
+        if (Expanded.Buffer)
+        {
+            Expanded.MaximumLength = (USHORT)Length;
+            Status = RtlExpandEnvironmentStrings_U(SmpDefaultEnvironment, &Command, &Expanded, &Length);
+        }
+        else
+        {
+            Status = STATUS_NO_MEMORY;
+        }
+    }
+    if (NT_SUCCESS(Status))
+    {
+        Command = Expanded;
+        Status = SmpParseCommandLine(&Command, &Flags, &FileName, &Directory, &Arguments);
+    }
     if (NT_SUCCESS(Status))
     {
         if (Flags & (SMP_ASYNC_FLAG | SMP_DEBUG_FLAG | SMP_AUTOCHK_FLAG |
@@ -92,6 +111,8 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
         RtlFreeHeap(RtlGetProcessHeap(), 0, Arguments.Buffer);
     if (!NT_SUCCESS(Status))
         DPRINT1("SMSS: UpdateExecute failed for %wZ: %lx\n", &Command, Status);
+    if (Expanded.Buffer)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, Expanded.Buffer);
     /* The updater journal owns recovery; a missing updater must not stop boot. */
     return STATUS_SUCCESS;
 }

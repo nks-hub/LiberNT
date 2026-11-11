@@ -270,6 +270,46 @@ test_NoDeleteAccess(LPCWSTR Dir, LPCWSTR FileSystem)
     RemoveNoDeleteDir(SubDir);
 }
 
+/* A move to another volume is a copy; on Windows 11 a stop removes the partial file there and keeps the source */
+static void
+test_MoveToOtherVolume(LPCWSTR Root)
+{
+    WCHAR Other[] = L"A:\\", Moved[MAX_PATH];
+    DWORD Drives = GetLogicalDrives(), Action, Error;
+    HANDLE File = INVALID_HANDLE_VALUE;
+    BOOL Ret;
+
+    for (; Other[0] <= L'Z'; Other[0]++)
+    {
+        if (!(Drives & (1 << (Other[0] - L'A'))) || Other[0] == towupper(Root[0]) || GetDriveTypeW(Other) != DRIVE_FIXED)
+            continue;
+        StringCchPrintfW(Moved, ARRAYSIZE(Moved), L"%sCopyFileExStop-moved.bin", Other);
+        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_FLAG_DELETE_ON_CLOSE, NULL);
+        if (File != INVALID_HANDLE_VALUE)
+            break;
+    }
+    if (File == INVALID_HANDLE_VALUE)
+    {
+        skip("No second local volume to move to\n");
+        return;
+    }
+    CloseHandle(File);
+
+    for (Action = PROGRESS_CANCEL; Action <= PROGRESS_STOP; Action++)
+    {
+        StopAt = STOP_AT;
+        StopAction = Action;
+        StoppedAt = FirstReport = FirstChunk = -1;
+        SetLastError(0xdeadbeef);
+        Ret = MoveFileWithProgressW(Source, Moved, Progress, NULL, MOVEFILE_COPY_ALLOWED);
+        Error = GetLastError();
+        ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Action %lu: move to %S returned %d (%lu)\n", Action, Other, Ret, Error);
+        ok(GetFileAttributesW(Source) != INVALID_FILE_ATTRIBUTES, "Action %lu: the source is gone after the stopped move\n", Action);
+        ok(GetFileAttributesW(Moved) == INVALID_FILE_ATTRIBUTES, "Action %lu: the stopped move left its destination\n", Action);
+        DeleteFileW(Moved);
+    }
+}
+
 START_TEST(CopyFileExStop)
 {
     static UCHAR Chunk[65536];
@@ -322,6 +362,7 @@ START_TEST(CopyFileExStop)
     test_FailedRead(0);
     test_FailedRead(COPY_FILE_RESTARTABLE);
     test_StopAfterRename();
+    test_MoveToOtherVolume(Root);
 
     DeleteFileW(Dest);
     test_NoDeleteAccess(Dir, FileSystem);

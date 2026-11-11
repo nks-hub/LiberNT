@@ -919,8 +919,8 @@ TestSendControl(VOID)
     ULONG ControlLength = (ULONG)WSA_CMSG_SPACE(sizeof(IN_PKTINFO));
     IN_PKTINFO PktInfo;
     NTSTATUS Status;
-    ULONG Source;
-    LONG Count;
+    ULONG Source, Length, Aligned;
+    LONG Count, Expected;
 
     ReceiveCount = 0;
     Refuse = FALSE;
@@ -1024,14 +1024,38 @@ TestSendControl(VOID)
     Status = SendToControl(Sender, "CTRL0011", WSKEVENTS_PORT + 5, TRUE, (ULONG)sizeof(CMSGHDR) - 1, &Control.Header);
     ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
 
-    ASSERT(ControlLength + 4 <= sizeof(Control));
-    Status = SendToControl(Sender, "CTRL0012", WSKEVENTS_PORT + 5, FALSE, ControlLength + 4, &Control.Header);
-    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
-    Status = SendToControl(Sender, "CTRL0013", WSKEVENTS_PORT + 5, TRUE, ControlLength + 4, &Control.Header);
-    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+    /* A message needs its aligned length in the buffer, also when the buffer ends exactly on the message */
+    Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo)) + 1;
+    Aligned = (ULONG)WSA_CMSGHDR_ALIGN(Control.Header.cmsg_len);
+    ASSERT(Aligned > Control.Header.cmsg_len && Aligned <= sizeof(Control));
+    for (Length = (ULONG)Control.Header.cmsg_len; Length < Aligned; Length++)
+    {
+        Status = SendToControl(Sender, "CTRL0016", WSKEVENTS_PORT + 5, FALSE, Length, &Control.Header);
+        ok(Status == STATUS_INVALID_PARAMETER, "WskSendTo with %lu bytes for a message padded to %lu returned 0x%lx\n",
+           Length, Aligned, Status);
+        Status = SendToControl(Sender, "CTRL0017", WSKEVENTS_PORT + 5, TRUE, Length, &Control.Header);
+        ok(Status == STATUS_INVALID_PARAMETER, "WskSendMessages with %lu bytes for a message padded to %lu returned 0x%lx\n",
+           Length, Aligned, Status);
+    }
 
-    Count = WaitReceives(5, 500);
-    ok_eq_long(Count, 4L);
+    /* What follows the last message is ignored when it is too short for a header */
+    Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo));
+    Aligned = (ULONG)WSA_CMSGHDR_ALIGN(Control.Header.cmsg_len);
+    ASSERT(Aligned + sizeof(CMSGHDR) - 1 <= sizeof(Control));
+    Expected = 4;
+    for (Length = Aligned + 1; Length < Aligned + sizeof(CMSGHDR); Length++)
+    {
+        Status = SendToControl(Sender, "CTRL0012", WSKEVENTS_PORT + 5, FALSE, Length, &Control.Header);
+        ok(Status == STATUS_SUCCESS, "WskSendTo with %lu bytes after the message returned 0x%lx\n", Length - Aligned, Status);
+        Status = SendToControl(Sender, "CTRL0013", WSKEVENTS_PORT + 5, TRUE, Length, &Control.Header);
+        ok(Status == STATUS_SUCCESS, "WskSendMessages with %lu bytes after the message returned 0x%lx\n", Length - Aligned, Status);
+        Expected += 2;
+    }
+
+    Count = WaitReceives(Expected, 2000);
+    ok_eq_long(Count, Expected);
+    Count = WaitReceives(Expected + 1, 500);
+    ok_eq_long(Count, Expected);
 
 close:
     if (Receiver != NULL)

@@ -1203,8 +1203,13 @@ NetioBuildSendControl(
     {
         PCMSGHDR Header = (PCMSGHDR)((PUCHAR)ControlInfo + Offset);
 
+        /* Windows 11 ignores what follows the last message when it cannot hold a header */
+        if (Offset != 0 && ControlInfoLength - Offset < sizeof(WSACMSGHDR))
+            break;
+
         if (ControlInfoLength - Offset < sizeof(WSACMSGHDR) ||
-            Header->cmsg_len < WSA_CMSG_LEN(0) || Header->cmsg_len > ControlInfoLength - Offset)
+            Header->cmsg_len < WSA_CMSG_LEN(0) || Header->cmsg_len > ControlInfoLength - Offset ||
+            WSA_CMSGHDR_ALIGN(Header->cmsg_len) > ControlInfoLength - Offset)
         {
             return STATUS_INVALID_PARAMETER;
         }
@@ -1222,8 +1227,6 @@ NetioBuildSendControl(
             Target->OptionsLength = (LONG)TDI_CMSG_SPACE(sizeof(IN_PKTINFO));
         }
 
-        if (WSA_CMSGHDR_ALIGN(Header->cmsg_len) >= ControlInfoLength - Offset)
-            break;
         Offset += (ULONG)WSA_CMSGHDR_ALIGN(Header->cmsg_len);
     }
 

@@ -208,9 +208,12 @@ WriteRestrictedToken(VOID)
     ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, MAXIMUM_ALLOWED, &GrantedAccess), "write-restricted token gets its maximum");
     ok_eq_hex(GrantedAccess & (FILE_READ_DATA | FILE_EXECUTE | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES),
               FILE_READ_DATA | FILE_EXECUTE);
-    trace("write-restricted token: DELETE %d, WRITE_DAC %d\n",
-          CheckAccess(&Sd, &SubjectContext, WriteRestricted, DELETE, &GrantedAccess),
-          CheckAccess(&Sd, &SubjectContext, WriteRestricted, WRITE_DAC, &GrantedAccess));
+    ok_eq_hex(GrantedAccess & (DELETE | WRITE_DAC | WRITE_OWNER), 0);
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, DELETE, &GrantedAccess), "write-restricted token deletes");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, WRITE_DAC, &GrantedAccess), "write-restricted token writes the DACL");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, WRITE_OWNER, &GrantedAccess), "write-restricted token writes the owner");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_READ_DATA | DELETE, &GrantedAccess),
+                  "write-restricted token reads and deletes");
 
     Status = RtlAddAccessAllowedAce(Dacl, ACL_REVISION, FILE_WRITE_DATA, SeExports->SeDialupSid);
     ok_eq_hex(Status, STATUS_SUCCESS);

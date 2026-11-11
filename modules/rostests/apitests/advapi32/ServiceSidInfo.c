@@ -138,6 +138,12 @@ static void WINAPI restricted_main(DWORD argc, LPWSTR *argv)
     service_ok(error == ERROR_ACCESS_DENIED, "writing a key that grants access to LocalSystem only: %ld\n", error);
     if (error == ERROR_SUCCESS)
         RegCloseKey(key);
+    error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_path, 0, DELETE, &key);
+    service_ok(error == ERROR_ACCESS_DENIED, "opening a key that grants access to LocalSystem only for DELETE: %ld\n", error);
+    if (error == ERROR_SUCCESS)
+        RegCloseKey(key);
+    error = RegDeleteKeyW(HKEY_LOCAL_MACHINE, key_path);
+    service_ok(error == ERROR_ACCESS_DENIED, "deleting a key that grants access to LocalSystem only: %ld\n", error);
 
     status.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(status_handle, &status);

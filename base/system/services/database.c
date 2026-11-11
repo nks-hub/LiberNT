@@ -730,13 +730,7 @@ ScmLogonService(
     if (ScmIsLocalSystemAccount(pImage->pszAccountName) ||
         ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName)))
     {
-        dwError = ScmApplyServiceSid(pService, pImage);
-        if (dwError != ERROR_SUCCESS && pImage->hToken != NULL)
-        {
-            CloseHandle(pImage->hToken);
-            pImage->hToken = NULL;
-        }
-        return dwError;
+        return ERROR_SUCCESS;
     }
 
     /* Get the user and domain names */
@@ -815,9 +809,6 @@ done:
 
     if (ptr != NULL)
         *ptr = L'\\';
-
-    if (dwError == ERROR_SUCCESS)
-        dwError = ScmApplyServiceSid(pService, pImage);
 
     if (dwError != ERROR_SUCCESS)
     {
@@ -935,13 +926,17 @@ ScmCreateOrReferenceServiceImage(PSERVICE pService)
 
         bSecurityService = ScmIsSecurityService(pServiceImage);
 
-        /* Create the control pipe */
-        dwError = ScmCreateNewControlPipe(pServiceImage,
-                                          bSecurityService);
+        dwError = ScmApplyServiceSid(pService, pServiceImage);
+        if (dwError == ERROR_SUCCESS)
+        {
+            /* Create the control pipe */
+            dwError = ScmCreateNewControlPipe(pServiceImage,
+                                              bSecurityService);
+            if (dwError != ERROR_SUCCESS)
+                DPRINT1("ScmCreateNewControlPipe() failed (Error %lu)\n", dwError);
+        }
         if (dwError != ERROR_SUCCESS)
         {
-            DPRINT1("ScmCreateNewControlPipe() failed (Error %lu)\n", dwError);
-
             /* Unload the user profile */
             if (pServiceImage->hProfile != NULL)
             {

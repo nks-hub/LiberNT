@@ -432,11 +432,25 @@ FindSourceDisksLine(HINF hInf, PCWSTR Section, PCWSTR Decoration, PCWSTR Key, PI
 }
 
 static BOOL
+IsBelowDirectory(PCWSTR Directory, PCWSTR Path)
+{
+    WCHAR Base[MAX_PATH];
+    DWORD Length = GetFullPathNameW(Directory, ARRAYSIZE(Base), Base, NULL);
+
+    if (Length == 0 || Length >= ARRAYSIZE(Base))
+        return FALSE;
+    if (Base[Length - 1] == L'\\')
+        Length--;
+    return _wcsnicmp(Path, Base, Length) == 0 && Path[Length] == L'\\' && Path[Length + 1];
+}
+
+static BOOL
 LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
 {
-    WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"", DiskName[16];
+    WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"", DiskName[16], Joined[MAX_PATH];
     INFCONTEXT Line;
     INT SourceId;
+    DWORD Length;
 
     if (FindSourceDisksLine(hInf, L"SourceDisksFiles", Decoration, Name, &Line) && SetupGetIntField(&Line, 1, &SourceId))
     {
@@ -450,15 +464,19 @@ LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR Driver
         }
     }
 
-    if (SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s%s%s%s%s\\%s", PackageDir,
+    if (SUCCEEDED(StringCchPrintfW(Joined, ARRAYSIZE(Joined), L"%s%s%s%s%s\\%s", PackageDir,
                                    *SourcePath ? L"\\" : L"", SourcePath,
                                    *SubDir ? L"\\" : L"", SubDir, Name)) &&
+        !wcschr(Joined + wcslen(PackageDir), L':') &&
+        (Length = GetFullPathNameW(Joined, PathSize, Path, NULL)) != 0 && Length < PathSize &&
+        IsBelowDirectory(PackageDir, Path) &&
         GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
     {
         return TRUE;
     }
 
-    if (SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
+    if (!wcspbrk(Name, L"\\/:") &&
+        SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
         GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
     {
         return TRUE;
@@ -486,6 +504,11 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PCWSTR Pa
         return FALSE;
     if (Source == Name)
         return TRUE;
+    if (wcspbrk(Name, L"\\/:"))
+    {
+        ERR("%S is not a file name\n", Name);
+        return FALSE;
+    }
 
     for (Attempt = 0; !*StagingDir && Attempt < 100; Attempt++)
     {

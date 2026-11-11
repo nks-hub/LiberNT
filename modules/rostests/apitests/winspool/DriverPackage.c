@@ -377,6 +377,67 @@ static const char EscapeInf[] =
     "TESTESC.DAT=1\r\n"
     "..\\lntprnesc.dll=1\r\n";
 
+static const char IncludeEscapeInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Include Escape Printer\"=TESTIES,LiberNT_Package_Include_Escape\r\n"
+    "\r\n"
+    "[TESTIES]\r\n"
+    "Include=../lntprnout.inf\r\n"
+    "CopyFiles=@TESTIES.DAT\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTIES.DAT=1\r\n";
+
+static const char SlashEscapeInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Slash Escape Printer\"=TESTSLE,LiberNT_Package_Slash_Escape\r\n"
+    "\r\n"
+    "[TESTSLE]\r\n"
+    "CopyFiles=TESTSLE_FILES\r\n"
+    "\r\n"
+    "[TESTSLE_FILES]\r\n"
+    "TESTSLE.DAT\r\n"
+    "../lntprnout.dll\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTSLE.DAT=1\r\n";
+
+static const char OutsideInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n";
+
 static const char MalformedInf[] =
     "[Version]\r\n"
     "Signature=\"$LiberNT$\"\r\n"
@@ -386,23 +447,24 @@ static const char MalformedInf[] =
     "\"LiberNT\"=Models\r\n";
 
 static VOID
-TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, HRESULT Expected)
+TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, PCWSTR Outside, HRESULT Expected)
 {
-    WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
+    WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], Temp[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
     ULONG Length = ARRAYSIZE(StoreInf);
     WIN32_FIND_DATAW Find;
     HANDLE hFind;
     HRESULT hr;
 
-    GetTempPathW(MAX_PATH, Dir);
-    StringCchCatW(Dir, MAX_PATH, Name);
+    GetTempPathW(MAX_PATH, Temp);
+    StringCchPrintfW(Dir, ARRAYSIZE(Dir), L"%s%s", Temp, Name);
     CreateDirectoryW(Dir, NULL);
     StringCchPrintfW(InfName, ARRAYSIZE(InfName), L"%s.inf", Name);
     StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, InfName);
 
     if (WriteTestFile(Dir, InfName, Inf, InfSize) &&
-        WriteTestFile(Dir, Present, Text, sizeof(Text) - 1))
+        WriteTestFile(Dir, Present, Text, sizeof(Text) - 1) &&
+        (!Outside || WriteTestFile(Temp, Outside, OutsideInf, sizeof(OutsideInf) - 1)))
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
         ok(Expected == S_OK ? FAILED(hr) : hr == Expected, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
@@ -417,12 +479,26 @@ TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, 
         ok(hFind == INVALID_HANDLE_VALUE, "%S was staged\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
         if (hFind != INVALID_HANDLE_VALUE)
             FindClose(hFind);
+
+        if (Outside)
+        {
+            GetWindowsDirectoryW(Path, ARRAYSIZE(Path));
+            StringCchCatW(Path, ARRAYSIZE(Path), L"\\System32\\DriverStore\\FileRepository\\");
+            StringCchCatW(Path, ARRAYSIZE(Path), Outside);
+            ok(GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES, "%S was created outside the package directory\n", Path);
+            DeleteFileW(Path);
+        }
     }
     else
     {
         skip("Failed to create the package %S (%lu)\n", InfName, GetLastError());
     }
 
+    if (Outside)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s%s", Temp, Outside);
+        DeleteFileW(Path);
+    }
     StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Present);
     DeleteFileW(Path);
     DeleteFileW(InfPath);
@@ -1148,11 +1224,13 @@ START_TEST(DriverPackage)
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
     ok(hr == E_INVALIDARG, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
-    TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnunl", UnlistedInf, sizeof(UnlistedInf) - 1, L"TESTUNL.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnbad",MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
-    TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", S_OK);
+    TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnunl", UnlistedInf, sizeof(UnlistedInf) - 1, L"TESTUNL.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnbad",MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", NULL, S_OK);
+    TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", NULL, S_OK);
+    TestRefusedPackage(L"lntprnies", IncludeEscapeInf, sizeof(IncludeEscapeInf) - 1, L"TESTIES.DAT", L"lntprnout.inf", S_OK);
+    TestRefusedPackage(L"lntprnsle", SlashEscapeInf, sizeof(SlashEscapeInf) - 1, L"TESTSLE.DAT", L"lntprnout.dll", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
                        L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL, NULL);
     TestInstallPackage(L"lntprntwo", L"LiberNT Package Two Needs Printer", TwoNeedsInf, sizeof(TwoNeedsInf) - 1,

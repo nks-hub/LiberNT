@@ -91,6 +91,7 @@
 @ stub GetShrinkedSize
 @ stdcall ImpersonatePrinterClient(long)
 @ stdcall InitializeRouter(long)
+@ stdcall InstallPrinterDriverFromPackageW(wstr wstr wstr wstr long)
 @ stub IsNamedPipeRpcCall
 @ stub LoadDriver
 @ stub LoadDriverFiletoConvertDevmode

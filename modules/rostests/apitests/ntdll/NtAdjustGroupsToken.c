@@ -243,6 +243,10 @@ AdjustWithPreviousState(VOID)
     ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
     CheckGroupsUnchanged(Token, Before);
 
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, &Small, NULL);
+    ok_hex(Status, STATUS_ACCESS_VIOLATION);
+    CheckGroupsUnchanged(Token, Before);
+
     Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Expected);
     if (!Previous)
     {

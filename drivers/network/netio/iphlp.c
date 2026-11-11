@@ -19,6 +19,7 @@
 #define NETIO_IPHLP_TAG 'hIeN'
 #define NETIO_INITIAL_ENTITIES 256
 #define NETIO_MAX_ROUTES 128
+#define NETIO_ROUTE_QUERY_ATTEMPTS 4
 #define NETIO_MAX_ADDRESSES 64
 
 static
@@ -1267,7 +1268,7 @@ NetioQueryRoutes4(
     PMIB_IPFORWARD_ROW2 Grown, Row;
     IPSNMPInfo Snmp;
     IFEntry *Entry;
-    ULONG Returned, EntityCount, RouteCount, Size, i, j;
+    ULONG Returned, EntityCount, RouteCount, Size, Attempt, i, j;
     NTSTATUS Status;
     HANDLE Tcp;
 
@@ -1284,34 +1285,48 @@ NetioQueryRoutes4(
         if (Entities[i].tei_entity != CL_NL_ENTITY)
             continue;
 
-        RtlZeroMemory(&Snmp, sizeof(Snmp));
-        Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
-                               IP_MIB_STATS_ID, &Snmp, sizeof(Snmp), &Returned);
-        if (!NT_SUCCESS(Status))
+        for (Attempt = 0; ; Attempt++)
         {
-            if (Complete)
-                goto Done;
-            continue;
-        }
-        Size = (Snmp.ipsi_numroutes + 16) * sizeof(NETIO_TDI_ROUTE);
-        Routes = ExAllocatePoolWithTag(PagedPool, Size, NETIO_IPHLP_TAG);
-        if (Routes == NULL)
-        {
-            Status = STATUS_INSUFFICIENT_RESOURCES;
-            goto Done;
-        }
-        Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
-                               IP_MIB_ARPTABLE_ENTRY_ID, Routes, Size, &Returned);
-        if (NT_SUCCESS(Status) && Returned > Size)
-            Status = STATUS_BUFFER_OVERFLOW;
-        if (!NT_SUCCESS(Status))
-        {
+            RtlZeroMemory(&Snmp, sizeof(Snmp));
+            Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
+                                   IP_MIB_STATS_ID, &Snmp, sizeof(Snmp), &Returned);
+            if (!NT_SUCCESS(Status))
+                break;
+            if (Snmp.ipsi_numroutes > MAXULONG / sizeof(NETIO_TDI_ROUTE) - 16)
+            {
+                Status = STATUS_INTEGER_OVERFLOW;
+                break;
+            }
+            Size = (Snmp.ipsi_numroutes + 16) * sizeof(NETIO_TDI_ROUTE);
+            Routes = ExAllocatePoolWithTag(PagedPool, Size, NETIO_IPHLP_TAG);
+            if (Routes == NULL)
+            {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
+            Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
+                                   IP_MIB_ARPTABLE_ENTRY_ID, Routes, Size, &Returned);
+            if (NT_SUCCESS(Status) && Returned > Size)
+                Status = STATUS_BUFFER_OVERFLOW;
+            if (NT_SUCCESS(Status))
+                break;
+
             ExFreePoolWithTag(Routes, NETIO_IPHLP_TAG);
             Routes = NULL;
-            if (Complete)
-                goto Done;
-            continue;
+            if ((Status != STATUS_BUFFER_OVERFLOW && Status != STATUS_BUFFER_TOO_SMALL) ||
+                Attempt == NETIO_ROUTE_QUERY_ATTEMPTS - 1)
+            {
+                break;
+            }
         }
+        if (!NT_SUCCESS(Status))
+        {
+            /* The stack answers so for an entity removed since the enumeration; only that one is left out */
+            if (Status == STATUS_INVALID_PARAMETER && !Complete)
+                continue;
+            goto Done;
+        }
+        ASSERT(Routes != NULL);
         RouteCount = Returned / sizeof(NETIO_TDI_ROUTE);
 
         if (*Count + RouteCount > *Capacity)

@@ -307,6 +307,21 @@ test_MoveToOtherVolume(LPCWSTR Root)
         ok(GetFileAttributesW(Source) != INVALID_FILE_ATTRIBUTES, "Action %lu: the source is gone after the stopped move\n", Action);
         ok(GetFileAttributesW(Moved) == INVALID_FILE_ATTRIBUTES, "Action %lu: the stopped move left its destination\n", Action);
         DeleteFileW(Moved);
+
+        /* The file that the move was to replace is gone as well */
+        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+        ok(File != INVALID_HANDLE_VALUE, "Action %lu: cannot create %S (%lu)\n", Action, Moved, GetLastError());
+        if (File == INVALID_HANDLE_VALUE)
+            continue;
+        CloseHandle(File);
+        StoppedAt = FirstReport = FirstChunk = -1;
+        SetLastError(0xdeadbeef);
+        Ret = MoveFileWithProgressW(Source, Moved, Progress, NULL, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING);
+        Error = GetLastError();
+        ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Action %lu: move over a file on %S returned %d (%lu)\n", Action, Other, Ret, Error);
+        ok(GetFileAttributesW(Source) != INVALID_FILE_ATTRIBUTES, "Action %lu: the source is gone after the stopped replacing move\n", Action);
+        ok(GetFileAttributesW(Moved) == INVALID_FILE_ATTRIBUTES, "Action %lu: the stopped move left the file it was to replace\n", Action);
+        DeleteFileW(Moved);
     }
 }
 

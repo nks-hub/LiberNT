@@ -281,6 +281,12 @@ void test_runner(void (*run_test)(PCSTR, PCWSTR, void*), void *param)
 {
     HANDLE hServerPipe = INVALID_HANDLE_VALUE;
     HANDLE hThread;
+    SECURITY_DESCRIPTOR sd;
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), &sd, FALSE };
+
+    /* A service with a write-restricted token reports through the pipe too */
+    InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+    SetSecurityDescriptorDacl(&sd, TRUE, NULL, FALSE);
 
     StringCbPrintfW(service_nameW, sizeof(service_nameW), L"WineTestService%lu", GetTickCount());
     WideCharToMultiByte(CP_ACP, 0, service_nameW, -1, service_nameA, _countof(service_nameA), NULL, NULL);
@@ -288,7 +294,7 @@ void test_runner(void (*run_test)(PCSTR, PCWSTR, void*), void *param)
     StringCbPrintfW(named_pipe_name, sizeof(named_pipe_name), L"\\\\.\\pipe\\%ls_pipe", service_nameW);
 
     hServerPipe = CreateNamedPipeW(named_pipe_name, PIPE_ACCESS_INBOUND,
-                                   PIPE_TYPE_MESSAGE|PIPE_READMODE_MESSAGE|PIPE_WAIT, 10, 2048, 2048, 10000, NULL);
+                                   PIPE_TYPE_MESSAGE|PIPE_READMODE_MESSAGE|PIPE_WAIT, 10, 2048, 2048, 10000, &sa);
     ok(hServerPipe != INVALID_HANDLE_VALUE, "CreateNamedPipe failed: %lu\n", GetLastError());
     if (hServerPipe == INVALID_HANDLE_VALUE)
         return;

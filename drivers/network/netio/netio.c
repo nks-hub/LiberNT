@@ -174,6 +174,7 @@ typedef struct _WSK_SOCKET_INTERNAL
     BOOLEAN PktInfo;
     BOOLEAN ReceiveStarted;
     volatile BOOLEAN ReceiveClosing;
+    EX_RUNDOWN_REF ReceiveStartRundown;
     LONG ReceivesBusy;
     KEVENT ReceivesIdle;
     KSPIN_LOCK ReceiveLock;
@@ -1158,12 +1159,15 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
         {
             /* Receives can have been started by a client that enabled the event meanwhile */
             NetioStopReceives(Socket);
+            ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+            ExWaitForRundownProtectionRelease(&Socket->ReceiveStartRundown);
             KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
             ASSERT(!Socket->ReceiveStarted);
+            Socket->LocalAddressFile = NULL;
             Socket->ReceiveClosing = FALSE;
             KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+            ExReInitializeRundownProtection(&Socket->ReceiveStartRundown);
 
-            Socket->LocalAddressFile = NULL;
             Socket->LocalAddressHandle = NULL;
             ObDereferenceObject(AddressFile);
             ZwClose(AddressHandle);
@@ -1763,17 +1767,26 @@ NetioStartReceives(
 {
     PNETIO_RECEIVE Receives[NETIO_RECEIVE_COUNT] = { NULL };
     PDEVICE_OBJECT DeviceObject;
+    PFILE_OBJECT AddressFile;
+    NTSTATUS Status = STATUS_SUCCESS;
     BOOLEAN Start;
     KIRQL OldIrql;
     ULONG i;
 
-    if (Socket->ReceiveStarted || Socket->LocalAddressFile == NULL ||
-        Socket->DatagramDispatch == NULL || Socket->DatagramDispatch->WskReceiveFromEvent == NULL)
-    {
+    if (Socket->DatagramDispatch == NULL || Socket->DatagramDispatch->WskReceiveFromEvent == NULL)
         return STATUS_SUCCESS;
-    }
 
-    DeviceObject = IoGetRelatedDeviceObject(Socket->LocalAddressFile);
+    /* A bind that failed waits for this protection before it releases the address file */
+    if (!ExAcquireRundownProtection(&Socket->ReceiveStartRundown))
+        return STATUS_SUCCESS;
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    AddressFile = (Socket->ReceiveStarted || Socket->ReceiveClosing) ? NULL : Socket->LocalAddressFile;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+    if (AddressFile == NULL)
+        goto Done;
+
+    DeviceObject = IoGetRelatedDeviceObject(AddressFile);
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
     {
         PNETIO_RECEIVE Receive = ExAllocatePoolZero(NonPagedPool, sizeof(*Receive), TAG_NETIO);
@@ -1794,6 +1807,7 @@ NetioStartReceives(
     Start = !Socket->ReceiveStarted && !Socket->ReceiveClosing;
     if (Start)
     {
+        ASSERT(Socket->LocalAddressFile == AddressFile);
         RtlCopyMemory(Socket->Receives, Receives, sizeof(Receives));
         KeClearEvent(&Socket->ReceivesIdle);
         Socket->ReceivesBusy = NETIO_RECEIVE_COUNT;
@@ -1804,16 +1818,19 @@ NetioStartReceives(
     if (!Start)
     {
         NetioFreeReceives(Receives);
-        return STATUS_SUCCESS;
+        goto Done;
     }
 
     for (i = 0; i < NETIO_RECEIVE_COUNT; i++)
         NetioPostReceive(Receives[i]);
-    return STATUS_SUCCESS;
+    goto Done;
 
 Fail:
     NetioFreeReceives(Receives);
-    return STATUS_INSUFFICIENT_RESOURCES;
+    Status = STATUS_INSUFFICIENT_RESOURCES;
+Done:
+    ExReleaseRundownProtection(&Socket->ReceiveStartRundown);
+    return Status;
 }
 
 static VOID
@@ -2678,6 +2695,7 @@ WskSocket(
             RtlInitUnicodeString(&Socket->TdiName, L"\\Device\\Udp");
             Socket->DatagramDispatch = Dispatch;
             KeInitializeSpinLock(&Socket->ReceiveLock);
+            ExInitializeRundownProtection(&Socket->ReceiveStartRundown);
             InitializeListHead(&Socket->ReceiveQueue);
             InitializeListHead(&Socket->ReceivesParked);
             KeInitializeEvent(&Socket->ReceivesIdle, NotificationEvent, TRUE);

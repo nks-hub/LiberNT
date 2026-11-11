@@ -464,6 +464,23 @@ ScmCreateNotify(DWORD dwNotifyMask)
 }
 
 
+static BOOL
+ScmIsNotifyPending(PLIST_ENTRY ListHead,
+                   PVOID Owner)
+{
+    PLIST_ENTRY Entry;
+    PNOTIFY_HANDLE pNotify;
+
+    for (Entry = ListHead->Flink; Entry != ListHead; Entry = Entry->Flink)
+    {
+        pNotify = CONTAINING_RECORD(Entry, NOTIFY_HANDLE, ListEntry);
+        if (pNotify->Owner == Owner && !pNotify->bSubscription)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+
 static PMANAGER_HANDLE
 ScmGetServiceManagerFromHandle(SC_RPC_HANDLE Handle)
 {
@@ -7033,6 +7050,12 @@ RNotifyServiceStatusChange(
 
         pNotify->Owner = hManager;
         EnterCriticalSection(&ScmNotifyLock);
+        if (!pNotify->bSubscription && ScmIsNotifyPending(&ScmManagerNotifyList, hManager))
+        {
+            LeaveCriticalSection(&ScmNotifyLock);
+            ScmReleaseNotify(pNotify);
+            return ERROR_ALREADY_REGISTERED;
+        }
         /* A renewed subscription names the last change it saw; one made since is reported without its kind and name */
         dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
         if (pNotify->bSubscription && dwSequence != 0 && dwSequence != ScmDatabaseNotifySequence)
@@ -7095,6 +7118,15 @@ RNotifyServiceStatusChange(
         ScmUnlockDatabase();
         ScmReleaseNotify(pNotify);
         return ERROR_SERVICE_MARKED_FOR_DELETE;
+    }
+
+    pNotify->Owner = hSvc;
+    if (!pNotify->bSubscription && ScmIsNotifyPending(&hSvc->NotifyList, hSvc))
+    {
+        LeaveCriticalSection(&ScmNotifyLock);
+        ScmUnlockDatabase();
+        ScmReleaseNotify(pNotify);
+        return ERROR_ALREADY_REGISTERED;
     }
 
     if (bReport && (pNotify->dwNotifyMask & dwMask))

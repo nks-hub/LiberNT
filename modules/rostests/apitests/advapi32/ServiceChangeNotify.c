@@ -350,13 +350,16 @@ test_ServiceStatus(SC_HANDLE Manager)
     }
 
     {
-        SC_HANDLE Other;
+        SC_HANDLE Other, Watcher;
 
+        /* The request stays pending, and a handle takes one pending request */
+        Watcher = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        ok(Watcher != NULL, "OpenServiceW failed (%lu)\n", GetLastError());
         ZeroMemory(&Notify, sizeof(Notify));
         Notify.dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
         Notify.pfnNotifyCallback = ServiceNotified;
         StatusApcs = 0;
-        Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_RUNNING, &Notify);
+        Error = NotifyServiceStatusChangeW(Watcher, SERVICE_NOTIFY_RUNNING, &Notify);
         ok(Error == ERROR_SUCCESS, "Running request: NotifyServiceStatusChangeW returned %lu\n", Error);
         Other = CreateServiceW(Manager, TEST_SERVICE L"2", TEST_SERVICE L"2", SERVICE_ALL_ACCESS,
                                SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_IGNORE,
@@ -373,6 +376,8 @@ test_ServiceStatus(SC_HANDLE Manager)
         SleepEx(500, TRUE);
         ok(StatusApcs == 0, "Deleting another service ended the request: status %lu, triggered 0x%lx\n",
            Notify.dwNotificationStatus, Notify.dwNotificationTriggered);
+        if (Watcher)
+            CloseServiceHandle(Watcher);
     }
 
     ZeroMemory(&Notify, sizeof(Notify));
@@ -518,6 +523,70 @@ test_ChangeDuringCallback(PCSTR NameA, PCWSTR NameW, void *Param)
     CloseServiceHandle(Manager);
 }
 
+/* A handle takes a new request once its pending one was delivered */
+static void
+test_SecondRequest(PCSTR NameA, PCWSTR NameW, void *Param)
+{
+    SERVICE_NOTIFYW First = { SERVICE_NOTIFY_STATUS_CHANGE }, Second = { SERVICE_NOTIFY_STATUS_CHANGE };
+    SC_HANDLE Manager, Service;
+    SERVICE_STATUS Status;
+    DWORD Error, Start;
+
+    UNREFERENCED_PARAMETER(NameA);
+    UNREFERENCED_PARAMETER(Param);
+
+    Manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!Manager)
+    {
+        skip("Cannot open the service manager (%lu)\n", GetLastError());
+        return;
+    }
+    Service = register_serviceW(Manager, L"ServiceChangeNotify", NameW, NULL);
+    if (!Service)
+    {
+        skip("Cannot create the test service (%lu)\n", GetLastError());
+        CloseServiceHandle(Manager);
+        return;
+    }
+
+    First.pfnNotifyCallback = ServiceNotified;
+    Second.pfnNotifyCallback = ServiceNotified;
+    StatusApcs = 0;
+    Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_RUNNING, &First);
+    ok(Error == ERROR_SUCCESS, "First request returned %lu\n", Error);
+    Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_RUNNING, &Second);
+    ok(Error == ERROR_ALREADY_REGISTERED, "Second request on the same handle returned %lu\n", Error);
+    SleepEx(200, TRUE);
+    ok(StatusApcs == 0, "%ld results before the service started\n", StatusApcs);
+
+    ok(StartServiceW(Service, 0, NULL), "StartServiceW failed (%lu)\n", GetLastError());
+    ok(WaitState(Service, SERVICE_RUNNING), "The service is not running\n");
+    for (Start = GetTickCount(); !StatusApcs && GetTickCount() - Start < 5000; )
+        SleepEx(200, TRUE);
+    ok(StatusApcs == 1, "%ld results for the started service\n", StatusApcs);
+    ok(First.dwNotificationTriggered == SERVICE_NOTIFY_RUNNING, "First request: triggered 0x%lx\n",
+       First.dwNotificationTriggered);
+
+    StatusApcs = 0;
+    Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_STOPPED, &Second);
+    ok(Error == ERROR_SUCCESS, "Request after the delivered one returned %lu\n", Error);
+
+    ControlService(Service, SERVICE_CONTROL_STOP, &Status);
+    ok(WaitState(Service, SERVICE_STOPPED), "The service did not stop\n");
+    if (Error == ERROR_SUCCESS)
+    {
+        for (Start = GetTickCount(); !StatusApcs && GetTickCount() - Start < 5000; )
+            SleepEx(200, TRUE);
+        ok(StatusApcs == 1, "%ld results for the stopped service\n", StatusApcs);
+        ok(Second.dwNotificationTriggered == SERVICE_NOTIFY_STOPPED, "Request after the delivered one: triggered 0x%lx\n",
+           Second.dwNotificationTriggered);
+    }
+
+    DeleteService(Service);
+    CloseServiceHandle(Service);
+    CloseServiceHandle(Manager);
+}
+
 static volatile LONG DatabaseCalls, DatabaseSeen;
 
 static VOID CALLBACK
@@ -635,6 +704,7 @@ START_TEST(ServiceChangeNotify)
         skip("SubscribeServiceChangeNotifications is missing\n");
     test_ServiceNames();
     test_ServiceStatus(Manager);
+    test_runner(test_SecondRequest, NULL);
     test_Masks(Manager);
 
     CloseHandle(NotifyEvent);

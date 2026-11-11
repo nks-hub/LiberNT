@@ -1476,11 +1476,30 @@ DeleteDirectoryTree(
     return RemoveDirectoryW(Directory);
 }
 
+/* The rename fails while a file of the package is open, before anything of the package is changed */
+static BOOL
+MoveStoreDirectoryAside(
+    IN PCWSTR Directory,
+    OUT PWSTR Aside)
+{
+    WCHAR Suffix[32];
+
+    swprintf(Suffix, ARRAY_SIZE(Suffix), L".delete-%lx-%lx", GetCurrentProcessId(), GetTickCount());
+    if (lstrlenW(Directory) + lstrlenW(Suffix) >= MAX_PATH)
+    {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
+    }
+    lstrcpyW(Aside, Directory);
+    lstrcatW(Aside, Suffix);
+    return MoveFileW(Directory, Aside);
+}
+
 BOOL
 SETUPAPI_DeleteDriverStorePackage(
     IN PCWSTR PublishedInfFileName)
 {
-    WCHAR StoreInf[MAX_PATH];
+    WCHAR StoreInf[MAX_PATH], Aside[MAX_PATH];
     PWSTR Last;
 
     if (!SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf))
@@ -1491,7 +1510,7 @@ SETUPAPI_DeleteDriverStorePackage(
         return TRUE;
 
     *Last = UNICODE_NULL;
-    return DeleteDirectoryTree(StoreInf);
+    return MoveStoreDirectoryAside(StoreInf, Aside) && DeleteDirectoryTree(Aside);
 }
 
 static HRESULT
@@ -1681,9 +1700,10 @@ DriverStoreDeleteDriverPackageW(
     IN PVOID Reserved1,
     IN PVOID Reserved2)
 {
-    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
+    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Aside[MAX_PATH];
     PWSTR Last, BaseName;
-    DWORD Length;
+    DWORD Length, Error;
+    BOOL Published, Deleted = TRUE;
 
     Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
     if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName ||
@@ -1693,16 +1713,32 @@ DriverStoreDeleteDriverPackageW(
     }
 
     /* Only the package of the native architecture is published */
-    if (FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source) && !DeletePublishedInfs(StoreInf))
-        return HRESULT_FROM_WIN32(GetLastError());
+    Published = FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source);
 
     Last = wcsrchr(StoreInf, L'\\');
     if (!Last)
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     *Last = UNICODE_NULL;
-    if (!DeleteDirectoryTree(StoreInf))
+    if (!MoveStoreDirectoryAside(StoreInf, Aside))
         return HRESULT_FROM_WIN32(GetLastError());
+
+    if (Published)
+    {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        Deleted = CombinePath(Source, Aside, Last + 1) && DeletePublishedInfs(Source);
+    }
+    if (!Deleted)
+    {
+        Error = GetLastError();
+        if (!MoveFileW(Aside, StoreInf))
+            ERR("Driver package %s is left in %s, restoring it failed with error %lu\n",
+                debugstr_w(StoreInf), debugstr_w(Aside), GetLastError());
+        return HRESULT_FROM_WIN32(Error);
+    }
+
+    if (!DeleteDirectoryTree(Aside))
+        ERR("The deleted driver package %s is left in %s (%lu)\n", debugstr_w(StoreInf), debugstr_w(Aside), GetLastError());
 
     return S_OK;
 }

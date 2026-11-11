@@ -1571,6 +1571,33 @@ TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
         FindClose(hFind);
 }
 
+static VOID
+TestHeldPackageDelete(PCWSTR InfPath, PCWSTR StoreInf)
+{
+    static const PCWSTR Names[] = { L"lntprnpkg.inf", L"TESTPKG.GPD", L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.HLP", L"TESTPKG.DAT" };
+    int DirLength = (int)(wcsrchr(StoreInf, L'\\') - StoreInf);
+    WCHAR Path[MAX_PATH], Published[MAX_PATH];
+    HANDLE hHeld;
+    HRESULT hr;
+    UINT i;
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%.*s\\TESTPKG.HLP", DirLength, StoreInf);
+    hHeld = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(hHeld != INVALID_HANDLE_VALUE, "Opening %S failed with %lu\n", Path, GetLastError());
+    if (hHeld == INVALID_HANDLE_VALUE)
+        return;
+
+    hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+    ok(FAILED(hr), "DeletePrinterDriverPackageW returned 0x%lx for a package with an open file\n", hr);
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%.*s\\%s", DirLength, StoreInf, Names[i]);
+        ok(GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES, "%S was deleted from a package with an open file\n", Path);
+    }
+    ok(FindPublishedInf(InfPath, Published), "The published INF was deleted and the package with an open file was not\n");
+    CloseHandle(hHeld);
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -1929,6 +1956,8 @@ START_TEST(DriverPackage)
             skip("Cannot replace %S (%lu)\n", StoreInf, GetLastError());
         }
     }
+
+    TestHeldPackageDelete(InfPath, StoreInf);
 
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
     ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);

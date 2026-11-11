@@ -508,20 +508,22 @@ NetShellRefreshAdapterIndex(LANSTATUSUI_CONTEXT *pContext)
     NETCON_PROPERTIES *pProps = NULL;
     NET_LUID Luid;
     NET_IFINDEX IfIndex;
-    BOOL bChanged = FALSE;
+    BOOL bFound = FALSE;
 
     if (pContext->pNet->GetProperties(&pProps) != S_OK || !pProps)
         return FALSE;
     if (!ConvertInterfaceGuidToLuid(&pProps->guidId, &Luid) &&
-        !ConvertInterfaceLuidToIndex(&Luid, &IfIndex) &&
-        IfIndex != pContext->dwAdapterIndex)
+        !ConvertInterfaceLuidToIndex(&Luid, &IfIndex))
     {
-        pContext->dwAdapterIndex = IfIndex;
-        pContext->Status = (UINT)-1;
-        bChanged = TRUE;
+        if (IfIndex != pContext->dwAdapterIndex)
+        {
+            pContext->dwAdapterIndex = IfIndex;
+            pContext->Status = (UINT)-1;
+        }
+        bFound = TRUE;
     }
     NcFreeNetconProperties(pProps);
-    return bChanged;
+    return bFound;
 }
 
 VOID
@@ -536,9 +538,8 @@ UpdateLanStatus(HWND hwndDlg, LANSTATUSUI_CONTEXT * pContext)
     DWORD dwError;
 
     ZeroMemory(&IfEntry, sizeof(IfEntry));
-    IfEntry.dwIndex = pContext->dwAdapterIndex;
-    dwError = GetIfEntry(&IfEntry);
-    if (dwError != NO_ERROR && NetShellRefreshAdapterIndex(pContext))
+    dwError = ERROR_FILE_NOT_FOUND;
+    if (NetShellRefreshAdapterIndex(pContext))
     {
         IfEntry.dwIndex = pContext->dwAdapterIndex;
         dwError = GetIfEntry(&IfEntry);

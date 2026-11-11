@@ -1647,7 +1647,10 @@ DeletePublishedInfs(
 
     hFind = FindFirstFileW(Pattern, &FindData);
     if (hFind == INVALID_HANDLE_VALUE)
-        return TRUE;
+    {
+        Error = GetLastError();
+        return Error == ERROR_FILE_NOT_FOUND || Error == ERROR_PATH_NOT_FOUND || Error == ERROR_NO_MORE_FILES;
+    }
 
     do
     {
@@ -1670,6 +1673,9 @@ DeletePublishedInfs(
             DeleteFileW(Published);
         }
     } while (FindNextFileW(hFind, &FindData));
+
+    if (Error == ERROR_SUCCESS && GetLastError() != ERROR_NO_MORE_FILES)
+        Error = GetLastError();
 
     FindClose(hFind);
     SetLastError(Error);

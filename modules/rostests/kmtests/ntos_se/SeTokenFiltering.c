@@ -263,6 +263,7 @@ OwnerRights(VOID)
     PSID AceSids[RTL_NUMBER_OF(Tests)];
     ULONG_PTR GroupsBuffer[(FIELD_OFFSET(TOKEN_GROUPS, Groups) + 2 * sizeof(SID_AND_ATTRIBUTES)) / sizeof(ULONG_PTR) + 1];
     PTOKEN_GROUPS RestrictedGroups = (PTOKEN_GROUPS)GroupsBuffer;
+    PSID_AND_ATTRIBUTES RestrictedSids;
     PTOKEN_USER User = NULL;
     SECURITY_DESCRIPTOR Sd;
     ACCESS_MASK GrantedAccess;
@@ -281,10 +282,11 @@ OwnerRights(VOID)
         goto done;
     }
 
-    RestrictedGroups->Groups[0].Attributes = 0;
-    RestrictedGroups->Groups[0].Sid = SeExports->SeDialupSid;
-    RestrictedGroups->Groups[1].Attributes = 0;
-    RestrictedGroups->Groups[1].Sid = User->User.Sid;
+    RestrictedSids = RestrictedGroups->Groups;
+    RestrictedSids[0].Attributes = 0;
+    RestrictedSids[0].Sid = SeExports->SeDialupSid;
+    RestrictedSids[1].Attributes = 0;
+    RestrictedSids[1].Sid = User->User.Sid;
 
     for (j = 1; j < RTL_NUMBER_OF(Tokens); j++)
     {

@@ -14,10 +14,12 @@
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
+#include <lm.h>
 #include <strsafe.h>
 #include <drvpkglock.h>
 
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
+#define SP_COPY_NOOVERWRITE 0x0000008
 
 BOOL WINAPI SetupCopyOEMInfW(PCWSTR SourceInfFileName, PCWSTR OEMSourceMediaLocation, DWORD OEMSourceMediaType, DWORD CopyStyle,
                              PWSTR DestinationInfFileName, DWORD DestinationInfFileNameSize, PDWORD RequiredSize,
@@ -1328,6 +1330,95 @@ FindPublishedInf(PCWSTR InfPath, PWSTR Published)
     return Found;
 }
 
+static const char NoSectionInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package No Section Printer\"=TESTNOSEC,LiberNT_Package_No_Section\r\n"
+    "\r\n"
+    "[TESTNOSEC]\r\n"
+    "CopyFiles=@TESTNOSEC.DLL,@TESTNOSEC.GPD,TESTNOSEC_MISSING\r\n"
+    "DriverFile=TESTNOSEC.DLL\r\n"
+    "ConfigFile=TESTNOSEC.DLL\r\n"
+    "DataFile=TESTNOSEC.GPD\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTNOSEC.DLL=1\r\n"
+    "TESTNOSEC.GPD=1\r\n";
+
+/* Windows 11 uploads and publishes a signed package whose CopyFiles names a section that no INF of it has */
+static VOID
+TestMissingCopyFilesSection(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnnosec.inf", L"TESTNOSEC.DLL", L"TESTNOSEC.GPD" };
+    static const PCWSTR DriverName = L"LiberNT Package No Section Printer";
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnnosec");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
+    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\%s", Dir, Names[1]);
+
+    if (CopyFileW(Path, File, FALSE) &&
+        WriteTestFile(Dir, Names[0], NoSectionInf, sizeof(NoSectionInf) - 1) &&
+        WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1))
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(lntprnnosec.inf) returned 0x%lx\n", hr);
+        if (hr == S_OK)
+        {
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S does not exist\n", StoreInf);
+            ok(FindPublishedInf(InfPath, Path), "lntprnnosec.inf is not published\n");
+
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, DriverName, NULL, 0);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+            hKey = OpenDriverKey(DriverName);
+            ok(hKey == NULL, "Driver %S is registered\n", DriverName);
+            if (hKey)
+                RegCloseKey(hKey);
+            ok(!DriverFileExists(Names[1]), "%S was installed\n", Names[1]);
+
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", StoreInf, hr);
+            ok(GetFileAttributesW(StoreInf) == INVALID_FILE_ATTRIBUTES, "%S still exists\n", StoreInf);
+            ok(!FindPublishedInf(InfPath, Path), "%S is still published\n", Path);
+        }
+    }
+    else
+    {
+        skip("Failed to create the package lntprnnosec.inf (%lu)\n", GetLastError());
+    }
+
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 /* The package of the test environment and the one of the other environment are staged from the same INF */
 static VOID
 TestSharedInf(PCWSTR InfPath, PCWSTR StoreInf)
@@ -1986,6 +2077,333 @@ TestConcurrentInstall(PCWSTR InfPath, PCWSTR StoreInf)
     ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
 }
 
+#define OEM_RACE_ROUNDS 200
+
+typedef struct _OEM_RACE_TEST
+{
+    PCWSTR InfPath;
+    CRITICAL_SECTION NameLock;
+    WCHAR Name[32];
+    LONG Done;
+    LONG Copied;
+    LONG CopyFailed;
+    LONG Uninstalled;
+} OEM_RACE_TEST, *POEM_RACE_TEST;
+
+static DWORD WINAPI
+OemRaceCopyThread(PVOID Parameter)
+{
+    POEM_RACE_TEST Test = Parameter;
+    DWORD Start = GetTickCount();
+    WCHAR Published[MAX_PATH];
+    PWSTR Component;
+    UINT i;
+
+    for (i = 0; i < OEM_RACE_ROUNDS && GetTickCount() - Start < 4 * RACE_TIME; i++)
+    {
+        if (!SetupCopyOEMInfW(Test->InfPath, NULL, 0, 0, Published, ARRAYSIZE(Published), NULL, &Component))
+        {
+            Test->CopyFailed++;
+            continue;
+        }
+        Test->Copied++;
+        EnterCriticalSection(&Test->NameLock);
+        StringCchCopyW(Test->Name, ARRAYSIZE(Test->Name), Component);
+        LeaveCriticalSection(&Test->NameLock);
+    }
+    InterlockedExchange(&Test->Done, 1);
+    return 0;
+}
+
+static DWORD WINAPI
+OemRaceUninstallThread(PVOID Parameter)
+{
+    POEM_RACE_TEST Test = Parameter;
+    WCHAR Name[32];
+
+    while (!Test->Done)
+    {
+        EnterCriticalSection(&Test->NameLock);
+        StringCchCopyW(Name, ARRAYSIZE(Name), Test->Name);
+        LeaveCriticalSection(&Test->NameLock);
+        if (Name[0] && SetupUninstallOEMInfW(Name, 0, NULL))
+            Test->Uninstalled++;
+        else
+            Sleep(1);
+    }
+    return 0;
+}
+
+static BOOL
+IsInfRecorded(PCWSTR Name)
+{
+    WCHAR Path[MAX_PATH];
+    HKEY hKey;
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"SYSTEM\\DriverDatabase\\DriverInfFiles\\%s", Name);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
+        return FALSE;
+    RegCloseKey(hKey);
+    return TRUE;
+}
+
+/* Whoever holds the package lock sees a package that is published, staged and recorded, or none of the three */
+static VOID
+TestOemInfRace(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnrace.inf", L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Marker[] = "; lntprnrace\r\n";
+    static char Inf[sizeof(Marker) + sizeof(PlainInf)];
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], Pattern[MAX_PATH], Path[MAX_PATH], Published[MAX_PATH], Name[32];
+    static OEM_RACE_TEST Test;
+    HANDLE Namespace, Lock, Threads[2], hFind;
+    UINT i, Checks = 0, Torn = 0;
+    BOOL Exists, Stored, Recorded;
+    WIN32_FIND_DATAW Find;
+    DWORD Start;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnrace");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    GetWindowsDirectoryW(Pattern, ARRAYSIZE(Pattern));
+    StringCchCatW(Pattern, ARRAYSIZE(Pattern), L"\\System32\\DriverStore\\FileRepository\\lntprnrace.inf_*");
+
+    memcpy(Inf, Marker, sizeof(Marker) - 1);
+    memcpy(Inf + sizeof(Marker) - 1, PlainInf, sizeof(PlainInf) - 1);
+    if (!WriteTestFile(Dir, Names[0], Inf, sizeof(Marker) - 1 + sizeof(PlainInf) - 1) ||
+        !WriteTestFile(Dir, Names[1], Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnrace.inf (%lu)\n", GetLastError());
+        goto Cleanup;
+    }
+
+    Test.InfPath = InfPath;
+    InitializeCriticalSection(&Test.NameLock);
+    Threads[0] = CreateThread(NULL, 0, OemRaceCopyThread, &Test, 0, NULL);
+    Threads[1] = CreateThread(NULL, 0, OemRaceUninstallThread, &Test, 0, NULL);
+    ok(Threads[0] != NULL && Threads[1] != NULL, "CreateThread failed with %lu\n", GetLastError());
+    if (!Threads[0])
+        InterlockedExchange(&Test.Done, 1);
+
+    Start = GetTickCount();
+    while (!Test.Done && GetTickCount() - Start < 60000)
+    {
+        if (!AcquirePackageLock(&Namespace, &Lock))
+        {
+            skip("Cannot take the package lock (%lu)\n", GetLastError());
+            break;
+        }
+        Exists = FindPublishedInf(InfPath, Published);
+        hFind = FindFirstFileW(Pattern, &Find);
+        Stored = hFind != INVALID_HANDLE_VALUE;
+        if (Stored)
+            FindClose(hFind);
+        EnterCriticalSection(&Test.NameLock);
+        StringCchCopyW(Name, ARRAYSIZE(Name), Test.Name);
+        LeaveCriticalSection(&Test.NameLock);
+        Recorded = Exists ? IsInfRecorded(wcsrchr(Published, L'\\') + 1) : (Name[0] && IsInfRecorded(Name));
+        ReleasePackageLock(Namespace, Lock);
+
+        Checks++;
+        if (Stored != Exists || Recorded != Exists)
+        {
+            if (!Torn)
+                trace("Check %u: published %d, staged %d, recorded %d\n", Checks, Exists, Stored, Recorded);
+            Torn++;
+        }
+        Sleep(1);
+    }
+
+    for (i = 0; i < ARRAYSIZE(Threads); i++)
+    {
+        if (Threads[i])
+        {
+            ok(WaitForSingleObject(Threads[i], 60000) == WAIT_OBJECT_0, "Thread %u did not finish\n", i);
+            CloseHandle(Threads[i]);
+        }
+    }
+    DeleteCriticalSection(&Test.NameLock);
+
+    trace("%ld copied, %ld copies failed, %ld uninstalled, %u checks\n", Test.Copied, Test.CopyFailed, Test.Uninstalled, Checks);
+    ok(Test.Copied > 0, "SetupCopyOEMInfW never succeeded\n");
+    ok(Checks > 0, "The package was never looked at under the package lock\n");
+    ok(Torn == 0, "%u of %u looks under the package lock found a package that was only partly there\n", Torn, Checks);
+
+    Exists = FindPublishedInf(InfPath, Published);
+    hFind = FindFirstFileW(Pattern, &Find);
+    Stored = hFind != INVALID_HANDLE_VALUE;
+    if (Stored)
+        FindClose(hFind);
+    ok(Stored == Exists, "After the race the package is %s but %s\n", Exists ? "published" : "not published", Stored ? "staged" : "not staged");
+    if (Exists)
+    {
+        ok(IsInfRecorded(wcsrchr(Published, L'\\') + 1), "%S is published but not recorded\n", Published);
+        ok(SetupUninstallOEMInfW(wcsrchr(Published, L'\\') + 1, 0, NULL), "SetupUninstallOEMInfW failed with %lu\n", GetLastError());
+    }
+    ok(!Test.Name[0] || !IsInfRecorded(Test.Name), "%S is recorded without its INF\n", Test.Name);
+    hFind = FindFirstFileW(Pattern, &Find);
+    ok(hFind == INVALID_HANDLE_VALUE, "%S is left in the store\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+    if (hFind != INVALID_HANDLE_VALUE)
+        FindClose(hFind);
+
+Cleanup:
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
+#define STANDARD_USER L"LntPkgTest"
+#define STANDARD_PASSWORD L"Lnt!Pkg#2026q"
+
+typedef struct _OEM_INF_RESULT
+{
+    BOOL Result;
+    DWORD Error;
+    DWORD Required;
+    WCHAR Published[MAX_PATH];
+    PWSTR Component;
+} OEM_INF_RESULT, *POEM_INF_RESULT;
+
+static VOID
+CopyOemInf(PCWSTR InfPath, DWORD Style, POEM_INF_RESULT Out)
+{
+    Out->Required = 0xdeadbeef;
+    Out->Component = NULL;
+    StringCchCopyW(Out->Published, ARRAYSIZE(Out->Published), L"untouched");
+    SetLastError(0xdeadbeef);
+    Out->Result = SetupCopyOEMInfW(InfPath, NULL, 0, Style, Out->Published, ARRAYSIZE(Out->Published), &Out->Required, &Out->Component);
+    Out->Error = GetLastError();
+}
+
+/* Windows 11 22621 tells a standard user about a published INF and refuses with ERROR_ACCESS_DENIED to publish a new one */
+static VOID
+TestStandardUserOemInf(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnstd.inf", L"lntprnstdnew.inf", L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Marker[] = "; lntprnstd\r\n", NewMarker[] = "; lntprnstd new\r\n";
+    static char Inf[sizeof(NewMarker) + sizeof(PlainInf)];
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], NewInfPath[MAX_PATH], Path[MAX_PATH], Pattern[MAX_PATH];
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    OEM_INF_RESULT Admin, NoOverwrite, Again, New;
+    USER_INFO_1 UserInfo = { 0 };
+    WIN32_FIND_DATAW Find;
+    HANDLE hToken = NULL, hFind;
+    NET_API_STATUS Status;
+    BOOL Created, Readable = FALSE;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnstd");
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;OICI;GA;;;WD)", SDDL_REVISION_1, &Security.lpSecurityDescriptor, NULL))
+    {
+        CreateDirectoryW(Dir, &Security);
+        LocalFree(Security.lpSecurityDescriptor);
+    }
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    StringCchPrintfW(NewInfPath, ARRAYSIZE(NewInfPath), L"%s\\%s", Dir, Names[1]);
+    GetWindowsDirectoryW(Pattern, ARRAYSIZE(Pattern));
+    StringCchCatW(Pattern, ARRAYSIZE(Pattern), L"\\System32\\DriverStore\\FileRepository\\lntprnstdnew.inf_*");
+
+    memcpy(Inf, Marker, sizeof(Marker) - 1);
+    memcpy(Inf + sizeof(Marker) - 1, PlainInf, sizeof(PlainInf) - 1);
+    Created = WriteTestFile(Dir, Names[0], Inf, sizeof(Marker) - 1 + sizeof(PlainInf) - 1);
+    memcpy(Inf, NewMarker, sizeof(NewMarker) - 1);
+    memcpy(Inf + sizeof(NewMarker) - 1, PlainInf, sizeof(PlainInf) - 1);
+    if (!Created ||
+        !WriteTestFile(Dir, Names[1], Inf, sizeof(NewMarker) - 1 + sizeof(PlainInf) - 1) ||
+        !WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Dir, Names[3], Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnstd.inf (%lu)\n", GetLastError());
+        goto Cleanup;
+    }
+
+    CopyOemInf(InfPath, 0, &Admin);
+    if (!Admin.Result)
+    {
+        skip("lntprnstd.inf cannot be published (%lu)\n", Admin.Error);
+        goto Cleanup;
+    }
+
+    NetUserDel(NULL, STANDARD_USER);
+    UserInfo.usri1_name = STANDARD_USER;
+    UserInfo.usri1_password = STANDARD_PASSWORD;
+    UserInfo.usri1_priv = USER_PRIV_USER;
+    UserInfo.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD;
+    Status = NetUserAdd(NULL, 1, (PBYTE)&UserInfo, NULL);
+    if (Status != NERR_Success ||
+        !LogonUserW(STANDARD_USER, L".", STANDARD_PASSWORD, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken))
+    {
+        skip("No standard user to call SetupCopyOEMInfW as (NetUserAdd %lu, LogonUserW %lu)\n", Status, GetLastError());
+    }
+    else if (!ImpersonateLoggedOnUser(hToken))
+    {
+        skip("ImpersonateLoggedOnUser failed with %lu\n", GetLastError());
+    }
+    else
+    {
+        Readable = GetFileAttributesW(InfPath) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(Admin.Published) != INVALID_FILE_ATTRIBUTES;
+        if (Readable)
+        {
+            CopyOemInf(InfPath, SP_COPY_NOOVERWRITE, &NoOverwrite);
+            CopyOemInf(InfPath, 0, &Again);
+            CopyOemInf(NewInfPath, 0, &New);
+        }
+        RevertToSelf();
+
+        if (!Readable)
+        {
+            skip("The standard user cannot read %S or %S\n", InfPath, Admin.Published);
+        }
+        else
+        {
+            ok(!NoOverwrite.Result && NoOverwrite.Error == ERROR_FILE_EXISTS,
+               "SP_COPY_NOOVERWRITE returned %d with error %lu for a published INF\n", NoOverwrite.Result, NoOverwrite.Error);
+            ok(!_wcsicmp(NoOverwrite.Published, Admin.Published) && NoOverwrite.Required == wcslen(Admin.Published) + 1,
+               "SP_COPY_NOOVERWRITE returned %S and size %lu\n", NoOverwrite.Published, NoOverwrite.Required);
+            ok(NoOverwrite.Component && !_wcsicmp(NoOverwrite.Component, Admin.Component),
+               "SP_COPY_NOOVERWRITE returned the component %S\n", NoOverwrite.Component ? NoOverwrite.Component : L"(null)");
+
+            ok(Again.Result && Again.Error == ERROR_SUCCESS, "A published INF returned %d with error %lu\n", Again.Result, Again.Error);
+            ok(!_wcsicmp(Again.Published, Admin.Published) && Again.Required == wcslen(Admin.Published) + 1,
+               "A published INF returned %S and size %lu\n", Again.Published, Again.Required);
+            ok(Again.Component && !_wcsicmp(Again.Component, Admin.Component),
+               "A published INF returned the component %S\n", Again.Component ? Again.Component : L"(null)");
+
+            ok(!New.Result && New.Error == ERROR_ACCESS_DENIED, "A new INF returned %d with error %lu\n", New.Result, New.Error);
+            ok(!wcscmp(New.Published, L"untouched") && New.Required == 0xdeadbeef && !New.Component,
+               "A new INF returned %S and size %lu\n", New.Published, New.Required);
+            ok(!FindPublishedInf(NewInfPath, Path), "The standard user published %S\n", Path);
+            hFind = FindFirstFileW(Pattern, &Find);
+            ok(hFind == INVALID_HANDLE_VALUE, "The standard user staged %S\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+            if (hFind != INVALID_HANDLE_VALUE)
+                FindClose(hFind);
+        }
+    }
+
+    if (hToken)
+        CloseHandle(hToken);
+    NetUserDel(NULL, STANDARD_USER);
+    if (FindPublishedInf(NewInfPath, Path))
+        SetupUninstallOEMInfW(wcsrchr(Path, L'\\') + 1, 0, NULL);
+    ok(SetupUninstallOEMInfW(Admin.Component, 0, NULL), "SetupUninstallOEMInfW failed with %lu\n", GetLastError());
+
+Cleanup:
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 static VOID
 TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
 {
@@ -2301,6 +2719,9 @@ START_TEST(DriverPackage)
     TestIncompleteUpdate();
     TestJunctionPackage();
     TestSetupLock();
+    TestOemInfRace();
+    TestStandardUserOemInf();
+    TestMissingCopyFilesSection();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

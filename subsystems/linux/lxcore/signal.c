@@ -961,7 +961,7 @@ LxSignalTakeAction(
     if (Info != NULL)
         *Info = Process->PendingInfo[Signal - 1];
     if ((Action->Flags & LX_SA_RESETHAND) && (Action->Handler > LX_SIG_IGN))
-        RtlZeroMemory(&Process->SigAction[Signal - 1], sizeof(LX_SIGACTION));
+        Process->SigAction[Signal - 1].Handler = LX_SIG_DFL;
     ExReleaseFastMutex(&Process->Lock);
 }
 
@@ -1261,7 +1261,8 @@ LxSignalQueue(
     Result = LxCopyFromUser(&Info, InfoPointer, sizeof(Info));
     if (Result != 0)
         return Result;
-    if (((Info.Code >= 0) || (Info.Code == LX_SI_TKILL)) && (Tgid != LxPidNr(Call->Process, Call->Process)))
+    if (((Info.Code >= 0) || (Info.Code == LX_SI_TKILL)) &&
+        (Tgid != ((Tid != 0) ? LxPidNr(Call->Process, Call->Process) : LxTidNr(Call->Process, Call->Thread))))
         return -LX_EPERM;
     Info.Signo = Signal;
     if (LxSignalInfoHasUid(Signal, &Info))
@@ -1280,8 +1281,9 @@ LxSignalQueue(
     else
     {
         Target = LxProcessLookupNr(Call->Process, Tgid);
-        if (Target == NULL)
+        if ((Target == NULL) && (LxThreadLookupNr(Call->Process, Tgid, &Target) == NULL))
             return -LX_ESRCH;
+        ASSERT(Target != NULL);
     }
 
     Result = LxSignalPermitted(Call->Process, Target, Signal);
@@ -1316,15 +1318,16 @@ LX_SYSCALL(LxSysSigaltstack)
             return Result;
         if (OnStack)
             return -LX_EPERM;
-        if (New.Flags & LX_SS_DISABLE)
+        /* TODO: SS_AUTODISARM is rejected as on WSL1; Linux 4.7+ accepts it and disarms the stack on delivery. */
+        if ((New.Flags != 0) && (New.Flags != LX_SS_ONSTACK) && (New.Flags != LX_SS_DISABLE))
+            return -LX_EINVAL;
+        if (New.Flags == LX_SS_DISABLE)
         {
             RtlZeroMemory(&Thread->AltStack, sizeof(Thread->AltStack));
             Thread->AltStack.Flags = LX_SS_DISABLE;
         }
         else
         {
-            if (New.Flags & ~LX_SS_ONSTACK)
-                return -LX_EINVAL;
             if (New.Size < LX_MINSIGSTKSZ)
                 return -LX_ENOMEM;
             Thread->AltStack.Sp = New.Sp;

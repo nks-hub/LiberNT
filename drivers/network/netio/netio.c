@@ -1141,6 +1141,9 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
 {
     NTSTATUS status;
     PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
+    PFILE_OBJECT AddressFile;
+    HANDLE AddressHandle;
+    KIRQL OldIrql;
 
     PTRANSPORT_ADDRESS ta = TdiTransportAddressFromSocketAddress(LocalAddress);
 
@@ -1158,17 +1161,38 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
         goto err_out;
     }
 
-    status = TdiOpenAddressFile(&Socket->TdiName,
-                                ta, AFD_SHARE_REUSE, &Socket->LocalAddressHandle, &Socket->LocalAddressFile);
+    /* A failed open sets the handle to INVALID_HANDLE_VALUE, which must not reach the socket */
+    status = TdiOpenAddressFile(&Socket->TdiName, ta, AFD_SHARE_REUSE, &AddressHandle, &AddressFile);
 
     ExFreePoolWithTag(ta, TAG_NETIO);
 
-    if (NT_SUCCESS(status) && Socket->type == SOCK_DGRAM)
+    if (!NT_SUCCESS(status))
+        goto err_out;
+
+    Socket->LocalAddressFile = AddressFile;
+    Socket->LocalAddressHandle = AddressHandle;
+
+    if (Socket->type == SOCK_DGRAM)
     {
         if (Socket->PktInfo)
-            status = NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, TRUE);
+            status = NetioSetAddressOption(AddressFile, AO_OPTION_IP_PKTINFO, TRUE);
         if (NT_SUCCESS(status) && Socket->ReceiveEvents)
             status = NetioStartReceives(Socket);
+
+        if (!NT_SUCCESS(status))
+        {
+            /* Receives can have been started by a client that enabled the event meanwhile */
+            NetioStopReceives(Socket);
+            KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+            ASSERT(!Socket->ReceiveStarted);
+            Socket->ReceiveClosing = FALSE;
+            KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+            Socket->LocalAddressFile = NULL;
+            Socket->LocalAddressHandle = NULL;
+            ObDereferenceObject(AddressFile);
+            ZwClose(AddressHandle);
+        }
     }
 
 err_out:

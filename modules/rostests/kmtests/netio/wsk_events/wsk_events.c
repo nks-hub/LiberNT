@@ -3,7 +3,7 @@
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
  *              requests made at DISPATCH_LEVEL, repeated registration, enabling
- *              the event from two threads at once
+ *              the event from two threads at once, binding again after a failed bind
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -93,13 +93,36 @@ WaitIrp(
 }
 
 static
-PWSK_SOCKET
-OpenSocket(
-    _In_ PWSK_PROVIDER_NPI Provider,
+NTSTATUS
+BindSocket(
+    _In_ PWSK_SOCKET Socket,
+    _In_ ULONG HostAddress,
     _In_ USHORT Port)
 {
-    PWSK_SOCKET Socket = NULL;
     SOCKADDR_IN Address;
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    RtlZeroMemory(&Address, sizeof(Address));
+    Address.sin_family = AF_INET;
+    Address.sin_port = RtlUshortByteSwap(Port);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(HostAddress);
+    Irp = NewIrp(&Event);
+    if (Irp == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskBind(Socket, (PSOCKADDR)&Address, 0, Irp);
+    Status = WaitIrp(Irp, &Event, Status);
+    IoFreeIrp(Irp);
+    return Status;
+}
+
+static
+PWSK_SOCKET
+CreateSocket(
+    _In_ PWSK_PROVIDER_NPI Provider)
+{
+    PWSK_SOCKET Socket = NULL;
     KEVENT Event;
     NTSTATUS Status;
     PIRP Irp;
@@ -115,21 +138,23 @@ OpenSocket(
     if (NT_SUCCESS(Status))
         Socket = (PWSK_SOCKET)Irp->IoStatus.Information;
     IoFreeIrp(Irp);
+    return Socket;
+}
+
+static
+PWSK_SOCKET
+OpenSocket(
+    _In_ PWSK_PROVIDER_NPI Provider,
+    _In_ USHORT Port)
+{
+    PWSK_SOCKET Socket = CreateSocket(Provider);
+    NTSTATUS Status;
+
     if (Socket == NULL)
         return NULL;
 
-    RtlZeroMemory(&Address, sizeof(Address));
-    Address.sin_family = AF_INET;
-    Address.sin_port = RtlUshortByteSwap(Port);
-    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
-    Irp = NewIrp(&Event);
-    if (Irp != NULL)
-    {
-        Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskBind(Socket, (PSOCKADDR)&Address, 0, Irp);
-        Status = WaitIrp(Irp, &Event, Status);
-        ok_eq_hex(Status, STATUS_SUCCESS);
-        IoFreeIrp(Irp);
-    }
+    Status = BindSocket(Socket, 0x7f000001, Port);
+    ok_eq_hex(Status, STATUS_SUCCESS);
     return Socket;
 }
 
@@ -668,6 +693,63 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+VOID
+TestBindAfterFailedBind(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender = NULL;
+    NTSTATUS Status;
+    LONG Count;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Receiver = CreateSocket(&ProviderNpi);
+    if (Receiver == NULL)
+        goto release;
+
+    /* 192.0.2.1 is reserved for documentation and is not an address of this machine */
+    Status = BindSocket(Receiver, 0xc0000201, WSKEVENTS_PORT + 4);
+    ok(!NT_SUCCESS(Status), "Binding to an address that is not local returned 0x%lx\n", Status);
+    Status = BindSocket(Receiver, 0x7f000001, WSKEVENTS_PORT + 4);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Sender == NULL)
+        goto close;
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = SendTo(Sender, "BIND0001", WSKEVENTS_PORT + 4);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(1, 2000);
+    ok_eq_long(Count, 1L);
+    ok(WasSeen("BIND0001"), "BIND0001 was not indicated on the socket bound at the second attempt\n");
+
+close:
+    CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+release:
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -716,5 +798,6 @@ TestMessageHandler(
     TestStaticCallbacks();
     TestRegisterAgain();
     TestConcurrentEnable();
+    TestBindAfterFailedBind();
     return STATUS_SUCCESS;
 }

@@ -419,6 +419,34 @@ TestDispatchLevel(
     }
 }
 
+static
+VOID
+TestLocalAddressAgain(
+    _In_ PWSK_SOCKET Socket,
+    _In_ USHORT Port)
+{
+    SOCKADDR_IN Address;
+    ULONG Round, Failures = 0;
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    for (Round = 0; Round < 4096; Round++)
+    {
+        RtlZeroMemory(&Address, sizeof(Address));
+        Irp = NewIrp(&Event);
+        if (Irp == NULL)
+            break;
+        Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskGetLocalAddress(
+            Socket, (PSOCKADDR)&Address, Irp);
+        Status = WaitIrp(Irp, &Event, Status);
+        if (!NT_SUCCESS(Status) || RtlUshortByteSwap(Address.sin_port) != Port)
+            Failures++;
+        IoFreeIrp(Irp);
+    }
+    ok(Round == 4096 && Failures == 0, "%lu address queries were made, %lu of them failed\n", Round, Failures);
+}
+
 /* Closes the socket */
 static
 VOID
@@ -610,6 +638,7 @@ TestRun(VOID)
        "DATA0004 was not indicated after enabling the event again: %s %s\n", Seen[3], Seen[4]);
 
     TestDispatchLevel(Receiver, WSKEVENTS_PORT);
+    TestLocalAddressAgain(Receiver, WSKEVENTS_PORT);
     Status = SendTo(Sender, "DATA0006", WSKEVENTS_PORT);
     ok_eq_hex(Status, STATUS_SUCCESS);
     Count = WaitReceives(6, 2000);

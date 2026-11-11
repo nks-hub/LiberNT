@@ -155,7 +155,7 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
         return NtAdjustGroupsToken( handle, reset, groups64, len, NULL, retlen );
 
     /* a zero length changes nothing and reports what the kernel refuses in the request */
-    status = NtAdjustGroupsToken( handle, reset, groups64, 0, &probe, &ret_size );
+    status = NtAdjustGroupsToken( handle, reset, groups64, 0, &probe, retlen ? &ret_size : NULL );
     if (status != STATUS_BUFFER_TOO_SMALL) return status;
 
     status = NtQueryInformationToken( handle, TokenGroups, NULL, 0, &size );

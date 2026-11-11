@@ -439,8 +439,7 @@ test_InterfaceState(CREATED *State)
     ok(IsInterfacePresent(&Class, Copy), "%S is not present after it was enabled again\n", Copy);
 
     hr = SwDeviceInterfaceSetState(Device, L"\\\\?\\SWD#" TEST_ENUMERATOR L"#NoSuchDevice#{4c6e7449-6e74-6572-6661-636553746174}", TRUE);
-    trace("Enabling an interface that was never registered returned 0x%08lx\n", hr);
-    ok(FAILED(hr), "An interface that was never registered was enabled\n");
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "Enabling an interface that was never registered returned 0x%08lx\n", hr);
 
     SwDeviceClose(Device);
     ok(WaitGone(State->InstanceId), "%S stayed after its handle closed\n", State->InstanceId);

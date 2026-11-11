@@ -826,7 +826,6 @@ SepDuplicateToken(
                  */
                 LastIndex = AccessToken->UserAndGroupCount - 1;
 
-                /* Windows 11 moves the last group into the place of the removed one */
                 AccessToken->UserAndGroups[GroupsIndex] = AccessToken->UserAndGroups[LastIndex];
                 AccessToken->UserAndGroupCount--;
                 if (AccessToken->DefaultOwnerIndex == GroupsIndex)

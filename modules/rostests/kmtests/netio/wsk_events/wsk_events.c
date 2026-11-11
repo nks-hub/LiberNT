@@ -4,7 +4,8 @@
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
  *              requests made at DISPATCH_LEVEL, repeated registration, enabling
  *              the event from two threads at once, binding again after a failed bind,
- *              IP_PKTINFO and malformed control data on a send, bursts of datagrams
+ *              IP_PKTINFO and malformed control data on a send, bursts of datagrams,
+ *              the limit on the datagrams a socket holds for its client
  * COPYRIGHT:  Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -29,6 +30,9 @@ static ULONG LastControlLength;
 
 #define BURST_COUNT 256
 #define BURST_SIZE 1400
+#define LIMIT_COUNT 4096
+/* netio holds at most this many bytes of received datagrams for a socket */
+#define RECEIVE_LIMIT (4 * 1024 * 1024)
 
 typedef enum _BURST_MODE
 {
@@ -41,7 +45,7 @@ typedef enum _BURST_MODE
 static volatile BURST_MODE BurstMode;
 static volatile LONG BurstErrors;
 static volatile LONG BurstHeldCount;
-static PWSK_DATAGRAM_INDICATION BurstHeld[BURST_COUNT];
+static PWSK_DATAGRAM_INDICATION BurstHeld[LIMIT_COUNT];
 
 static
 NTSTATUS
@@ -78,7 +82,7 @@ BurstReceive(
     if (BurstMode == BurstRetain)
     {
         Index = InterlockedIncrement(&BurstHeldCount) - 1;
-        if (Index < BURST_COUNT)
+        if (Index < LIMIT_COUNT)
         {
             BurstHeld[Index] = DataIndication;
             Status = STATUS_PENDING;
@@ -1103,6 +1107,141 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+NTSTATUS
+SendBurst(
+    _In_ PWSK_SOCKET Sender,
+    _In_ PWSK_BUF Buffer,
+    _Out_writes_bytes_(sizeof(ULONG)) PUCHAR Data,
+    _In_ USHORT Port,
+    _In_ ULONG Count)
+{
+    SOCKADDR_IN Address;
+    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG Sequence;
+    KEVENT Event;
+    PIRP Irp;
+
+    RtlZeroMemory(&Address, sizeof(Address));
+    Address.sin_family = AF_INET;
+    Address.sin_port = RtlUshortByteSwap(Port);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+
+    for (Sequence = 0; Sequence < Count && NT_SUCCESS(Status); Sequence++)
+    {
+        RtlCopyMemory(Data, &Sequence, sizeof(Sequence));
+        Irp = NewIrp(&Event);
+        if (Irp == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Sender->Dispatch)->WskSendTo(
+            Sender, Buffer, 0, (PSOCKADDR)&Address, 0, NULL, Irp);
+        Status = WaitIrp(Irp, &Event, Status);
+        IoFreeIrp(Irp);
+    }
+    return Status;
+}
+
+static
+VOID
+TestReceiveLimit(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    WSK_BUF Buffer;
+    NTSTATUS Status;
+    LONG Count, Errors, Held, Round;
+    PUCHAR Data;
+
+    Refuse = FALSE;
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Data = ExAllocatePoolZero(NonPagedPool, BURST_SIZE, 'tEsW');
+    Buffer.Mdl = Data ? IoAllocateMdl(Data, BURST_SIZE, FALSE, FALSE, NULL) : NULL;
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 7);
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Buffer.Mdl == NULL || Receiver == NULL || Sender == NULL)
+    {
+        ok(FALSE, "Out of memory or no sockets\n");
+        goto close;
+    }
+    MmBuildMdlForNonPagedPool(Buffer.Mdl);
+    Buffer.Offset = 0;
+    Buffer.Length = BURST_SIZE;
+
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    ReceiveCount = 0;
+    BurstErrors = 0;
+    BurstHeldCount = 0;
+    BurstMode = BurstRetain;
+    Status = SendBurst(Sender, &Buffer, Data, WSKEVENTS_PORT + 7, LIMIT_COUNT);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    Count = WaitReceives(LIMIT_COUNT, 2000);
+    Held = BurstHeldCount;
+    ok(Held == Count, "%ld datagrams were indicated, %ld of them were retained\n", Count, Held);
+    ok(Held >= BURST_COUNT && Held < LIMIT_COUNT, "%ld of %d datagrams were retained\n", Held, LIMIT_COUNT);
+    ok((ULONG)Held * BURST_SIZE <= RECEIVE_LIMIT, "The %ld retained datagrams hold more than %d bytes\n", Held, RECEIVE_LIMIT);
+    Errors = BurstErrors;
+    ok(Errors == 0, "%ld datagrams were indicated out of order or with a wrong length\n", Errors);
+
+    BurstMode = BurstOff;
+    ReceiveCount = 0;
+    while (Held-- > 0)
+    {
+        Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Receiver->Dispatch)->WskRelease(Receiver, BurstHeld[Held]);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+    }
+
+    /* The receive requests go back to tcpip from a worker thread, and it discards what arrives before that */
+    for (Round = 0; Round < 40 && ReceiveCount == 0; Round++)
+    {
+        Status = SendTo(Sender, "LIMT0001", WSKEVENTS_PORT + 7);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        WaitReceives(1, 50);
+    }
+    Count = ReceiveCount;
+    ok(Count != 0, "No datagram was indicated after the retained ones were released\n");
+
+    WaitReceives(MAXLONG, 200);
+    ReceiveCount = 0;
+    BurstErrors = 0;
+    BurstMode = BurstPlain;
+    Status = SendBurst(Sender, &Buffer, Data, WSKEVENTS_PORT + 7, BURST_COUNT);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(BURST_COUNT, 3000);
+    ok(Count == BURST_COUNT, "%ld of %d datagrams were indicated after the release\n", Count, BURST_COUNT);
+    Errors = BurstErrors;
+    ok(Errors == 0, "%ld datagrams were indicated out of order or with a wrong length after the release\n", Errors);
+
+close:
+    BurstMode = BurstOff;
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    if (Buffer.Mdl != NULL)
+        IoFreeMdl(Buffer.Mdl);
+    if (Data != NULL)
+        ExFreePoolWithTag(Data, 'tEsW');
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -1155,5 +1294,6 @@ TestMessageHandler(
     TestBindAfterFailedBind();
     TestSendControl();
     TestBurst();
+    TestReceiveLimit();
     return STATUS_SUCCESS;
 }

@@ -537,6 +537,14 @@ ScmCreateServiceSidToken(
     PTOKEN_STATISTICS pStatistics = NULL;
     PSID pServiceSid = NULL;
     ULONG ulSidLength = 0;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    union
+    {
+        SID Sid;
+        BYTE Buffer[SECURITY_MAX_SID_SIZE];
+    } LogonSid;
+    LUID LogonId;
+    BOOL bHasLogonSid = FALSE;
     BOOLEAN bWasEnabled;
     NTSTATUS Status;
     DWORD i;
@@ -569,17 +577,37 @@ ScmCreateServiceSidToken(
     }
 
     pNewGroups = HeapAlloc(GetProcessHeap(), 0,
-                           FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 1]));
+                           FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 2]));
     if (pNewGroups == NULL)
     {
         Status = STATUS_NO_MEMORY;
         goto done;
     }
-    pNewGroups->GroupCount = pGroups->GroupCount + 1;
     for (i = 0; i < pGroups->GroupCount; i++)
+    {
         pNewGroups->Groups[i] = pGroups->Groups[i];
+        if ((pGroups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID)
+            bHasLogonSid = TRUE;
+    }
     pNewGroups->Groups[i].Sid = pServiceSid;
     pNewGroups->Groups[i].Attributes = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_OWNER;
+    i++;
+
+    /* The token of the SCM, the base of a LocalSystem service, comes from no logon and has no logon SID */
+    if (!bHasLogonSid)
+    {
+        Status = NtAllocateLocallyUniqueId(&LogonId);
+        if (!NT_SUCCESS(Status))
+            goto done;
+        RtlInitializeSid(&LogonSid.Sid, &NtAuthority, SECURITY_LOGON_IDS_RID_COUNT);
+        *RtlSubAuthoritySid(&LogonSid.Sid, 0) = SECURITY_LOGON_IDS_RID;
+        *RtlSubAuthoritySid(&LogonSid.Sid, 1) = (ULONG)LogonId.HighPart;
+        *RtlSubAuthoritySid(&LogonSid.Sid, 2) = LogonId.LowPart;
+        pNewGroups->Groups[i].Sid = &LogonSid.Sid;
+        pNewGroups->Groups[i].Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_LOGON_ID;
+        i++;
+    }
+    pNewGroups->GroupCount = i;
 
     InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
     ObjectAttributes.SecurityQualityOfService = &Qos;
@@ -1943,15 +1971,21 @@ ScmCreateServiceDatabase(VOID)
 VOID
 ScmShutdownServiceDatabase(VOID)
 {
+    HANDLE hWorker;
+
     DPRINT("ScmShutdownServiceDatabase() called\n");
 
-    if (ScmDelayedAutoStartWorker != NULL)
+    EnterCriticalSection(&ControlServiceCriticalSection);
+    hWorker = ScmDelayedAutoStartWorker;
+    ScmDelayedAutoStartWorker = NULL;
+    LeaveCriticalSection(&ControlServiceCriticalSection);
+
+    if (hWorker != NULL)
     {
         SetEvent(ScmDelayedAutoStartStop);
-        WaitForSingleObject(ScmDelayedAutoStartWorker, INFINITE);
-        CloseHandle(ScmDelayedAutoStartWorker);
+        WaitForSingleObject(hWorker, INFINITE);
+        CloseHandle(hWorker);
         CloseHandle(ScmDelayedAutoStartStop);
-        ScmDelayedAutoStartWorker = NULL;
         ScmDelayedAutoStartStop = NULL;
     }
 
@@ -2953,7 +2987,6 @@ ScmAutoStartServices(VOID)
     HKEY hSafeBootKey = NULL;
     PSERVICE *Delayed;
     ULONG DelayedCount = 0;
-    HANDLE hThread;
     ULONG i;
 
     /*
@@ -2975,27 +3008,8 @@ ScmAutoStartServices(VOID)
     for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
         i++;
     Delayed = HeapAlloc(GetProcessHeap(), 0, i * sizeof(*Delayed));
-    hThread = NULL;
-    if (Delayed != NULL)
-    {
-        ScmDelayedAutoStartStop = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (ScmDelayedAutoStartStop != NULL)
-            hThread = CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, CREATE_SUSPENDED, NULL);
-    }
-    if (hThread == NULL)
-    {
+    if (Delayed == NULL)
         DPRINT1("Cannot delay the delayed automatic services, they start with the other ones\n");
-        if (ScmDelayedAutoStartStop != NULL)
-        {
-            CloseHandle(ScmDelayedAutoStartStop);
-            ScmDelayedAutoStartStop = NULL;
-        }
-        if (Delayed != NULL)
-        {
-            HeapFree(GetProcessHeap(), 0, Delayed);
-            Delayed = NULL;
-        }
-    }
 
     /* Acquire the service control critical section, to synchronize starts */
     EnterCriticalSection(&ControlServiceCriticalSection);
@@ -3118,16 +3132,42 @@ ScmAutoStartServices(VOID)
         ServiceEntry = ServiceEntry->Flink;
     }
 
+    if (Delayed != NULL)
+    {
+        Delayed[DelayedCount] = NULL;
+
+        /* The shutdown takes the worker under this critical section, so it either finds it here or has set ScmShutdown before */
+        if (DelayedCount != 0 && !ScmShutdown)
+        {
+            ScmDelayedAutoStartStop = CreateEventW(NULL, TRUE, FALSE, NULL);
+            if (ScmDelayedAutoStartStop != NULL)
+                ScmDelayedAutoStartWorker = CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, 0, NULL);
+        }
+
+        if (ScmDelayedAutoStartWorker == NULL)
+        {
+            if (ScmDelayedAutoStartStop != NULL)
+            {
+                CloseHandle(ScmDelayedAutoStartStop);
+                ScmDelayedAutoStartStop = NULL;
+            }
+
+            for (i = 0; i < DelayedCount && !ScmShutdown; i++)
+            {
+                DPRINT1("Cannot delay the start of %S\n", Delayed[i]->lpServiceName);
+                ScmLoadService(Delayed[i], 0, NULL);
+            }
+
+            ScmLockDatabaseExclusive();
+            for (i = 0; i < DelayedCount; i++)
+                ScmDereferenceService(Delayed[i]);
+            ScmUnlockDatabase();
+            HeapFree(GetProcessHeap(), 0, Delayed);
+        }
+    }
+
     /* Release the critical section */
     LeaveCriticalSection(&ControlServiceCriticalSection);
-
-    if (Delayed == NULL)
-        return;
-    Delayed[DelayedCount] = NULL;
-    if (DelayedCount == 0)
-        SetEvent(ScmDelayedAutoStartStop);
-    ResumeThread(hThread);
-    ScmDelayedAutoStartWorker = hThread;
 }
 
 

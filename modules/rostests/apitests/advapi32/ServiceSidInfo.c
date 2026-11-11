@@ -36,6 +36,42 @@ static BOOL token_has_service_sid(PTOKEN_GROUPS groups, PCWSTR name)
     return token_has_sid(groups, (PSID)sid);
 }
 
+static DWORD count_logon_sids(PTOKEN_GROUPS groups, PSID *sid)
+{
+    DWORD i, count = 0;
+
+    *sid = NULL;
+    for (i = 0; i < groups->GroupCount; i++)
+    {
+        if ((groups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID)
+        {
+            *sid = groups->Groups[i].Sid;
+            count++;
+        }
+    }
+    return count;
+}
+
+static PTOKEN_GROUPS query_process_groups(void)
+{
+    PTOKEN_GROUPS groups = NULL;
+    HANDLE token;
+    DWORD size = 0;
+
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    {
+        GetTokenInformation(token, TokenGroups, NULL, 0, &size);
+        groups = HeapAlloc(GetProcessHeap(), 0, size);
+        if (groups && !GetTokenInformation(token, TokenGroups, groups, size, &size))
+        {
+            HeapFree(GetProcessHeap(), 0, groups);
+            groups = NULL;
+        }
+        CloseHandle(token);
+    }
+    return groups;
+}
+
 static VOID WINAPI service_handler(DWORD ctrl)
 {
     UNREFERENCED_PARAMETER(ctrl);
@@ -46,10 +82,11 @@ static void WINAPI restricted_main(DWORD argc, LPWSTR *argv)
     static SID world = { SID_REVISION, 1, { SECURITY_WORLD_SID_AUTHORITY }, { SECURITY_WORLD_RID } };
     static SID write_restricted = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_WRITE_RESTRICTED_CODE_RID } };
     SERVICE_STATUS status = { SERVICE_WIN32_OWN_PROCESS, SERVICE_RUNNING };
-    PTOKEN_GROUPS groups = NULL;
+    PTOKEN_GROUPS groups = NULL, all_groups;
+    PSID logon_sid = NULL;
     WCHAR key_path[150];
     HANDLE token;
-    DWORD size = 0;
+    DWORD size = 0, count;
     LONG error;
     HKEY key;
 
@@ -73,14 +110,24 @@ static void WINAPI restricted_main(DWORD argc, LPWSTR *argv)
         CloseHandle(token);
     }
     service_ok(groups != NULL, "the restricted SIDs of the process token cannot be read: %lu\n", GetLastError());
+    all_groups = query_process_groups();
+    service_ok(all_groups != NULL, "the groups of the process token cannot be read: %lu\n", GetLastError());
+    if (all_groups)
+    {
+        count = count_logon_sids(all_groups, &logon_sid);
+        service_ok(count == 1, "the process token has %lu groups with SE_GROUP_LOGON_ID\n", count);
+    }
     if (groups)
     {
-        service_trace("the process token has %lu restricted SIDs\n", groups->GroupCount);
+        service_ok(groups->GroupCount == 4, "the process token has %lu restricted SIDs\n", groups->GroupCount);
         service_ok(token_has_service_sid(groups, argv[0]), "the restricted SIDs lack the service SID\n");
+        service_ok(logon_sid != NULL && token_has_sid(groups, logon_sid), "the restricted SIDs lack the logon SID\n");
         service_ok(token_has_sid(groups, &world), "the restricted SIDs lack Everyone\n");
         service_ok(token_has_sid(groups, &write_restricted), "the restricted SIDs lack S-1-5-33\n");
         HeapFree(GetProcessHeap(), 0, groups);
     }
+    if (all_groups)
+        HeapFree(GetProcessHeap(), 0, all_groups);
 
     StringCbPrintfW(key_path, sizeof(key_path), L"SOFTWARE\\%ls", argv[0]);
     error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_path, 0, KEY_READ, &key);
@@ -99,10 +146,10 @@ static void WINAPI restricted_main(DWORD argc, LPWSTR *argv)
 static void WINAPI service_main(DWORD argc, LPWSTR *argv)
 {
     SERVICE_STATUS status = { SERVICE_WIN32_SHARE_PROCESS, SERVICE_RUNNING };
-    PTOKEN_GROUPS groups = NULL;
+    PTOKEN_GROUPS groups;
+    PSID logon_sid;
     WCHAR peer[100];
-    HANDLE token;
-    DWORD size = 0;
+    DWORD count;
 
     UNREFERENCED_PARAMETER(argc);
 
@@ -112,20 +159,12 @@ static void WINAPI service_main(DWORD argc, LPWSTR *argv)
         return;
     SetServiceStatus(status_handle, &status);
 
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-    {
-        GetTokenInformation(token, TokenGroups, NULL, 0, &size);
-        groups = HeapAlloc(GetProcessHeap(), 0, size);
-        if (groups && !GetTokenInformation(token, TokenGroups, groups, size, &size))
-        {
-            HeapFree(GetProcessHeap(), 0, groups);
-            groups = NULL;
-        }
-        CloseHandle(token);
-    }
+    groups = query_process_groups();
     service_ok(groups != NULL, "the groups of the process token cannot be read: %lu\n", GetLastError());
     if (groups)
     {
+        count = count_logon_sids(groups, &logon_sid);
+        service_ok(count == 1, "the process token has %lu groups with SE_GROUP_LOGON_ID\n", count);
         StringCbPrintfW(peer, sizeof(peer), L"%lsPeer", argv[0]);
         service_ok(token_has_service_sid(groups, argv[0]), "the process token lacks the service SID of %S\n", argv[0]);
         service_ok(token_has_service_sid(groups, peer), "the process token lacks the service SID of %S, the stopped service of the same image\n", peer);

@@ -644,6 +644,67 @@ test_StopAfterDelete(PCSTR NameA, PCWSTR NameW, void *Param)
     CloseServiceHandle(Manager);
 }
 
+static volatile LONG GatedCalls;
+
+static VOID CALLBACK
+StatusRecordedGated(DWORD Notify, PVOID Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    trace("Gated status callback 0x%lx\n", Notify);
+    InterlockedOr(&StatusSeen, Notify);
+    if (InterlockedIncrement(&GatedCalls) == 1)
+        WaitForSingleObject(GateEvent, 30000);
+}
+
+/* A subscription gets the current state at once, and a delete made before that callback returned is not lost */
+static void
+test_DeleteDuringCallback(SC_HANDLE Manager)
+{
+    PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
+    SC_HANDLE Service;
+    DWORD Error, Start;
+
+    Service = CreateTestService(Manager);
+    ok(Service != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
+    if (!Service)
+        return;
+
+    GateEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    StatusSeen = 0;
+    GatedCalls = 0;
+    Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, StatusRecordedGated, NULL, &Subscription);
+    ok(Error == ERROR_SUCCESS, "Status subscription returned %lu\n", Error);
+    if (Error == ERROR_SUCCESS)
+    {
+        for (Start = GetTickCount(); !GatedCalls && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(GatedCalls == 1, "%ld callbacks for the state at the subscription, expected 1\n", GatedCalls);
+        ok(StatusSeen == SERVICE_NOTIFY_STOPPED, "The first callback reported 0x%lx, expected SERVICE_NOTIFY_STOPPED\n", StatusSeen);
+
+        ok(DeleteService(Service), "DeleteService failed (%lu)\n", GetLastError());
+        Sleep(200);
+        SetEvent(GateEvent);
+        for (Start = GetTickCount(); !(StatusSeen & SERVICE_NOTIFY_DELETE_PENDING) && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(StatusSeen & SERVICE_NOTIFY_DELETE_PENDING, "No callback for SERVICE_NOTIFY_DELETE_PENDING (0x%lx)\n", StatusSeen);
+        pUnsubscribe(Subscription);
+    }
+    else
+    {
+        DeleteService(Service);
+    }
+
+    CloseHandle(GateEvent);
+    CloseServiceHandle(Service);
+    for (Start = GetTickCount(); GetTickCount() - Start < 5000; Sleep(50))
+    {
+        Service = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        if (!Service)
+            break;
+        CloseServiceHandle(Service);
+    }
+}
+
 static volatile LONG DatabaseCalls, DatabaseSeen;
 
 static VOID CALLBACK
@@ -756,6 +817,7 @@ START_TEST(ServiceChangeNotify)
         test_SubscribeHandleClosed();
         test_runner(test_ChangeDuringCallback, NULL);
         test_runner(test_StopAfterDelete, NULL);
+        test_DeleteDuringCallback(Manager);
         test_DatabaseChangeDuringCallback(Manager);
     }
     else

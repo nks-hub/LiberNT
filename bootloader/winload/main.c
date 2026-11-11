@@ -406,6 +406,16 @@ OslMain(VOID)
                               OslParameters.KernelFile,
                               OSL_KERNEL_MODULE,
                               LoaderSystemCode);
+    /* Entries of systems installed before the SMP kernel became the default name files that updates have since removed */
+    if (!Kernel && _wcsicmp(OslParameters.KernelFile, L"ntkrnlmp.exe") == 0)
+    {
+        Kernel = OslLoadCoreImage(LoaderBlock,
+                                  &OsDevice,
+                                  Directory,
+                                  L"ntoskrnl.exe",
+                                  OSL_KERNEL_MODULE,
+                                  LoaderSystemCode);
+    }
     Hal = Kernel ? OslLoadCoreImage(LoaderBlock,
                                     &OsDevice,
                                     Directory,
@@ -413,6 +423,15 @@ OslMain(VOID)
                                     OSL_HAL_MODULE,
                                     LoaderHalCode)
                  : NULL;
+    if (Kernel && !Hal && _wcsicmp(OslParameters.HalFile, L"halmacpi.dll") == 0)
+    {
+        Hal = OslLoadCoreImage(LoaderBlock,
+                               &OsDevice,
+                               Directory,
+                               L"hal.dll",
+                               OSL_HAL_MODULE,
+                               LoaderHalCode);
+    }
     if (Hal && OslHasDebugPort(Options, "NET"))
         OslLoadNetworkDebugger(LoaderBlock, &OsDevice, Directory);
 

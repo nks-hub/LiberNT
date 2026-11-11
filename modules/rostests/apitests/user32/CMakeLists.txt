@@ -1,6 +1,7 @@
 add_subdirectory(makeimg)
 
 list(APPEND SOURCE
+    AltTabHook.c
     AttachThreadInput.c
     ../include/msgtrace.c
     CalculatePopupWindowPosition.c
@@ -30,6 +31,9 @@ list(APPEND SOURCE
     DM_REPOSITION.c
     Dpi.c
     DpiHostingBehavior.c
+    DpiAwareness.c
+    DpiScaling.c
+    DpiVirtualization.c
     DrawIconEx.c
     DrawText.c
     desktop.c

@@ -356,6 +356,70 @@ test_Interface(CREATED *State)
 }
 
 static void
+test_DevNodeProperty(CREATED *State)
+{
+    static const DEVPROPKEY Key = { { 0x4c6e7453, 0x7754, 0x4465, { 0x76, 0x69, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } }, 4 };
+    ULONG Value = 0x1234, Read, Size;
+    DEVPROPTYPE Type;
+    HSWDEVICE Device;
+    DEVINST DevInst;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = Create(L"Property", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+    Cr = CM_Locate_DevNodeW(&DevInst, State->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
+    ok(Cr == CR_SUCCESS, "CM_Locate_DevNodeW returned CR %lu\n", Cr);
+    if (Cr != CR_SUCCESS)
+        goto Done;
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_NULL, NULL, 0, 0);
+    ok(Cr == CR_SUCCESS, "Creating a property without a value returned CR %lu\n", Cr);
+    Type = DEVPROP_TYPE_EMPTY;
+    Read = 0;
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
+    ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_NULL && Size == 0,
+       "The new property without a value is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    Type = DEVPROP_TYPE_EMPTY;
+    Size = 0;
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, NULL, &Size, 0);
+    trace("The property without a value read without a buffer is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_UINT32, (const BYTE *)&Value, sizeof(Value), 0);
+    ok(Cr == CR_SUCCESS, "Setting a value returned CR %lu\n", Cr);
+    Type = DEVPROP_TYPE_EMPTY;
+    Read = 0;
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
+    ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_UINT32 && Size == sizeof(Read) && Read == Value,
+       "The value is CR %lu, type 0x%lx, size %lu, 0x%lx\n", Cr, Type, Size, Read);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_NULL, NULL, 0, 0);
+    ok(Cr == CR_SUCCESS, "Removing the value of a property returned CR %lu\n", Cr);
+    Type = DEVPROP_TYPE_EMPTY;
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
+    ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_NULL && Size == 0,
+       "The property that lost its value is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(Cr == CR_SUCCESS, "Deleting the property returned CR %lu\n", Cr);
+    Type = DEVPROP_TYPE_EMPTY;
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
+    trace("The deleted property is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    ok(Cr != CR_SUCCESS, "The deleted property is still there, type 0x%lx, size %lu\n", Type, Size);
+
+Done:
+    SwDeviceClose(Device);
+    WaitGone(State->InstanceId);
+}
+
+static void
 RunChild(void)
 {
     CREATED State;
@@ -411,6 +475,7 @@ START_TEST(SwDevice)
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);
     test_Interface(&State);
+    test_DevNodeProperty(&State);
     test_ProcessEnd();
     CloseHandle(State.Event);
 }

@@ -218,7 +218,11 @@ static LSTATUS query_property( HKEY root, const WCHAR *prefix, DEVPROPTYPE type,
         RegCloseKey( hkey );
     }
 
+#ifdef __REACTOS__
+    if (!err && !prop->buffer && *prop->size) err = ERROR_MORE_DATA;
+#else
     if (!err && !prop->buffer) err = ERROR_MORE_DATA;
+#endif
     if ((!err || err == ERROR_MORE_DATA) && prop->type) *prop->type = type;
     if (err == ERROR_FILE_NOT_FOUND) return ERROR_NOT_FOUND;
     return err;
@@ -2967,14 +2971,8 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
         case DEVPROP_TYPE_EMPTY:
             err = RegDeleteKeyW( dev_key, path );
             break;
-        case DEVPROP_TYPE_NULL:
-            if (!(err = RegOpenKeyExW( dev_key, path, 0, KEY_SET_VALUE, &prop_key )))
-            {
-                err = RegDeleteValueW( prop_key, NULL );
-                RegCloseKey( prop_key );
-            }
-            break;
         default:
+            if (type == DEVPROP_TYPE_NULL) size = 0;
             if (!(err = RegCreateKeyExW( dev_key, path, 0, NULL, 0, KEY_SET_VALUE, NULL, &prop_key, NULL )))
             {
                 err = RegSetValueExW( prop_key, NULL, 0, 0xffff0000 | (type & 0xffff), buffer, size );

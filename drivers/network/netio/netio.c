@@ -173,12 +173,18 @@ typedef struct _WSK_SOCKET_INTERNAL
     KEVENT SendsIdle;
 } WSK_SOCKET_INTERNAL, *PWSK_SOCKET_INTERNAL;
 
+typedef struct _NETIO_SEND_CONTROL
+{
+    DECLSPEC_ALIGN(8) UCHAR Data[32];
+} NETIO_SEND_CONTROL, *PNETIO_SEND_CONTROL;
+
 typedef struct _NETIO_CONTEXT
 {
     PIRP UserIrp;
     PWSK_SOCKET_INTERNAL socket;
     PTDI_CONNECTION_INFORMATION TargetConnectionInfo;
     PTDI_CONNECTION_INFORMATION PeerAddrRet;
+    NETIO_SEND_CONTROL SendControl;
 } NETIO_CONTEXT, *PNETIO_CONTEXT;
 
 static void
@@ -1213,6 +1219,46 @@ enum direction
 };
 
 static NTSTATUS
+NetioBuildSendControl(
+    _In_ ULONG ControlInfoLength,
+    _In_reads_bytes_opt_(ControlInfoLength) PCMSGHDR ControlInfo,
+    _Inout_ PTDI_CONNECTION_INFORMATION Target,
+    _Inout_ PNETIO_SEND_CONTROL Storage)
+{
+    ULONG Offset = 0;
+
+    if (ControlInfoLength != 0 && ControlInfo == NULL)
+        return STATUS_INVALID_PARAMETER;
+
+    while (ControlInfoLength - Offset >= sizeof(WSACMSGHDR))
+    {
+        PCMSGHDR Header = (PCMSGHDR)((PUCHAR)ControlInfo + Offset);
+
+        if (Header->cmsg_len < WSA_CMSG_LEN(0) || Header->cmsg_len > ControlInfoLength - Offset)
+            return STATUS_INVALID_PARAMETER;
+
+        if (Header->cmsg_level == IPPROTO_IP && Header->cmsg_type == IP_PKTINFO)
+        {
+            if (Header->cmsg_len < WSA_CMSG_LEN(sizeof(IN_PKTINFO)))
+                return STATUS_INVALID_PARAMETER;
+
+            ASSERT(TDI_CMSG_SPACE(sizeof(IN_PKTINFO)) <= sizeof(*Storage));
+            RtlZeroMemory(Storage, sizeof(*Storage));
+            TDI_INIT_CMSGHDR(Storage->Data, IPPROTO_IP, IP_PKTINFO, sizeof(IN_PKTINFO));
+            RtlCopyMemory(TDI_CMSG_DATA(Storage->Data), WSA_CMSG_DATA(Header), sizeof(IN_PKTINFO));
+            Target->Options = Storage->Data;
+            Target->OptionsLength = (LONG)TDI_CMSG_SPACE(sizeof(IN_PKTINFO));
+        }
+
+        if (WSA_CMSGHDR_ALIGN(Header->cmsg_len) >= ControlInfoLength - Offset)
+            break;
+        Offset += (ULONG)WSA_CMSGHDR_ALIGN(Header->cmsg_len);
+    }
+
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS
 NetioDeferSend(
     _In_ PWSK_SOCKET SocketParam,
     _In_opt_ PWSK_BUF Buffer,
@@ -1269,6 +1315,12 @@ WskSendTo(
     if (BufferData == NULL)
     {
         DPRINT1("Error mapping MDL\n");
+        goto err_out_free_nc_and_tci;
+    }
+
+    status = NetioBuildSendControl(ControlInfoLength, ControlInfo, TargetConnectionInfo, &NetioContext->SendControl);
+    if (!NT_SUCCESS(status))
+    {
         goto err_out_free_nc_and_tci;
     }
 
@@ -1858,6 +1910,7 @@ typedef struct _NETIO_SEND_BATCH
     LONG Pending;
     NTSTATUS Status;
     LONG_PTR Bytes;
+    NETIO_SEND_CONTROL SendControl;
 } NETIO_SEND_BATCH, *PNETIO_SEND_BATCH;
 
 typedef struct _NETIO_SEND_ITEM
@@ -1918,8 +1971,6 @@ WskSendMessages(
     NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(Flags);
-    UNREFERENCED_PARAMETER(ControlInfoLength);
-    UNREFERENCED_PARAMETER(ControlInfo);
 
     if (KeGetCurrentIrql() > PASSIVE_LEVEL)
         return NetioDeferSend(SocketParam, NULL, BufferList, Flags, RemoteAddress, ControlInfoLength, ControlInfo, Irp);
@@ -1943,6 +1994,13 @@ WskSendMessages(
     {
         ExFreePoolWithTag(Batch, TAG_NETIO);
         Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Fail;
+    }
+    Status = NetioBuildSendControl(ControlInfoLength, ControlInfo, Batch->Target, &Batch->SendControl);
+    if (!NT_SUCCESS(Status))
+    {
+        ExFreePoolWithTag(Batch->Target, TAG_AFD_TDI_CONNECTION_INFORMATION);
+        ExFreePoolWithTag(Batch, TAG_NETIO);
         goto Fail;
     }
     Batch->UserIrp = Irp;

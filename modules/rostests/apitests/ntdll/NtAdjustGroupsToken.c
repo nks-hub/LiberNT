@@ -237,6 +237,9 @@ AdjustWithPreviousState(VOID)
     PTOKEN_GROUPS Before, Previous = NULL;
     TOKEN_GROUPS Disable, Small;
     ULONG Target, Length, Expected, Needed;
+    UCHAR Room[FIELD_OFFSET(TOKEN_GROUPS, Groups[2]) + SECURITY_MAX_SID_SIZE];
+    PVOID ReadOnly = NULL;
+    SIZE_T PageSize = PAGE_SIZE;
 
     Token = DuplicateProcessToken();
     if (!Token)
@@ -261,6 +264,39 @@ AdjustWithPreviousState(VOID)
     Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, &Small, NULL);
     ok_hex(Status, STATUS_ACCESS_VIOLATION);
     CheckGroupsUnchanged(Token, Before);
+
+    Status = NtAllocateVirtualMemory(NtCurrentProcess(), &ReadOnly, 0, &PageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READONLY);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        /* On Windows 11 a length that cannot be written fails the call before the token is touched */
+        Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed, (PTOKEN_GROUPS)Room, (PULONG)ReadOnly);
+        ok_hex(Status, STATUS_ACCESS_VIOLATION);
+        CheckGroupsUnchanged(Token, Before);
+        Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed, (PTOKEN_GROUPS)Room, (PULONG)(ULONG_PTR)1);
+        ok_hex(Status, STATUS_ACCESS_VIOLATION);
+        CheckGroupsUnchanged(Token, Before);
+
+        /* A native caller is failed the same way for the previous state; a 32-bit caller on a 64-bit system gets the error after the adjustment */
+        Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed, (PTOKEN_GROUPS)ReadOnly, &Length);
+        ok_hex(Status, STATUS_ACCESS_VIOLATION);
+        if (PreviousStateLength(0, 0) != FIELD_OFFSET(TOKEN_GROUPS, Groups[0]))
+        {
+            PTOKEN_GROUPS After = QueryGroups(Token);
+
+            ok(After && !(After->Groups[Target].Attributes & SE_GROUP_ENABLED), "The group is still enabled after the failed 32-bit call\n");
+            if (After)
+                RtlFreeHeap(RtlGetProcessHeap(), 0, After);
+            Disable.Groups[0].Attributes = SE_GROUP_ENABLED;
+            Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, NULL, NULL);
+            ok_hex(Status, STATUS_SUCCESS);
+            Disable.Groups[0].Attributes = 0;
+        }
+        CheckGroupsUnchanged(Token, Before);
+
+        PageSize = 0;
+        NtFreeVirtualMemory(NtCurrentProcess(), &ReadOnly, &PageSize, MEM_RELEASE);
+    }
 
     Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Needed);
     if (!Previous)

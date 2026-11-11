@@ -153,6 +153,9 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     if (!prev)
         return NtAdjustGroupsToken( handle, reset, groups64, len, NULL, retlen );
 
+    /* as on Windows 11, a length that cannot be written fails the call before the token is touched */
+    if (retlen) *(volatile ULONG *)retlen = *(volatile ULONG *)retlen;
+
     /* as on Windows 11, the length counts for the 64-bit layout and a short buffer is told that size */
     if (!(prev64 = Wow64AllocateTemp( len ))) return STATUS_NO_MEMORY;
     status = NtAdjustGroupsToken( handle, reset, groups64, len, prev64, retlen ? &ret_size : NULL );

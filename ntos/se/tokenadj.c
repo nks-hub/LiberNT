@@ -724,7 +724,8 @@ NtAdjustGroupsToken(
             if (PreviousState != NULL)
             {
                 ProbeForWrite(PreviousState, BufferLength, sizeof(ULONG));
-                ProbeForWrite(ReturnLength, sizeof(*ReturnLength), sizeof(ULONG));
+                /* Windows 11 answers a misaligned length with an access violation, not with a misalignment */
+                ProbeForWrite(ReturnLength, sizeof(*ReturnLength), sizeof(UCHAR));
             }
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

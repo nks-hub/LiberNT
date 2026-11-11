@@ -282,6 +282,55 @@ test_ServiceNames(void)
     CloseServiceHandle(Manager);
 }
 
+static void
+test_ServiceNamesA(void)
+{
+    SERVICE_NOTIFYA Notify = { SERVICE_NOTIFY_STATUS_CHANGE };
+    SC_HANDLE Manager, Service;
+    DWORD Error, Start;
+
+    Manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!Manager)
+        return;
+    for (Start = GetTickCount(); GetTickCount() - Start < 5000; Sleep(50))
+    {
+        Service = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        if (!Service)
+            break;
+        CloseServiceHandle(Service);
+    }
+    Notify.pfnNotifyCallback = ManagerNotified;
+    ApcFired = FALSE;
+    Error = NotifyServiceStatusChangeA(Manager, SERVICE_NOTIFY_CREATED, &Notify);
+    ok(Error == ERROR_SUCCESS, "NotifyServiceStatusChangeA returned %lu\n", Error);
+    if (Error == ERROR_SUCCESS)
+    {
+        Service = CreateTestService(Manager);
+        ok(Service != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
+        for (Start = GetTickCount(); !ApcFired && GetTickCount() - Start < 10000; )
+            SleepEx(500, TRUE);
+        ok(ApcFired, "The notification did not come\n");
+        if (ApcFired)
+        {
+            ok(Notify.dwNotificationTriggered & SERVICE_NOTIFY_CREATED, "Triggered 0x%lx\n",
+               Notify.dwNotificationTriggered);
+            ok(Notify.pszServiceNames && !_stricmp(Notify.pszServiceNames, "/LntChangeNotifyTest"),
+               "Service names %s\n", Notify.pszServiceNames ? Notify.pszServiceNames : "(null)");
+            if (Notify.pszServiceNames)
+            {
+                ok(Notify.pszServiceNames[strlen(Notify.pszServiceNames) + 1] == 0, "The list has no second terminator\n");
+                LocalFree(Notify.pszServiceNames);
+            }
+        }
+        if (Service)
+        {
+            DeleteService(Service);
+            CloseServiceHandle(Service);
+        }
+    }
+    CloseServiceHandle(Manager);
+}
+
 static volatile LONG StatusApcs;
 
 static VOID CALLBACK
@@ -634,6 +683,7 @@ START_TEST(ServiceChangeNotify)
     else
         skip("SubscribeServiceChangeNotifications is missing\n");
     test_ServiceNames();
+    test_ServiceNamesA();
     test_ServiceStatus(Manager);
     test_Masks(Manager);
 

@@ -55,6 +55,7 @@ struct notify_data
     void (*done)( void *context, DWORD sequence );
     BOOL (*wanted)( void *context );
     void *done_context;
+    BOOL ansi;
 #endif
     struct list entry;
 };
@@ -1342,12 +1343,28 @@ static DWORD WINAPI notify_thread(void *user)
         if (cparams->pszServiceNames)
         {
             SIZE_T len = wcslen(cparams->pszServiceNames);
-            WCHAR *names = LocalAlloc(LMEM_FIXED, (len + 2) * sizeof(WCHAR));
+            WCHAR *names;
 
-            if (names)
+            if (data->ansi)
             {
-                memcpy(names, cparams->pszServiceNames, len * sizeof(WCHAR));
-                names[len] = names[len + 1] = 0;
+                int size = WideCharToMultiByte(CP_ACP, 0, cparams->pszServiceNames, (int)len, NULL, 0, NULL, NULL);
+                char *namesA = LocalAlloc(LMEM_FIXED, size + 2);
+
+                if (namesA)
+                {
+                    WideCharToMultiByte(CP_ACP, 0, cparams->pszServiceNames, (int)len, namesA, size, NULL, NULL);
+                    namesA[size] = namesA[size + 1] = 0;
+                }
+                names = (WCHAR *)namesA;
+            }
+            else
+            {
+                names = LocalAlloc(LMEM_FIXED, (len + 2) * sizeof(WCHAR));
+                if (names)
+                {
+                    memcpy(names, cparams->pszServiceNames, len * sizeof(WCHAR));
+                    names[len] = names[len + 1] = 0;
+                }
             }
             data->notify_buffer->pszServiceNames = names;
             MIDL_user_free(cparams->pszServiceNames);
@@ -1395,7 +1412,7 @@ static DWORD WINAPI notify_thread(void *user)
 
 #ifdef __REACTOS__
 static DWORD notify_status_change( SC_HANDLE service, DWORD mask, DWORD sequence, SERVICE_NOTIFYW *notify_buffer,
-                                   void (*done)( void *, DWORD ), BOOL (*wanted)( void * ), void *done_context );
+                                   void (*done)( void *, DWORD ), BOOL (*wanted)( void * ), void *done_context, BOOL ansi );
 
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
@@ -1405,11 +1422,11 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
 {
     TRACE( "%p 0x%lx %p\n", service, mask, notify_buffer );
 
-    return notify_status_change( service, mask, 0, notify_buffer, NULL, NULL, NULL );
+    return notify_status_change( service, mask, 0, notify_buffer, NULL, NULL, NULL, FALSE );
 }
 
 static DWORD notify_status_change( SC_HANDLE service, DWORD mask, DWORD sequence, SERVICE_NOTIFYW *notify_buffer,
-                                   void (*done)( void *, DWORD ), BOOL (*wanted)( void * ), void *done_context )
+                                   void (*done)( void *, DWORD ), BOOL (*wanted)( void * ), void *done_context, BOOL ansi )
 #else
 /******************************************************************************
  *     NotifyServiceStatusChangeW   (sechost.@)
@@ -1436,6 +1453,7 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeW( SC_HANDLE service, DW
     data->done = done;
     data->wanted = wanted;
     data->done_context = done_context;
+    data->ansi = ansi;
 #endif
     if (!DuplicateHandle( GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(),
                           &data->calling_thread, 0, FALSE, DUPLICATE_SAME_ACCESS ))
@@ -1516,7 +1534,7 @@ DWORD WINAPI DECLSPEC_HOTPATCH NotifyServiceStatusChangeA( SC_HANDLE service, DW
 {
     TRACE( "%p 0x%lx %p\n", service, mask, notify_buffer );
 
-    return NotifyServiceStatusChangeW( service, mask, (SERVICE_NOTIFYW *)notify_buffer );
+    return notify_status_change( service, mask, 0, (SERVICE_NOTIFYW *)notify_buffer, NULL, NULL, NULL, TRUE );
 }
 
 #define SERVICE_NOTIFY_SUBSCRIPTION 0x80000000
@@ -1608,7 +1626,7 @@ static DWORD WINAPI subscription_thread( void *param )
             req->notify.pContext = sub->context;
             /* The server reports at once a status change made after the one with this sequence */
             err = notify_status_change( sub->handle, sub->mask | SERVICE_NOTIFY_SUBSCRIPTION, sequence, &req->notify,
-                                        request_finished, request_wanted, req );
+                                        request_finished, request_wanted, req, FALSE );
         }
         if (first)
         {

@@ -7,9 +7,9 @@ include_directories(include)
 add_subdirectory(example)
 add_subdirectory(fltmgr)
 add_subdirectory(hidparse)
+add_subdirectory(netio_iphlp)
 add_subdirectory(kernel32)
 add_subdirectory(ndis)
-add_subdirectory(netio)
 add_subdirectory(ntos_cc)
 add_subdirectory(ntos_io)
 add_subdirectory(ntos_mm)
@@ -523,6 +523,7 @@ list(APPEND KMTEST_SOURCE
     hidparse/HidP_user.c
     kernel32/FileAttributes_user.c
     kernel32/FindFile_user.c
+    netio_iphlp/NetioIpHlp_user.c
     ntos_cc/CcCopyRead_user.c
     ntos_cc/CcCopyWrite_user.c
     ntos_cc/CcMapData_user.c
@@ -539,7 +540,6 @@ list(APPEND KMTEST_SOURCE
     ntos_mm/NtUserPhysicalPages.c
     ntos_mm/NtProcessClone.c
     ndis/NdisSgDma_user.c
-    netio/NetioIpHlp_user.c
     ntos_po/BatteryClassNotify_user.c
     ntos_po/PoIrp_user.c
     ntos_po/PoFxState_user.c

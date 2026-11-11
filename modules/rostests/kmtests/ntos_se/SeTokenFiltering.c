@@ -232,8 +232,126 @@ done:
     SeReleaseSubjectContext(&SubjectContext);
 }
 
+static
+VOID
+OwnerRights(VOID)
+{
+    static const PCSTR TokenNames[] = { "unrestricted", "restricted", "write-restricted", "restricted with the owner",
+                                        "write-restricted with the owner" };
+    static const ACCESS_MASK Desired[] = { READ_CONTROL, WRITE_DAC, MAXIMUM_ALLOWED };
+    static const struct
+    {
+        PCSTR Name;
+        ACCESS_MASK Access;
+        ACCESS_MASK Granted[RTL_NUMBER_OF(TokenNames)][RTL_NUMBER_OF(Desired)];
+    } Tests[] =
+    {
+        { "user: all", FILE_ALL_ACCESS, { { 0x20000, 0x40000, 0x1f01ff }, { 0, 0, 0 }, { 0x20000, 0, 0x1200e9 },
+                                          { 0x20000, 0x40000, 0x1f01ff }, { 0x20000, 0x40000, 0x1f01ff } } },
+        { "empty", 0, { { 0x20000, 0x40000, 0x60000 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0x20000, 0x40000, 0x60000 }, { 0x20000, 0x40000, 0x60000 } } },
+        { "owner rights: RC WD", READ_CONTROL | WRITE_DAC, { { 0x20000, 0x40000, 0x60000 }, { 0, 0, 0 }, { 0, 0, 0 },
+                                                             { 0x20000, 0x40000, 0x60000 }, { 0x20000, 0x40000, 0x60000 } } },
+        { "restricting SID: all", FILE_ALL_ACCESS, { { 0x20000, 0x40000, 0x60000 }, { 0, 0, 0 }, { 0, 0, 0 },
+                                                     { 0x20000, 0x40000, 0x60000 }, { 0x20000, 0x40000, 0x60000 } } },
+        { "user: read", FILE_GENERIC_READ, { { 0x20000, 0x40000, 0x160089 }, { 0, 0, 0 }, { 0x20000, 0, 0x120089 },
+                                             { 0x20000, 0x40000, 0x160089 }, { 0x20000, 0x40000, 0x160089 } } },
+    };
+    ULONG DaclBuffer[(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE) / sizeof(ULONG) + 1];
+    PACL Dacl = (PACL)DaclBuffer;
+    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    PACCESS_TOKEN Tokens[RTL_NUMBER_OF(TokenNames)] = { NULL };
+    PSID AceSids[RTL_NUMBER_OF(Tests)];
+    ULONG_PTR GroupsBuffer[(FIELD_OFFSET(TOKEN_GROUPS, Groups) + 2 * sizeof(SID_AND_ATTRIBUTES)) / sizeof(ULONG_PTR) + 1];
+    PTOKEN_GROUPS RestrictedGroups = (PTOKEN_GROUPS)GroupsBuffer;
+    PTOKEN_USER User = NULL;
+    SECURITY_DESCRIPTOR Sd;
+    ACCESS_MASK GrantedAccess;
+    BOOLEAN Granted;
+    NTSTATUS Status;
+    ULONG i, j, k;
+
+    SeCaptureSubjectContext(&SubjectContext);
+    Tokens[0] = SubjectContext.PrimaryToken;
+
+    Status = SeQueryInformationToken(Tokens[0], TokenUser, (PVOID*)&User);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+    {
+        User = NULL;
+        goto done;
+    }
+
+    RestrictedGroups->Groups[0].Attributes = 0;
+    RestrictedGroups->Groups[0].Sid = SeExports->SeDialupSid;
+    RestrictedGroups->Groups[1].Attributes = 0;
+    RestrictedGroups->Groups[1].Sid = User->User.Sid;
+
+    for (j = 1; j < RTL_NUMBER_OF(Tokens); j++)
+    {
+        RestrictedGroups->GroupCount = j < 3 ? 1 : 2;
+        Status = SeFilterToken(Tokens[0], (j & 1) ? 0 : WRITE_RESTRICTED, NULL, NULL, RestrictedGroups, &Tokens[j]);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        if (!NT_SUCCESS(Status))
+        {
+            Tokens[j] = NULL;
+            goto done;
+        }
+    }
+
+    AceSids[0] = User->User.Sid;
+    AceSids[1] = NULL;
+    AceSids[2] = SeExports->SeOwnerRightsSid;
+    AceSids[3] = SeExports->SeDialupSid;
+    AceSids[4] = User->User.Sid;
+
+    for (i = 0; i < RTL_NUMBER_OF(Tests); i++)
+    {
+        Status = RtlCreateSecurityDescriptor(&Sd, SECURITY_DESCRIPTOR_REVISION);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Status = RtlCreateAcl(Dacl, sizeof(DaclBuffer), ACL_REVISION);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        if (AceSids[i] != NULL)
+        {
+            Status = RtlAddAccessAllowedAce(Dacl, ACL_REVISION, Tests[i].Access, AceSids[i]);
+            ok_eq_hex(Status, STATUS_SUCCESS);
+        }
+        Status = RtlSetDaclSecurityDescriptor(&Sd, TRUE, Dacl, FALSE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Status = RtlSetOwnerSecurityDescriptor(&Sd, User->User.Sid, FALSE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Status = RtlSetGroupSecurityDescriptor(&Sd, User->User.Sid, FALSE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+
+        for (j = 0; j < RTL_NUMBER_OF(Tokens); j++)
+        {
+            for (k = 0; k < RTL_NUMBER_OF(Desired); k++)
+            {
+                Granted = CheckAccess(&Sd, &SubjectContext, Tokens[j], Desired[k], &GrantedAccess);
+                ok(Granted == (Tests[i].Granted[j][k] != 0), "DACL %s, %s token, access 0x%lx: granted %d\n",
+                   Tests[i].Name, TokenNames[j], Desired[k], Granted);
+                if (Granted)
+                {
+                    ok(GrantedAccess == Tests[i].Granted[j][k], "DACL %s, %s token, access 0x%lx: granted 0x%lx, expected 0x%lx\n",
+                       Tests[i].Name, TokenNames[j], Desired[k], GrantedAccess, Tests[i].Granted[j][k]);
+                }
+            }
+        }
+    }
+
+done:
+    for (j = 1; j < RTL_NUMBER_OF(Tokens); j++)
+    {
+        if (Tokens[j] != NULL)
+            ObDereferenceObject(Tokens[j]);
+    }
+    if (User != NULL)
+        ExFreePool(User);
+    SeReleaseSubjectContext(&SubjectContext);
+}
+
 START_TEST(SeTokenFiltering)
 {
     FilterToken();
     WriteRestrictedToken();
+    OwnerRights();
 }

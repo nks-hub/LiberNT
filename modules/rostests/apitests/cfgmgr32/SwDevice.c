@@ -44,7 +44,7 @@ CreatedAndClosed(HSWDEVICE hSwDevice, HRESULT CreateResult, PVOID Context, PCWST
 }
 
 static HRESULT
-Create(PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State, HSWDEVICE *Device)
+CreateIn(PCWSTR Enumerator, PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State, HSWDEVICE *Device)
 {
     SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
     HRESULT hr;
@@ -57,10 +57,16 @@ Create(PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREAT
     ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
     State->Result = E_PENDING;
     ResetEvent(State->Event);
-    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, State, Device);
+    hr = SwDeviceCreate(Enumerator, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, State, Device);
     if (SUCCEEDED(hr) && WaitForSingleObject(State->Event, 30000) != WAIT_OBJECT_0)
         hr = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
     return hr;
+}
+
+static HRESULT
+Create(PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State, HSWDEVICE *Device)
+{
+    return CreateIn(TEST_ENUMERATOR, Instance, Capabilities, Security, State, Device);
 }
 
 static BOOL
@@ -111,6 +117,53 @@ test_Lifetime(CREATED *State)
     ok(hr == S_OK, "SwDeviceSetLifetime returned 0x%08lx\n", hr);
     SwDeviceClose(Device);
     ok(WaitGone(InstanceId), "%S stayed after its handle closed\n", InstanceId);
+}
+
+static void
+test_SimilarIds(CREATED *State)
+{
+    static const WCHAR First[] = L"SWD\\" TEST_ENUMERATOR L"#Owner\\Key";
+    static const WCHAR Second[] = L"SWD\\" TEST_ENUMERATOR L"\\Owner#Key";
+    HSWDEVICE FirstDevice, SecondDevice;
+    HRESULT hr;
+
+    hr = CreateIn(TEST_ENUMERATOR L"#Owner", L"Key", SWDeviceCapabilitiesSilentInstall, NULL, State, &FirstDevice);
+    ok(hr == S_OK, "SwDeviceCreate returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+    ok(!_wcsicmp(State->InstanceId, First), "The first device is %S\n", State->InstanceId);
+
+    hr = Create(L"Owner#Key", SWDeviceCapabilitiesSilentInstall, NULL, State, &SecondDevice);
+    ok(hr == S_OK, "SwDeviceCreate returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+    {
+        SwDeviceClose(FirstDevice);
+        WaitGone(First);
+        return;
+    }
+    ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+    ok(!_wcsicmp(State->InstanceId, Second), "The second device is %S\n", State->InstanceId);
+    ok(IsPresent(First), "%S is not present\n", First);
+    ok(IsPresent(Second), "%S is not present\n", Second);
+
+    hr = SwDeviceSetLifetime(FirstDevice, SWDeviceLifetimeParentPresent);
+    ok(hr == S_OK, "SwDeviceSetLifetime returned 0x%08lx\n", hr);
+    SwDeviceClose(FirstDevice);
+    SwDeviceClose(SecondDevice);
+    ok(WaitGone(Second), "%S stayed after its handle closed\n", Second);
+    ok(IsPresent(First), "%S left with the handle of %S\n", First, Second);
+
+    hr = CreateIn(TEST_ENUMERATOR L"#Owner", L"Key", SWDeviceCapabilitiesSilentInstall, NULL, State, &FirstDevice);
+    ok(hr == S_OK, "SwDeviceCreate of the persistent device returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(State->Result == S_OK, "Opening the persistent device after %S closed reported 0x%08lx\n", Second, State->Result);
+
+    hr = SwDeviceSetLifetime(FirstDevice, SWDeviceLifetimeHandle);
+    ok(hr == S_OK, "SwDeviceSetLifetime returned 0x%08lx\n", hr);
+    SwDeviceClose(FirstDevice);
+    ok(WaitGone(First), "%S stayed after its handle closed\n", First);
 }
 
 static void
@@ -621,6 +674,7 @@ START_TEST(SwDevice)
 
     State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
     test_Lifetime(&State);
+    test_SimilarIds(&State);
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
     test_CloseInCallback(&State);

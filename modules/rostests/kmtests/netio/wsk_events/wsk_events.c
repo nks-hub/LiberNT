@@ -34,6 +34,8 @@ static BOOLEAN SendAtDispatch;
 #define LIMIT_COUNT 4096
 /* netio holds at most this many bytes of received datagrams for a socket */
 #define RECEIVE_LIMIT (4 * 1024 * 1024)
+/* The largest datagram: netio asks tcpip for no more of them once one of this size would pass the limit */
+#define RECEIVE_SIZE 65536
 
 typedef enum _BURST_MODE
 {
@@ -47,6 +49,7 @@ static volatile BURST_MODE BurstMode;
 static volatile LONG BurstErrors;
 static volatile LONG BurstHeldCount;
 static PWSK_DATAGRAM_INDICATION BurstHeld[LIMIT_COUNT];
+static SIZE_T BurstOverhead;
 
 static
 NTSTATUS
@@ -82,6 +85,11 @@ BurstReceive(
 
     if (BurstMode == BurstRetain)
     {
+        /* netio counts the whole allocation of a datagram, which starts at the indication and ends with the data */
+        Data = MmGetSystemAddressForMdlSafe(DataIndication->Buffer.Mdl, NormalPagePriority);
+        if (Data != NULL)
+            BurstOverhead = (SIZE_T)(Data - (PUCHAR)DataIndication);
+
         Index = InterlockedIncrement(&BurstHeldCount) - 1;
         if (Index < LIMIT_COUNT)
         {
@@ -1219,6 +1227,7 @@ TestReceiveLimit(VOID)
     WSK_BUF Buffer;
     NTSTATUS Status;
     LONG Count, Errors, Held, Round;
+    SIZE_T Overhead, Bytes;
     PUCHAR Data;
 
     Refuse = FALSE;
@@ -1253,6 +1262,7 @@ TestReceiveLimit(VOID)
     ReceiveCount = 0;
     BurstErrors = 0;
     BurstHeldCount = 0;
+    BurstOverhead = 0;
     BurstMode = BurstRetain;
     Status = SendBurst(Sender, &Buffer, Data, WSKEVENTS_PORT + 7, LIMIT_COUNT);
     ok_eq_hex(Status, STATUS_SUCCESS);
@@ -1260,8 +1270,14 @@ TestReceiveLimit(VOID)
     Count = WaitReceives(LIMIT_COUNT, 2000);
     Held = BurstHeldCount;
     ok(Held == Count, "%ld datagrams were indicated, %ld of them were retained\n", Count, Held);
-    ok(Held >= BURST_COUNT && Held < LIMIT_COUNT, "%ld of %d datagrams were retained\n", Held, LIMIT_COUNT);
-    ok((ULONG)Held * BURST_SIZE <= RECEIVE_LIMIT, "The %ld retained datagrams hold more than %d bytes\n", Held, RECEIVE_LIMIT);
+    ok(Held < LIMIT_COUNT, "%ld of %d datagrams were retained\n", Held, LIMIT_COUNT);
+    Overhead = BurstOverhead;
+    ok(Overhead >= sizeof(WSK_DATAGRAM_INDICATION) && Overhead < 1024, "A datagram has %lu bytes before its data\n", (ULONG)Overhead);
+    Bytes = (SIZE_T)Held * (Overhead + BURST_SIZE);
+    ok(Bytes <= RECEIVE_LIMIT, "The %ld retained datagrams hold %lu bytes, more than %d\n", Held, (ULONG)Bytes, RECEIVE_LIMIT);
+    ok(Bytes + Overhead + RECEIVE_SIZE > RECEIVE_LIMIT,
+       "The %ld retained datagrams hold %lu bytes, a datagram of %d bytes still fits below %d\n",
+       Held, (ULONG)Bytes, RECEIVE_SIZE, RECEIVE_LIMIT);
     Errors = BurstErrors;
     ok(Errors == 0, "%ld datagrams were indicated out of order or with a wrong length\n", Errors);
 

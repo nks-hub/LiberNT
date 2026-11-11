@@ -414,6 +414,20 @@ test_DevNodeProperty(CREATED *State)
     trace("The deleted property is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
     ok(Cr != CR_SUCCESS, "The deleted property is still there, type 0x%lx, size %lu\n", Type, Size);
 
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, 0xffffffff, (const BYTE *)&Value, sizeof(Value), 0);
+    trace("Setting a property of type 0xffffffff returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A property of type 0xffffffff was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_UINT32 | DEVPROP_TYPEMOD_LIST, (const BYTE *)&Value, sizeof(Value), 0);
+    trace("Setting a list of UINT32 returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A list of UINT32 was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_NULL, (const BYTE *)&Value, sizeof(Value), 0);
+    trace("Setting a property without a value from %lu bytes returned CR %lu\n", (ULONG)sizeof(Value), Cr);
+    Type = DEVPROP_TYPE_EMPTY;
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
+    trace("After the rejected types the property is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+
 Done:
     SwDeviceClose(Device);
     WaitGone(State->InstanceId);

@@ -2930,6 +2930,26 @@ CONFIGRET WINAPI CM_Get_DevNode_PropertyW( DEVINST node, const DEVPROPKEY *key, 
 }
 
 #ifdef __REACTOS__
+static BOOL is_valid_property_type( DEVPROPTYPE prop_type )
+{
+    DWORD type = prop_type & DEVPROP_MASK_TYPE;
+    DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
+
+    if (prop_type & ~(DEVPROP_MASK_TYPE | DEVPROP_MASK_TYPEMOD)) return FALSE;
+    if (type > MAX_DEVPROP_TYPE || typemod > MAX_DEVPROP_TYPEMOD) return FALSE;
+
+    if (typemod == DEVPROP_TYPEMOD_ARRAY &&
+        (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL ||
+         type == DEVPROP_TYPE_STRING || type == DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING))
+        return FALSE;
+
+    if (typemod == DEVPROP_TYPEMOD_LIST &&
+        type != DEVPROP_TYPE_STRING && type != DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING)
+        return FALSE;
+
+    return TRUE;
+}
+
 /***********************************************************************
  *           CM_Set_DevNode_Property_ExW (cfgmgr32.@)
  *
@@ -2949,6 +2969,10 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
     if (!key) return CR_INVALID_POINTER;
     if (flags) return CR_INVALID_FLAG;
     if (size && !buffer) return CR_INVALID_POINTER;
+    if (!is_valid_property_type( type ) ||
+        (buffer && !size && type != DEVPROP_TYPE_EMPTY && type != DEVPROP_TYPE_NULL) ||
+        (size && (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)))
+        return CR_INVALID_DATA;
     if (devnode_get_device( node, &dev )) return CR_INVALID_DEVNODE;
 
     if (!memcmp( &key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid, sizeof(key->fmtid) ) && key->pid >= 2)
@@ -2972,7 +2996,6 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
             err = RegDeleteKeyW( dev_key, path );
             break;
         default:
-            if (type == DEVPROP_TYPE_NULL) size = 0;
             if (!(err = RegCreateKeyExW( dev_key, path, 0, NULL, 0, KEY_SET_VALUE, NULL, &prop_key, NULL )))
             {
                 err = RegSetValueExW( prop_key, NULL, 0, 0xffff0000 | (type & 0xffff), buffer, size );

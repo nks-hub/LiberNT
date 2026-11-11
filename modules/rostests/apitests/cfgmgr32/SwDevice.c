@@ -301,6 +301,36 @@ test_Capabilities(CREATED *State)
     }
 }
 
+/* Windows 11 looks up the module of the callback and refuses a callback that has none */
+static void
+test_CallbackOutsideModule(void)
+{
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    HSWDEVICE Device = (HSWDEVICE)(ULONG_PTR)1;
+    PVOID Page;
+    HRESULT hr;
+
+    Page = VirtualAlloc(NULL, 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!Page)
+    {
+        skip("VirtualAlloc failed (%lu)\n", GetLastError());
+        return;
+    }
+
+    Info.pszInstanceId = L"NoModule";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, (SW_DEVICE_CREATE_CALLBACK)(ULONG_PTR)Page, NULL, &Device);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND), "SwDeviceCreate with a callback outside of every module returned 0x%08lx\n", hr);
+    ok(Device == NULL, "SwDeviceCreate with a callback outside of every module returned the device %p\n", Device);
+    ok(!IsPresent(L"SWD\\" TEST_ENUMERATOR L"\\NoModule"), "A device was created for a callback outside of every module\n");
+
+    /* A creation that started calls into the page */
+    if (FAILED(hr))
+        VirtualFree(Page, 0, MEM_RELEASE);
+}
+
 static void
 test_CloseInCallback(CREATED *State)
 {
@@ -759,6 +789,7 @@ START_TEST(SwDevice)
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
     test_Capabilities(&State);
+    test_CallbackOutsideModule();
     test_CloseInCallback(&State);
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);

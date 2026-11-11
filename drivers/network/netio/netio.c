@@ -980,10 +980,11 @@ WskControlSocket(
                         status = STATUS_INVALID_PARAMETER;
                         break;
                     }
-                    Socket->PktInfo = *(PULONG)InputBuffer != 0;
                     status = Socket->LocalAddressFile ?
-                             NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, Socket->PktInfo) :
+                             NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, *(PULONG)InputBuffer != 0) :
                              STATUS_SUCCESS;
+                    if (NT_SUCCESS(status))
+                        Socket->PktInfo = *(PULONG)InputBuffer != 0;
                     break;
                 default:
                     DPRINT1("WskControlSocket: Level %d Not implemented\n", Level);

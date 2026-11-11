@@ -2127,13 +2127,14 @@ ScmGetBootAndSystemDriverState(VOID)
  * ScmSendControlPacket must never be called with the database lock being held.
  * The service passed must always be referenced instead.
  */
-DWORD
-ScmSendControlPacket(
+static DWORD
+ScmSendControlPacketWithTimeout(
     _In_ HANDLE hControlPipe,
     _In_ PCWSTR pServiceName,
     _In_ DWORD dwControl,
     _In_ DWORD dwControlPacketSize,
-    _In_ PVOID pControlPacket)
+    _In_ PVOID pControlPacket,
+    _In_ DWORD dwTimeout)
 {
     DWORD dwError = ERROR_SUCCESS;
     BOOL bResult;
@@ -2166,7 +2167,7 @@ ScmSendControlPacket(
 
         DPRINT("TransactNamedPipe(%S, %d) returned ERROR_IO_PENDING\n", pServiceName, dwControl);
 
-        dwError = WaitForSingleObject(hControlPipe, PipeTimeout);
+        dwError = WaitForSingleObject(hControlPipe, dwTimeout);
         DPRINT("WaitForSingleObject(%S, %d) returned %lu\n", pServiceName, dwControl, dwError);
 
         if (dwError == WAIT_TIMEOUT)
@@ -2200,6 +2201,18 @@ Done:
         dwError = ReplyPacket.dwError;
 
     return dwError;
+}
+
+
+DWORD
+ScmSendControlPacket(
+    _In_ HANDLE hControlPipe,
+    _In_ PCWSTR pServiceName,
+    _In_ DWORD dwControl,
+    _In_ DWORD dwControlPacketSize,
+    _In_ PVOID pControlPacket)
+{
+    return ScmSendControlPacketWithTimeout(hControlPipe, pServiceName, dwControl, dwControlPacketSize, pControlPacket, PipeTimeout);
 }
 
 
@@ -2304,12 +2317,13 @@ ScmControlServiceEx(
 }
 
 
-DWORD
-ScmControlService(
+static DWORD
+ScmControlServiceWithTimeout(
     _In_ HANDLE hControlPipe,
     _In_ PCWSTR pServiceName,
     _In_ DWORD dwControl,
-    _In_ DWORD hServiceStatus)
+    _In_ DWORD hServiceStatus,
+    _In_ DWORD dwTimeout)
 {
     DWORD dwError = ERROR_SUCCESS;
     PSCM_CONTROL_PACKET ControlPacket;
@@ -2338,17 +2352,29 @@ ScmControlService(
     wcscpy(Ptr, pServiceName);
 
     /* Send the control packet */
-    dwError = ScmSendControlPacket(hControlPipe,
-                                   pServiceName,
-                                   dwControl,
-                                   PacketSize,
-                                   ControlPacket);
+    dwError = ScmSendControlPacketWithTimeout(hControlPipe,
+                                              pServiceName,
+                                              dwControl,
+                                              PacketSize,
+                                              ControlPacket,
+                                              dwTimeout);
 
     /* Free the control packet */
     HeapFree(GetProcessHeap(), 0, ControlPacket);
 
     DPRINT("ScmControlService(%S, %d) done (Error %lu)\n", pServiceName, dwControl, dwError);
     return dwError;
+}
+
+
+DWORD
+ScmControlService(
+    _In_ HANDLE hControlPipe,
+    _In_ PCWSTR pServiceName,
+    _In_ DWORD dwControl,
+    _In_ DWORD hServiceStatus)
+{
+    return ScmControlServiceWithTimeout(hControlPipe, pServiceName, dwControl, hServiceStatus, PipeTimeout);
 }
 
 
@@ -3211,9 +3237,11 @@ ScmPreshutdownServices(VOID)
     {
         HANDLE hControlPipe = NULL;
         DWORD dwResumeCount = 0;
+        DWORD dwTimeout;
 
         CurrentService = Waits[i].Service;
-        Waits[i].Deadline = GetTickCount64() + ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
+        dwTimeout = ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
+        Waits[i].Deadline = GetTickCount64() + dwTimeout;
 
         ScmLockDatabaseShared();
         if (CurrentService->lpImage != NULL && CurrentService->Status.dwCurrentState != SERVICE_STOPPED &&
@@ -3231,7 +3259,8 @@ ScmPreshutdownServices(VOID)
         }
 
         DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
-        if (ScmControlService(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN, dwResumeCount) != ERROR_SUCCESS)
+        if (ScmControlServiceWithTimeout(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN,
+                                         dwResumeCount, dwTimeout) != ERROR_SUCCESS)
             Waits[i].Deadline = 0;
         CloseHandle(hControlPipe);
     }

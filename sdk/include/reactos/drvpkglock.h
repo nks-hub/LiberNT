@@ -1,7 +1,7 @@
 /*
- * PROJECT:     LiberNT Printing Include files
+ * PROJECT:     LiberNT Spooler and Setup API
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     Lock shared by the processes that add, register and delete printer driver packages
+ * PURPOSE:     Lock shared by the processes that stage, register and delete driver packages of the driver store
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 

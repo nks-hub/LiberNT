@@ -6,6 +6,7 @@
  */
 
 #include "setupapi_private.h"
+#include <drvpkglock.h>
 
 static const WCHAR RepositoryPath[] = L"\\System32\\DriverStore\\FileRepository";
 static const WCHAR VersionSection[] = L"Version";
@@ -261,7 +262,9 @@ ResolvePackagePath(
     OUT PWSTR Path)
 {
     WCHAR Joined[MAX_PATH], Base[MAX_PATH];
-    DWORD Length, BaseLength;
+    DWORD Length, BaseLength, Attributes;
+    PWSTR Cursor;
+    WCHAR Saved;
 
     if (!CombinePath(Joined, Root, Relative))
         return ERROR_FILENAME_EXCED_RANGE;
@@ -277,6 +280,22 @@ ResolvePackagePath(
         BaseLength--;
     if (_wcsnicmp(Path, Base, BaseLength) != 0 || Path[BaseLength] != L'\\' || !Path[BaseLength + 1])
         return ERROR_BAD_PATHNAME;
+
+    /* A junction or a link below the root leads out of it although the path does not */
+    for (Cursor = Path + BaseLength + 1; ; Cursor++)
+    {
+        Saved = *Cursor;
+        if (Saved != L'\\' && Saved != UNICODE_NULL)
+            continue;
+
+        *Cursor = UNICODE_NULL;
+        Attributes = GetFileAttributesW(Path);
+        *Cursor = Saved;
+        if (Attributes != INVALID_FILE_ATTRIBUTES && (Attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            return ERROR_BAD_PATHNAME;
+        if (Saved == UNICODE_NULL)
+            break;
+    }
     return ERROR_SUCCESS;
 }
 
@@ -437,7 +456,7 @@ StagePackageFile(
     WCHAR Source[MAX_PATH], Target[MAX_PATH], Compressed[MAX_PATH];
     STAGE_CABINET_CONTEXT Stage;
     PWSTR Last;
-    DWORD Error;
+    DWORD Error, Attributes;
 
     Error = IsSafeRelativePath(Relative) ? ResolvePackagePath(SourceRoot, Relative, Source) : ERROR_BAD_PATHNAME;
     if (Error == ERROR_SUCCESS)
@@ -455,7 +474,8 @@ StagePackageFile(
     if (GetFileAttributesW(Source) == INVALID_FILE_ATTRIBUTES)
     {
         if (!GetCompressedSourceName(Source, Compressed, ARRAY_SIZE(Compressed)) ||
-            GetFileAttributesW(Compressed) == INVALID_FILE_ATTRIBUTES)
+            (Attributes = GetFileAttributesW(Compressed)) == INVALID_FILE_ATTRIBUTES ||
+            (Attributes & FILE_ATTRIBUTE_REPARSE_POINT))
         {
             Compressed[0] = UNICODE_NULL;
             if (!Cabinet || GetFileAttributesW(Cabinet) == INVALID_FILE_ATTRIBUTES)
@@ -1088,7 +1108,7 @@ RestoreStoreBackup(
 }
 
 static BOOL
-StageDriverPackage(
+StageLockedDriverPackage(
     IN PCWSTR SourceInfFileName,
     IN WORD Architecture,
     OUT PWSTR StoreInfFileName OPTIONAL)
@@ -1115,8 +1135,9 @@ StageDriverPackage(
     if (IsSystemInfDirectory(SourceRoot))
         return TRUE;
     /* A package in the store is the source of the package of another architecture */
-    if (_wcsnicmp(SourceRoot, Root, lstrlenW(Root)) == 0 &&
-        (!StoreInfFileName || FindStoreInf(Source, BaseName, Architecture, StoreInfFileName)))
+    Length = lstrlenW(Root);
+    if (_wcsnicmp(SourceRoot, Root, Length) == 0 && SourceRoot[Length] == L'\\' &&
+        FindStoreInf(Source, BaseName, Architecture, StoreInfFileName ? StoreInfFileName : Store))
     {
         return TRUE;
     }
@@ -1178,6 +1199,29 @@ StageDriverPackage(
     {
         CombinePath(StoreInfFileName, Store, BaseName);
     }
+    return Staged;
+}
+
+static BOOL
+StageDriverPackage(
+    IN PCWSTR SourceInfFileName,
+    IN WORD Architecture,
+    OUT PWSTR StoreInfFileName OPTIONAL)
+{
+    HANDLE Namespace, Lock;
+    DWORD Error;
+    BOOL Staged;
+
+    if (!AcquirePackageLock(&Namespace, &Lock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    Staged = StageLockedDriverPackage(SourceInfFileName, Architecture, StoreInfFileName);
+    Error = GetLastError();
+    ReleasePackageLock(Namespace, Lock);
+    SetLastError(Error);
     return Staged;
 }
 
@@ -1476,22 +1520,48 @@ DeleteDirectoryTree(
     return RemoveDirectoryW(Directory);
 }
 
+/* The rename fails while a file of the package is open, before anything of the package is changed */
+static BOOL
+MoveStoreDirectoryAside(
+    IN PCWSTR Directory,
+    OUT PWSTR Aside)
+{
+    WCHAR Suffix[32];
+
+    swprintf(Suffix, ARRAY_SIZE(Suffix), L".delete-%lx-%lx", GetCurrentProcessId(), GetTickCount());
+    if (lstrlenW(Directory) + lstrlenW(Suffix) >= MAX_PATH)
+    {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
+    }
+    lstrcpyW(Aside, Directory);
+    lstrcatW(Aside, Suffix);
+    return MoveFileW(Directory, Aside);
+}
+
 BOOL
 SETUPAPI_DeleteDriverStorePackage(
     IN PCWSTR PublishedInfFileName)
 {
-    WCHAR StoreInf[MAX_PATH];
+    WCHAR StoreInf[MAX_PATH], Aside[MAX_PATH];
+    HANDLE Namespace, Lock;
+    BOOL Deleted = TRUE;
     PWSTR Last;
 
-    if (!SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf))
-        return TRUE;
+    if (!AcquirePackageLock(&Namespace, &Lock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
 
-    Last = wcsrchr(StoreInf, L'\\');
-    if (!Last)
-        return TRUE;
+    if (SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf) && (Last = wcsrchr(StoreInf, L'\\')) != NULL)
+    {
+        *Last = UNICODE_NULL;
+        Deleted = MoveStoreDirectoryAside(StoreInf, Aside) && DeleteDirectoryTree(Aside);
+    }
 
-    *Last = UNICODE_NULL;
-    return DeleteDirectoryTree(StoreInf);
+    ReleasePackageLock(Namespace, Lock);
+    return Deleted;
 }
 
 static HRESULT
@@ -1637,7 +1707,7 @@ DriverStoreAddDriverPackageW(
     OUT PWSTR ReturnPath,
     IN OUT PDWORD ReturnLength)
 {
-    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
+    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Published[MAX_PATH];
     PWSTR BaseName;
     DWORD Length;
     HRESULT hr;
@@ -1653,9 +1723,10 @@ DriverStoreAddDriverPackageW(
     /* SetupCopyOEMInfW publishes for the native architecture only */
     if (Architecture == GetNativeArchitecture())
     {
-        if (!SetupCopyOEMInfW(Source, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL))
+        if (!SetupCopyOEMInfW(Source, NULL, SPOST_NONE, 0, Published, ARRAY_SIZE(Published), NULL, NULL))
             return HRESULT_FROM_WIN32(GetLastError());
-        if (!FindSourceStoreInf(Source, Architecture, Source, StoreInf))
+        /* A source inside the store that is not a package INF does not name the package staged from it */
+        if (!FindStoreInf(Published, BaseName, Architecture, StoreInf))
             return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
     }
@@ -1674,16 +1745,14 @@ DriverStoreAddDriverPackageW(
     return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
 }
 
-HRESULT
-WINAPI
-DriverStoreDeleteDriverPackageW(
-    IN PCWSTR InfPath,
-    IN PVOID Reserved1,
-    IN PVOID Reserved2)
+static HRESULT
+DeleteLockedDriverPackage(
+    IN PCWSTR InfPath)
 {
-    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
+    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Aside[MAX_PATH];
     PWSTR Last, BaseName;
-    DWORD Length;
+    DWORD Length, Error;
+    BOOL Published, Deleted = TRUE;
 
     Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
     if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName ||
@@ -1693,18 +1762,52 @@ DriverStoreDeleteDriverPackageW(
     }
 
     /* Only the package of the native architecture is published */
-    if (FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source) && !DeletePublishedInfs(StoreInf))
-        return HRESULT_FROM_WIN32(GetLastError());
+    Published = FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source);
 
     Last = wcsrchr(StoreInf, L'\\');
     if (!Last)
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     *Last = UNICODE_NULL;
-    if (!DeleteDirectoryTree(StoreInf))
+    if (!MoveStoreDirectoryAside(StoreInf, Aside))
         return HRESULT_FROM_WIN32(GetLastError());
 
+    if (Published)
+    {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        Deleted = CombinePath(Source, Aside, Last + 1) && DeletePublishedInfs(Source);
+    }
+    if (!Deleted)
+    {
+        Error = GetLastError();
+        if (!MoveFileW(Aside, StoreInf))
+            ERR("Driver package %s is left in %s, restoring it failed with error %lu\n",
+                debugstr_w(StoreInf), debugstr_w(Aside), GetLastError());
+        return HRESULT_FROM_WIN32(Error);
+    }
+
+    if (!DeleteDirectoryTree(Aside))
+        ERR("The deleted driver package %s is left in %s (%lu)\n", debugstr_w(StoreInf), debugstr_w(Aside), GetLastError());
+
     return S_OK;
+}
+
+HRESULT
+WINAPI
+DriverStoreDeleteDriverPackageW(
+    IN PCWSTR InfPath,
+    IN PVOID Reserved1,
+    IN PVOID Reserved2)
+{
+    HANDLE Namespace, Lock;
+    HRESULT hr;
+
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+
+    hr = DeleteLockedDriverPackage(InfPath);
+    ReleasePackageLock(Namespace, Lock);
+    return hr;
 }
 
 static PWSTR

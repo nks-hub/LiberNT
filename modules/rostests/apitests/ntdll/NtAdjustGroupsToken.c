@@ -46,6 +46,20 @@ QueryGroups(
     return Groups;
 }
 
+/* As measured on Windows 11, a 32-bit caller on a 64-bit system must give room for the 64-bit layout */
+static
+ULONG
+PreviousStateLength(
+    _In_ ULONG Count,
+    _In_ ULONG SidLength)
+{
+    ULONG_PTR Wow64 = 0;
+
+    if (NT_SUCCESS(NtQueryInformationProcess(NtCurrentProcess(), ProcessWow64Information, &Wow64, sizeof(Wow64), NULL)) && Wow64)
+        return 8 + Count * 16 + SidLength;
+    return FIELD_OFFSET(TOKEN_GROUPS, Groups[Count]) + SidLength;
+}
+
 static
 HANDLE
 DuplicateProcessToken(VOID)
@@ -222,7 +236,7 @@ AdjustWithPreviousState(VOID)
     HANDLE Token;
     PTOKEN_GROUPS Before, Previous = NULL;
     TOKEN_GROUPS Disable, Small;
-    ULONG Target, Length, Expected;
+    ULONG Target, Length, Expected, Needed;
 
     Token = DuplicateProcessToken();
     if (!Token)
@@ -236,18 +250,19 @@ AdjustWithPreviousState(VOID)
     Disable.Groups[0].Sid = Before->Groups[Target].Sid;
     Disable.Groups[0].Attributes = 0;
     Expected = FIELD_OFFSET(TOKEN_GROUPS, Groups[1]) + RtlLengthSid(Before->Groups[Target].Sid);
+    Needed = PreviousStateLength(1, RtlLengthSid(Before->Groups[Target].Sid));
 
     Length = 0;
     Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, &Small, &Length);
     ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
-    ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
+    ok(Length == Needed, "ReturnLength is %lu, expected %lu\n", Length, Needed);
     CheckGroupsUnchanged(Token, Before);
 
     Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, &Small, NULL);
     ok_hex(Status, STATUS_ACCESS_VIOLATION);
     CheckGroupsUnchanged(Token, Before);
 
-    Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Expected);
+    Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Needed);
     if (!Previous)
     {
         skip("Out of memory\n");
@@ -255,11 +270,11 @@ AdjustWithPreviousState(VOID)
     }
 
     Length = 0;
-    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Expected - 1, Previous, &Length);
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed - 1, Previous, &Length);
     ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
-    ok(Length == Expected, "ReturnLength is %lu, expected %lu\n", Length, Expected);
+    ok(Length == Needed, "ReturnLength is %lu, expected %lu\n", Length, Needed);
     CheckGroupsUnchanged(Token, Before);
-    if (Length != Expected)
+    if (Length != Needed)
         goto Cleanup;
 
     Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Length, Previous, &Length);
@@ -274,6 +289,19 @@ AdjustWithPreviousState(VOID)
     ok(Previous->Groups[0].Attributes == Before->Groups[Target].Attributes,
        "The previous attributes are 0x%lx, expected 0x%lx\n",
        Previous->Groups[0].Attributes, Before->Groups[Target].Attributes);
+
+    /* The group is disabled now, so the same request changes nothing */
+    Needed = PreviousStateLength(0, 0);
+    Length = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed - 1, &Small, &Length);
+    ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
+    ok(Length == Needed, "ReturnLength is %lu, expected %lu\n", Length, Needed);
+    Small.GroupCount = MAXULONG;
+    Length = 0;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed, &Small, &Length);
+    ok_hex(Status, STATUS_SUCCESS);
+    ok(Length == FIELD_OFFSET(TOKEN_GROUPS, Groups[0]), "ReturnLength is %lu without a change\n", Length);
+    ok(Small.GroupCount == 0, "GroupCount is %lu without a change\n", Small.GroupCount);
 
     Status = NtAdjustGroupsToken(Token, FALSE, Previous, 0, NULL, NULL);
     ok_hex(Status, STATUS_SUCCESS);
@@ -298,7 +326,7 @@ AdjustAndResetWithPreviousState(VOID)
         ULONG GroupCount;
         SID_AND_ATTRIBUTES Groups[2];
     } Disable;
-    ULONG Index, Target, Length, Expected;
+    ULONG Index, Target, Length, Expected, Needed;
 
     Token = DuplicateProcessToken();
     if (!Token)
@@ -317,7 +345,8 @@ AdjustAndResetWithPreviousState(VOID)
     }
 
     Expected = FIELD_OFFSET(TOKEN_GROUPS, Groups[1]) + RtlLengthSid(Before->Groups[Target].Sid);
-    Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Expected);
+    Needed = PreviousStateLength(1, RtlLengthSid(Before->Groups[Target].Sid));
+    Previous = RtlAllocateHeap(RtlGetProcessHeap(), 0, Needed);
     if (!Previous)
     {
         skip("Out of memory\n");
@@ -330,7 +359,7 @@ AdjustAndResetWithPreviousState(VOID)
     Disable.Groups[1].Sid = &Absent;
     Disable.Groups[1].Attributes = 0;
     Length = 0;
-    Status = NtAdjustGroupsToken(Token, FALSE, (PTOKEN_GROUPS)&Disable, Expected, Previous, &Length);
+    Status = NtAdjustGroupsToken(Token, FALSE, (PTOKEN_GROUPS)&Disable, Needed, Previous, &Length);
     ok_hex(Status, STATUS_NOT_ALL_ASSIGNED);
     if (Status != STATUS_NOT_ALL_ASSIGNED)
         goto Cleanup;
@@ -345,7 +374,7 @@ AdjustAndResetWithPreviousState(VOID)
     }
 
     Length = 0;
-    Status = NtAdjustGroupsToken(Token, TRUE, NULL, Expected, Previous, &Length);
+    Status = NtAdjustGroupsToken(Token, TRUE, NULL, Needed, Previous, &Length);
     ok_hex(Status, STATUS_SUCCESS);
     if (!NT_SUCCESS(Status))
         goto Cleanup;

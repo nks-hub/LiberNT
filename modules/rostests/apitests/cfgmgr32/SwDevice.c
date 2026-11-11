@@ -355,6 +355,112 @@ test_Interface(CREATED *State)
     WaitGone(State->InstanceId);
 }
 
+static BOOL
+IsInterfacePresent(const GUID *Class, PCWSTR InterfaceId)
+{
+    WCHAR List[2048];
+    PCWSTR Entry;
+    CONFIGRET Cr;
+
+    List[0] = UNICODE_NULL;
+    Cr = CM_Get_Device_Interface_ListW((LPGUID)Class, NULL, List, ARRAYSIZE(List), CM_GET_DEVICE_INTERFACE_LIST_PRESENT);
+    if (Cr != CR_SUCCESS)
+    {
+        trace("CM_Get_Device_Interface_ListW returned CR %lu\n", Cr);
+        return FALSE;
+    }
+    for (Entry = List; *Entry; Entry += wcslen(Entry) + 1)
+    {
+        if (wcslen(Entry) > 4 && !_wcsicmp(Entry + 4, InterfaceId + 4))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* Windows 11 lists an interface some time after the call that enabled it has returned */
+static BOOL
+WaitInterface(BOOL Present, const GUID *Class, PCWSTR InterfaceId)
+{
+    ULONG Try;
+
+    for (Try = 0; Try < 50; Try++)
+    {
+        if (IsInterfacePresent(Class, InterfaceId) == Present)
+            return TRUE;
+        Sleep(100);
+    }
+    return FALSE;
+}
+
+static void
+test_InterfaceState(CREATED *State)
+{
+    static const GUID Class = { 0x4c6e7449, 0x6e74, 0x6572, { 0x66, 0x61, 0x63, 0x65, 0x53, 0x74, 0x61, 0x74 } };
+    DEVPROP_BOOLEAN Enabled = DEVPROP_FALSE;
+    DEVPROPTYPE Type = DEVPROP_TYPE_EMPTY;
+    PWSTR InterfaceId = NULL;
+    WCHAR Copy[MAX_PATH];
+    HSWDEVICE Device;
+    HANDLE File;
+    ULONG Size;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = Create(L"InterfaceState", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate returned 0x%08lx\n", hr);
+    if (FAILED(hr))
+        return;
+    ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+
+    hr = SwDeviceInterfaceRegister(Device, &Class, L"State", 0, NULL, TRUE, &InterfaceId);
+    ok(hr == S_OK, "SwDeviceInterfaceRegister of an enabled interface returned 0x%08lx\n", hr);
+    ok(InterfaceId != NULL, "SwDeviceInterfaceRegister returned no interface\n");
+    if (FAILED(hr) || !InterfaceId || wcslen(InterfaceId) <= 4 || wcslen(InterfaceId) >= ARRAYSIZE(Copy))
+    {
+        SwDeviceClose(Device);
+        WaitGone(State->InstanceId);
+        return;
+    }
+    lstrcpyW(Copy, InterfaceId);
+    SwMemFree(InterfaceId);
+
+    ok(WaitInterface(TRUE, &Class, Copy), "%S registered enabled is not present\n", Copy);
+    Size = sizeof(Enabled);
+    Cr = CM_Get_Device_Interface_PropertyW(Copy, &DEVPKEY_DeviceInterface_Enabled, &Type, (PBYTE)&Enabled, &Size, 0);
+    ok(Cr == CR_SUCCESS && Enabled == DEVPROP_TRUE, "The interface registered enabled is CR %lu, enabled %d\n", Cr, Enabled);
+
+    File = CreateFileW(Copy, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    trace("Opening the enabled interface %s (error %lu)\n", File != INVALID_HANDLE_VALUE ? "succeeded" : "failed", GetLastError());
+    if (File != INVALID_HANDLE_VALUE)
+        CloseHandle(File);
+
+    hr = SwDeviceInterfaceSetState(Device, Copy, TRUE);
+    trace("Enabling the enabled interface returned 0x%08lx\n", hr);
+    ok(WaitInterface(TRUE, &Class, Copy), "%S enabled twice is not present\n", Copy);
+
+    hr = SwDeviceInterfaceSetState(Device, Copy, FALSE);
+    ok(hr == S_OK, "Disabling the interface returned 0x%08lx\n", hr);
+    ok(WaitInterface(FALSE, &Class, Copy), "%S is present after it was disabled\n", Copy);
+    Size = sizeof(Enabled);
+    Cr = CM_Get_Device_Interface_PropertyW(Copy, &DEVPKEY_DeviceInterface_Enabled, &Type, (PBYTE)&Enabled, &Size, 0);
+    ok(Cr == CR_SUCCESS && Enabled == DEVPROP_FALSE, "The disabled interface is CR %lu, enabled %d\n", Cr, Enabled);
+
+    hr = SwDeviceInterfaceSetState(Device, Copy, FALSE);
+    trace("Disabling the disabled interface returned 0x%08lx\n", hr);
+    ok(WaitInterface(FALSE, &Class, Copy), "%S disabled twice is present\n", Copy);
+
+    hr = SwDeviceInterfaceSetState(Device, Copy, TRUE);
+    ok(hr == S_OK, "Enabling the interface again returned 0x%08lx\n", hr);
+    ok(WaitInterface(TRUE, &Class, Copy), "%S is not present after it was enabled again\n", Copy);
+
+    hr = SwDeviceInterfaceSetState(Device, L"\\\\?\\SWD#" TEST_ENUMERATOR L"#NoSuchDevice#{4c6e7449-6e74-6572-6661-636553746174}", TRUE);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "Enabling an interface that was never registered returned 0x%08lx\n", hr);
+
+    SwDeviceClose(Device);
+    ok(WaitGone(State->InstanceId), "%S stayed after its handle closed\n", State->InstanceId);
+    ok(WaitInterface(FALSE, &Class, Copy), "%S is present after its device was closed\n", Copy);
+}
+
 static void
 test_DevNodeProperty(CREATED *State)
 {
@@ -521,6 +627,7 @@ START_TEST(SwDevice)
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);
     test_Interface(&State);
+    test_InterfaceState(&State);
     test_DevNodeProperty(&State);
     test_ProcessEnd();
     CloseHandle(State.Event);

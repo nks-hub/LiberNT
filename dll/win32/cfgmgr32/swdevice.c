@@ -1038,7 +1038,6 @@ SetInterfaceProperties(
     return HRESULT_FROM_WIN32(Error);
 }
 
-/* TODO: enabling a device interface needs a plug and play control that reaches IoSetDeviceInterfaceState */
 HRESULT
 WINAPI
 SwDeviceInterfaceRegister(
@@ -1072,11 +1071,6 @@ SwDeviceInterfaceRegister(
     {
         hr = E_INVALIDARG;
     }
-    else if (fEnabled)
-    {
-        FIXME("Enabling an interface of %s is not supported\n", debugstr_w(Device->InstanceId));
-        hr = HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
-    }
     else
     {
         hr = CrToHresult(CM_Register_Device_InterfaceW(Device->DevInst, (LPGUID)pInterfaceClassGuid, pszReferenceString,
@@ -1088,6 +1082,8 @@ SwDeviceInterfaceRegister(
         Link[1] = L'\\';
         hr = SetInterfaceProperties(Device, Link, cPropertyCount, pProperties);
     }
+    if (SUCCEEDED(hr) && fEnabled)
+        hr = CrToHresult(CfgmgrSetSoftwareDeviceInterfaceState(Link, TRUE));
     if (SUCCEEDED(hr) && ppszDeviceInterfaceId)
     {
         InterfaceId = DupBuffer(Link, (wcslen(Link) + 1) * sizeof(WCHAR));
@@ -1117,15 +1113,23 @@ SwDeviceInterfaceSetState(
     _In_ BOOL fEnabled)
 {
     PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    HRESULT hr;
+
+    TRACE("%p %s %d\n", hSwDevice, debugstr_w(pszDeviceInterfaceId), fEnabled);
 
     if (!Device || !pszDeviceInterfaceId)
         return E_INVALIDARG;
     if (!EnterSwDevice(Device))
         return E_HANDLE;
-    LeaveSwDevice(Device);
 
-    FIXME("%p %s %d not supported\n", hSwDevice, debugstr_w(pszDeviceInterfaceId), fEnabled);
-    return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+    hr = Device->DevInst ? SetInterfaceProperties(Device, pszDeviceInterfaceId, 0, NULL) : E_INVALIDARG;
+    /* Windows 11 answers ERROR_NOT_FOUND for an interface the device has not registered */
+    if (hr == E_INVALIDARG && Device->DevInst)
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    if (SUCCEEDED(hr))
+        hr = CrToHresult(CfgmgrSetSoftwareDeviceInterfaceState(pszDeviceInterfaceId, fEnabled));
+    LeaveSwDevice(Device);
+    return hr;
 }
 
 HRESULT

@@ -253,7 +253,11 @@ typedef enum _PLUGPLAY_CONTROL_CLASS
     PlugPlayControlResetDevice,
     PlugPlayControlHaltDevice,
     PlugPlayControlGetBlockedDriverList,
-    MaxPlugPlayControl
+    MaxPlugPlayControl,
+#ifdef __REACTOS__
+    /* Not a class of Windows, which changes the state of an interface through its device API driver */
+    PlugPlayControlSetDeviceInterfaceState = 0x100
+#endif
 } PLUGPLAY_CONTROL_CLASS;
 
 typedef enum _PLUGPLAY_BUS_CLASS
@@ -594,6 +598,14 @@ typedef struct _PLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA
     ULONG DeviceInstanceLength;
     PWSTR DeviceInstance;
 } PLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA, *PPLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA;
+
+#ifdef __REACTOS__
+typedef struct _PLUGPLAY_CONTROL_INTERFACE_STATE_DATA
+{
+    UNICODE_STRING SymbolicLinkName;
+    BOOLEAN Enable;
+} PLUGPLAY_CONTROL_INTERFACE_STATE_DATA, *PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA;
+#endif
 
 //
 // Plug and Play Bus Type Definition

@@ -3,7 +3,8 @@
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
  *              requests made at DISPATCH_LEVEL, repeated registration, enabling
- *              the event from two threads at once, binding again after a failed bind
+ *              the event from two threads at once, binding again after a failed bind,
+ *              IP_PKTINFO and malformed control data on a send
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -23,6 +24,7 @@ static volatile LONG ReceiveCount;
 static KSPIN_LOCK ReceiveLock;
 static volatile BOOLEAN Refuse;
 static CHAR Seen[MAX_SEEN][9];
+static ULONG SeenSource[MAX_SEEN];
 static ULONG LastControlLength;
 
 static
@@ -48,6 +50,8 @@ ReceiveFromEvent(
     Index = ReceiveCount;
     if (Index < MAX_SEEN && Data != NULL && DataIndication->Buffer.Length >= 8)
         RtlCopyMemory(Seen[Index], Data + DataIndication->Buffer.Offset, 8);
+    if (Index < MAX_SEEN && DataIndication->RemoteAddress != NULL)
+        SeenSource[Index] = ((PSOCKADDR_IN)DataIndication->RemoteAddress)->sin_addr.s_addr;
     LastControlLength = DataIndication->ControlInfoLength;
     InterlockedIncrement(&ReceiveCount);
     KeReleaseSpinLock(&ReceiveLock, OldIrql);
@@ -213,12 +217,17 @@ SetReceiveEvent(
 
 static
 NTSTATUS
-SendTo(
+SendToControl(
     _In_ PWSK_SOCKET Socket,
     _In_ PCSTR Payload,
-    _In_ USHORT Port)
+    _In_ USHORT Port,
+    _In_ BOOLEAN Messages,
+    _In_ ULONG ControlLength,
+    _In_reads_bytes_opt_(ControlLength) PCMSGHDR Control)
 {
+    PWSK_PROVIDER_DATAGRAM_DISPATCH Dispatch = (PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch;
     SOCKADDR_IN Address;
+    WSK_BUF_LIST List;
     WSK_BUF Buffer;
     KEVENT Event;
     NTSTATUS Status;
@@ -248,14 +257,32 @@ SendTo(
     Irp = NewIrp(&Event);
     if (Irp != NULL)
     {
-        Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskSendTo(
-            Socket, &Buffer, 0, (PSOCKADDR)&Address, 0, NULL, Irp);
+        if (Messages)
+        {
+            List.Next = NULL;
+            List.Buffer = Buffer;
+            Status = Dispatch->WskSendMessages(Socket, &List, 0, (PSOCKADDR)&Address, ControlLength, Control, Irp);
+        }
+        else
+        {
+            Status = Dispatch->WskSendTo(Socket, &Buffer, 0, (PSOCKADDR)&Address, ControlLength, Control, Irp);
+        }
         Status = WaitIrp(Irp, &Event, Status);
         IoFreeIrp(Irp);
     }
     IoFreeMdl(Buffer.Mdl);
     ExFreePoolWithTag(Data, 'tEsW');
     return Status;
+}
+
+static
+NTSTATUS
+SendTo(
+    _In_ PWSK_SOCKET Socket,
+    _In_ PCSTR Payload,
+    _In_ USHORT Port)
+{
+    return SendToControl(Socket, Payload, Port, FALSE, 0, NULL);
 }
 
 static
@@ -755,6 +782,116 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+VOID
+TestSendControl(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    union
+    {
+        CMSGHDR Header;
+        UCHAR Space[64];
+    } Control;
+    ULONG ControlLength = (ULONG)WSA_CMSG_SPACE(sizeof(IN_PKTINFO));
+    IN_PKTINFO PktInfo;
+    NTSTATUS Status;
+    ULONG Source;
+    LONG Count;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+    RtlZeroMemory(SeenSource, sizeof(SeenSource));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 5);
+    Sender = CreateSocket(&ProviderNpi);
+    if (Receiver == NULL || Sender == NULL)
+        goto close;
+    Status = BindSocket(Sender, 0, 0);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    ASSERT(ControlLength <= sizeof(Control));
+    RtlZeroMemory(&Control, sizeof(Control));
+    Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo));
+    Control.Header.cmsg_level = IPPROTO_IP;
+    Control.Header.cmsg_type = IP_PKTINFO;
+    PktInfo.ipi_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+    PktInfo.ipi_ifindex = 0;
+    RtlCopyMemory(WSA_CMSG_DATA(&Control.Header), &PktInfo, sizeof(PktInfo));
+
+    Status = SendToControl(Sender, "CTRL0001", WSKEVENTS_PORT + 5, FALSE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(1, 2000);
+    ok_eq_long(Count, 1L);
+    ok(WasSeen("CTRL0001"), "CTRL0001 was not indicated\n");
+    Source = RtlUlongByteSwap(SeenSource[0]);
+    ok_eq_hex(Source, 0x7f000001UL);
+
+    Status = SendToControl(Sender, "CTRL0002", WSKEVENTS_PORT + 5, TRUE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(2, 2000);
+    ok_eq_long(Count, 2L);
+    ok(WasSeen("CTRL0002"), "CTRL0002 was not indicated\n");
+    Source = RtlUlongByteSwap(SeenSource[1]);
+    ok_eq_hex(Source, 0x7f000001UL);
+
+    /* 192.0.2.1 is reserved for documentation and is not an address of this machine */
+    PktInfo.ipi_addr.s_addr = RtlUlongByteSwap(0xc0000201);
+    RtlCopyMemory(WSA_CMSG_DATA(&Control.Header), &PktInfo, sizeof(PktInfo));
+    Status = SendToControl(Sender, "CTRL0003", WSKEVENTS_PORT + 5, FALSE, ControlLength, &Control.Header);
+    ok(!NT_SUCCESS(Status), "WskSendTo from a source address that is not local returned 0x%lx\n", Status);
+    Status = SendToControl(Sender, "CTRL0004", WSKEVENTS_PORT + 5, TRUE, ControlLength, &Control.Header);
+    ok(!NT_SUCCESS(Status), "WskSendMessages from a source address that is not local returned 0x%lx\n", Status);
+
+    PktInfo.ipi_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+    RtlCopyMemory(WSA_CMSG_DATA(&Control.Header), &PktInfo, sizeof(PktInfo));
+
+    Control.Header.cmsg_len = ControlLength + 1;
+    Status = SendToControl(Sender, "CTRL0005", WSKEVENTS_PORT + 5, FALSE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+    Status = SendToControl(Sender, "CTRL0006", WSKEVENTS_PORT + 5, TRUE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+
+    Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo) - 1);
+    Status = SendToControl(Sender, "CTRL0007", WSKEVENTS_PORT + 5, FALSE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+
+    Control.Header.cmsg_len = sizeof(CMSGHDR) - 1;
+    Status = SendToControl(Sender, "CTRL0008", WSKEVENTS_PORT + 5, TRUE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+
+    Status = SendToControl(Sender, "CTRL0009", WSKEVENTS_PORT + 5, FALSE, ControlLength, NULL);
+    ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
+
+    Count = WaitReceives(3, 500);
+    ok_eq_long(Count, 2L);
+
+close:
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -805,5 +942,6 @@ TestMessageHandler(
     TestRegisterAgain();
     TestConcurrentEnable();
     TestBindAfterFailedBind();
+    TestSendControl();
     return STATUS_SUCCESS;
 }

@@ -16,6 +16,7 @@
 #include "netio_iphlp.h"
 
 static KMT_MESSAGE_HANDLER TestGetIfEntry2;
+static KMT_MESSAGE_HANDLER TestGetBestRoute2;
 
 static
 NTSTATUS
@@ -44,6 +45,61 @@ TestGetIfEntry2(
     return Status;
 }
 
+static
+NTSTATUS
+TestGetBestRoute2(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG ControlCode,
+    _In_opt_ PVOID Buffer,
+    _In_ SIZE_T InLength,
+    _Inout_ PSIZE_T OutLength)
+{
+    PNETIOIPHLP_BEST_ROUTE Request = Buffer;
+    PMIB_IPFORWARD_TABLE2 Table;
+    SOCKADDR_INET Destination, Source;
+    NTSTATUS Status;
+    ULONG i;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+    UNREFERENCED_PARAMETER(ControlCode);
+
+    ok_irql(PASSIVE_LEVEL);
+    if (Buffer == NULL || InLength != sizeof(*Request) || *OutLength < sizeof(*Request))
+    {
+        *OutLength = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(&Destination, sizeof(Destination));
+    Destination.Ipv4.sin_family = AF_INET;
+    Destination.Ipv4.sin_addr.s_addr = Request->Destination;
+    if (Request->Destination == 0)
+    {
+        Destination.Ipv4.sin_addr.s_addr = NETIOIPHLP_LOOPBACK_ADDRESS;
+        Status = GetIpForwardTable2(AF_INET, &Table);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        if (NT_SUCCESS(Status))
+        {
+            for (i = 0; i < Table->NumEntries; i++)
+            {
+                if (Table->Table[i].DestinationPrefix.PrefixLength == 0 &&
+                    Table->Table[i].NextHop.Ipv4.sin_addr.s_addr != 0)
+                {
+                    Destination.Ipv4.sin_addr.s_addr = Table->Table[i].NextHop.Ipv4.sin_addr.s_addr;
+                    break;
+                }
+            }
+            FreeMibTable(Table);
+        }
+    }
+
+    Request->Destination = Destination.Ipv4.sin_addr.s_addr;
+    Status = GetBestRoute2(NULL, 0, NULL, &Destination, 0, &Request->Route, &Source);
+    ok_irql(PASSIVE_LEVEL);
+    *OutLength = NT_SUCCESS(Status) ? sizeof(*Request) : 0;
+    return Status;
+}
+
 NTSTATUS
 TestEntry(
     _In_ PDRIVER_OBJECT DriverObject,
@@ -51,6 +107,8 @@ TestEntry(
     _Out_ PCWSTR *DeviceName,
     _Inout_ INT *Flags)
 {
+    NTSTATUS Status;
+
     PAGED_CODE();
 
     UNREFERENCED_PARAMETER(DriverObject);
@@ -59,7 +117,10 @@ TestEntry(
 
     *DeviceName = L"NetioIpHlp";
 
-    return KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_GET_IF_ENTRY2, NULL, TestGetIfEntry2);
+    Status = KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_GET_IF_ENTRY2, NULL, TestGetIfEntry2);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    return KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_GET_BEST_ROUTE2, NULL, TestGetBestRoute2);
 }
 
 VOID

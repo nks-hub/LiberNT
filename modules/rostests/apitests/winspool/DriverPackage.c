@@ -235,7 +235,7 @@ static VOID
 DeleteTestDriver(VOID)
 {
     static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT",
-                                    L"TESTREN.DAT", L"TESTROLL.DAT" };
+                                    L"TESTREN.DAT", L"TESTROLL.DAT", L"TESTROLL.DAT.apd-new", L"TESTROLL.DAT.apd-old" };
     static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME, LOCK_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
@@ -1106,6 +1106,40 @@ CreateTestJunction(PCWSTR Link, PCWSTR Target)
     return FALSE;
 }
 
+static VOID
+TestLinkedInf(PCWSTR InfPath, PCSTR What)
+{
+    static const PCWSTR Names[] = { L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    WCHAR StoreInf[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    DWORD Size = sizeof(Dir);
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(FAILED(hr), "UploadPrinterDriverPackageW returned 0x%lx for %s\n", hr, What);
+    if (hr == S_OK)
+        DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+
+    hr = InstallPrinterDriverFromPackageW(NULL, InfPath, L"LiberNT Package Plain Printer", NULL, 0);
+    ok(FAILED(hr), "InstallPrinterDriverFromPackageW returned 0x%lx for %s\n", hr, What);
+    hKey = OpenDriverKey(L"LiberNT Package Plain Printer");
+    ok(hKey == NULL, "A driver was registered from %s\n", What);
+    if (hKey)
+        RegCloseKey(hKey);
+
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\LiberNT Package Plain Printer");
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Dir, Size, &Size))
+    {
+        for (i = 0; i < ARRAYSIZE(Names); i++)
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", Dir, Names[i]);
+            DeleteFileW(Path);
+        }
+    }
+}
+
 /* The INF takes TESTJNC.DLL from a directory of the package that is a junction to a directory outside of it */
 static VOID
 TestJunctionPackage(VOID)
@@ -1163,6 +1197,46 @@ TestJunctionPackage(VOID)
         RemoveDirectoryW(Link);
     }
 
+    /* A whole package whose directory is reached through a junction, and whose INF is reached through a link */
+    if (!WriteTestFile(Outside, L"lntprnroot.inf", PlainInf, sizeof(PlainInf) - 1) ||
+        !WriteTestFile(Outside, L"TESTPLAIN.DLL", Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Outside, L"TESTPLAIN.GPD", Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnroot.inf (%lu)\n", GetLastError());
+    }
+    else
+    {
+        StringCchPrintfW(Link, ARRAYSIZE(Link), L"%sr", Outside);
+        if (CreateTestJunction(Link, Outside))
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\lntprnroot.inf", Link);
+            TestLinkedInf(Path, "a package directory that is a junction");
+            RemoveDirectoryW(Link);
+        }
+        else
+        {
+            skip("The file system does not take a junction (%lu)\n", GetLastError());
+        }
+
+        StringCchPrintfW(Link, ARRAYSIZE(Link), L"%s\\lntprnlink.inf", Outside);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\lntprnroot.inf", Outside);
+        if (CreateSymbolicLinkW(Link, Path, 0))
+        {
+            TestLinkedInf(Link, "an INF that is a link");
+            DeleteFileW(Link);
+        }
+        else
+        {
+            skip("The file system does not take a link (%lu)\n", GetLastError());
+        }
+    }
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\lntprnroot.inf", Outside);
+    DeleteFileW(Path);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTPLAIN.DLL", Outside);
+    DeleteFileW(Path);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTPLAIN.GPD", Outside);
+    DeleteFileW(Path);
     StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTJNC.DLL", Outside);
     DeleteFileW(Path);
     RemoveDirectoryW(Outside);
@@ -1633,12 +1707,23 @@ TestDriverUpdate(PLOCK_TEST Test, PCWSTR SourceDir, PCWSTR Gone)
 {
     static const char First[] = "version A\r\n";
     static const char Second[] = "version B, longer\r\n";
-    WCHAR Fresh[MAX_PATH], Path[MAX_PATH], Value[MAX_PATH] = L"";
+    static const char Foreign[] = "not a file of the update\r\n";
+    WCHAR Fresh[MAX_PATH], Path[MAX_PATH] = L"", Value[MAX_PATH] = L"";
     PWSTR DataFile = Test->Info.pDataFile, ConfigFile = Test->Info.pConfigFile;
     DWORD Size = sizeof(Path);
     WIN32_FIND_DATAW Find;
+    BOOL HasForeign = FALSE;
     HANDLE hFind;
     HKEY hKey;
+
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Path, Size, &Size))
+    {
+        StringCchCatW(Path, ARRAYSIZE(Path), L"\\3");
+        CreateDirectoryW(Path, NULL);
+        HasForeign = WriteTestFile(Path, L"TESTROLL.DAT.apd-new", Foreign, sizeof(Foreign) - 1) &&
+                     WriteTestFile(Path, L"TESTROLL.DAT.apd-old", Foreign, sizeof(Foreign) - 1);
+    }
+    ok(HasForeign, "Cannot write TESTROLL.DAT.apd-new and TESTROLL.DAT.apd-old (%lu)\n", GetLastError());
 
     StringCchPrintfW(Fresh, ARRAYSIZE(Fresh), L"%s\\TESTROLL.DAT", SourceDir);
     if (!WriteTestFile(SourceDir, L"TESTROLL.DAT", First, sizeof(First) - 1))
@@ -1662,6 +1747,25 @@ TestDriverUpdate(PLOCK_TEST Test, PCWSTR SourceDir, PCWSTR Gone)
 
     TestLockedDestination(Test, SourceDir);
     ok(DriverFileIs(L"TESTROLL.DAT", First), "TESTROLL.DAT was not restored after an update that failed\n");
+
+    if (HasForeign)
+    {
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-new", Foreign), "An update that failed changed TESTROLL.DAT.apd-new\n");
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-old", Foreign), "An update that failed changed TESTROLL.DAT.apd-old\n");
+    }
+    ok(AddPrinterDriverExW(NULL, 8, (PBYTE)&Test->Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+       "AddPrinterDriverExW failed with %lu\n", GetLastError());
+    ok(DriverFileIs(L"TESTROLL.DAT", Second), "TESTROLL.DAT is not the second version\n");
+    if (HasForeign)
+    {
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-new", Foreign), "The update changed TESTROLL.DAT.apd-new\n");
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-old", Foreign), "The update changed TESTROLL.DAT.apd-old\n");
+    }
+    StringCchPrintfW(Value, ARRAYSIZE(Value), L"%s\\TESTROLL.DAT.apd-new", Path);
+    DeleteFileW(Value);
+    StringCchPrintfW(Value, ARRAYSIZE(Value), L"%s\\TESTROLL.DAT.apd-old", Path);
+    DeleteFileW(Value);
+    Value[0] = UNICODE_NULL;
 
     hKey = OpenDriverKey(LOCK_DRIVER_NAME);
     ok(hKey != NULL, "Driver %S is not registered any more\n", LOCK_DRIVER_NAME);
@@ -1944,6 +2048,22 @@ TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
     else
     {
         skip("Moving %S away failed with %lu\n", StoreDir, GetLastError());
+    }
+
+    /* The state an upload leaves when it cannot delete its staging directory */
+    StringCchPrintfW(Backup, ARRAYSIZE(Backup), L"%s.stage-0-0", StoreDir);
+    if (CreateDirectoryW(Backup, NULL) && WriteTestFile(Backup, L"TESTKEEP.DAT", Text, sizeof(Text) - 1))
+    {
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx over a staging directory\n", hr);
+        ok(GetFileAttributesW(Backup) == INVALID_FILE_ATTRIBUTES, "%S was left behind\n", Backup);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S is gone after an upload over a staging directory\n", StoreInf);
+    }
+    else
+    {
+        skip("Creating %S failed with %lu\n", Backup, GetLastError());
+        RemoveDirectoryW(Backup);
     }
 
     ok(WriteTestFile(Dir, L"TESTPKG.HLP", Text, sizeof(Text) - 1), "Restoring TESTPKG.HLP failed\n");

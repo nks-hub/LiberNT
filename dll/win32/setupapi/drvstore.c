@@ -11,7 +11,7 @@
 static const WCHAR RepositoryPath[] = L"\\System32\\DriverStore\\FileRepository";
 static const WCHAR VersionSection[] = L"Version";
 static const WCHAR CatalogFile[] = L"CatalogFile";
-static const WCHAR BackupPattern[] = L".stage-*.old";
+static const WCHAR StagingPattern[] = L".stage-*";
 
 #define RESTORE_ATTEMPTS 5
 #define RESTORE_DELAY 100
@@ -281,8 +281,8 @@ ResolvePackagePath(
     if (_wcsnicmp(Path, Base, BaseLength) != 0 || Path[BaseLength] != L'\\' || !Path[BaseLength + 1])
         return ERROR_BAD_PATHNAME;
 
-    /* A junction or a link below the root leads out of it although the path does not */
-    for (Cursor = Path + BaseLength + 1; ; Cursor++)
+    /* A junction or a link, the root itself or below it, leads out of the root although the path does not */
+    for (Cursor = Path + BaseLength; ; Cursor++)
     {
         Saved = *Cursor;
         if (Saved != L'\\' && Saved != UNICODE_NULL)
@@ -1074,11 +1074,12 @@ RestoreStoreBackup(
     HANDLE hFind;
     PWSTR Name;
     DWORD Error = ERROR_SUCCESS;
+    INT Length;
 
-    if (lstrlenW(Store) + ARRAY_SIZE(BackupPattern) > MAX_PATH)
+    if (lstrlenW(Store) + ARRAY_SIZE(StagingPattern) > MAX_PATH)
         return TRUE;
     lstrcpyW(Backup, Store);
-    lstrcatW(Backup, BackupPattern);
+    lstrcatW(Backup, StagingPattern);
 
     hFind = FindFirstFileW(Backup, &FindData);
     if (hFind == INVALID_HANDLE_VALUE)
@@ -1094,7 +1095,10 @@ RestoreStoreBackup(
         }
         lstrcpyW(Name + 1, FindData.cFileName);
 
-        if (GetFileAttributesW(Store) != INVALID_FILE_ATTRIBUTES)
+        /* Staging runs under the package lock, so a staging directory found here is one its owner could not delete */
+        Length = lstrlenW(FindData.cFileName);
+        if (Length < 4 || _wcsicmp(FindData.cFileName + Length - 4, L".old") != 0 ||
+            GetFileAttributesW(Store) != INVALID_FILE_ATTRIBUTES)
         {
             DeleteDirectoryTree(Backup);
         }
@@ -1185,6 +1189,14 @@ StageLockedDriverPackage(
         FindStoreInf(Source, BaseName, Architecture, StoreInfFileName ? StoreInfFileName : Store))
     {
         return TRUE;
+    }
+
+    Error = ResolvePackagePath(SourceRoot, BaseName, Target);
+    if (Error != ERROR_SUCCESS)
+    {
+        ERR("INF %s cannot be taken from the package directory\n", debugstr_w(Source));
+        SetLastError(Error);
+        return FALSE;
     }
 
     if (!BuildStoreDirectory(Source, BaseName, Architecture, Store) ||

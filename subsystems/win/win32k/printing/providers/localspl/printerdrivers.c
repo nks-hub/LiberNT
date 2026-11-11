@@ -23,6 +23,7 @@ typedef struct {
 typedef struct {
     WCHAR   src[MAX_PATH+MAX_PATH];
     WCHAR   dst[MAX_PATH+MAX_PATH];
+    WCHAR   stage[MAX_PATH+MAX_PATH];
     DWORD   srclen;
     DWORD   dstlen;
     DWORD   copyflags;
@@ -902,10 +903,33 @@ static const WCHAR * const apd_value_names[APD_VALUE_COUNT] =
     dependent_filesW, monitorW, datatypeW, previous_namesW
 };
 
-static void apd_side_name( const WCHAR *dst, const WCHAR *suffix, WCHAR *name )
+static void apd_side_name( const apd_data_t *apd, DWORD index, const WCHAR *suffix, WCHAR *name )
 {
-    lstrcpyW( name, dst );
-    lstrcatW( name, suffix );
+    StringCchPrintfW( name, APD_NAME_SIZE, L"%s\\%lu.%s", apd->stage, index, suffix );
+}
+
+/* The new files and the backups of one update live in a directory only this update can have created */
+static BOOL apd_create_stage( apd_data_t *apd )
+{
+    DWORD id = GetTickCount() ^ (GetCurrentProcessId() << 16) ^ GetCurrentThreadId();
+
+    for (;;)
+    {
+        if (FAILED(StringCchPrintfW( apd->stage, ARRAYSIZE(apd->stage), L"%.*s.apd-%08lx", (int)apd->dstlen, apd->dst, id )))
+        {
+            SetLastError( ERROR_FILENAME_EXCED_RANGE );
+            break;
+        }
+        if (CreateDirectoryW( apd->stage, NULL ))
+            return TRUE;
+        if (GetLastError() != ERROR_ALREADY_EXISTS)
+            break;
+        id++;
+    }
+
+    apd->error = GetLastError();
+    apd->stage[0] = 0;
+    return FALSE;
 }
 
 static BOOL apd_stage( const WCHAR *srcname, apd_data_t *apd )
@@ -936,8 +960,14 @@ static BOOL apd_stage( const WCHAR *srcname, apd_data_t *apd )
     }
     lstrcpyW( dst, apd->dst );
 
-    apd_side_name( dst, L".apd-new", tmp );
-    if (!CopyFileW( srcname, tmp, FALSE ))
+    if (!apd->stage[0] && !apd_create_stage( apd ))
+    {
+        HeapFree( GetProcessHeap(), 0, dst );
+        return FALSE;
+    }
+
+    apd_side_name( apd, apd->file_count, L"new", tmp );
+    if (!CopyFileW( srcname, tmp, TRUE ))
     {
         apd->error = GetLastError();
         DeleteFileW( tmp );
@@ -961,8 +991,8 @@ static BOOL apd_commit( apd_data_t *apd )
     for (i = 0; i < apd->file_count; i++)
     {
         file = &apd->files[i];
-        apd_side_name( file->dst, L".apd-new", tmp );
-        apd_side_name( file->dst, L".apd-old", old );
+        apd_side_name( apd, i, L"new", tmp );
+        apd_side_name( apd, i, L"old", old );
 
         existed = GetFileAttributesW( file->dst ) != INVALID_FILE_ATTRIBUTES;
         if (existed && apd_same_file( tmp, file->dst ))
@@ -972,7 +1002,7 @@ static BOOL apd_commit( apd_data_t *apd )
             continue;
         }
 
-        if (existed && !MoveFileExW( file->dst, old, MOVEFILE_REPLACE_EXISTING ))
+        if (existed && !MoveFileW( file->dst, old ))
         {
             apd->error = GetLastError();
             return FALSE;
@@ -1004,7 +1034,7 @@ static DWORD apd_release( apd_data_t *apd, BOOL rollback )
         file = &apd->files[i];
         if (file->state == APD_STAGED)
         {
-            apd_side_name( file->dst, L".apd-new", name );
+            apd_side_name( apd, i, L"new", name );
             DeleteFileW( name );
         }
         else if (file->state == APD_CREATED && rollback)
@@ -1014,7 +1044,7 @@ static DWORD apd_release( apd_data_t *apd, BOOL rollback )
         }
         else if (file->state == APD_REPLACED)
         {
-            apd_side_name( file->dst, L".apd-old", name );
+            apd_side_name( apd, i, L"old", name );
             if (rollback)
             {
                 if (!MoveFileExW( name, file->dst, MOVEFILE_REPLACE_EXISTING ) && error == ERROR_SUCCESS)
@@ -1028,6 +1058,11 @@ static DWORD apd_release( apd_data_t *apd, BOOL rollback )
     HeapFree( GetProcessHeap(), 0, apd->files );
     apd->files = NULL;
     apd->file_count = 0;
+
+    /* A backup that could not be put back stays in the directory, which then stays too */
+    if (apd->stage[0] && !RemoveDirectoryW( apd->stage ) && error == ERROR_SUCCESS)
+        MoveFileExW( apd->stage, NULL, MOVEFILE_DELAY_UNTIL_REBOOT );
+    apd->stage[0] = 0;
 
     for (i = 0; i < APD_VALUE_COUNT; i++)
     {
@@ -1297,6 +1332,7 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
     apd.error = ERROR_SUCCESS;
     apd.files = NULL;
     apd.file_count = 0;
+    apd.stage[0] = 0;
     ZeroMemory(apd.saved, sizeof(apd.saved));
     CreateDirectoryW(apd.src, NULL);
     CreateDirectoryW(apd.dst, NULL);

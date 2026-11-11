@@ -938,6 +938,65 @@ TestOtherEnvironment(VOID)
     RemoveDirectoryW(Dir);
 }
 
+/* Only <name>.inf in FileRepository\<name>.inf_<architecture>_<hash> is a staged package; any other INF is a package source */
+static VOID
+TestMisplacedPackage(PCWSTR Parent, PCWSTR Directory, PCWSTR InfName)
+{
+    static const PCWSTR Names[] = { L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Root[MAX_PATH], Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    HRESULT hr;
+    PWSTR Last;
+    UINT i;
+
+    GetWindowsDirectoryW(Root, ARRAYSIZE(Root));
+    StringCchCatW(Root, ARRAYSIZE(Root), L"\\System32\\DriverStore\\");
+    StringCchCatW(Root, ARRAYSIZE(Root), Parent);
+    CreateDirectoryW(Root, NULL);
+    StringCchPrintfW(Dir, ARRAYSIZE(Dir), L"%s\\%s", Root, Directory);
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, InfName);
+
+    if (WriteTestFile(Dir, InfName, PlainInf, sizeof(PlainInf) - 1) &&
+        WriteTestFile(Dir, Names[0], Text, sizeof(Text) - 1) &&
+        WriteTestFile(Dir, Names[1], Text, sizeof(Text) - 1))
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfPath, hr);
+        if (hr == S_OK)
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"\\FileRepository\\%s_" TEST_STORE_ARCHITECTURE L"_", InfName);
+            ok(wcsstr(StoreInf, Path) != NULL && _wcsicmp(StoreInf, InfPath) != 0, "%S was taken for the staged package %S\n", InfPath, StoreInf);
+
+            StringCchCopyW(Path, ARRAYSIZE(Path), StoreInf);
+            Last = wcsrchr(Path, L'\\');
+            if (Last)
+            {
+                StringCchCopyW(Last + 1, ARRAYSIZE(Path) - (Last + 1 - Path), Names[0]);
+                ok(GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES, "%S was not staged from %S\n", Path, Dir);
+            }
+
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", StoreInf, hr);
+        }
+    }
+    else
+    {
+        skip("Failed to create the package %S (%lu)\n", InfPath, GetLastError());
+    }
+
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+    if (wcscmp(Parent, L"FileRepository") != 0)
+        RemoveDirectoryW(Root);
+}
+
 static BOOL
 FindPublishedInf(PCWSTR InfPath, PWSTR Published)
 {
@@ -1634,6 +1693,8 @@ START_TEST(DriverPackage)
     TestInstallPackage(L"lntprninc", L"LiberNT Package Include Printer", IncludeInf, sizeof(IncludeInf) - 1,
                        L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"lntprncmn.inf");
     TestOtherEnvironment();
+    TestMisplacedPackage(L"FileRepository-backup", L"lntprnsib", L"lntprnsib.inf");
+    TestMisplacedPackage(L"FileRepository", L"lntprnbadh.inf_" TEST_STORE_ARCHITECTURE L"_0000000000000000", L"lntprnbadh.inf");
     TestIncompleteUpdate();
 
     if (!CreateTestPackage(Dir, InfPath))

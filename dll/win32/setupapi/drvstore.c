@@ -1115,8 +1115,9 @@ StageDriverPackage(
     if (IsSystemInfDirectory(SourceRoot))
         return TRUE;
     /* A package in the store is the source of the package of another architecture */
-    if (_wcsnicmp(SourceRoot, Root, lstrlenW(Root)) == 0 &&
-        (!StoreInfFileName || FindStoreInf(Source, BaseName, Architecture, StoreInfFileName)))
+    Length = lstrlenW(Root);
+    if (_wcsnicmp(SourceRoot, Root, Length) == 0 && SourceRoot[Length] == L'\\' &&
+        FindStoreInf(Source, BaseName, Architecture, StoreInfFileName ? StoreInfFileName : Store))
     {
         return TRUE;
     }
@@ -1656,7 +1657,7 @@ DriverStoreAddDriverPackageW(
     OUT PWSTR ReturnPath,
     IN OUT PDWORD ReturnLength)
 {
-    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
+    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Published[MAX_PATH];
     PWSTR BaseName;
     DWORD Length;
     HRESULT hr;
@@ -1672,9 +1673,10 @@ DriverStoreAddDriverPackageW(
     /* SetupCopyOEMInfW publishes for the native architecture only */
     if (Architecture == GetNativeArchitecture())
     {
-        if (!SetupCopyOEMInfW(Source, NULL, SPOST_NONE, 0, NULL, 0, NULL, NULL))
+        if (!SetupCopyOEMInfW(Source, NULL, SPOST_NONE, 0, Published, ARRAY_SIZE(Published), NULL, NULL))
             return HRESULT_FROM_WIN32(GetLastError());
-        if (!FindSourceStoreInf(Source, Architecture, Source, StoreInf))
+        /* A source inside the store that is not a package INF does not name the package staged from it */
+        if (!FindStoreInf(Published, BaseName, Architecture, StoreInf))
             return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
     }

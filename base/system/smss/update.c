@@ -35,7 +35,7 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
     UNREFERENCED_PARAMETER(ValueName);
     UNREFERENCED_PARAMETER(Context);
     UNREFERENCED_PARAMETER(EntryContext);
-    if (ValueType != REG_SZ || ValueLength < sizeof(WCHAR) ||
+    if ((ValueType != REG_SZ && ValueType != REG_EXPAND_SZ) || ValueLength < sizeof(WCHAR) ||
         ValueLength > MAXUSHORT || ValueLength % sizeof(WCHAR) ||
         ((PWSTR)ValueData)[ValueLength / sizeof(WCHAR) - 1])
         return STATUS_INVALID_PARAMETER;

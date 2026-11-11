@@ -1646,4 +1646,13 @@ interface winspool {
     DWORD _RpcAddDriverCatalog(
         /* TODO */
     );
+
+    /* Function 0x63 */
+    DWORD _RpcInstallPrinterDriverFromPackage(
+        [in, unique] WINSPOOL_HANDLE pszServer,
+        [in, string, unique] const WCHAR* pszInfPath,
+        [in, string, unique] const WCHAR* pszDriverName,
+        [in, string, unique] const WCHAR* pszEnvironment,
+        [in] DWORD dwFlags
+    );
 }

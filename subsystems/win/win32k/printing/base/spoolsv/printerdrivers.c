@@ -263,6 +263,25 @@ _RpcAddPrinterDriverEx(WINSPOOL_HANDLE pName, WINSPOOL_DRIVER_CONTAINER* pDriver
 }
 
 DWORD
+_RpcInstallPrinterDriverFromPackage(WINSPOOL_HANDLE pszServer, const WCHAR* pszInfPath, const WCHAR* pszDriverName, const WCHAR* pszEnvironment, DWORD dwFlags)
+{
+    DWORD dwErrorCode;
+    HRESULT hr;
+
+    dwErrorCode = RpcImpersonateClient(NULL);
+    if (dwErrorCode != ERROR_SUCCESS)
+    {
+        ERR("RpcImpersonateClient failed with error %lu!\n", dwErrorCode);
+        return (DWORD)HRESULT_FROM_WIN32(dwErrorCode);
+    }
+
+    hr = InstallPrinterDriverFromPackageW(pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
+
+    RpcRevertToSelf();
+    return (DWORD)hr;
+}
+
+DWORD
 _RpcDeletePrinterDriver(WINSPOOL_HANDLE pName, WCHAR* pEnvironment, WCHAR* pDriverName)
 {
     DWORD dwErrorCode;

@@ -1375,6 +1375,124 @@ TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
     TestDriverUpdate(&Test, SourceDir, Gone);
 }
 
+#define RACE_TIME 5000
+
+typedef struct _RACE_TEST
+{
+    PCWSTR InfPath;
+    PCWSTR StoreInf;
+    LONG Installed;
+    LONG Refused;
+    LONG Broken;
+    LONG Deleted;
+    LONG UploadFailed;
+} RACE_TEST, *PRACE_TEST;
+
+static const PCWSTR RaceFiles[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT", L"TESTREN.DAT" };
+
+static UINT
+CountDriverFiles(VOID)
+{
+    UINT i, Present = 0;
+
+    for (i = 0; i < ARRAYSIZE(RaceFiles); i++)
+    {
+        if (DriverFileExists(RaceFiles[i]))
+            Present++;
+    }
+    return Present;
+}
+
+static DWORD WINAPI
+RaceInstallThread(PVOID Parameter)
+{
+    PRACE_TEST Test = Parameter;
+    DWORD Start = GetTickCount();
+    UINT Before, After;
+    HRESULT hr;
+    HKEY hKey;
+
+    do
+    {
+        Before = CountDriverFiles();
+        hr = InstallPrinterDriverFromPackageW(NULL, Test->StoreInf, TEST_DRIVER_NAME, NULL, IPDFP_COPY_ALL_FILES);
+        After = CountDriverFiles();
+        hKey = OpenDriverKey(TEST_DRIVER_NAME);
+        if (hr == S_OK)
+        {
+            Test->Installed++;
+            if (!hKey || After != ARRAYSIZE(RaceFiles))
+                Test->Broken++;
+        }
+        else
+        {
+            Test->Refused++;
+            if (hKey || After != Before)
+                Test->Broken++;
+        }
+        if (hKey)
+            RegCloseKey(hKey);
+        DeleteTestDriver();
+    } while (GetTickCount() - Start < RACE_TIME);
+
+    return 0;
+}
+
+static DWORD WINAPI
+RaceDeleteThread(PVOID Parameter)
+{
+    PRACE_TEST Test = Parameter;
+    DWORD Start = GetTickCount();
+    WCHAR StoreInf[MAX_PATH];
+    ULONG Length;
+    HRESULT hr;
+
+    do
+    {
+        if (DeletePrinterDriverPackageW(NULL, Test->StoreInf, NULL) == S_OK)
+            Test->Deleted++;
+        Length = ARRAYSIZE(StoreInf);
+        hr = UploadPrinterDriverPackageW(NULL, Test->InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        if (hr != S_OK || _wcsicmp(StoreInf, Test->StoreInf) != 0)
+            Test->UploadFailed++;
+    } while (GetTickCount() - Start < RACE_TIME);
+
+    return 0;
+}
+
+static VOID
+TestConcurrentInstall(PCWSTR InfPath, PCWSTR StoreInf)
+{
+    static RACE_TEST Test;
+    WCHAR Again[MAX_PATH];
+    ULONG Length = ARRAYSIZE(Again);
+    HANDLE Threads[2];
+    HRESULT hr;
+    UINT i;
+
+    Test.InfPath = InfPath;
+    Test.StoreInf = StoreInf;
+    Threads[0] = CreateThread(NULL, 0, RaceInstallThread, &Test, 0, NULL);
+    Threads[1] = CreateThread(NULL, 0, RaceDeleteThread, &Test, 0, NULL);
+    for (i = 0; i < ARRAYSIZE(Threads); i++)
+    {
+        ok(Threads[i] != NULL, "CreateThread failed with %lu\n", GetLastError());
+        if (Threads[i])
+        {
+            ok(WaitForSingleObject(Threads[i], 60000) == WAIT_OBJECT_0, "Thread %u did not finish\n", i);
+            CloseHandle(Threads[i]);
+        }
+    }
+
+    trace("%ld installed, %ld refused, %ld packages deleted\n", Test.Installed, Test.Refused, Test.Deleted);
+    ok(Test.Broken == 0, "%ld of %ld installations were left half done\n", Test.Broken, Test.Installed + Test.Refused);
+    ok(Test.UploadFailed == 0, "%ld uploads failed or gave another store INF\n", Test.UploadFailed);
+
+    DeleteTestDriver();
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, Again, &Length);
+    ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -1552,6 +1670,30 @@ START_TEST(DriverPackage)
     ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
 
     {
+        WCHAR Slashed[MAX_PATH], Value[MAX_PATH];
+        DWORD Size = sizeof(Value);
+        HKEY hNeeds;
+        PWSTR Next;
+
+        StringCchCopyW(Slashed, ARRAYSIZE(Slashed), StoreInf);
+        for (Next = Slashed; *Next; Next++)
+        {
+            if (*Next == L'\\')
+                *Next = L'/';
+        }
+        hr = InstallPrinterDriverFromPackageW(NULL, Slashed, NEEDS_DRIVER_NAME, NULL, IPDFP_COPY_ALL_FILES);
+        ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Slashed, hr);
+        hNeeds = OpenDriverKey(NEEDS_DRIVER_NAME);
+        ok(hNeeds != NULL, "Driver %S is not registered\n", NEEDS_DRIVER_NAME);
+        if (hNeeds)
+        {
+            ok(RegQueryValueExW(hNeeds, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+               !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
+            RegCloseKey(hNeeds);
+        }
+    }
+
+    {
         WCHAR DriverDir[MAX_PATH];
         DWORD Size = sizeof(DriverDir);
         static const char Keep[] = "not the package file\r\n";
@@ -1689,6 +1831,7 @@ START_TEST(DriverPackage)
     TestPackageLock(InfPath, StoreInf);
 
     DeleteTestDriver();
+    TestConcurrentInstall(InfPath, StoreInf);
 
     {
         WCHAR Other[MAX_PATH];

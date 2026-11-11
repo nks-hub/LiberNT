@@ -125,7 +125,112 @@ done:
         ExFreePool(SubjectContext);
 }
 
+static
+BOOLEAN
+CheckAccess(
+    _In_ PSECURITY_DESCRIPTOR Sd,
+    _In_ PSECURITY_SUBJECT_CONTEXT ProcessContext,
+    _In_ PACCESS_TOKEN ClientToken,
+    _In_ ACCESS_MASK DesiredAccess,
+    _Out_ PACCESS_MASK GrantedAccess)
+{
+    GENERIC_MAPPING Mapping = { FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS };
+    SECURITY_SUBJECT_CONTEXT Context = *ProcessContext;
+    NTSTATUS AccessStatus = STATUS_PENDING;
+    BOOLEAN Granted;
+
+    Context.ClientToken = ClientToken;
+    Context.ImpersonationLevel = SecurityImpersonation;
+    *GrantedAccess = 0;
+    Granted = SeAccessCheck(Sd, &Context, FALSE, DesiredAccess, 0, NULL, &Mapping, UserMode, GrantedAccess, &AccessStatus);
+    ok_eq_hex(AccessStatus, Granted ? STATUS_SUCCESS : STATUS_ACCESS_DENIED);
+    return Granted;
+}
+
+static
+VOID
+WriteRestrictedToken(VOID)
+{
+    ULONG DaclBuffer[(sizeof(ACL) + 2 * (sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE)) / sizeof(ULONG) + 1];
+    PACL Dacl = (PACL)DaclBuffer;
+    SECURITY_SUBJECT_CONTEXT SubjectContext;
+    PACCESS_TOKEN Token, Restricted = NULL, WriteRestricted = NULL;
+    TOKEN_GROUPS RestrictedGroups;
+    SECURITY_DESCRIPTOR Sd;
+    ACCESS_MASK GrantedAccess;
+    NTSTATUS Status;
+
+    SeCaptureSubjectContext(&SubjectContext);
+    Token = SubjectContext.PrimaryToken;
+
+    RestrictedGroups.GroupCount = 1;
+    RestrictedGroups.Groups[0].Attributes = 0;
+    RestrictedGroups.Groups[0].Sid = SeExports->SeDialupSid;
+
+    Status = SeFilterToken(Token, 0, NULL, NULL, &RestrictedGroups, &Restricted);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        Restricted = NULL;
+    Status = SeFilterToken(Token, WRITE_RESTRICTED, NULL, NULL, &RestrictedGroups, &WriteRestricted);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        WriteRestricted = NULL;
+    if (Restricted == NULL || WriteRestricted == NULL)
+        goto done;
+
+    ok_bool_true(SeTokenIsRestricted(Restricted), "restricted token is restricted");
+    ok_bool_false(SeTokenIsWriteRestricted(Restricted), "restricted token is write restricted");
+    ok_bool_true(SeTokenIsRestricted(WriteRestricted), "write-restricted token is restricted");
+    ok_bool_true(SeTokenIsWriteRestricted(WriteRestricted), "write-restricted token is write restricted");
+
+    Status = RtlCreateSecurityDescriptor(&Sd, SECURITY_DESCRIPTOR_REVISION);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = RtlCreateAcl(Dacl, sizeof(DaclBuffer), ACL_REVISION);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = RtlAddAccessAllowedAce(Dacl, ACL_REVISION, FILE_ALL_ACCESS, SeExports->SeWorldSid);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = RtlSetDaclSecurityDescriptor(&Sd, TRUE, Dacl, FALSE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = RtlSetOwnerSecurityDescriptor(&Sd, SeExports->SeNullSid, FALSE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = RtlSetGroupSecurityDescriptor(&Sd, SeExports->SeNullSid, FALSE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, Restricted, FILE_GENERIC_READ, &GrantedAccess), "restricted token reads");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, Restricted, FILE_WRITE_DATA, &GrantedAccess), "restricted token writes");
+
+    ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_GENERIC_READ, &GrantedAccess), "write-restricted token reads");
+    ok_eq_hex(GrantedAccess, FILE_GENERIC_READ);
+    ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_GENERIC_EXECUTE, &GrantedAccess), "write-restricted token executes");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_WRITE_DATA, &GrantedAccess), "write-restricted token writes");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_READ_DATA | FILE_APPEND_DATA, &GrantedAccess),
+                  "write-restricted token reads and appends");
+    ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, MAXIMUM_ALLOWED, &GrantedAccess), "write-restricted token gets its maximum");
+    ok_eq_hex(GrantedAccess & (FILE_READ_DATA | FILE_EXECUTE | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_WRITE_EA | FILE_WRITE_ATTRIBUTES),
+              FILE_READ_DATA | FILE_EXECUTE);
+    trace("write-restricted token: DELETE %d, WRITE_DAC %d\n",
+          CheckAccess(&Sd, &SubjectContext, WriteRestricted, DELETE, &GrantedAccess),
+          CheckAccess(&Sd, &SubjectContext, WriteRestricted, WRITE_DAC, &GrantedAccess));
+
+    Status = RtlAddAccessAllowedAce(Dacl, ACL_REVISION, FILE_WRITE_DATA, SeExports->SeDialupSid);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_READ_DATA | FILE_WRITE_DATA, &GrantedAccess),
+                 "write-restricted token writes with its restricted SID");
+    ok_bool_false(CheckAccess(&Sd, &SubjectContext, WriteRestricted, FILE_APPEND_DATA, &GrantedAccess),
+                  "write-restricted token appends with its restricted SID");
+    ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, MAXIMUM_ALLOWED, &GrantedAccess), "write-restricted token gets its maximum");
+    ok_eq_hex(GrantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA), FILE_READ_DATA | FILE_WRITE_DATA);
+
+done:
+    if (WriteRestricted != NULL)
+        ObDereferenceObject(WriteRestricted);
+    if (Restricted != NULL)
+        ObDereferenceObject(Restricted);
+    SeReleaseSubjectContext(&SubjectContext);
+}
+
 START_TEST(SeTokenFiltering)
 {
     FilterToken();
+    WriteRestrictedToken();
 }

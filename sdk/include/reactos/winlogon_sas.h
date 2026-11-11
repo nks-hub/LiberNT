@@ -8,3 +8,8 @@
 #pragma once
 
 #define WINLOGON_SOFTWARE_SAS_EVENT L"Global\\WinlogonSoftwareSas%lu"
+
+/* LocalSystem: full access, the SERVICE logon group: EVENT_MODIFY_STATE */
+#define WINLOGON_SOFTWARE_SAS_EVENT_SDDL L"D:(A;;GA;;;SY)(A;;0x2;;;SU)"
+
+#define WINLOGON_SOFTWARE_SAS_SERVICES 0x1

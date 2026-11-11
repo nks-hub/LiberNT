@@ -320,7 +320,8 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                                              (dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS) ? CREATE_NEW : CREATE_ALWAYS,
                                              FileBasic.FileAttributes,
                                              NULL);
-                if (INVALID_HANDLE_VALUE == FileHandleDest && GetLastError() == ERROR_SHARING_VIOLATION)
+                if (INVALID_HANDLE_VALUE == FileHandleDest &&
+                    (GetLastError() == ERROR_SHARING_VIOLATION || GetLastError() == ERROR_ACCESS_DENIED))
                 {
                     NoDeleteAccess = TRUE;
                     FileHandleDest = CreateFileW(lpNewFileName,

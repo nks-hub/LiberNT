@@ -6,6 +6,7 @@
  */
 
 #include "precomp.h"
+#include <sddl.h>
 
 #define SOURCE_SIZE (6 * 1024 * 1024)
 #define STOP_AT (2 * 1024 * 1024)
@@ -193,6 +194,83 @@ test_StopAfterRename(void)
     DeleteFileW(Dest);
 }
 
+static BOOL
+SetDacl(LPCWSTR Path, LPCWSTR Sddl)
+{
+    PSECURITY_DESCRIPTOR Descriptor;
+    BOOL Ret;
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(Sddl, SDDL_REVISION_1, &Descriptor, NULL))
+        return FALSE;
+    Ret = SetFileSecurityW(Path, DACL_SECURITY_INFORMATION, Descriptor);
+    LocalFree(Descriptor);
+    return Ret;
+}
+
+static void
+RemoveNoDeleteDir(LPCWSTR SubDir)
+{
+    SetDacl(SubDir, L"D:(A;;FA;;;WD)");
+    SetDacl(Dest, L"D:(A;;FA;;;WD)");
+    DeleteFileW(Dest);
+    RemoveDirectoryW(SubDir);
+}
+
+static void
+test_NoDeleteAccess(LPCWSTR Dir, LPCWSTR FileSystem)
+{
+    WCHAR SubDir[MAX_PATH];
+    HANDLE File;
+    DWORD Error;
+    BOOL Ret;
+
+    if (wcscmp(FileSystem, L"NTFS"))
+    {
+        skip("No file security on %S\n", FileSystem);
+        return;
+    }
+
+    StringCchPrintfW(SubDir, ARRAYSIZE(SubDir), L"%sCopyFileExStop-nodelete", Dir);
+    StringCchPrintfW(Dest, ARRAYSIZE(Dest), L"%s\\dst.bin", SubDir);
+    RemoveNoDeleteDir(SubDir);
+
+    Ret = CreateDirectoryW(SubDir, NULL);
+    ok(Ret, "Cannot create %S (%lu)\n", SubDir, GetLastError());
+    File = CreateFileW(Dest, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+    ok(File != INVALID_HANDLE_VALUE, "Cannot create the destination (%lu)\n", GetLastError());
+    if (File != INVALID_HANDLE_VALUE)
+        CloseHandle(File);
+
+    /* Everyone: generic read and write on the file, all but FILE_DELETE_CHILD on the directory */
+    Ret = SetDacl(Dest, L"D:P(A;;0x12019f;;;WD)") && SetDacl(SubDir, L"D:P(A;;0x1f01bf;;;WD)");
+    ok(Ret, "Cannot set the DACLs (%lu)\n", GetLastError());
+
+    SetLastError(0xdeadbeef);
+    File = CreateFileW(Dest, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, 0, NULL);
+    if (!Ret || File != INVALID_HANDLE_VALUE)
+    {
+        skip("The destination can still be opened for deletion\n");
+        if (File != INVALID_HANDLE_VALUE)
+            CloseHandle(File);
+    }
+    else
+    {
+        ok(GetLastError() == ERROR_ACCESS_DENIED, "Open for deletion failed with %lu\n", GetLastError());
+
+        Ret = Copy(0, 0, PROGRESS_CONTINUE);
+        ok(Ret, "Copy over a destination without DELETE access failed (%lu)\n", GetLastError());
+        ok(SameAsSource(), "The destination without DELETE access differs from the source\n");
+
+        Ret = Copy(0, STOP_AT, PROGRESS_STOP);
+        Error = GetLastError();
+        ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Stopped copy over a destination without DELETE access returned %d (%lu)\n", Ret, Error);
+        trace("Stopped copy over a destination without DELETE access returned %d (%lu), the destination %s\n",
+              Ret, Error, GetFileAttributesW(Dest) == INVALID_FILE_ATTRIBUTES ? "is gone" : "still exists");
+    }
+
+    RemoveNoDeleteDir(SubDir);
+}
+
 START_TEST(CopyFileExStop)
 {
     static UCHAR Chunk[65536];
@@ -247,5 +325,6 @@ START_TEST(CopyFileExStop)
     test_StopAfterRename();
 
     DeleteFileW(Dest);
+    test_NoDeleteAccess(Dir, FileSystem);
     DeleteFileW(Source);
 }

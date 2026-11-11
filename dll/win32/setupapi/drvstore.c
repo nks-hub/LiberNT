@@ -973,10 +973,12 @@ CreateStagingDirectory(
 static BOOL
 IsTreeInStore(
     IN PCWSTR Directory,
-    IN PCWSTR Store)
+    IN PCWSTR Store,
+    IN BOOL Contents)
 {
     WCHAR Path[MAX_PATH], Other[MAX_PATH];
     WIN32_FIND_DATAW FindData;
+    DWORD Attributes;
     HANDLE hFind;
     BOOL Result = TRUE;
 
@@ -995,10 +997,15 @@ IsTreeInStore(
         if (!CombinePath(Path, Directory, FindData.cFileName) || !CombinePath(Other, Store, FindData.cFileName))
             Result = FALSE;
         else if (FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            Result = IsTreeInStore(Path, Other);
-        else
+            Result = IsTreeInStore(Path, Other, Contents);
+        else if (Contents)
             Result = FilesAreIdentical(Path, Other);
+        else
+            Result = (Attributes = GetFileAttributesW(Other)) != INVALID_FILE_ATTRIBUTES && !(Attributes & FILE_ATTRIBUTE_DIRECTORY);
     } while (Result && FindNextFileW(hFind, &FindData));
+
+    if (Result && GetLastError() != ERROR_NO_MORE_FILES)
+        Result = FALSE;
 
     FindClose(hFind);
     return Result;
@@ -1015,7 +1022,8 @@ ReplaceStoreDirectory(
     if (GetFileAttributesW(Store) == INVALID_FILE_ATTRIBUTES)
         return MoveFileW(Staging, Store);
 
-    if (IsTreeInStore(Staging, Store))
+    /* The contents are compared one way; the other way finds what only the store has */
+    if (IsTreeInStore(Staging, Store, TRUE) && IsTreeInStore(Store, Staging, FALSE))
     {
         DeleteDirectoryTree(Staging);
         return TRUE;

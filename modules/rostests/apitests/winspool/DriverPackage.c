@@ -110,6 +110,9 @@ static const char TestInf[] =
     "TESTPKG.DAT\r\n"
     "TESTREN.DAT,TESTPKG.DAT\r\n"
     "\r\n"
+    "[TESTPKG_OPTIONAL]\r\n"
+    "CopyFiles=@TESTOPT.DAT\r\n"
+    "\r\n"
     "[DestinationDirs]\r\n"
     "DefaultDestDir=66000\r\n"
     "\r\n"
@@ -1936,7 +1939,7 @@ TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
         ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx over a backup\n", hr);
         ok(GetFileAttributesW(Backup) == INVALID_FILE_ATTRIBUTES, "%S was left behind\n", Backup);
         StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTKEEP.DAT", StoreDir);
-        ok(GetFileAttributesW(StoreFile) != INVALID_FILE_ATTRIBUTES, "The backup was not put back as %S\n", StoreDir);
+        ok(GetFileAttributesW(StoreFile) == INVALID_FILE_ATTRIBUTES, "%S of the backup is not in the package and was left in the store\n", StoreFile);
     }
     else
     {
@@ -1955,6 +1958,30 @@ TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
     ok(hFind == INVALID_HANDLE_VALUE, "%S was left behind\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
     if (hFind != INVALID_HANDLE_VALUE)
         FindClose(hFind);
+}
+
+/* No model installs the section that copies TESTOPT.DAT, so a package is complete with and without the file */
+static VOID
+TestRemovedOptionalFile(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
+{
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR SourceFile[MAX_PATH], StoreFile[MAX_PATH], Again[MAX_PATH];
+    ULONG Length = ARRAYSIZE(Again);
+    HRESULT hr;
+
+    StringCchPrintfW(SourceFile, ARRAYSIZE(SourceFile), L"%s\\TESTOPT.DAT", Dir);
+    StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%.*s\\TESTOPT.DAT", (int)(wcsrchr(StoreInf, L'\\') - StoreInf), StoreInf);
+    ok(WriteTestFile(Dir, L"TESTOPT.DAT", Text, sizeof(Text) - 1), "Writing %S failed\n", SourceFile);
+
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+    ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx with an optional file\n", hr);
+    ok(GetFileAttributesW(StoreFile) != INVALID_FILE_ATTRIBUTES, "%S was not staged\n", StoreFile);
+
+    ok(DeleteFileW(SourceFile), "Deleting %S failed with %lu\n", SourceFile, GetLastError());
+    Length = ARRAYSIZE(Again);
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+    ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx without the optional file\n", hr);
+    ok(GetFileAttributesW(StoreFile) == INVALID_FILE_ATTRIBUTES, "%S was left in the store after its source was removed\n", StoreFile);
 }
 
 static VOID
@@ -2134,6 +2161,7 @@ START_TEST(DriverPackage)
     }
 
     TestStoreReplacement(Dir, InfPath, StoreInf);
+    TestRemovedOptionalFile(Dir, InfPath, StoreInf);
 
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, BROKEN_DRIVER_NAME, NULL, 0);
     ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);

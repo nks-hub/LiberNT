@@ -208,7 +208,7 @@ CombinePath(
 {
     DWORD RootLength = lstrlenW(Root);
 
-    while (*Relative == L'\\')
+    while (*Relative == L'\\' || *Relative == L'/')
         Relative++;
 
     if (RootLength + 1 + lstrlenW(Relative) >= MAX_PATH)
@@ -226,22 +226,47 @@ IsSafeRelativePath(
     IN PCWSTR Relative)
 {
     PCWSTR Cursor = Relative;
+    SIZE_T Length;
 
-    if (wcschr(Relative, L':'))
+    if (wcschr(Relative, L':') || *Relative == L'\\' || *Relative == L'/')
         return FALSE;
 
     while (*Cursor)
     {
-        PCWSTR End = wcschr(Cursor, L'\\');
-        SIZE_T Length = End ? (SIZE_T)(End - Cursor) : wcslen(Cursor);
-
+        Length = wcscspn(Cursor, L"\\/");
         if (Length == 2 && Cursor[0] == L'.' && Cursor[1] == L'.')
             return FALSE;
-        if (!End)
-            break;
-        Cursor = End + 1;
+        Cursor += Length;
+        if (*Cursor)
+            Cursor++;
     }
     return TRUE;
+}
+
+static DWORD
+ResolvePackagePath(
+    IN PCWSTR Root,
+    IN PCWSTR Relative,
+    OUT PWSTR Path)
+{
+    WCHAR Joined[MAX_PATH], Base[MAX_PATH];
+    DWORD Length, BaseLength;
+
+    if (!CombinePath(Joined, Root, Relative))
+        return ERROR_FILENAME_EXCED_RANGE;
+
+    Length = GetFullPathNameW(Joined, MAX_PATH, Path, NULL);
+    BaseLength = GetFullPathNameW(Root, MAX_PATH, Base, NULL);
+    if (Length >= MAX_PATH || BaseLength >= MAX_PATH)
+        return ERROR_FILENAME_EXCED_RANGE;
+    if (Length == 0 || BaseLength == 0)
+        return ERROR_BAD_PATHNAME;
+
+    if (Base[BaseLength - 1] == L'\\')
+        BaseLength--;
+    if (_wcsnicmp(Path, Base, BaseLength) != 0 || Path[BaseLength] != L'\\' || !Path[BaseLength + 1])
+        return ERROR_BAD_PATHNAME;
+    return ERROR_SUCCESS;
 }
 
 static BOOL
@@ -403,10 +428,10 @@ StagePackageFile(
     PWSTR Last;
     DWORD Error;
 
-    Error = IsSafeRelativePath(Relative) ? ERROR_FILENAME_EXCED_RANGE : ERROR_BAD_PATHNAME;
-    if (Error == ERROR_BAD_PATHNAME ||
-        !CombinePath(Source, SourceRoot, Relative) ||
-        !CombinePath(Target, StoreRoot, Relative))
+    Error = IsSafeRelativePath(Relative) ? ResolvePackagePath(SourceRoot, Relative, Source) : ERROR_BAD_PATHNAME;
+    if (Error == ERROR_SUCCESS)
+        Error = ResolvePackagePath(StoreRoot, Relative, Target);
+    if (Error != ERROR_SUCCESS)
     {
         if (!Required)
             return TRUE;
@@ -454,8 +479,7 @@ StagePackageFile(
 
     if (Cabinet)
     {
-        Stage.FileName = wcsrchr(Relative, L'\\');
-        Stage.FileName = Stage.FileName ? Stage.FileName + 1 : Relative;
+        Stage.FileName = wcsrchr(Source, L'\\') + 1;
         Stage.Target = Target;
         Stage.Found = FALSE;
         if (!SetupIterateCabinetW(Cabinet, 0, StageCabinetCallback, &Stage))
@@ -510,7 +534,8 @@ StageCopyFile(
     IN OUT PSTAGE_PACKAGE_CONTEXT Package)
 {
     WCHAR SubDir[MAX_PATH], DiskPath[MAX_PATH], Tag[MAX_PATH], Relative[MAX_PATH], Cabinet[MAX_PATH], DiskName[16];
-    PCWSTR CabinetPath = NULL;
+    WCHAR CabinetName[MAX_PATH];
+    PCWSTR CabinetPath = NULL, Disk;
     INFCONTEXT Line;
     SIZE_T Length;
     INT DiskId;
@@ -541,7 +566,12 @@ StageCopyFile(
             Tag[0] = UNICODE_NULL;
     }
 
-    if (!CombinePath(Relative, DiskPath, SubDir) ||
+    /* SourceDisksNames gives the path of a disk with one leading separator */
+    Disk = DiskPath;
+    if (*Disk == L'\\' || *Disk == L'/')
+        Disk++;
+
+    if (!CombinePath(Relative, Disk, SubDir) ||
         lstrlenW(Relative) + 1 + lstrlenW(FileName) >= MAX_PATH)
     {
         if (!Package->Required)
@@ -556,13 +586,10 @@ StageCopyFile(
 
     Length = wcslen(Tag);
     if (Length > 4 && _wcsicmp(Tag + Length - 4, L".cab") == 0 &&
-        IsSafeRelativePath(DiskPath) && IsSafeRelativePath(Tag) &&
-        CombinePath(Cabinet, Package->SourceRoot, DiskPath) &&
-        lstrlenW(Cabinet) + 1 + Length < MAX_PATH)
+        IsSafeRelativePath(Disk) && IsSafeRelativePath(Tag) &&
+        CombinePath(CabinetName, Disk, Tag) &&
+        ResolvePackagePath(Package->SourceRoot, CabinetName, Cabinet) == ERROR_SUCCESS)
     {
-        if (Cabinet[0] && Cabinet[lstrlenW(Cabinet) - 1] != L'\\')
-            lstrcatW(Cabinet, L"\\");
-        lstrcatW(Cabinet, Tag);
         CabinetPath = Cabinet;
     }
 
@@ -646,10 +673,17 @@ StageIncludedInfs(
         FieldCount = SetupGetFieldCount(&Context);
         for (Field = 1; Field <= FieldCount; Field++)
         {
+            if (!SetupGetStringFieldW(&Context, Field, Name, ARRAY_SIZE(Name), NULL) || !Name[0])
+                continue;
+            if (!IsSafeRelativePath(Name))
+            {
+                ERR("Included INF %s is not a name in the package directory\n", debugstr_w(Name));
+                SetLastError(ERROR_BAD_PATHNAME);
+                return FALSE;
+            }
+
             /* An INF that is not in the package directory belongs to the system, not to the package */
-            if (!SetupGetStringFieldW(&Context, Field, Name, ARRAY_SIZE(Name), NULL) || !Name[0] ||
-                !IsSafeRelativePath(Name) ||
-                !CombinePath(Path, Package->SourceRoot, Name) ||
+            if (ResolvePackagePath(Package->SourceRoot, Name, Path) != ERROR_SUCCESS ||
                 GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES)
             {
                 continue;

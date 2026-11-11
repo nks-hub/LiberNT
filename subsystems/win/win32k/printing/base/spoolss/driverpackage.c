@@ -355,7 +355,8 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_
 }
 
 static HRESULT
-InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, WORD Architecture, DWORD dwFlags)
+InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, WORD Architecture, DWORD dwFlags,
+                   HANDLE Namespace, HANDLE Lock, PBOOL Locked)
 {
     WCHAR InstallSection[MAX_PATH], ActualSection[MAX_PATH], NeedsSection[MAX_PATH], Include[MAX_PATH];
     WCHAR DriverFile[MAX_PATH], ConfigFile[MAX_PATH], DataFile[MAX_PATH], HelpFile[MAX_PATH];
@@ -373,6 +374,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     INFCONTEXT Context;
     PCWSTR Decoration = L"";
     HINF hInf, hPackage;
+    HANDLE hPin = INVALID_HANDLE_VALUE;
     HRESULT hr;
 
     for (i = 0; i < ARRAYSIZE(EnvironmentArchitectures); i++)
@@ -584,6 +586,16 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     ResolvePackageInf(InfPath, Architecture, RecordedInf);
     DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : InfPath;
 
+    /* A package directory with an open file cannot be renamed, so the package is neither deleted nor replaced without the lock */
+    hPin = CreateFileW(InfPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hPin == INVALID_HANDLE_VALUE)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto Cleanup;
+    }
+    ReleasePackageLock(Namespace, Lock);
+    *Locked = FALSE;
+
     if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
                              APD_COPY_FROM_DIRECTORY |
                              ((dwFlags & IPDFP_COPY_ALL_FILES) ? APD_COPY_ALL_FILES : APD_COPY_NEW_FILES)))
@@ -595,6 +607,8 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     hr = S_OK;
 
 Cleanup:
+    if (hPin != INVALID_HANDLE_VALUE)
+        CloseHandle(hPin);
     if (DependentFiles)
         DllFreeSplMem(DependentFiles);
     for (i = 0; i < Staged.Count; i++)
@@ -618,6 +632,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     HANDLE Namespace, Lock;
     PCWSTR Environment;
     WORD Architecture;
+    BOOL Locked = TRUE;
     HRESULT hr;
 
     TRACE("InstallPrinterDriverFromPackageW(%S, %S, %S, %S, 0x%lx)\n",
@@ -633,12 +648,13 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (FAILED(hr))
         return hr;
 
-    /* The lock is held from the first read of the package until the driver is registered; the print provider takes it again on this thread */
+    /* The lock is held while the package is read; the print provider takes it again to copy the files and register the driver */
     if (!AcquirePackageLock(&Namespace, &Lock))
         return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 
-    hr = InstallFromPackage(pszInfPath, pszDriverName, Environment, Architecture, dwFlags);
+    hr = InstallFromPackage(pszInfPath, pszDriverName, Environment, Architecture, dwFlags, Namespace, Lock, &Locked);
 
-    ReleasePackageLock(Namespace, Lock);
+    if (Locked)
+        ReleasePackageLock(Namespace, Lock);
     return hr;
 }

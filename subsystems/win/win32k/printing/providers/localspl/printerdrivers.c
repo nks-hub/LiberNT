@@ -1245,15 +1245,12 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
     const PRINTENV_T *env;
     apd_data_t apd;
     DRIVER_INFO_8W di;
-    BOOL    (WINAPI *pDrvDriverEvent)(DWORD, DWORD, LPBYTE, LPARAM);
-    HMODULE hui;
     WCHAR *file;
     HKEY    hroot;
     HKEY    hdrv;
     DWORD   disposition;
     DWORD   len;
     LONG    lres;
-    BOOL    res;
 
     /* we need to set all entries in the Registry, independent from the Level of
        DRIVER_INFO, that the caller supplied */
@@ -1414,6 +1411,28 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
     apd_release(&apd, FALSE);
     RegCloseKey(hroot);
 
+    FIXME("=> TRUE with %u\n", GetLastError());
+    return TRUE;
+}
+
+/* Runs code of the driver, which may wait for a caller of the package functions: never under the package lock */
+static void send_driver_initialize(DWORD level, LPBYTE pDriverInfo)
+{
+    const PRINTENV_T *env;
+    DRIVER_INFO_8W di;
+    BOOL    (WINAPI *pDrvDriverEvent)(DWORD, DWORD, LPBYTE, LPARAM);
+    HMODULE hui;
+    BOOL    res;
+
+    ZeroMemory(&di, sizeof(di));
+    if (pDriverInfo && (level < ARRAYSIZE(di_sizeof)))
+    {
+        memcpy(&di, pDriverInfo, di_sizeof[level]);
+    }
+
+    env = validate_envW(di.pEnvironment);
+    if (env == NULL) return;
+
     //
     // Locate driver and send the event.
     //
@@ -1434,9 +1453,6 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
     }
     if (hui)
         FreeLibrary(hui);
-
-    FIXME("=> TRUE with %u\n", GetLastError());
-    return TRUE;
 }
 
 BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags, BOOL lazy)
@@ -1447,7 +1463,12 @@ BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags
     BOOL res;
 
     if (level != 8 || !di || !di->pszInfPath || !*di->pszInfPath)
-        return add_printer_driver(level, pDriverInfo, dwFileCopyFlags, lazy);
+    {
+        res = add_printer_driver(level, pDriverInfo, dwFileCopyFlags, lazy);
+        if (res)
+            send_driver_initialize(level, pDriverInfo);
+        return res;
+    }
 
     /* DeletePrinterDriverPackage holds this lock from looking for a driver of the package until it is deleted */
     if (!AcquirePackageLock(&hNamespace, &hLock))
@@ -1468,6 +1489,8 @@ BOOL myAddPrinterDriverEx(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags
     }
 
     ReleasePackageLock(hNamespace, hLock);
+    if (res)
+        send_driver_initialize(level, pDriverInfo);
     SetLastError(error);
     return res;
 }

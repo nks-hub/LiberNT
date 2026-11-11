@@ -1309,6 +1309,82 @@ deregister:
     WskDeregister(&Registration);
 }
 
+typedef struct _FLOOD_THREAD
+{
+    PWSK_SOCKET Sender;
+    volatile BOOLEAN Stop;
+} FLOOD_THREAD, *PFLOOD_THREAD;
+
+static KSTART_ROUTINE FloodThread;
+
+static
+VOID
+NTAPI
+FloodThread(
+    _In_ PVOID Context)
+{
+    PFLOOD_THREAD Thread = Context;
+
+    while (!Thread->Stop)
+        SendTo(Thread->Sender, "CLOS0001", WSKEVENTS_PORT + 8);
+}
+
+static
+VOID
+TestCloseWhileReceiving(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver;
+    FLOOD_THREAD Flood;
+    PKTHREAD Thread;
+    NTSTATUS Status;
+    LONG Round, Count;
+
+    Refuse = FALSE;
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Flood.Sender = OpenSocket(&ProviderNpi, 0);
+    if (Flood.Sender == NULL)
+        goto release;
+    Flood.Stop = FALSE;
+    Thread = KmtStartThread(FloodThread, &Flood);
+
+    /* Each datagram makes netio hand its receive request back to tcpip while the close cancels the requests */
+    for (Round = 0; Round < 64; Round++)
+    {
+        ReceiveCount = 0;
+        Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 8);
+        if (Receiver == NULL)
+            break;
+        Status = SetReceiveEvent(Receiver, TRUE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Count = WaitReceives(1, 2000);
+        ok(Count != 0, "Round %ld: no datagram was indicated\n", Round);
+        CloseSocket(Receiver);
+    }
+    ok_eq_long(Round, 64);
+
+    Flood.Stop = TRUE;
+    KmtFinishThread(Thread, NULL);
+    CloseSocket(Flood.Sender);
+release:
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -1362,5 +1438,6 @@ TestMessageHandler(
     TestSendControl();
     TestBurst();
     TestReceiveLimit();
+    TestCloseWhileReceiving();
     return STATUS_SUCCESS;
 }

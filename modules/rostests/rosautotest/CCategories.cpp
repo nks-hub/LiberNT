@@ -427,6 +427,7 @@ static const CATEGORY_RULE Rules[] =
     { "credui_winetest", "*", "security:tokens" },
     { "msgina_apitest", "*", "security:tokens" },
     { "sandbox_apitest", "*", "security:tokens" },
+    { "sas_apitest", "*", "security:tokens" },
     { "userenv_apitest", "*", "security:tokens" },
     { "userenv_winetest", "*", "security:tokens" },
     { "cmd_apitest", "*", "shell:cmd" },

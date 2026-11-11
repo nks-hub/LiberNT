@@ -1430,8 +1430,23 @@ SoftwareSasCallback(
     IN BOOLEAN TimedOut)
 {
     PWLSESSION Session = (PWLSESSION)Context;
+    DWORD Policy = 0, Size = sizeof(Policy);
 
     UNREFERENCED_PARAMETER(TimedOut);
+
+    /* A service can signal the event without going through sas.dll */
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                     L"SoftwareSASGeneration",
+                     RRF_RT_REG_DWORD,
+                     NULL,
+                     &Policy,
+                     &Size) != ERROR_SUCCESS ||
+        !(Policy & WINLOGON_SOFTWARE_SAS_SERVICES))
+    {
+        WARN("WL: Software SAS from a service is disabled by policy\n");
+        return;
+    }
 
     /* Same path as the keyboard; during setup the hotkey is not registered either */
     if (!GetSetupType())
@@ -1453,7 +1468,7 @@ InitializeSoftwareSas(
     WCHAR EventName[64];
     DWORD dwError;
 
-    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;SY)",
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(WINLOGON_SOFTWARE_SAS_EVENT_SDDL,
                                                               SDDL_REVISION_1,
                                                               &SecurityDescriptor,
                                                               NULL))

@@ -2660,13 +2660,25 @@ ScmLoadService(PSERVICE Service,
         if (dwError == ERROR_SUCCESS)
         {
             ScmLockDatabaseExclusive();
-            Service->Status.dwCurrentState = SERVICE_START_PENDING;
-            Service->Status.dwControlsAccepted = 0;
-            ScmNotifyServiceStatus(Service);
-            ScmReferenceService(Service);
+            if (Service->bDeleted)
+            {
+                dwError = ERROR_SERVICE_MARKED_FOR_DELETE;
+            }
+            else if (Service->dwStartType == SERVICE_DISABLED)
+            {
+                dwError = ERROR_SERVICE_DISABLED;
+            }
+            else
+            {
+                Service->Status.dwCurrentState = SERVICE_START_PENDING;
+                Service->Status.dwControlsAccepted = 0;
+                ScmNotifyServiceStatus(Service);
+                ScmReferenceService(Service);
+            }
             ScmUnlockDatabase();
 
-            dwError = ScmStartUserModeService(Service, argc, argv);
+            if (dwError == ERROR_SUCCESS)
+                dwError = ScmStartUserModeService(Service, argc, argv);
             if (dwError == ERROR_SUCCESS)
             {
                 ScmLockDatabaseExclusive();

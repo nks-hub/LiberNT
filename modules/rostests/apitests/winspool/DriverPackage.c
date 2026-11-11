@@ -938,6 +938,84 @@ TestOtherEnvironment(VOID)
     RemoveDirectoryW(Dir);
 }
 
+static BOOL
+FindPublishedInf(PCWSTR InfPath, PWSTR Published)
+{
+    WCHAR InfDir[MAX_PATH], Pattern[MAX_PATH];
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+    BOOL Found = FALSE;
+
+    GetWindowsDirectoryW(InfDir, ARRAYSIZE(InfDir));
+    StringCchCatW(InfDir, ARRAYSIZE(InfDir), L"\\inf");
+    StringCchPrintfW(Pattern, ARRAYSIZE(Pattern), L"%s\\oem*.inf", InfDir);
+    hFind = FindFirstFileW(Pattern, &Find);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return FALSE;
+    do
+    {
+        StringCchPrintfW(Published, MAX_PATH, L"%s\\%s", InfDir, Find.cFileName);
+        Found = FilesMatch(Published, InfPath);
+    } while (!Found && FindNextFileW(hFind, &Find));
+    FindClose(hFind);
+    return Found;
+}
+
+/* The package of the test environment and the one of the other environment are staged from the same INF */
+static VOID
+TestSharedInf(PCWSTR InfPath, PCWSTR StoreInf)
+{
+    WCHAR Published[MAX_PATH], Other[MAX_PATH];
+    ULONG Length = ARRAYSIZE(Other);
+    HANDLE hFile = INVALID_HANDLE_VALUE;
+    HRESULT hr;
+    UINT i;
+
+    /* A published INF that is open without delete sharing cannot be deleted */
+    if (FindPublishedInf(InfPath, Published))
+        hFile = CreateFileW(Published, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(hFile != INVALID_HANDLE_VALUE, "%S is not published or cannot be opened (%lu)\n", InfPath, GetLastError());
+    if (hFile != INVALID_HANDLE_VALUE)
+    {
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(FAILED(hr), "DeletePrinterDriverPackageW returned 0x%lx while the published INF could not be deleted\n", hr);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted and %S was not\n", StoreInf, Published);
+        CloseHandle(hFile);
+        ok(GetFileAttributesW(Published) != INVALID_FILE_ATTRIBUTES, "%S was deleted\n", Published);
+    }
+
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, OTHER_ENVIRONMENT, UPDP_SILENT_UPLOAD, NULL, Other, &Length);
+    ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+    if (hr != S_OK)
+        return;
+    ok(wcsstr(Other, L"\\lntprnpkg.inf_" OTHER_STORE_ARCHITECTURE L"_") != NULL, "%S is not a package of %S\n", Other, OTHER_ENVIRONMENT);
+
+    hr = DeletePrinterDriverPackageW(NULL, Other, OTHER_ENVIRONMENT);
+    ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+    ok(GetFileAttributesW(Other) == INVALID_FILE_ATTRIBUTES, "%S still exists\n", Other);
+    ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted with the package of %S\n", StoreInf, OTHER_ENVIRONMENT);
+    ok(FindPublishedInf(InfPath, Published), "The published INF was deleted with the package of %S\n", OTHER_ENVIRONMENT);
+
+    hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, NEEDS_DRIVER_NAME, NULL, 0);
+    ok(hr == S_OK, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+    DeleteTestDriver();
+
+    for (i = 0; i < 2; i++)
+    {
+        PCWSTR Source = i ? Published : StoreInf;
+
+        Length = ARRAYSIZE(Other);
+        hr = UploadPrinterDriverPackageW(NULL, Source, OTHER_ENVIRONMENT, UPDP_SILENT_UPLOAD, NULL, Other, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(%S, %S) returned 0x%lx\n", Source, OTHER_ENVIRONMENT, hr);
+        if (hr != S_OK)
+            continue;
+        ok(wcsstr(Other, L"\\lntprnpkg.inf_" OTHER_STORE_ARCHITECTURE L"_") != NULL, "%S is not a package of %S\n", Other, OTHER_ENVIRONMENT);
+        ok(GetFileAttributesW(Other) != INVALID_FILE_ATTRIBUTES, "%S does not exist\n", Other);
+        hr = DeletePrinterDriverPackageW(NULL, Other, OTHER_ENVIRONMENT);
+        ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", Other, hr);
+    }
+}
+
 typedef struct _LOCK_TEST
 {
     DRIVER_INFO_8W Info;
@@ -1380,6 +1458,8 @@ START_TEST(DriverPackage)
         if (hr == S_OK)
             ok(_wcsicmp(Again, StoreInf) == 0, "Upload for %S returned %S\n", TEST_ENVIRONMENT, Again);
     }
+
+    TestSharedInf(InfPath, StoreInf);
 
     {
         WCHAR StoreDir[MAX_PATH], StoreFile[MAX_PATH], SourceFile[MAX_PATH], Again[MAX_PATH];

@@ -532,6 +532,8 @@ cleanup:
     return rc;
 }
 
+static HANDLE LockConnectionNames(VOID);
+
 static
 DWORD
 InstallNetDevice(
@@ -553,6 +555,7 @@ InstallNetDevice(
     HKEY hNetworkKey = NULL;
     HKEY hLinkageKey = NULL;
     HKEY hConnectionKey = NULL;
+    HANDLE hNamesLock = NULL;
     DWORD dwShowIcon, dwLength, dwValue;
     PWSTR pszNameBuffer = NULL;
     DWORD dwRegType;
@@ -798,6 +801,16 @@ InstallNetDevice(
         goto cleanup;
     }
 
+    hNamesLock = LockConnectionNames();
+    if (!hNamesLock)
+    {
+        rc = GetLastError();
+        if (rc == ERROR_SUCCESS)
+            rc = ERROR_LOCK_FAILED;
+        ERR("Cannot lock the connection names (error 0x%lx)\n", rc);
+        goto cleanup;
+    }
+
     rc = GetUniqueConnectionName(hNetworkKey, NameId, &pszNameBuffer);
     if (rc != ERROR_SUCCESS)
     {
@@ -822,6 +835,8 @@ InstallNetDevice(
     }
 
     rc = RegSetValueExW(hConnectionKey, L"Name", 0, REG_SZ, (const BYTE*)pszNameBuffer, (wcslen(pszNameBuffer) + 1) * sizeof(WCHAR));
+    ReleaseMutex(hNamesLock);
+    hNamesLock = NULL;
     if (rc != ERROR_SUCCESS)
     {
         ERR("RegSetValueExW() failed with error 0x%lx\n", rc);
@@ -887,6 +902,8 @@ InstallNetDevice(
     rc = ERROR_SUCCESS;
 
 cleanup:
+    if (hNamesLock != NULL)
+        ReleaseMutex(hNamesLock);
     HeapFree(GetProcessHeap(), 0, pszNameBuffer);
     HeapFree(GetProcessHeap(), 0, InstanceId);
     HeapFree(GetProcessHeap(), 0, ComponentId);
@@ -1009,25 +1026,36 @@ GetSuggestedInstanceId(
     return !Used;
 }
 
-static HANDLE InstanceIdNamespace, InstanceIdLock;
+typedef struct _NAMESPACE_LOCK
+{
+    PCWSTR NamespaceName;
+    PCWSTR LockName;
+    HANDLE Namespace;
+    HANDLE Lock;
+    INIT_ONCE Once;
+} NAMESPACE_LOCK, *PNAMESPACE_LOCK;
+
+static NAMESPACE_LOCK InstanceIdLock = { L"NetCfgxInstanceId", L"NetCfgxInstanceId\\Lock", NULL, NULL, INIT_ONCE_STATIC_INIT };
+/* NciSetConnectionName renames a connection under the same lock */
+static NAMESPACE_LOCK ConnectionNamesLock = { L"NetworkConnectionNames", L"NetworkConnectionNames\\Lock", NULL, NULL, INIT_ONCE_STATIC_INIT };
 
 /* Any process can create a global name first and hold it; only administrators can open this namespace */
 static
 BOOL
 CALLBACK
-CreateInstanceIdLock(
+CreateNamespaceLock(
     _Inout_ PINIT_ONCE Once,
     _Inout_opt_ PVOID Parameter,
     _Out_opt_ PVOID *Context)
 {
     SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    PNAMESPACE_LOCK Lock = Parameter;
     BYTE Admins[SECURITY_MAX_SID_SIZE];
     DWORD dwSize = sizeof(Admins);
     HANDLE hBoundary;
     DWORD Try;
 
     UNREFERENCED_PARAMETER(Once);
-    UNREFERENCED_PARAMETER(Parameter);
     UNREFERENCED_PARAMETER(Context);
 
     if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &dwSize) ||
@@ -1036,41 +1064,70 @@ CreateInstanceIdLock(
     {
         return FALSE;
     }
-    hBoundary = CreateBoundaryDescriptorW(L"NetCfgxInstanceId", 0);
+    hBoundary = CreateBoundaryDescriptorW(Lock->NamespaceName, 0);
     if (hBoundary && AddSIDToBoundaryDescriptor(&hBoundary, Admins))
     {
         /* The namespace ends with its last handle, so it can be gone again once creating it found it */
-        for (Try = 0; !InstanceIdNamespace && Try < 3; Try++)
+        for (Try = 0; !Lock->Namespace && Try < 3; Try++)
         {
-            InstanceIdNamespace = CreatePrivateNamespaceW(&Security, hBoundary, L"NetCfgxInstanceId");
-            if (!InstanceIdNamespace)
-                InstanceIdNamespace = OpenPrivateNamespaceW(hBoundary, L"NetCfgxInstanceId");
+            Lock->Namespace = CreatePrivateNamespaceW(&Security, hBoundary, Lock->NamespaceName);
+            if (!Lock->Namespace)
+                Lock->Namespace = OpenPrivateNamespaceW(hBoundary, Lock->NamespaceName);
         }
     }
     if (hBoundary)
         DeleteBoundaryDescriptor(hBoundary);
-    if (InstanceIdNamespace)
+    if (Lock->Namespace)
     {
-        InstanceIdLock = CreateMutexW(&Security, FALSE, L"NetCfgxInstanceId\\Lock");
-        if (!InstanceIdLock)
+        Lock->Lock = CreateMutexW(&Security, FALSE, Lock->LockName);
+        if (!Lock->Lock)
         {
-            ClosePrivateNamespace(InstanceIdNamespace, 0);
-            InstanceIdNamespace = NULL;
+            ClosePrivateNamespace(Lock->Namespace, 0);
+            Lock->Namespace = NULL;
         }
     }
     LocalFree(Security.lpSecurityDescriptor);
-    return InstanceIdLock != NULL;
+    return Lock->Lock != NULL;
+}
+
+static
+HANDLE
+AcquireNamespaceLock(
+    _Inout_ PNAMESPACE_LOCK Lock)
+{
+    DWORD dwWait;
+
+    if (!InitOnceExecuteOnce(&Lock->Once, CreateNamespaceLock, Lock, NULL))
+        return NULL;
+    dwWait = WaitForSingleObject(Lock->Lock, INFINITE);
+    return (dwWait == WAIT_OBJECT_0 || dwWait == WAIT_ABANDONED) ? Lock->Lock : NULL;
+}
+
+static
+HANDLE
+LockConnectionNames(VOID)
+{
+    return AcquireNamespaceLock(&ConnectionNamesLock);
+}
+
+static
+VOID
+FreeNamespaceLock(
+    _In_ PNAMESPACE_LOCK Lock)
+{
+    if (Lock->Lock)
+    {
+        CloseHandle(Lock->Lock);
+        ClosePrivateNamespace(Lock->Namespace, 0);
+    }
 }
 
 /* SetupAPI unloads the class installer after each call */
 VOID
 FreeInstanceIdLock(VOID)
 {
-    if (InstanceIdLock)
-    {
-        CloseHandle(InstanceIdLock);
-        ClosePrivateNamespace(InstanceIdNamespace, 0);
-    }
+    FreeNamespaceLock(&InstanceIdLock);
+    FreeNamespaceLock(&ConnectionNamesLock);
 }
 
 static
@@ -1120,10 +1177,9 @@ NetClassInstaller(
     LPWSTR UuidRpcString = NULL;
     LPWSTR UuidString = NULL;
     HKEY hDriverKey;
-    static INIT_ONCE InstanceIdLockOnce = INIT_ONCE_STATIC_INIT;
     HANDLE hInstanceIdLock = NULL;
     LONG rc;
-    DWORD dwLength, dwWait;
+    DWORD dwLength;
 
     if (InstallFunction != DIF_INSTALLDEVICE)
         return ERROR_DI_DO_DEFAULT;
@@ -1246,12 +1302,7 @@ NetClassInstaller(
     /* Two installs must not pick the same suggested GUID before InstallNetDevice publishes it */
     if (IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET))
     {
-        if (InitOnceExecuteOnce(&InstanceIdLockOnce, CreateInstanceIdLock, NULL, NULL))
-        {
-            dwWait = WaitForSingleObject(InstanceIdLock, INFINITE);
-            if (dwWait == WAIT_OBJECT_0 || dwWait == WAIT_ABANDONED)
-                hInstanceIdLock = InstanceIdLock;
-        }
+        hInstanceIdLock = AcquireNamespaceLock(&InstanceIdLock);
         if (!hInstanceIdLock)
         {
             rc = GetLastError();

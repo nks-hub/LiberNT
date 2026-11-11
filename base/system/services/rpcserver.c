@@ -7192,8 +7192,8 @@ RNotifyServiceStatusChange(
     else
         bReport = !hSvc->bStatusNotified;
 
-    /* A subscription gets the change it missed before it learns that the service is deleted */
-    if (lpService->bDeleted && !(pNotify->bSubscription && bReport))
+    /* A subscription to a deleted service lasts until it has seen the service stopped */
+    if (lpService->bDeleted && !(pNotify->bSubscription && (bReport || lpService->Status.dwCurrentState != SERVICE_STOPPED)))
     {
         LeaveCriticalSection(&ScmNotifyLock);
         ScmUnlockDatabase();

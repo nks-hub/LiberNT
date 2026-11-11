@@ -4,8 +4,8 @@
  * PURPOSE:     WSK datagram receive events: turning them off and on, refused datagrams,
  *              requests made at DISPATCH_LEVEL, repeated registration, enabling
  *              the event from two threads at once, binding again after a failed bind,
- *              IP_PKTINFO and malformed control data on a send
- * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ *              IP_PKTINFO and malformed control data on a send, bursts of datagrams
+ * COPYRIGHT:  Copyright 2026 LuRy <lury@lury.cz>
  */
 
 #include <kmt_test.h>
@@ -27,6 +27,66 @@ static CHAR Seen[MAX_SEEN][9];
 static ULONG SeenSource[MAX_SEEN];
 static ULONG LastControlLength;
 
+#define BURST_COUNT 256
+#define BURST_SIZE 1400
+
+typedef enum _BURST_MODE
+{
+    BurstOff,
+    BurstPlain,
+    BurstStall,
+    BurstRetain,
+} BURST_MODE;
+
+static volatile BURST_MODE BurstMode;
+static volatile LONG BurstErrors;
+static volatile LONG BurstHeldCount;
+static PWSK_DATAGRAM_INDICATION BurstHeld[BURST_COUNT];
+
+static
+NTSTATUS
+BurstReceive(
+    _In_ PWSK_DATAGRAM_INDICATION DataIndication)
+{
+    PWSK_DATAGRAM_INDICATION Indication;
+    NTSTATUS Status = STATUS_SUCCESS;
+    LARGE_INTEGER Delay;
+    ULONG Sequence;
+    PUCHAR Data;
+    LONG Index;
+
+    for (Indication = DataIndication; Indication != NULL; Indication = Indication->Next)
+    {
+        Index = InterlockedIncrement(&ReceiveCount) - 1;
+        Data = MmGetSystemAddressForMdlSafe(Indication->Buffer.Mdl, NormalPagePriority);
+        if (Data == NULL || Indication->Buffer.Length != BURST_SIZE)
+        {
+            InterlockedIncrement(&BurstErrors);
+            continue;
+        }
+        RtlCopyMemory(&Sequence, Data + Indication->Buffer.Offset, sizeof(Sequence));
+        if (Sequence != (ULONG)Index)
+            InterlockedIncrement(&BurstErrors);
+
+        if (BurstMode == BurstStall && Index % 16 == 0 && KeGetCurrentIrql() == PASSIVE_LEVEL)
+        {
+            Delay.QuadPart = -10 * 1000 * 3;
+            KeDelayExecutionThread(KernelMode, FALSE, &Delay);
+        }
+    }
+
+    if (BurstMode == BurstRetain)
+    {
+        Index = InterlockedIncrement(&BurstHeldCount) - 1;
+        if (Index < BURST_COUNT)
+        {
+            BurstHeld[Index] = DataIndication;
+            Status = STATUS_PENDING;
+        }
+    }
+    return Status;
+}
+
 static
 NTSTATUS
 WSKAPI
@@ -44,6 +104,9 @@ ReceiveFromEvent(
 
     if (DataIndication == NULL)
         return STATUS_SUCCESS;
+
+    if (BurstMode != BurstOff)
+        return BurstReceive(DataIndication);
 
     Data = MmGetSystemAddressForMdlSafe(DataIndication->Buffer.Mdl, NormalPagePriority);
     KeAcquireSpinLock(&ReceiveLock, &OldIrql);
@@ -892,6 +955,113 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+VOID
+TestBurst(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_PROVIDER_DATAGRAM_DISPATCH Dispatch;
+    PWSK_SOCKET Receiver, Sender;
+    SOCKADDR_IN Address;
+    WSK_BUF Buffer;
+    BURST_MODE Mode;
+    KEVENT Event;
+    NTSTATUS Status;
+    LONG Count, Errors, Held;
+    ULONG Sequence;
+    PUCHAR Data;
+    PIRP Irp;
+
+    Refuse = FALSE;
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Data = ExAllocatePoolZero(NonPagedPool, BURST_SIZE, 'tEsW');
+    Buffer.Mdl = Data ? IoAllocateMdl(Data, BURST_SIZE, FALSE, FALSE, NULL) : NULL;
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 6);
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Buffer.Mdl == NULL || Receiver == NULL || Sender == NULL)
+    {
+        ok(FALSE, "Out of memory or no sockets\n");
+        goto close;
+    }
+    MmBuildMdlForNonPagedPool(Buffer.Mdl);
+    Buffer.Offset = 0;
+    Buffer.Length = BURST_SIZE;
+    Dispatch = (PWSK_PROVIDER_DATAGRAM_DISPATCH)Sender->Dispatch;
+
+    RtlZeroMemory(&Address, sizeof(Address));
+    Address.sin_family = AF_INET;
+    Address.sin_port = RtlUshortByteSwap(WSKEVENTS_PORT + 6);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    for (Mode = BurstPlain; Mode <= BurstRetain; Mode++)
+    {
+        ReceiveCount = 0;
+        BurstErrors = 0;
+        BurstHeldCount = 0;
+        BurstMode = Mode;
+
+        Status = STATUS_SUCCESS;
+        for (Sequence = 0; Sequence < BURST_COUNT && NT_SUCCESS(Status); Sequence++)
+        {
+            RtlCopyMemory(Data, &Sequence, sizeof(Sequence));
+            Irp = NewIrp(&Event);
+            if (Irp == NULL)
+            {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                break;
+            }
+            Status = Dispatch->WskSendTo(Sender, &Buffer, 0, (PSOCKADDR)&Address, 0, NULL, Irp);
+            Status = WaitIrp(Irp, &Event, Status);
+            IoFreeIrp(Irp);
+        }
+        ok_eq_hex(Status, STATUS_SUCCESS);
+
+        Count = WaitReceives(BURST_COUNT, 3000);
+        ok(Count == BURST_COUNT, "Mode %d: %ld of %d datagrams were indicated\n", (int)Mode, Count, BURST_COUNT);
+        Errors = BurstErrors;
+        ok(Errors == 0, "Mode %d: %ld datagrams were indicated out of order or with a wrong length\n", (int)Mode, Errors);
+
+        BurstMode = BurstOff;
+        Held = min(BurstHeldCount, BURST_COUNT);
+        ok(Held == (Mode == BurstRetain ? Count : 0), "Mode %d: %ld indications were retained\n", (int)Mode, Held);
+        while (Held-- > 0)
+        {
+            Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Receiver->Dispatch)->WskRelease(Receiver, BurstHeld[Held]);
+            ok_eq_hex(Status, STATUS_SUCCESS);
+        }
+    }
+
+close:
+    BurstMode = BurstOff;
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    if (Buffer.Mdl != NULL)
+        IoFreeMdl(Buffer.Mdl);
+    if (Data != NULL)
+        ExFreePoolWithTag(Data, 'tEsW');
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -943,5 +1113,6 @@ TestMessageHandler(
     TestConcurrentEnable();
     TestBindAfterFailedBind();
     TestSendControl();
+    TestBurst();
     return STATUS_SUCCESS;
 }

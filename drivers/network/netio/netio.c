@@ -874,6 +874,7 @@ WskControlSocket(
 {
     PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
     NTSTATUS status = STATUS_NOT_IMPLEMENTED;
+    KIRQL OldIrql;
 
     FUNCTION_TRACE;
 
@@ -991,7 +992,11 @@ WskControlSocket(
                              NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, *(PULONG)InputBuffer != 0) :
                              STATUS_SUCCESS;
                     if (NT_SUCCESS(status))
+                    {
+                        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
                         Socket->PktInfo = *(PULONG)InputBuffer != 0;
+                        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+                    }
                     break;
                 default:
                     DPRINT1("WskControlSocket: Level %d Not implemented\n", Level);
@@ -1109,6 +1114,7 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
     PWSK_SOCKET_INTERNAL Socket = CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket);
     PFILE_OBJECT AddressFile;
     HANDLE AddressHandle;
+    BOOLEAN PktInfo;
     KIRQL OldIrql;
 
     PTRANSPORT_ADDRESS ta = TdiTransportAddressFromSocketAddress(LocalAddress);
@@ -1140,7 +1146,10 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
 
     if (Socket->type == SOCK_DGRAM)
     {
-        if (Socket->PktInfo)
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        PktInfo = Socket->PktInfo;
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+        if (PktInfo)
             status = NetioSetAddressOption(AddressFile, AO_OPTION_IP_PKTINFO, TRUE);
         if (NT_SUCCESS(status) && Socket->ReceiveEvents)
             status = NetioStartReceives(Socket);
@@ -1530,8 +1539,7 @@ NetioQueueDatagram(
 
     Datagram->Indication.Buffer.Mdl = Datagram->Mdl;
     Datagram->Indication.Buffer.Length = Length;
-    if (Socket->PktInfo)
-        Datagram->Indication.ControlInfoLength = min((ULONG)ConnInfo->OptionsLength, (ULONG)sizeof(Datagram->Control));
+    Datagram->Indication.ControlInfoLength = min((ULONG)ConnInfo->OptionsLength, (ULONG)sizeof(Datagram->Control));
     if (Datagram->Indication.ControlInfoLength != 0)
     {
         RtlCopyMemory(Datagram->Control, Receive->Control, Datagram->Indication.ControlInfoLength);
@@ -1540,6 +1548,11 @@ NetioQueueDatagram(
     Datagram->Indication.RemoteAddress = (PSOCKADDR)&Datagram->Remote;
 
     KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    if (!Socket->PktInfo)
+    {
+        Datagram->Indication.ControlInfoLength = 0;
+        Datagram->Indication.ControlInfo = NULL;
+    }
     Queued = !Socket->ReceiveClosing && Socket->ReceiveBytes + Datagram->Size <= NETIO_RECEIVE_LIMIT &&
              (Socket->ReceiveEvents || Socket->ReceiveQueued < NETIO_RECEIVE_COUNT);
     if (Queued)

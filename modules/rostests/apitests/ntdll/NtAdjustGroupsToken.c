@@ -265,6 +265,14 @@ AdjustWithPreviousState(VOID)
     ok_hex(Status, STATUS_ACCESS_VIOLATION);
     CheckGroupsUnchanged(Token, Before);
 
+    /* On Windows 11 a missing NewState fails the call before the outputs are looked at */
+    Status = NtAdjustGroupsToken(Token, FALSE, NULL, sizeof(Room), (PTOKEN_GROUPS)Room, NULL);
+    ok_hex(Status, STATUS_INVALID_PARAMETER);
+    Status = NtAdjustGroupsToken(Token, FALSE, NULL, sizeof(Room), (PTOKEN_GROUPS)Room, (PULONG)(ULONG_PTR)1);
+    ok_hex(Status, STATUS_INVALID_PARAMETER);
+    Status = NtAdjustGroupsToken(Token, FALSE, NULL, sizeof(Room), (PTOKEN_GROUPS)(ULONG_PTR)1, &Length);
+    ok_hex(Status, STATUS_INVALID_PARAMETER);
+
     Status = NtAllocateVirtualMemory(NtCurrentProcess(), &ReadOnly, 0, &PageSize, MEM_COMMIT | MEM_RESERVE, PAGE_READONLY);
     ok_hex(Status, STATUS_SUCCESS);
     if (NT_SUCCESS(Status))

@@ -1168,6 +1168,7 @@ Ndis6TryDispatchAdapterFdoIrp(
         case IRP_MJ_CREATE:
         case IRP_MJ_CLEANUP:
         case IRP_MJ_CLOSE:
+        case IRP_MJ_SHUTDOWN:
             Status = STATUS_SUCCESS;
             break;
 

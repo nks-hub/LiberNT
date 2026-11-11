@@ -3121,10 +3121,14 @@ ScmPreshutdownServices(VOID)
         dwResumeCount = CurrentService->dwResumeCount;
         ScmUnlockDatabase();
         if (hControlPipe == NULL)
+        {
+            Waits[i].Deadline = 0;
             continue;
+        }
 
         DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
-        ScmControlService(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN, dwResumeCount);
+        if (ScmControlService(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN, dwResumeCount) != ERROR_SUCCESS)
+            Waits[i].Deadline = 0;
         CloseHandle(hControlPipe);
     }
 

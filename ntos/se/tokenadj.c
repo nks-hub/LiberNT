@@ -210,11 +210,6 @@ SepAdjustPrivileges(
  * This is a UM (user mode) pointer and it's prone to raise exceptions
  * if such pointer address is not valid.
  *
- * @param[out] PreviousSids
- * The buffer that receives the SIDs of the groups in PreviousGroupsState.
- * It must be present when PreviousGroupsState is, and hold
- * ChangedSidsLength bytes as the counting pass reported them.
- *
  * @param[out] ChangedGroups
  * Returns the total number of changed groups in an access token. This
  * argument could also indicate the number of groups to be changed if
@@ -222,9 +217,6 @@ SepAdjustPrivileges(
  * of 0 indicates no groups have been or to be changed because the groups'
  * attributes in a token are the same as the ones from NewState given by
  * the caller.
- *
- * @param[out] ChangedSidsLength
- * Returns the total length of the SIDs of the changed groups, in bytes.
  *
  * @return
  * STATUS_SUCCESS is returned if the function has successfully completed

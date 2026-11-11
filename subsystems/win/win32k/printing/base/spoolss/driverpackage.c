@@ -234,8 +234,8 @@ IsBelowDirectory(PCWSTR Directory, PWSTR Path)
     if (_wcsnicmp(Path, Base, Length) != 0 || Path[Length] != L'\\' || !Path[Length + 1])
         return FALSE;
 
-    /* A junction or a link below the directory leads out of it although the path does not */
-    for (Cursor = Path + Length + 1; ; Cursor++)
+    /* A junction or a link, the directory itself or below it, leads out of the directory although the path does not */
+    for (Cursor = Path + Length; ; Cursor++)
     {
         Saved = *Cursor;
         if (Saved != L'\\' && Saved != UNICODE_NULL)
@@ -425,6 +425,12 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         return E_INVALIDARG;
     }
     *Slash = UNICODE_NULL;
+
+    if (!IsBelowDirectory(PackageDir, InfPath))
+    {
+        ERR("INF %S cannot be taken from the package directory\n", InfPath);
+        return HRESULT_FROM_WIN32(ERROR_BAD_PATHNAME);
+    }
 
     Size = sizeof(DriverDir);
     if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)Environment, 1, (PBYTE)DriverDir, Size, &Size))

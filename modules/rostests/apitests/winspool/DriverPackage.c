@@ -1986,6 +1986,187 @@ TestConcurrentInstall(PCWSTR InfPath, PCWSTR StoreInf)
     ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
 }
 
+#define OEM_RACE_ROUNDS 200
+
+typedef struct _OEM_RACE_TEST
+{
+    PCWSTR InfPath;
+    CRITICAL_SECTION NameLock;
+    WCHAR Name[32];
+    LONG Done;
+    LONG Copied;
+    LONG CopyFailed;
+    LONG Uninstalled;
+} OEM_RACE_TEST, *POEM_RACE_TEST;
+
+static DWORD WINAPI
+OemRaceCopyThread(PVOID Parameter)
+{
+    POEM_RACE_TEST Test = Parameter;
+    DWORD Start = GetTickCount();
+    WCHAR Published[MAX_PATH];
+    PWSTR Component;
+    UINT i;
+
+    for (i = 0; i < OEM_RACE_ROUNDS && GetTickCount() - Start < 4 * RACE_TIME; i++)
+    {
+        if (!SetupCopyOEMInfW(Test->InfPath, NULL, 0, 0, Published, ARRAYSIZE(Published), NULL, &Component))
+        {
+            Test->CopyFailed++;
+            continue;
+        }
+        Test->Copied++;
+        EnterCriticalSection(&Test->NameLock);
+        StringCchCopyW(Test->Name, ARRAYSIZE(Test->Name), Component);
+        LeaveCriticalSection(&Test->NameLock);
+    }
+    InterlockedExchange(&Test->Done, 1);
+    return 0;
+}
+
+static DWORD WINAPI
+OemRaceUninstallThread(PVOID Parameter)
+{
+    POEM_RACE_TEST Test = Parameter;
+    WCHAR Name[32];
+
+    while (!Test->Done)
+    {
+        EnterCriticalSection(&Test->NameLock);
+        StringCchCopyW(Name, ARRAYSIZE(Name), Test->Name);
+        LeaveCriticalSection(&Test->NameLock);
+        if (Name[0] && SetupUninstallOEMInfW(Name, 0, NULL))
+            Test->Uninstalled++;
+        else
+            Sleep(1);
+    }
+    return 0;
+}
+
+static BOOL
+IsInfRecorded(PCWSTR Name)
+{
+    WCHAR Path[MAX_PATH];
+    HKEY hKey;
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"SYSTEM\\DriverDatabase\\DriverInfFiles\\%s", Name);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
+        return FALSE;
+    RegCloseKey(hKey);
+    return TRUE;
+}
+
+/* Whoever holds the package lock sees a package that is published, staged and recorded, or none of the three */
+static VOID
+TestOemInfRace(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnrace.inf", L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Marker[] = "; lntprnrace\r\n";
+    static char Inf[sizeof(Marker) + sizeof(PlainInf)];
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], Pattern[MAX_PATH], Path[MAX_PATH], Published[MAX_PATH], Name[32];
+    static OEM_RACE_TEST Test;
+    HANDLE Namespace, Lock, Threads[2], hFind;
+    UINT i, Checks = 0, Torn = 0;
+    BOOL Exists, Stored, Recorded;
+    WIN32_FIND_DATAW Find;
+    DWORD Start;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnrace");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    GetWindowsDirectoryW(Pattern, ARRAYSIZE(Pattern));
+    StringCchCatW(Pattern, ARRAYSIZE(Pattern), L"\\System32\\DriverStore\\FileRepository\\lntprnrace.inf_*");
+
+    memcpy(Inf, Marker, sizeof(Marker) - 1);
+    memcpy(Inf + sizeof(Marker) - 1, PlainInf, sizeof(PlainInf) - 1);
+    if (!WriteTestFile(Dir, Names[0], Inf, sizeof(Marker) - 1 + sizeof(PlainInf) - 1) ||
+        !WriteTestFile(Dir, Names[1], Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnrace.inf (%lu)\n", GetLastError());
+        goto Cleanup;
+    }
+
+    Test.InfPath = InfPath;
+    InitializeCriticalSection(&Test.NameLock);
+    Threads[0] = CreateThread(NULL, 0, OemRaceCopyThread, &Test, 0, NULL);
+    Threads[1] = CreateThread(NULL, 0, OemRaceUninstallThread, &Test, 0, NULL);
+    ok(Threads[0] != NULL && Threads[1] != NULL, "CreateThread failed with %lu\n", GetLastError());
+    if (!Threads[0])
+        InterlockedExchange(&Test.Done, 1);
+
+    Start = GetTickCount();
+    while (!Test.Done && GetTickCount() - Start < 60000)
+    {
+        if (!AcquirePackageLock(&Namespace, &Lock))
+        {
+            skip("Cannot take the package lock (%lu)\n", GetLastError());
+            break;
+        }
+        Exists = FindPublishedInf(InfPath, Published);
+        hFind = FindFirstFileW(Pattern, &Find);
+        Stored = hFind != INVALID_HANDLE_VALUE;
+        if (Stored)
+            FindClose(hFind);
+        EnterCriticalSection(&Test.NameLock);
+        StringCchCopyW(Name, ARRAYSIZE(Name), Test.Name);
+        LeaveCriticalSection(&Test.NameLock);
+        Recorded = Exists ? IsInfRecorded(wcsrchr(Published, L'\\') + 1) : (Name[0] && IsInfRecorded(Name));
+        ReleasePackageLock(Namespace, Lock);
+
+        Checks++;
+        if (Stored != Exists || Recorded != Exists)
+        {
+            if (!Torn)
+                trace("Check %u: published %d, staged %d, recorded %d\n", Checks, Exists, Stored, Recorded);
+            Torn++;
+        }
+        Sleep(1);
+    }
+
+    for (i = 0; i < ARRAYSIZE(Threads); i++)
+    {
+        if (Threads[i])
+        {
+            ok(WaitForSingleObject(Threads[i], 60000) == WAIT_OBJECT_0, "Thread %u did not finish\n", i);
+            CloseHandle(Threads[i]);
+        }
+    }
+    DeleteCriticalSection(&Test.NameLock);
+
+    trace("%ld copied, %ld copies failed, %ld uninstalled, %u checks\n", Test.Copied, Test.CopyFailed, Test.Uninstalled, Checks);
+    ok(Test.Copied > 0, "SetupCopyOEMInfW never succeeded\n");
+    ok(Checks > 0, "The package was never looked at under the package lock\n");
+    ok(Torn == 0, "%u of %u looks under the package lock found a package that was only partly there\n", Torn, Checks);
+
+    Exists = FindPublishedInf(InfPath, Published);
+    hFind = FindFirstFileW(Pattern, &Find);
+    Stored = hFind != INVALID_HANDLE_VALUE;
+    if (Stored)
+        FindClose(hFind);
+    ok(Stored == Exists, "After the race the package is %s but %s\n", Exists ? "published" : "not published", Stored ? "staged" : "not staged");
+    if (Exists)
+    {
+        ok(IsInfRecorded(wcsrchr(Published, L'\\') + 1), "%S is published but not recorded\n", Published);
+        ok(SetupUninstallOEMInfW(wcsrchr(Published, L'\\') + 1, 0, NULL), "SetupUninstallOEMInfW failed with %lu\n", GetLastError());
+    }
+    ok(!Test.Name[0] || !IsInfRecorded(Test.Name), "%S is recorded without its INF\n", Test.Name);
+    hFind = FindFirstFileW(Pattern, &Find);
+    ok(hFind == INVALID_HANDLE_VALUE, "%S is left in the store\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+    if (hFind != INVALID_HANDLE_VALUE)
+        FindClose(hFind);
+
+Cleanup:
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 static VOID
 TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
 {
@@ -2301,6 +2482,7 @@ START_TEST(DriverPackage)
     TestIncompleteUpdate();
     TestJunctionPackage();
     TestSetupLock();
+    TestOemInfRace();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

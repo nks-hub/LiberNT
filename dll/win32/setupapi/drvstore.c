@@ -1284,10 +1284,10 @@ StageDriverPackage(
 }
 
 BOOL
-SETUPAPI_StageDriverPackage(
+SETUPAPI_StageLockedDriverPackage(
     IN PCWSTR SourceInfFileName)
 {
-    return StageDriverPackage(SourceInfFileName, GetNativeArchitecture(), NULL);
+    return StageLockedDriverPackage(SourceInfFileName, GetNativeArchitecture(), NULL);
 }
 
 static BOOL
@@ -1601,20 +1601,12 @@ MoveStoreDirectoryAside(
 }
 
 BOOL
-SETUPAPI_DeleteDriverStorePackage(
+SETUPAPI_DeleteLockedDriverStorePackage(
     IN PCWSTR PublishedInfFileName)
 {
     WCHAR StoreInf[MAX_PATH], Aside[MAX_PATH];
-    HANDLE Namespace, Lock;
     BOOL Deleted;
-    DWORD Error;
     PWSTR Last;
-
-    if (!AcquirePackageLock(&Namespace, &Lock))
-    {
-        SetLastError(ERROR_ACCESS_DENIED);
-        return FALSE;
-    }
 
     Deleted = DeleteStoreLeftovers(PublishedInfFileName);
     if (Deleted && SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf) && (Last = wcsrchr(StoreInf, L'\\')) != NULL)
@@ -1622,10 +1614,6 @@ SETUPAPI_DeleteDriverStorePackage(
         *Last = UNICODE_NULL;
         Deleted = MoveStoreDirectoryAside(StoreInf, Aside) && DeleteDirectoryTree(Aside);
     }
-
-    Error = GetLastError();
-    ReleasePackageLock(Namespace, Lock);
-    SetLastError(Error);
     return Deleted;
 }
 

@@ -24,14 +24,22 @@ extern PEXT2_GLOBAL Ext2Global;
 NTSTATUS
 Ext2ShutDown (IN PEXT2_IRP_CONTEXT IrpContext)
 {
+#ifdef __REACTOS__
+    NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+#endif
 
     PIRP                    Irp;
 
     PEXT2_VCB               Vcb;
     PLIST_ENTRY             ListEntry;
 
+#ifdef __REACTOS__
+    BOOLEAN                 _SEH2_VOLATILE GlobalResourceAcquired = FALSE;
+#else
     BOOLEAN                 GlobalResourceAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 

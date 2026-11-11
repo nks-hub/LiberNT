@@ -525,16 +525,28 @@ NTSTATUS
 Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
 {
     PDEVICE_OBJECT          DeviceObject;
+#ifdef __REACTOS__
+    NTSTATUS                _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
     NTSTATUS                Status = STATUS_UNSUCCESSFUL;
+#endif
     PEXT2_VCB               Vcb = NULL;
     PFILE_OBJECT            FileObject = NULL;
+#ifdef __REACTOS__
+    PEXT2_FCB               _SEH2_VOLATILE Fcb = NULL;
+#else
     PEXT2_FCB               Fcb = NULL;
+#endif
     PEXT2_MCB               Mcb = NULL;
     PEXT2_CCB               Ccb = NULL;
     PIRP                    Irp = NULL;
     PIO_STACK_LOCATION      IoStackLocation = NULL;
 
+#ifdef __REACTOS__
+    ULONG                   _SEH2_VOLATILE Length = 0;
+#else
     ULONG                   Length = 0;
+#endif
     ULONG                   FileIndex;
     PUNICODE_STRING         FileName;
     PUCHAR                  Buffer;
@@ -543,20 +555,33 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
     BOOLEAN                 ReturnSingleEntry;
     BOOLEAN                 IndexSpecified;
     BOOLEAN                 FirstQuery;
+#ifdef __REACTOS__
+    BOOLEAN                 _SEH2_VOLATILE FcbResourceAcquired = FALSE;
+#else
     BOOLEAN                 FcbResourceAcquired = FALSE;
+#endif
 
     USHORT                  NameLen;
     FILE_INFORMATION_CLASS  fi;
 
     OEM_STRING              Oem = { 0 };
+#ifdef __REACTOS__
+    UNICODE_STRING          _SEH2_VOLATILE Unicode = { 0 };
+    PEXT2_DIR_ENTRY2        _SEH2_VOLATILE pDir = NULL;
+#else
     UNICODE_STRING          Unicode = { 0 };
     PEXT2_DIR_ENTRY2        pDir = NULL;
+#endif
 
     ULONG                   ByteOffset;
     ULONG                   RecLen = 0;
     ULONG                   EntrySize = 0;
 
+#ifdef __REACTOS__
+    EXT2_FILLDIR_CONTEXT    _SEH2_VOLATILE fc = { 0 };
+#else
     EXT2_FILLDIR_CONTEXT    fc = { 0 };
+#endif
 
     _SEH2_TRY {
 
@@ -780,7 +805,11 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                                     EXT3_FEATURE_COMPAT_DIR_INDEX) &&
                 ((EXT3_I(&Mcb->Inode)->i_flags & EXT3_INDEX_FL) ||
                  ((Mcb->Inode.i_size >> BLOCK_BITS) == 1)) ) {
+#ifdef __REACTOS__
+            int rc = ext3_dx_readdir(&Ccb->filp, Ext2FillEntry, (void *)&fc);
+#else
             int rc = ext3_dx_readdir(&Ccb->filp, Ext2FillEntry, &fc);
+#endif
             Status = fc.efc_status;
             if (rc != ERR_BAD_DX_DIR) {
                 goto errorout;
@@ -896,7 +925,11 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
             Unicode.Length = 0;
             RtlZeroMemory(Unicode.Buffer, Unicode.MaximumLength);
 
+#ifdef __REACTOS__
+            Status = Ext2OEMToUnicode(Vcb, (PUNICODE_STRING)&Unicode, &Oem);
+#else
             Status = Ext2OEMToUnicode(Vcb, &Unicode, &Oem);
+#endif
             if (!NT_SUCCESS(Status)) {
                 DEBUG(DL_ERR, ( "Ex2QueryDirectory: Ext2OEMtoUnicode failed with %xh.\n", Status));
                 Status = STATUS_INSUFFICIENT_RESOURCES;
@@ -906,6 +939,19 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
             DEBUG(DL_CP, ( "Ex2QueryDirectory: process inode: %xh / %wZ (%d).\n",
                            pDir->inode, &Unicode, Unicode.Length));
 
+#ifdef __REACTOS__
+            if (FsRtlDoesNameContainWildCards(
+                        &(Ccb->DirectorySearchPattern)) ?
+                    FsRtlIsNameInExpression(
+                        &(Ccb->DirectorySearchPattern),
+                        (PUNICODE_STRING)&Unicode,
+                        TRUE,
+                        NULL) :
+                    !RtlCompareUnicodeString(
+                        &(Ccb->DirectorySearchPattern),
+                        (PCUNICODE_STRING)&Unicode,
+                        TRUE)           ) {
+#else
             if (FsRtlDoesNameContainWildCards(
                         &(Ccb->DirectorySearchPattern)) ?
                     FsRtlIsNameInExpression(
@@ -917,7 +963,24 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                         &(Ccb->DirectorySearchPattern),
                         &Unicode,
                         TRUE)           ) {
+#endif
 
+#ifdef __REACTOS__
+                Status = Ext2ProcessEntry(
+                             IrpContext,
+                             Vcb,
+                             Fcb,
+                             fi,
+                             pDir->inode,
+                             Buffer,
+                             CEILING_ALIGNED(ULONG, fc.efc_start, 8),
+                             Length - CEILING_ALIGNED(ULONG, fc.efc_start, 8),
+                             ByteOffset,
+                             (PUNICODE_STRING)&Unicode,
+                             &EntrySize,
+                             ReturnSingleEntry
+                         );
+#else
                 Status = Ext2ProcessEntry(
                              IrpContext,
                              Vcb,
@@ -932,6 +995,7 @@ Ext2QueryDirectory (IN PEXT2_IRP_CONTEXT IrpContext)
                              &EntrySize,
                              ReturnSingleEntry
                          );
+#endif
 
                 if (NT_SUCCESS(Status)) {
                     if (EntrySize > 0) {
@@ -1030,10 +1094,19 @@ Ext2NotifyChangeDirectory (
 )
 {
     PDEVICE_OBJECT      DeviceObject;
+#ifdef __REACTOS__
+    BOOLEAN             _SEH2_VOLATILE CompleteRequest = TRUE;
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+#else
     BOOLEAN             CompleteRequest = TRUE;
     NTSTATUS            Status = STATUS_UNSUCCESSFUL;
+#endif
     PEXT2_VCB           Vcb = NULL;
+#ifdef __REACTOS__
+    PEXT2_FCB           _SEH2_VOLATILE Fcb = NULL;
+#else
     PEXT2_FCB           Fcb = NULL;
+#endif
     PEXT2_CCB           Ccb = NULL;
     PIRP                Irp = NULL;
     PIO_STACK_LOCATION  IrpSp;
@@ -1041,7 +1114,11 @@ Ext2NotifyChangeDirectory (
     ULONG               CompletionFilter;
     BOOLEAN             WatchTree;
 
+#ifdef __REACTOS__
+    BOOLEAN             _SEH2_VOLATILE bFcbAcquired = FALSE;
+#else
     BOOLEAN             bFcbAcquired = FALSE;
+#endif
 
     _SEH2_TRY {
 

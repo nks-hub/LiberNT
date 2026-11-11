@@ -9394,7 +9394,7 @@ DxgkpCreateAllocationCaptured(
             }
             else if (DxgkAllocInfo.PrivateDriverDataSize >= sizeof(UINT))
             {
-                UINT Size = 0;
+                UINT _SEH2_VOLATILE Size = 0;
 
                 _SEH2_TRY
                 {
@@ -15858,7 +15858,7 @@ DxgkVidMmMapAllocationUser(
     PMDL Mdl = NULL;
     MEMORY_CACHING_TYPE CacheType;
     ULONG_PTR UserOffset;
-    PVOID UserMapBase;
+    PVOID _SEH2_VOLATILE UserMapBase;
     PVOID UserVa;
     NTSTATUS Status;
     PEPROCESS Process;

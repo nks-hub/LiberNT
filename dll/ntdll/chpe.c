@@ -2505,7 +2505,7 @@ NTAPI
 ChpeRtlUserThreadStart(PVOID StartAddress, PVOID Parameter)
 {
     NTSTATUS InitStatus;
-    ULONG_PTR Status = 0;
+    ULONG_PTR _SEH2_VOLATILE Status = 0;
 
     StartAddress = LdrpGetThreadStartAddress(StartAddress);
 

@@ -1290,7 +1290,7 @@ DWORD
 APIENTRY
 NtUserCallHwndParam(
     HWND hWnd,
-    DWORD_PTR Param,
+    DWORD_PTR _SEH2_VOLATILE Param,
     DWORD Routine)
 {
 

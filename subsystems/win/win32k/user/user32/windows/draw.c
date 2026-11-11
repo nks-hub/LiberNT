@@ -1468,7 +1468,7 @@ RealDrawFrameControl(HDC hDC, LPRECT rc, UINT uType, UINT uState)
 BOOL WINAPI
 DrawFrameControl(HDC hDC, LPRECT rc, UINT uType, UINT uState)
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    LoadUserApiHook();
 

@@ -2061,11 +2061,38 @@ SerCx2DdiPioTransmitPurgeFifoComplete(
 static
 VOID
 NTAPI
-SerCx2DdiNoOperation(
+SerCx2DdiPioInitializeTransactionComplete(
     _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
-    ...)
+    _In_ WDFOBJECT Object,
+    _In_ BOOLEAN InitSuccess)
 {
     UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(Object);
+    UNREFERENCED_PARAMETER(InitSuccess);
+}
+
+static
+VOID
+NTAPI
+SerCx2DdiPioCleanupTransactionComplete(
+    _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
+    _In_ WDFOBJECT Object)
+{
+    UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(Object);
+}
+
+static
+VOID
+NTAPI
+SerCx2DdiSaveReceiveFifoOnD0Exit(
+    _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
+    _In_ SERCX2PIORECEIVE PioReceive,
+    _In_ ULONG BytesToSave)
+{
+    UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(PioReceive);
+    UNREFERENCED_PARAMETER(BytesToSave);
 }
 
 
@@ -2576,13 +2603,13 @@ static PVOID SerCx2Functions[SercxFunctionTableNumEntries] =
     SerCx2DdiSystemDmaCleanupTransactionComplete,
     SerCx2DdiSystemDmaCleanupTransactionComplete,
     SerCx2DdiSystemDmaReceiveNewDataNotification,
-    SerCx2DdiNoOperation,
-    SerCx2DdiNoOperation,
-    SerCx2DdiNoOperation,
-    SerCx2DdiNoOperation,
+    SerCx2DdiPioInitializeTransactionComplete,
+    SerCx2DdiPioInitializeTransactionComplete,
+    SerCx2DdiPioCleanupTransactionComplete,
+    SerCx2DdiPioCleanupTransactionComplete,
     SerCx2DdiPioTransmitReady,
     SerCx2DdiPioReceiveReady,
-    SerCx2DdiNoOperation,
+    SerCx2DdiSaveReceiveFifoOnD0Exit,
     SerCx2DdiPioTransmitDrainFifoComplete,
     SerCx2DdiPioTransmitPurgeFifoComplete,
     SerCx2DdiSystemDmaTransmitDrainFifoComplete,

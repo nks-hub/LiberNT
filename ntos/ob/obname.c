@@ -1232,7 +1232,7 @@ ObQueryNameString(IN PVOID Object,
     ULONG NameSize;
     PWCH ObjectName;
     BOOLEAN ObjectIsNamed;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     /* Get the Kernel Meta-Structures */
     ObjectHeader = OBJECT_TO_OBJECT_HEADER(Object);

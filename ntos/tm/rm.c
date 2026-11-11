@@ -516,7 +516,7 @@ NtGetNotificationResourceManager(
     _In_ HANDLE ResourceManagerHandle,
     _Out_ PTRANSACTION_NOTIFICATION TransactionNotification,
     _In_ ULONG NotificationLength,
-    _In_opt_ PLARGE_INTEGER Timeout,
+    _In_opt_ PLARGE_INTEGER _SEH2_VOLATILE Timeout,
     _Out_opt_ PULONG ReturnLength,
     _In_ ULONG Asynchronous,
     _In_opt_ ULONG_PTR AsynchronousContext)
@@ -527,7 +527,7 @@ NtGetNotificationResourceManager(
     PKTMNOTIFICATION_PACKET Packet;
     LARGE_INTEGER SafeTimeout;
     PLIST_ENTRY Entry;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     PAGED_CODE();
 
     if (Asynchronous != 0 || AsynchronousContext != 0)

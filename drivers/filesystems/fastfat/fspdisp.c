@@ -63,7 +63,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
 
     PIRP Irp;
@@ -72,7 +72,7 @@ Return Value:
     BOOLEAN VcbDeleted;
     BOOLEAN  ExceptionCompletedIrp = FALSE;
 
-    PVOLUME_DEVICE_OBJECT VolDo;
+    PVOLUME_DEVICE_OBJECT _SEH2_VOLATILE VolDo;
 
     UCHAR MajorFunction = 0;
 

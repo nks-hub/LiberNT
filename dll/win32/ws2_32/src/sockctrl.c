@@ -270,18 +270,18 @@ INT
 WSAAPI
 getsockopt(IN SOCKET s,
            IN INT level,
-           IN INT optname,
-           OUT CHAR FAR* optval,
+           IN INT _SEH2_VOLATILE optname,
+           OUT CHAR FAR* _SEH2_VOLATILE optval,
            IN OUT INT FAR* optlen)
 {
     PWSPROCESS Process;
     PWSTHREAD Thread;
     PWSSOCKET Socket;
-    INT ErrorCode;
-    INT Status;
-    WSAPROTOCOL_INFOW ProtocolInfo;
-    PCHAR OldOptVal = NULL;
-    INT OldOptLen = 0;
+    INT _SEH2_VOLATILE ErrorCode;
+    INT _SEH2_VOLATILE Status;
+    WSAPROTOCOL_INFOW _SEH2_VOLATILE ProtocolInfo;
+    PCHAR _SEH2_VOLATILE OldOptVal = NULL;
+    INT _SEH2_VOLATILE OldOptLen = 0;
     DPRINT("getsockopt: %lx, %lx, %lx\n", s, level, optname);
 
     /* Enter prolog */
@@ -367,7 +367,7 @@ getsockopt(IN SOCKET s,
                                                                optname,
                                                                optval,
                                                                optlen,
-                                                               &ErrorCode);
+                                                               (LPINT)&ErrorCode);
 
             /* Deference the Socket Context */
             WsSockDereference(Socket);
@@ -379,7 +379,7 @@ getsockopt(IN SOCKET s,
                 if (!OldOptVal) return Status;
 
                 /* We did, so we have to convert the unicode info to ansi */
-                ErrorCode = MapUnicodeProtocolInfoToAnsi(&ProtocolInfo,
+                ErrorCode = MapUnicodeProtocolInfoToAnsi((LPWSAPROTOCOL_INFOW)&ProtocolInfo,
                                                          (LPWSAPROTOCOL_INFOA)
                                                          OldOptVal);
 

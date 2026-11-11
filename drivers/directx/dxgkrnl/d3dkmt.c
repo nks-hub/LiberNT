@@ -1552,7 +1552,7 @@ DxgkpInvokeQueryInterface(
     _In_ PVOID MiniportDeviceContext,
     _Inout_ PQUERY_INTERFACE QueryInterface)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY
     {
@@ -1573,7 +1573,7 @@ DxgkpInvokeQueryFeatureSupport(
     _In_ PVOID Context,
     INOUT_PDXGKARG_QUERYFEATURESUPPORT QueryFeatureSupport)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY
     {
@@ -2092,7 +2092,7 @@ DxgkpValidateAllocationListForIoctl(
     _In_ UINT AllocationCount)
 {
     UINT i;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
 
     if (AllocationCount == 0)
         return STATUS_SUCCESS;
@@ -2608,7 +2608,7 @@ static NTSTATUS DxgkpCaptureDeviceName(_In_ PCWSTR Source, _In_ KPROCESSOR_MODE 
         return STATUS_INVALID_PARAMETER;
     for (Index = 0; Index < DestinationCount; ++Index)
     {
-        WCHAR Character = L'\0';
+        WCHAR _SEH2_VOLATILE Character = L'\0';
         NTSTATUS Status = STATUS_SUCCESS;
 
         _SEH2_TRY
@@ -2946,7 +2946,7 @@ DxgkpQueryPhysicalAdapterPnpKey(
     HANDLE Key = NULL;
     UINT Capacity;
     UINT Cch;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (Query->PhysicalAdapterIndex != 0 || CchDest == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -3268,7 +3268,7 @@ DxgkpQueryMiniportUmdPrivate(
     PDXGKRNL_PROCESS ProcessRecord = NULL;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
     PVOID InputData;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -3771,7 +3771,7 @@ DxgkpQueryAdapterInfoCaptured(
         case KMTQAITYPE_UMDRIVERNAME:
         {
             D3DKMT_UMDFILENAMEINFO *pDriverName;
-            D3DKMT_UMDFILENAMEINFO DriverName;
+            D3DKMT_UMDFILENAMEINFO _SEH2_VOLATILE DriverName;
             NTSTATUS Status;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
@@ -3801,7 +3801,7 @@ DxgkpQueryAdapterInfoCaptured(
                                                  DxgkpIsWow64Caller() ? L"UserModeDriverNameWow"
                                                                       : L"UserModeDriverName",
                                                 (ULONG)DriverName.Version,
-                                                DriverName.UmdFileName,
+                                                (PWSTR)DriverName.UmdFileName,
                                                 ARRAYSIZE(DriverName.UmdFileName));
             if (!NT_SUCCESS(Status))
             {
@@ -4075,7 +4075,7 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_QUERY_GPUMMU_CAPS:
         {
-            D3DKMT_QUERY_GPUMMU_CAPS Query;
+            D3DKMT_QUERY_GPUMMU_CAPS _SEH2_VOLATILE Query;
 
             /*
              * Not gated on the reported version.  Windows answers this query
@@ -4104,7 +4104,7 @@ DxgkpQueryAdapterInfoCaptured(
                 DXGKP_QUERY_RETURN(STATUS_INVALID_PARAMETER);
             if (!Adapter->GpuMmuCapsValid)
                 DXGKP_QUERY_RETURN(STATUS_NOT_SUPPORTED);
-            RtlZeroMemory(&Query.Caps, sizeof(Query.Caps));
+            RtlZeroMemory((void *)&Query.Caps, sizeof(Query.Caps));
             Query.Caps.Flags.ReadOnlyMemorySupported = Adapter->GpuMmuCaps.ReadOnlyMemorySupported;
             Query.Caps.Flags.NoExecuteMemorySupported = Adapter->GpuMmuCaps.NoExecuteMemorySupported;
             Query.Caps.Flags.CacheCoherentMemorySupported = Adapter->GpuMmuCaps.CacheCoherentMemorySupported;
@@ -4302,9 +4302,9 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_NODEMETADATA:
         {
-            D3DKMT_NODEMETADATA Metadata;
+            D3DKMT_NODEMETADATA _SEH2_VOLATILE Metadata;
             PDXGKDDI_GET_NODE_METADATA GetNodeMetadata;
-            NTSTATUS Status = STATUS_UNSUCCESSFUL;
+            NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Metadata))
@@ -4330,12 +4330,12 @@ DxgkpQueryAdapterInfoCaptured(
                 DXGKP_QUERY_RETURN(STATUS_NOT_SUPPORTED);
             if (!DxgkAcquireKmdCall(Adapter))
                 DXGKP_QUERY_RETURN(STATUS_DEVICE_NOT_READY);
-            RtlZeroMemory(&Metadata.NodeData, sizeof(Metadata.NodeData));
+            RtlZeroMemory((void *)&Metadata.NodeData, sizeof(Metadata.NodeData));
             _SEH2_TRY
             {
                 Status = GetNodeMetadata(Adapter->MiniportDeviceContext,
                                          Metadata.NodeOrdinalAndAdapterIndex & 0xFFFF,
-                                         &Metadata.NodeData);
+                                         (DXGKARG_GETNODEMETADATA *)&Metadata.NodeData);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {
@@ -4359,7 +4359,7 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_NODEPERFDATA:
         {
-            D3DKMT_NODE_PERFDATA Request = {0};
+            D3DKMT_NODE_PERFDATA _SEH2_VOLATILE Request = {0};
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Request))
@@ -4844,7 +4844,7 @@ DxgkpQueryAdapterInfoCaptured(
          */
         case KMTQAITYPE_PHYSICALADAPTERDEVICEIDS:
         {
-            D3DKMT_QUERY_DEVICE_IDS Query;
+            D3DKMT_QUERY_DEVICE_IDS _SEH2_VOLATILE Query;
             NTSTATUS IdStatus;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
@@ -4863,7 +4863,7 @@ DxgkpQueryAdapterInfoCaptured(
             _SEH2_END;
             if (Query.PhysicalAdapterIndex != 0)
                 DXGKP_QUERY_RETURN(STATUS_INVALID_PARAMETER);
-            IdStatus = DxgkpQueryAdapterDeviceIds(Adapter, &Query.DeviceIds);
+            IdStatus = DxgkpQueryAdapterDeviceIds(Adapter, (D3DKMT_DEVICE_IDS *)&Query.DeviceIds);
             if (!NT_SUCCESS(IdStatus))
                 DXGKP_QUERY_RETURN(IdStatus);
             _SEH2_TRY
@@ -6077,7 +6077,7 @@ DxgkUnlock(
 {
     PDXGKRNL_ADAPTER UnlockAdapter;
     PDXGKRNL_DEVICE  UnlockDevice;
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     UINT ui;
 
     if (pUnlock == NULL)
@@ -6536,7 +6536,7 @@ DxgkpQueryScanLine(
 {
     PDXGKDDI_GET_SCAN_LINE GetScanLine;
     DXGKARG_GETSCANLINE GetScanLineArgs;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
     GetScanLine = DXGK_CB_FULL(Adapter, DxgkDdiGetScanLine);
@@ -7206,7 +7206,7 @@ DxgkpQueryMiniportPerfData(
     UINT Selector;
     PVOID Result;
     ULONG OutputSize;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PAGED_CODE();
 
@@ -8253,7 +8253,7 @@ DxgkpSetGammaRampCore(
     SIZE_T RampSize = 0;
     SIZE_T Index;
     BOOLEAN Found = FALSE;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 
@@ -8862,7 +8862,7 @@ DxgkOfferAllocations(
     PDXGKRNL_DEVICE Device;
     PDXGKP_RESOURCE_ALLOCATION_SNAPSHOT ResourceSnapshots = NULL;
     UINT ResourceAllocationCount = 0;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -8964,7 +8964,7 @@ DxgkReclaimAllocations(
     PDXGKRNL_DEVICE Device;
     PDXGKP_RESOURCE_ALLOCATION_SNAPSHOT ResourceSnapshots = NULL;
     UINT ResourceAllocationCount = 0;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -12050,7 +12050,7 @@ DxgkpDispatchBufferedIoctlWorker(
     ULONG   IoControlCode = KmtRequest->IoControlCode;
     ULONG   MinimumLevel;
     KPROCESSOR_MODE EmbeddedBufferMode = KmtRequest->Internal ? KernelMode : KmtRequest->RequestorMode;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     MinimumLevel = DxgkpKmtIoctlMinimumConfiguredLevel(IoControlCode);
     if (MinimumLevel == 0 || REACTOS_WDDM_TARGET_LEVEL < MinimumLevel)

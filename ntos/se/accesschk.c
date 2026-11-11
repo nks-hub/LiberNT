@@ -1915,9 +1915,9 @@ SepAccessCheck(
     ACCESS_MASK PreviouslyGrantedAccess = 0;
     PPRIVILEGE_SET Privileges = NULL;
     ULONG CapturedPrivilegeSetLength = 0, RequiredPrivilegeSetLength;
-    ULONG ResultListIndex;
+    ULONG _SEH2_VOLATILE ResultListIndex;
     PTOKEN Token;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 

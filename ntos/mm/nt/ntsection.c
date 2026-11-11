@@ -2341,7 +2341,7 @@ MiQuerySectionName(
     UNICODE_STRING ModuleName;
     KAPC_STATE ApcState;
     PEPROCESS Process;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     Status = ObReferenceObjectByHandle(ProcessHandle, PROCESS_QUERY_INFORMATION, PsProcessType, PreviousMode,
                                        (PVOID *)&Process, NULL);
@@ -2937,7 +2937,7 @@ NtQuerySection(
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     PMI_SECTION_OBJECT Section;
     SIZE_T Needed;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 

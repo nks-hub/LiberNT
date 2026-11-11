@@ -135,7 +135,7 @@ LxCopyFromUser(
     _In_ ULONG64 Source,
     _In_ SIZE_T Length)
 {
-    LONG64 Result = 0;
+    LONG64 _SEH2_VOLATILE Result = 0;
 
     if (Length == 0)
         return 0;
@@ -165,7 +165,7 @@ LxCopyToUser(
     _In_reads_bytes_(Length) const VOID *Source,
     _In_ SIZE_T Length)
 {
-    LONG64 Result = 0;
+    LONG64 _SEH2_VOLATILE Result = 0;
 
     if (Length == 0)
         return 0;
@@ -194,7 +194,7 @@ LxZeroUser(
     _In_ ULONG64 Destination,
     _In_ SIZE_T Length)
 {
-    LONG64 Result = 0;
+    LONG64 _SEH2_VOLATILE Result = 0;
 
     if (Length == 0)
         return 0;
@@ -225,8 +225,8 @@ LxCopyStringFromUser(
     _In_ SIZE_T MaxLength)
 {
     PSTR Buffer;
-    SIZE_T Index = 0;
-    LONG64 Result = -LX_ENAMETOOLONG;
+    SIZE_T _SEH2_VOLATILE Index = 0;
+    LONG64 _SEH2_VOLATILE Result = -LX_ENAMETOOLONG;
 
     *String = NULL;
     for (;;)

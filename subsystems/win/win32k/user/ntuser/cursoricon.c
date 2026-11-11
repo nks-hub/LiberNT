@@ -1026,7 +1026,7 @@ NtUserGetCursorInfo(
     PSYSTEM_CURSORINFO CurInfo;
     NTSTATUS Status = STATUS_SUCCESS;
     PCURICON_OBJECT CurIcon;
-    BOOL Ret = FALSE;
+    BOOL _SEH2_VOLATILE Ret = FALSE;
 
     TRACE("Enter NtUserGetCursorInfo\n");
     UserEnterShared();
@@ -1130,7 +1130,7 @@ APIENTRY
 NtUserClipCursor(
     RECTL *prcl)
 {
-    RECTL rclLocal;
+    RECTL _SEH2_VOLATILE rclLocal;
     BOOL bResult;
 
     if (prcl)
@@ -1148,7 +1148,7 @@ NtUserClipCursor(
         }
         _SEH2_END
 
-        prcl = &rclLocal;
+        prcl = (RECTL *)&rclLocal;
     }
 
     UserEnterExclusive();
@@ -1247,7 +1247,7 @@ NtUserFindExistingCursorIcon(
     PCURICON_OBJECT CurIcon;
     HICON Ret = NULL;
     UNICODE_STRING ustrModuleSafe, ustrRsrcSafe;
-    FINDEXISTINGCURICONPARAM paramSafe;
+    FINDEXISTINGCURICONPARAM _SEH2_VOLATILE paramSafe;
     NTSTATUS Status;
     PPROCESSINFO pProcInfo = PsGetCurrentProcessWin32Process();
     RTL_ATOM atomModName;
@@ -1257,7 +1257,7 @@ NtUserFindExistingCursorIcon(
     _SEH2_TRY
     {
         ProbeForRead(param, sizeof(*param), 1);
-        RtlCopyMemory(&paramSafe, param, sizeof(paramSafe));
+        RtlCopyMemory((void *)&paramSafe, param, sizeof(paramSafe));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

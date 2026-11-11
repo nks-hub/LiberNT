@@ -1100,7 +1100,7 @@ APIENTRY
 NtUserGetKeyboardLayoutName(
     _Inout_ PUNICODE_STRING pustrName)
 {
-    BOOL bRet = FALSE;
+    BOOL _SEH2_VOLATILE bRet = FALSE;
     PKL pKl;
     PTHREADINFO pti;
     UNICODE_STRING ustrNameSafe;

@@ -431,8 +431,8 @@ NtGdiPolyPolyDraw( IN HDC hDC,
     PULONG SafeCounts;
     NTSTATUS Status = STATUS_SUCCESS;
     BOOL Ret = TRUE;
-    ULONG nPoints = 0, nInvalid = 0, i;
-    BOOL bOverflow = FALSE;
+    ULONG _SEH2_VOLATILE nPoints = 0, nInvalid = 0, i;
+    BOOL _SEH2_VOLATILE bOverflow = FALSE;
 
     if (!UnsafePoints || !UnsafeCounts ||
         Count == 0 || iFunc == 0 || iFunc > GdiPolyPolyRgn)

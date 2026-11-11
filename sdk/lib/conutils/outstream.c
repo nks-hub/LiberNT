@@ -840,8 +840,8 @@ ConMsgPuts(
     IN DWORD   dwLanguageId)
 {
     INT Len;
-    DWORD dwLength  = 0;
-    LPWSTR lpMsgBuf = NULL;
+    DWORD _SEH2_VOLATILE dwLength  = 0;
+    LPWSTR _SEH2_VOLATILE lpMsgBuf = NULL;
 
     /*
      * Sanitize dwFlags. This version always ignores explicitly the inserts
@@ -913,8 +913,8 @@ ConMsgPrintf2V(
     IN va_list args)
 {
     INT Len;
-    DWORD dwLength  = 0;
-    LPWSTR lpMsgBuf = NULL;
+    DWORD _SEH2_VOLATILE dwLength  = 0;
+    LPWSTR _SEH2_VOLATILE lpMsgBuf = NULL;
 
     /*
      * Sanitize dwFlags. This version always ignores explicitly the inserts.

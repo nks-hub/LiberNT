@@ -973,7 +973,7 @@ BOOL UserExtTextOutW(HDC hdc,
     ULONG_PTR pStringBuffer;
     NTSTATUS Status;
     PLPK_CALLBACK_ARGUMENTS Argument;
-    BOOL bResult = FALSE;
+    BOOL _SEH2_VOLATILE bResult = FALSE;
 
     ArgumentLength = sizeof(LPK_CALLBACK_ARGUMENTS);
 

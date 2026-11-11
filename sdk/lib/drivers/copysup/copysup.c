@@ -48,7 +48,7 @@ FsRtlCopyRead2(
     IN PDEVICE_OBJECT DeviceObject,
     IN PVOID TopLevelContext)
 {
-    BOOLEAN Ret;
+    BOOLEAN _SEH2_VOLATILE Ret;
     ULONG PageCount;
     LARGE_INTEGER FinalOffset;
     PFSRTL_COMMON_FCB_HEADER Fcb;
@@ -200,7 +200,7 @@ FsRtlCopyWrite2(
 {
     IO_STATUS_BLOCK LocalIoStatus;
     PFSRTL_ADVANCED_FCB_HEADER Fcb;
-    BOOLEAN WriteToEof, AcquiredShared, FileSizeChanged, Ret;
+    BOOLEAN _SEH2_VOLATILE WriteToEof, AcquiredShared, FileSizeChanged, Ret;
     LARGE_INTEGER WriteOffset, LastOffset, InitialFileSize, InitialValidDataLength;
 
     PAGED_CODE();

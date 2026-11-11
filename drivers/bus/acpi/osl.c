@@ -456,7 +456,7 @@ AcpiOsReadable(
     void *Memory,
     ACPI_SIZE Length)
 {
-    BOOLEAN Ret = FALSE;
+    BOOLEAN _SEH2_VOLATILE Ret = FALSE;
 
     _SEH2_TRY
     {
@@ -477,7 +477,7 @@ AcpiOsWritable(
     void *Memory,
     ACPI_SIZE Length)
 {
-    BOOLEAN Ret = FALSE;
+    BOOLEAN _SEH2_VOLATILE Ret = FALSE;
 
     _SEH2_TRY
     {

@@ -3044,7 +3044,7 @@ ChpeNtCreateThread(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess, POBJECT_ATTR
                    PINITIAL_TEB UserStack, BOOLEAN CreateSuspended)
 {
     ARM64_NT_CONTEXT ArmContext;
-    PCONTEXT NativeContext = ThreadContext;
+    PCONTEXT _SEH2_VOLATILE NativeContext = ThreadContext;
 
     /* ARM64EC kernel32 builds a native ARM64 context for CreateThread,
      * while an emulated x64 caller supplies the hybrid AMD64 layout. */

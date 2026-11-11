@@ -23,7 +23,7 @@ HRESULT WINAPI
 Main_DirectDraw_GetCaps( LPDDRAWI_DIRECTDRAW_INT This, LPDDCAPS pDriverCaps,
                          LPDDCAPS pHELCaps)
 {
-    HRESULT retVal = DDERR_INVALIDPARAMS;
+    HRESULT _SEH2_VOLATILE retVal = DDERR_INVALIDPARAMS;
 
     DX_WINDBG_trace();
 

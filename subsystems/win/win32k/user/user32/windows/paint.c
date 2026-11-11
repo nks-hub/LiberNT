@@ -244,7 +244,7 @@ SetWindowRgn(
   BOOL bRedraw)
 {
    BOOL Hook;
-   int Ret = 0;
+   int _SEH2_VOLATILE Ret = 0;
 
    LoadUserApiHook();
 

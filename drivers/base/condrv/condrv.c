@@ -2270,7 +2270,7 @@ CdFastIoClientRequest(
     _In_ PDEVICE_OBJECT DeviceObject)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    CONDRV_CLIENT_REQUEST Header;
+    CONDRV_CLIENT_REQUEST _SEH2_VOLATILE Header;
     PFILE_OBJECT Target;
     PCD_FILE File;
     NTSTATUS Status = STATUS_SUCCESS;
@@ -2286,7 +2286,7 @@ CdFastIoClientRequest(
     {
         if (PreviousMode != KernelMode)
             ProbeForRead(InputBuffer, sizeof(Header), sizeof(UCHAR));
-        RtlCopyMemory(&Header, InputBuffer, sizeof(Header));
+        RtlCopyMemory((void *)&Header, InputBuffer, sizeof(Header));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

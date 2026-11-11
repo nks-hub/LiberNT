@@ -862,7 +862,7 @@ NtUserGetUpdatedClipboardFormats(
     _Out_ PUINT pcFormatsOut)
 {
     PWINSTATION_OBJECT pWinStaObj;
-    BOOL bRet = FALSE;
+    BOOL _SEH2_VOLATILE bRet = FALSE;
     UINT cAvailable, i;
 
     UserEnterShared();
@@ -971,7 +971,7 @@ NtUserEmptyClipboard(VOID)
 INT APIENTRY
 NtUserGetClipboardFormatName(UINT fmt, LPWSTR lpszFormatName, INT cchMaxCount)
 {
-    INT iRet = 0;
+    INT _SEH2_VOLATILE iRet = 0;
 
     UserEnterShared();
 
@@ -1058,7 +1058,7 @@ cleanup:
 INT APIENTRY
 NtUserGetPriorityClipboardFormat(UINT *paFormatPriorityList, INT cFormats)
 {
-    INT i, iRet = 0;
+    INT _SEH2_VOLATILE i, iRet = 0;
     PWINSTATION_OBJECT pWinStaObj;
 
     UserEnterShared();
@@ -1132,7 +1132,7 @@ cleanup:
 HANDLE APIENTRY
 NtUserGetClipboardData(UINT fmt, PGETCLIPBDATA pgcd)
 {
-    HANDLE hRet = NULL;
+    HANDLE _SEH2_VOLATILE hRet = NULL;
     PCLIP pElement;
     PWINSTATION_OBJECT pWinStaObj;
     UINT uSourceFmt = fmt;
@@ -1369,7 +1369,7 @@ cleanup:
 HANDLE APIENTRY
 NtUserSetClipboardData(UINT fmt, HANDLE hData, PSETCLIPBDATA pUnsafeScd)
 {
-    SETCLIPBDATA scd;
+    SETCLIPBDATA _SEH2_VOLATILE scd;
     HANDLE hRet;
 
     TRACE("NtUserSetClipboardData(%x %p %p)\n", fmt, hData, pUnsafeScd);
@@ -1383,7 +1383,7 @@ NtUserSetClipboardData(UINT fmt, HANDLE hData, PSETCLIPBDATA pUnsafeScd)
     _SEH2_TRY
     {
         ProbeForRead(pUnsafeScd, sizeof(*pUnsafeScd), 1);
-        RtlCopyMemory(&scd, pUnsafeScd, sizeof(scd));
+        RtlCopyMemory((void *)&scd, pUnsafeScd, sizeof(scd));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -1395,7 +1395,7 @@ NtUserSetClipboardData(UINT fmt, HANDLE hData, PSETCLIPBDATA pUnsafeScd)
     UserEnterExclusive();
 
     /* Call internal function */
-    hRet = UserSetClipboardData(fmt, hData, &scd);
+    hRet = UserSetClipboardData(fmt, hData, (PSETCLIPBDATA)&scd);
 
     UserLeave();
 

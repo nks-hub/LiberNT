@@ -200,7 +200,7 @@ PopQuerySleepDisableReasons(
     PUCHAR Snapshot;
     ULONG RecordLength;
     ULONG Length;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     PAGED_CODE();
 

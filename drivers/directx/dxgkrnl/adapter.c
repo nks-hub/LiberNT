@@ -10470,7 +10470,7 @@ DxgkCbMapMemory(
 {
     PDXGKRNL_ADAPTER Adapter;
     PDXGK_MAPMEM_ENTRY MapEntry;
-    PVOID Va = NULL;
+    PVOID _SEH2_VOLATILE Va = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
     ULONGLONG TotalStart100ns;
     ULONGLONG MapStart100ns;
@@ -12752,7 +12752,7 @@ DxgkpQueryDriverCaps(
     PDXGKDDI_QUERY_ADAPTER_INFO PfnQueryAdapterInfo;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
     ULONG CapsSize;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     C_ASSERT(sizeof(DXGK_DRIVERCAPS) <= DXGKP_DRIVERCAPS_QUERY_SIZE);
 
@@ -12800,7 +12800,7 @@ DxgkpQueryGpuMmuCaps(
     PDXGKDDI_QUERY_ADAPTER_INFO PfnQueryAdapterInfo;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
     DXGK_QUERYGPUMMUCAPSIN CapsIn;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     if (Caps == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -12853,7 +12853,7 @@ DxgkpQueryPageTableLevelDesc(
     PDXGKDDI_QUERY_ADAPTER_INFO PfnQueryAdapterInfo;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
     DXGK_QUERYPAGETABLELEVELDESCIN Input;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     if (Desc == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -13508,7 +13508,7 @@ DxgkpCollectAdapterDiagnosticInfo(
     PDXGKDDI_COLLECTDIAGNOSTICINFO CollectDiagnosticInfo;
     DXGKARG_COLLECTDIAGNOSTICINFO Args;
     PVOID Buffer;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     BOOLEAN CallbackAcquired;
 
     PAGED_CODE();
@@ -13623,7 +13623,7 @@ DxgkpSetVsyncInterruptState(
     DXGKARG_CONTROLINTERRUPT2 Args2;
     DXGK_VSYNC_CONTROL_DDI Ddi;
     ULONG Version;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     PAGED_CODE();
 
@@ -15318,7 +15318,7 @@ DxgkpStopMiniportPostDisplayOwner(
     _Out_opt_ PDXGK_DISPLAY_INFORMATION ReleasedPostDisplayInformation,
     _Out_opt_ PBOOLEAN ReleasedByDriver)
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
     if (!Adapter->MiniportDeviceStopped)
     {
@@ -16364,7 +16364,7 @@ DxgkpMiniportPnpDispatch(
             DXGKRNL_ADAPTER_STATE PreviousState;
             BOOLEAN NotifyRunningRemoval;
             BOOLEAN WaitForStop;
-            NTSTATUS NotifyStatus = STATUS_UNSUCCESSFUL;
+            NTSTATUS _SEH2_VOLATILE NotifyStatus = STATUS_UNSUCCESSFUL;
             NTSTATUS StopStatus = STATUS_SUCCESS;
 
             DxgkpAcquireAdapterMutexAfterStart(Adapter);
@@ -16690,7 +16690,7 @@ DxgkpMiniportQueryInterface(
     PDXGKDDI_QUERY_INTERFACE QueryInterface;
     QUERY_INTERFACE Query;
     ULONG Version;
-    NTSTATUS Status = STATUS_NOT_SUPPORTED;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_NOT_SUPPORTED;
 
     PAGED_CODE();
 

@@ -253,7 +253,7 @@ void release_dc_data(struct wgl_dc_data* dc_data)
 
 struct wgl_context* get_context(HGLRC hglrc)
 {
-    struct wgl_context* context = (struct wgl_context*)hglrc;
+    struct wgl_context* _SEH2_VOLATILE context = (struct wgl_context*)hglrc;
 
     if(!hglrc)
         return NULL;

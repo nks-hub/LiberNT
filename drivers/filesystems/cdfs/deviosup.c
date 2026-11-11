@@ -342,7 +342,11 @@ Return Value:
 
     IO_RUN IoRuns[MAX_PARALLEL_IOS];
     ULONG RunCount = 0;
+#ifdef __REACTOS__
+    ULONG _SEH2_VOLATILE CleanupRunCount = 0;
+#else
     ULONG CleanupRunCount = 0;
+#endif
 
     PVOID UserBuffer;
     ULONG UserBufferOffset = 0;
@@ -424,6 +428,18 @@ Return Value:
 
             RtlZeroMemory( IoRuns, sizeof( IoRuns ));
 
+#ifdef __REACTOS__
+            Unaligned = CdPrepareBuffers( IrpContext,
+                                          IrpContext->Irp,
+                                          Fcb,
+                                          UserBuffer,
+                                          UserBufferOffset,
+                                          CurrentOffset,
+                                          RemainingByteCount,
+                                          IoRuns,
+                                          (PULONG)&CleanupRunCount,
+                                          &ThisByteCount );
+#else
             Unaligned = CdPrepareBuffers( IrpContext,
                                           IrpContext->Irp,
                                           Fcb,
@@ -434,6 +450,7 @@ Return Value:
                                           IoRuns,
                                           &CleanupRunCount,
                                           &ThisByteCount );
+#endif
 
 
             RunCount = CleanupRunCount;
@@ -636,7 +653,11 @@ Return Value:
     RAW_READ_INFO RawReads[MAX_PARALLEL_IOS];
     IO_RUN IoRuns[MAX_PARALLEL_IOS];
     ULONG RunCount = 0;
+#ifdef __REACTOS__
+    ULONG _SEH2_VOLATILE CleanupRunCount = 0;
+#else
     ULONG CleanupRunCount = 0;
+#endif
 
     PVOID UserBuffer;
     ULONG UserBufferOffset = 0;
@@ -873,6 +894,18 @@ Return Value:
                 RtlZeroMemory( IoRuns, sizeof( IoRuns ));
                 RtlZeroMemory( RawReads, sizeof( RawReads ));
 
+#ifdef __REACTOS__
+                CdPrepareXABuffers( IrpContext,
+                                    IrpContext->Irp,
+                                    Fcb,
+                                    UserBuffer,
+                                    UserBufferOffset,
+                                    CurrentOffset,
+                                    RemainingByteCount,
+                                    IoRuns,
+                                    (PULONG)&CleanupRunCount,
+                                    &ThisByteCount );
+#else
                 CdPrepareXABuffers( IrpContext,
                                     IrpContext->Irp,
                                     Fcb,
@@ -883,6 +916,7 @@ Return Value:
                                     IoRuns,
                                     &CleanupRunCount,
                                     &ThisByteCount );
+#endif
             }
 
             //
@@ -1253,7 +1287,11 @@ Return Value:
 --*/
 
 {
+#ifdef __REACTOS__
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_INSUFFICIENT_RESOURCES;
+#else
     NTSTATUS Status = STATUS_INSUFFICIENT_RESOURCES;
+#endif
     PMDL Mdl;
 
     PAGED_CODE();

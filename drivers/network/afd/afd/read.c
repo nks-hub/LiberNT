@@ -836,7 +836,7 @@ AfdFastConnectedSocketReadData(
     BOOLEAN CopyFailed = FALSE;
     AFD_RECV_INFO RecvReq;
     AFD_WSABUF Buffers[8];
-    UINT BytesAvailable, BytesCopied = 0, BytesToCopy, i;
+    UINT _SEH2_VOLATILE BytesAvailable, BytesCopied = 0, BytesToCopy, i;
 
     if (!AfdCaptureRecvRequest(InputBuffer, InputBufferLength, Mode, Is32Bit, &RecvReq) ||
         (RecvReq.AfdFlags & (AFD_OVERLAPPED | AFD_SKIP_FIO)) ||

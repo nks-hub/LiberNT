@@ -2047,11 +2047,11 @@ DxgkpCreateDevice(
     PDXGKRNL_ADAPTER     Adapter;
     PDXGKRNL_DEVICE      Device;
     DXGKARG_CREATEDEVICE CreateDeviceArg;
-    DXGK_DEVICEINFO      LegacyDeviceInfo;
+    DXGK_DEVICEINFO      _SEH2_VOLATILE LegacyDeviceInfo;
     DXGK_DEVICE_WORK_TERMINAL_STATE WorkTerminal;
     NTSTATUS             Status;
     BOOLEAN              KmdTransactionStarted = FALSE;
-    BOOLEAN              LegacyDeviceInfoValid = FALSE;
+    BOOLEAN              _SEH2_VOLATILE LegacyDeviceInfoValid = FALSE;
 
     PAGED_CODE();
 
@@ -2142,7 +2142,7 @@ DxgkpCreateDevice(
     /* --- Call DxgkDdiCreateDevice ---------------------------------------- */
 
     RtlZeroMemory(&CreateDeviceArg, sizeof(CreateDeviceArg));
-    RtlZeroMemory(&LegacyDeviceInfo, sizeof(LegacyDeviceInfo));
+    RtlZeroMemory((void *)&LegacyDeviceInfo, sizeof(LegacyDeviceInfo));
     CreateDeviceArg.hDevice             = (HANDLE)Device; /* raw pointer as token */
     /* UMD D3DKMT flags are not bit-compatible with the KMD device flags. */
     CreateDeviceArg.Flags.Value         = 0;

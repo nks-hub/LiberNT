@@ -486,7 +486,7 @@ ObpCaptureObjectName(IN OUT PUNICODE_STRING CapturedName,
                      IN KPROCESSOR_MODE AccessMode,
                      IN BOOLEAN UseLookaside)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG StringLength;
     PWCHAR _SEH2_VOLATILE StringBuffer = NULL;
     UNICODE_STRING LocalName;
@@ -1736,7 +1736,7 @@ NtQueryObject(IN HANDLE ObjectHandle,
     POBJECT_BASIC_INFORMATION BasicInfo;
     ULONG InfoLength = 0;
     PVOID Object = NULL;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     POBJECT_HEADER_QUOTA_INFO ObjectQuota;
     SECURITY_INFORMATION SecurityInformation;
     POBJECT_TYPE ObjectType = NULL;

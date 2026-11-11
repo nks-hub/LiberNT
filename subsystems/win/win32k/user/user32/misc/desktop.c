@@ -249,7 +249,7 @@ int WINAPI
 GetSystemMetrics(int nIndex)
 {
    BOOL Hook;
-   int Ret = 0;
+   int _SEH2_VOLATILE Ret = 0;
 
    if (!gpsi) // Fixme! Hax! Need Timos delay load support?
    {
@@ -729,7 +729,7 @@ SystemParametersInfoA(UINT uiAction,
 		      PVOID pvParam,
 		      UINT fWinIni)
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    Hook = BeginIfHookedUserApiHook();
 
@@ -760,7 +760,7 @@ SystemParametersInfoW(UINT uiAction,
 		      PVOID pvParam,
 		      UINT fWinIni)
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    Hook = BeginIfHookedUserApiHook();
 

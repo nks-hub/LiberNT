@@ -1571,7 +1571,7 @@ WINAPI
 DECLSPEC_HOTPATCH
 EnableScrollBar( HWND hwnd, UINT nBar, UINT flags )
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    LoadUserApiHook();
 
@@ -1686,7 +1686,7 @@ WINAPI
 DECLSPEC_HOTPATCH
 GetScrollInfo(HWND Wnd, INT SBType, LPSCROLLINFO Info)
 {
-   BOOL Hook, Ret = FALSE;
+   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
 
    LoadUserApiHook();
 
@@ -1842,7 +1842,7 @@ DECLSPEC_HOTPATCH
 SetScrollInfo(HWND Wnd, int SBType, LPCSCROLLINFO Info, BOOL bRedraw)
 {
    BOOL Hook;
-   INT Ret = 0;
+   INT _SEH2_VOLATILE Ret = 0;
 
    LoadUserApiHook();
 

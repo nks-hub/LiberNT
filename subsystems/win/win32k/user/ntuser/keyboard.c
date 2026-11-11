@@ -1980,7 +1980,7 @@ APIENTRY
 NtUserGetKeyNameText(LONG lParam, LPWSTR lpString, int cchSize)
 {
     PTHREADINFO pti;
-    DWORD i, dwRet = 0;
+    DWORD _SEH2_VOLATILE i, dwRet = 0;
     SIZE_T cchKeyName;
     WORD wScanCode = (lParam >> 16) & 0xFF;
     BOOL bExtKey = (HIWORD(lParam) & KF_EXTENDED) ? TRUE : FALSE;

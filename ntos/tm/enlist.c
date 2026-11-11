@@ -932,7 +932,7 @@ NTSTATUS
 TmpEnlistmentCall(
     _In_ HANDLE EnlistmentHandle,
     _In_ ACCESS_MASK Access,
-    _In_opt_ PLARGE_INTEGER TmVirtualClock,
+    _In_opt_ PLARGE_INTEGER _SEH2_VOLATILE TmVirtualClock,
     _In_ PTMP_ENLISTMENT_ROUTINE Routine)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();

@@ -547,7 +547,7 @@ VfatCommonRead(
 {
     PVFATFCB Fcb;
     PVOID Buffer;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     ULONG Length = 0;
     ULONG BytesPerSector;
     LARGE_INTEGER ByteOffset;
@@ -876,9 +876,9 @@ VfatWrite(
     PVFAT_IRP_CONTEXT IrpContext = *pIrpContext;
     PVFATFCB Fcb;
     PERESOURCE Resource = NULL;
-    LARGE_INTEGER ByteOffset;
-    LARGE_INTEGER OldFileSize;
-    NTSTATUS Status = STATUS_SUCCESS;
+    LARGE_INTEGER _SEH2_VOLATILE ByteOffset;
+    LARGE_INTEGER _SEH2_VOLATILE OldFileSize;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     ULONG Length = 0;
     PVOID Buffer;
     ULONG BytesPerSector;
@@ -1105,11 +1105,11 @@ VfatWrite(
 
             if (ByteOffset.QuadPart > OldFileSize.QuadPart)
             {
-                CcZeroData(IrpContext->FileObject, &OldFileSize, &ByteOffset, TRUE);
+                CcZeroData(IrpContext->FileObject, (PLARGE_INTEGER)&OldFileSize, (PLARGE_INTEGER)&ByteOffset, TRUE);
             }
 
             if (CcCopyWrite(IrpContext->FileObject,
-                            &ByteOffset,
+                            (PLARGE_INTEGER)&ByteOffset,
                             Length,
                             TRUE /*CanWait*/,
                             Buffer))
@@ -1141,7 +1141,7 @@ VfatWrite(
 
         if (ByteOffset.QuadPart > OldFileSize.QuadPart)
         {
-            CcZeroData(IrpContext->FileObject, &OldFileSize, &ByteOffset, TRUE);
+            CcZeroData(IrpContext->FileObject, (PLARGE_INTEGER)&OldFileSize, (PLARGE_INTEGER)&ByteOffset, TRUE);
         }
 
         if (!IsVolume)

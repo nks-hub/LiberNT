@@ -38,7 +38,7 @@ Main_DirectDraw_QueryInterface (LPDDRAWI_DIRECTDRAW_INT This,
                                 REFIID id,
                                 LPVOID *obj)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
 
     DX_WINDBG_trace();
 
@@ -144,7 +144,7 @@ Main_DirectDraw_QueryInterface (LPDDRAWI_DIRECTDRAW_INT This,
 ULONG WINAPI
 Main_DirectDraw_AddRef (LPDDRAWI_DIRECTDRAW_INT This)
 {
-    ULONG retValue = 0;
+    ULONG _SEH2_VOLATILE retValue = 0;
 
     DX_WINDBG_trace();
 
@@ -193,7 +193,7 @@ Main_DirectDraw_AddRef (LPDDRAWI_DIRECTDRAW_INT This)
 ULONG WINAPI
 Main_DirectDraw_Release (LPDDRAWI_DIRECTDRAW_INT This)
 {
-    ULONG Counter = 0;
+    ULONG _SEH2_VOLATILE Counter = 0;
 
     DX_WINDBG_trace();
 
@@ -266,7 +266,7 @@ Main_DirectDraw_Initialize (LPDDRAWI_DIRECTDRAW_INT This, LPGUID lpGUID)
 HRESULT WINAPI
 Main_DirectDraw_Compact(LPDDRAWI_DIRECTDRAW_INT This)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
 
     DX_WINDBG_trace();
 
@@ -296,7 +296,7 @@ HRESULT WINAPI
 Main_DirectDraw_GetAvailableVidMem(LPDDRAWI_DIRECTDRAW_INT This, LPDDSCAPS ddscaps, LPDWORD dwTotal, LPDWORD dwFree)
 {
     DDSCAPS2 myddscaps;
-    HRESULT retValue = DD_OK;
+    HRESULT _SEH2_VOLATILE retValue = DD_OK;
 
     ZeroMemory(&myddscaps, sizeof(DDSCAPS2));
 
@@ -318,7 +318,7 @@ HRESULT WINAPI
 Main_DirectDraw_GetAvailableVidMem4(LPDDRAWI_DIRECTDRAW_INT This, LPDDSCAPS2 ddscaps,
                    LPDWORD dwTotal, LPDWORD dwFree)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
     DDHAL_GETAVAILDRIVERMEMORYDATA  memdata;
 
     DX_WINDBG_trace();
@@ -417,7 +417,7 @@ Main_DirectDraw_GetAvailableVidMem4(LPDDRAWI_DIRECTDRAW_INT This, LPDDSCAPS2 dds
 HRESULT WINAPI
 Main_DirectDraw_GetFourCCCodes(LPDDRAWI_DIRECTDRAW_INT This, LPDWORD lpNumCodes, LPDWORD lpCodes)
 {
-    HRESULT retVal = DD_OK;
+    HRESULT _SEH2_VOLATILE retVal = DD_OK;
 
     DX_WINDBG_trace();
 
@@ -478,7 +478,7 @@ HRESULT WINAPI
 Main_DirectDraw_CreateSurface (LPDDRAWI_DIRECTDRAW_INT This, LPDDSURFACEDESC pDDSD,
                                LPDDRAWI_DDRAWSURFACE_INT *ppSurf, IUnknown *pUnkOuter)
 {
-   HRESULT ret = DDERR_GENERIC;
+   HRESULT _SEH2_VOLATILE ret = DDERR_GENERIC;
    DDSURFACEDESC2 dd_desc_v2;
 
    DX_WINDBG_trace();
@@ -516,7 +516,7 @@ HRESULT WINAPI
 Main_DirectDraw_CreateSurface4(LPDDRAWI_DIRECTDRAW_INT This, LPDDSURFACEDESC2 pDDSD,
                                LPDDRAWI_DDRAWSURFACE_INT *ppSurf, IUnknown *pUnkOuter)
 {
-    HRESULT ret = DD_OK;
+    HRESULT _SEH2_VOLATILE ret = DD_OK;
     DX_WINDBG_trace();
 
     EnterCriticalSection(&ddcs);
@@ -545,7 +545,7 @@ Main_DirectDraw_CreateSurface4(LPDDRAWI_DIRECTDRAW_INT This, LPDDSURFACEDESC2 pD
 HRESULT WINAPI Main_DirectDraw_CreatePalette(LPDDRAWI_DIRECTDRAW_INT This, DWORD dwFlags,
                   LPPALETTEENTRY palent, LPDIRECTDRAWPALETTE* ppPalette, LPUNKNOWN pUnkOuter)
 {
-	HRESULT ret = DD_OK;
+	HRESULT _SEH2_VOLATILE ret = DD_OK;
     DX_WINDBG_trace();
 
     EnterCriticalSection(&ddcs);

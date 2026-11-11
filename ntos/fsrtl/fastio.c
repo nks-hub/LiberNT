@@ -75,7 +75,7 @@ FsRtlCopyRead(IN PFILE_OBJECT FileObject,
     LARGE_INTEGER Offset;
     PFAST_IO_DISPATCH FastIoDispatch;
     PDEVICE_OBJECT Device;
-    BOOLEAN Result = TRUE;
+    BOOLEAN _SEH2_VOLATILE Result = TRUE;
     ULONG PageCount = ADDRESS_AND_SIZE_TO_SPAN_PAGES(FileOffset, Length);
 
     PAGED_CODE();
@@ -270,7 +270,7 @@ FsRtlCopyWrite(IN PFILE_OBJECT FileObject,
                OUT PIO_STATUS_BLOCK IoStatus,
                IN PDEVICE_OBJECT DeviceObject)
 {
-    BOOLEAN Result = TRUE;
+    BOOLEAN _SEH2_VOLATILE Result = TRUE;
     PFAST_IO_DISPATCH FastIoDispatch;
     PDEVICE_OBJECT Device;
     PFSRTL_COMMON_FCB_HEADER FcbHeader;
@@ -1279,7 +1279,7 @@ FsRtlPrepareMdlWriteDev(IN PFILE_OBJECT FileObject,
                         OUT PIO_STATUS_BLOCK IoStatus,
                         IN PDEVICE_OBJECT DeviceObject)
 {
-    BOOLEAN Result = TRUE;
+    BOOLEAN _SEH2_VOLATILE Result = TRUE;
     PFAST_IO_DISPATCH FastIoDispatch;
     PDEVICE_OBJECT Device;
     PFSRTL_COMMON_FCB_HEADER FcbHeader;

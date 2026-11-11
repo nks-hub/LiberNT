@@ -322,7 +322,7 @@ NTSTATUS
 FatProcessException (
     IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp,
-    IN NTSTATUS ExceptionCode
+    IN NTSTATUS _SEH2_VOLATILE ExceptionCode
     )
 
 /*++
@@ -349,7 +349,7 @@ Return Value:
     PVCB Vcb;
     PIO_STACK_LOCATION IrpSp;
     FAT_VOLUME_STATE TransitionState = VolumeDirty;
-    ULONG SavedFlags = 0;
+    ULONG _SEH2_VOLATILE SavedFlags = 0;
 
     PAGED_CODE();
 

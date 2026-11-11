@@ -604,7 +604,7 @@ AlpcpSendWaitReceivePort(
     _Out_opt_ PPORT_MESSAGE ReceiveMessage,
     _Inout_opt_ PSIZE_T BufferLength,
     _Inout_opt_ PALPC_MESSAGE_ATTRIBUTES ReceiveMessageAttributes,
-    _In_opt_ PLARGE_INTEGER Timeout,
+    _In_opt_ PLARGE_INTEGER _SEH2_VOLATILE Timeout,
     _In_ KPROCESSOR_MODE PreviousMode)
 {
     NTSTATUS Status = STATUS_SUCCESS;
@@ -612,7 +612,7 @@ AlpcpSendWaitReceivePort(
     BOOLEAN Alertable;
     PORT_MESSAGE Header;
     LARGE_INTEGER CapturedTimeout;
-    SIZE_T AvailableLength = MAXULONG_PTR;
+    SIZE_T _SEH2_VOLATILE AvailableLength = MAXULONG_PTR;
     ULONG ReceiveAttributeSize;
     PALPC_MESSAGE_ATTRIBUTES SendAttributes = NULL, ReceiveAttributes = NULL;
     PKALPC_MESSAGE Message = NULL, ReceivedMessage = NULL, ContinueMessage = NULL;

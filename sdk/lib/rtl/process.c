@@ -28,7 +28,7 @@ RtlpQueryEnvironmentSize(
     ULONG_PTR BaseAddress, EnvironmentAddress;
     SIZE_T MaximumSize, MaximumLength, Offset, Index;
     NTSTATUS Status;
-    BOOLEAN Found = FALSE;
+    BOOLEAN _SEH2_VOLATILE Found = FALSE;
 
     if (!Environment || !EnvironmentSize)
         return STATUS_INVALID_PARAMETER;
@@ -264,7 +264,7 @@ RtlCreateUserProcess(IN PUNICODE_STRING ImageFileName,
                      IN HANDLE ExceptionPort OPTIONAL,
                      OUT PRTL_USER_PROCESS_INFORMATION ProcessInfo)
 {
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     OBJECT_ATTRIBUTES ObjectAttributes;
     DPRINT("RtlCreateUserProcess: %wZ\n", ImageFileName);
 

@@ -440,7 +440,7 @@ KeGetBugMessageText(IN ULONG BugCheckCode,
     PMESSAGE_RESOURCE_ENTRY MessageEntry;
     PCHAR BugCode;
     USHORT Length;
-    BOOLEAN Result = FALSE;
+    BOOLEAN _SEH2_VOLATILE Result = FALSE;
 
     /* Make sure we're not bugchecking too early */
     if (!KiBugCodeMessages) return Result;
@@ -641,7 +641,7 @@ KiIsBugCheckCodeAddress(
     _In_ ULONG_PTR Address)
 {
     BOOLEAN InKernel;
-    BOOLEAN Valid = FALSE;
+    BOOLEAN _SEH2_VOLATILE Valid = FALSE;
     PVOID ImageBase;
     PLDR_DATA_TABLE_ENTRY LdrEntry;
 
@@ -681,7 +681,7 @@ KiLookupBugCheckFunctionEntry(
     IMAGE_DATA_DIRECTORY ExceptionDirectory;
     PRUNTIME_FUNCTION FunctionTable;
     PRUNTIME_FUNCTION FunctionEntry;
-    PRUNTIME_FUNCTION Result = NULL;
+    PRUNTIME_FUNCTION _SEH2_VOLATILE Result = NULL;
     ULONG SizeOfImage;
     ULONG TableLength;
     ULONG IndexLow;
@@ -807,7 +807,7 @@ KiUnwindBugCheckFrame(
     ULONG_PTR LookupPc;
     ULONG_PTR NewPc;
     ULONG_PTR NewSp;
-    BOOLEAN Unwound = FALSE;
+    BOOLEAN _SEH2_VOLATILE Unwound = FALSE;
 
     OldPc = KeGetContextPc(Context);
     OldSp = KeGetContextStackRegister(Context);
@@ -897,8 +897,8 @@ KiCaptureBugCheckBackTrace(
     _Out_writes_(MaximumFrames) PULONG_PTR Frames,
     _In_ ULONG MaximumFrames)
 {
-    ULONG_PTR StackLow = 0;
-    ULONG_PTR StackHigh = 0;
+    ULONG_PTR _SEH2_VOLATILE StackLow = 0;
+    ULONG_PTR _SEH2_VOLATILE StackHigh = 0;
     ULONG_PTR Frame;
     ULONG_PTR FrameRecord;
     ULONG_PTR NextFrame;
@@ -1178,9 +1178,9 @@ KiUseExceptionBugCheckContext(
     _In_ ULONG_PTR ContextAddress,
     _Out_ PCONTEXT Context)
 {
-    CONTEXT ExceptionContext;
+    CONTEXT _SEH2_VOLATILE ExceptionContext;
     ULONG_PTR ProgramCounter;
-    BOOLEAN ContextCopied = FALSE;
+    BOOLEAN _SEH2_VOLATILE ContextCopied = FALSE;
 
     if ((BugCheckCode != SYSTEM_THREAD_EXCEPTION_NOT_HANDLED) ||
         (ContextAddress <= (ULONG_PTR)MmHighestUserAddress) ||
@@ -1205,7 +1205,7 @@ KiUseExceptionBugCheckContext(
     if (!ContextCopied)
         return FALSE;
 
-    ProgramCounter = KeGetContextPc(&ExceptionContext);
+    ProgramCounter = KeGetContextPc((PCONTEXT)&ExceptionContext);
     if (ProgramCounter == 0)
         return FALSE;
 

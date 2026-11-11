@@ -180,7 +180,7 @@ FAT16FindAndMarkAvailableCluster(
     PVOID BaseAddress;
     ULONG ChunkSize;
     PVOID Context = 0;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PUSHORT Block;
     PUSHORT BlockEnd;
 
@@ -196,7 +196,7 @@ FAT16FindAndMarkAvailableCluster(
             Offset.QuadPart = ROUND_DOWN(i * 2, ChunkSize);
             _SEH2_TRY
             {
-                CcPinRead(DeviceExt->FATFileObject, &Offset, ChunkSize, PIN_WAIT, &Context, &BaseAddress);
+                CcPinRead(DeviceExt->FATFileObject, (PLARGE_INTEGER)&Offset, ChunkSize, PIN_WAIT, &Context, &BaseAddress);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {
@@ -252,7 +252,7 @@ FAT12FindAndMarkAvailableCluster(
     ULONG i, j;
     PVOID BaseAddress;
     PVOID Context;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
 
     FatLength = DeviceExt->FatInfo.NumberOfClusters + 2;
     *Cluster = 0;
@@ -260,7 +260,7 @@ FAT12FindAndMarkAvailableCluster(
     Offset.QuadPart = 0;
     _SEH2_TRY
     {
-        CcPinRead(DeviceExt->FATFileObject, &Offset, DeviceExt->FatInfo.FATSectors * DeviceExt->FatInfo.BytesPerSector, PIN_WAIT, &Context, &BaseAddress);
+        CcPinRead(DeviceExt->FATFileObject, (PLARGE_INTEGER)&Offset, DeviceExt->FatInfo.FATSectors * DeviceExt->FatInfo.BytesPerSector, PIN_WAIT, &Context, &BaseAddress);
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -319,7 +319,7 @@ FAT32FindAndMarkAvailableCluster(
     PVOID BaseAddress;
     ULONG ChunkSize;
     PVOID Context;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     PULONG Block;
     PULONG BlockEnd;
 
@@ -335,7 +335,7 @@ FAT32FindAndMarkAvailableCluster(
             Offset.QuadPart = ROUND_DOWN(i * 4, ChunkSize);
             _SEH2_TRY
             {
-                CcPinRead(DeviceExt->FATFileObject, &Offset, ChunkSize, PIN_WAIT, &Context, &BaseAddress);
+                CcPinRead(DeviceExt->FATFileObject, (PLARGE_INTEGER)&Offset, ChunkSize, PIN_WAIT, &Context, &BaseAddress);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {
@@ -497,7 +497,7 @@ FAT32CountAvailableClusters(
     ULONG i;
     ULONG ChunkSize;
     PVOID Context = NULL;
-    LARGE_INTEGER Offset;
+    LARGE_INTEGER _SEH2_VOLATILE Offset;
     ULONG FatLength;
 
     ChunkSize = CACHEPAGESIZE(DeviceExt);
@@ -508,7 +508,7 @@ FAT32CountAvailableClusters(
         Offset.QuadPart = ROUND_DOWN(i * 4, ChunkSize);
         _SEH2_TRY
         {
-            CcMapData(DeviceExt->FATFileObject, &Offset, ChunkSize, MAP_WAIT, &Context, &BaseAddress);
+            CcMapData(DeviceExt->FATFileObject, (PLARGE_INTEGER)&Offset, ChunkSize, MAP_WAIT, &Context, &BaseAddress);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {

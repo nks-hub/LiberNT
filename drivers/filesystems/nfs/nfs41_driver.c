@@ -677,7 +677,11 @@ NTSTATUS marshal_nfs41_open(
     ULONG buf_len,
     ULONG *len)
 {
+#ifdef __REACTOS__
+    NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
+#else
     NTSTATUS status = STATUS_SUCCESS;
+#endif
     ULONG header_len = 0;
     unsigned char *tmp = buf;
 
@@ -757,7 +761,11 @@ NTSTATUS marshal_nfs41_rw(
     ULONG buf_len,
     ULONG *len)
 {
+#ifdef __REACTOS__
+    NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
+#else
     NTSTATUS status = STATUS_SUCCESS;
+#endif
     ULONG header_len = 0;
     unsigned char *tmp = buf;
 
@@ -937,7 +945,11 @@ NTSTATUS marshal_nfs41_dirquery(
     ULONG buf_len,
     ULONG *len)
 {
+#ifdef __REACTOS__
+    NTSTATUS _SEH2_VOLATILE status = STATUS_SUCCESS;
+#else
     NTSTATUS status = STATUS_SUCCESS;
+#endif
     ULONG header_len = 0;
     unsigned char *tmp = buf;
 

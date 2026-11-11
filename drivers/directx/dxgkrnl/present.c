@@ -1411,7 +1411,7 @@ DxgkpProgramScanoutViaMpo(
     DXGKARG_SETVIDPNSOURCEADDRESSWITHMULTIPLANEOVERLAY MpoArgs;
     DXGK_MULTIPLANE_OVERLAY_PLANE Plane;
     PDXGKDDI_SETVIDPNSOURCEADDRESSWITHMULTIPLANEOVERLAY PfnSetMpo;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_1)
     if (DXGK_CB_FULL(Adapter, DxgkDdiSetVidPnSourceAddressWithMultiPlaneOverlay3) != NULL)
@@ -3351,7 +3351,7 @@ DxgkpSelectPresentNode(
         for (Node = 0; Node < Adapter->NodeCount; ++Node)
         {
             DXGKARG_GETNODEMETADATA Metadata;
-            NTSTATUS Status = STATUS_UNSUCCESSFUL;
+            NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
 
             RtlZeroMemory(&Metadata, sizeof(Metadata));
             _SEH2_TRY

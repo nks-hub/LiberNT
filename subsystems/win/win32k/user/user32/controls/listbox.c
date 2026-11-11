@@ -882,7 +882,11 @@ static BOOL LISTBOX_SetTabStops( LB_DESCR *descr, INT count, LPINT tabs )
  */
 static LRESULT LISTBOX_GetText( LB_DESCR *descr, INT index, LPWSTR buffer, BOOL unicode )
 {
+#ifdef __REACTOS__
+    DWORD _SEH2_VOLATILE len = 0;
+#else
     DWORD len = 0;
+#endif
 
     if ((index < 0) || (index >= descr->nb_items))
     {

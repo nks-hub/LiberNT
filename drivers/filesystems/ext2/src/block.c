@@ -67,7 +67,11 @@ Ext2CreateMdl (
     IN LOCK_OPERATION op
 )
 {
+#ifdef __REACTOS__
+    NTSTATUS _SEH2_VOLATILE Status;
+#else
     NTSTATUS Status;
+#endif
     PMDL Mdl = NULL;
 
     ASSERT (Buffer != NULL);
@@ -114,7 +118,11 @@ Ext2LockUserBuffer (IN PIRP     Irp,
                     IN ULONG            Length,
                     IN LOCK_OPERATION   Operation)
 {
+#ifdef __REACTOS__
+    NTSTATUS _SEH2_VOLATILE Status;
+#else
     NTSTATUS Status;
+#endif
     ASSERT(Irp != NULL);
 
     if (Irp->MdlAddress != NULL) {
@@ -268,12 +276,23 @@ Ext2ReadWriteBlocks(
     PIRP                MasterIrp = IrpContext->Irp;
     PIO_STACK_LOCATION  IrpSp;
     PMDL                Mdl;
+#ifdef __REACTOS__
+    PEXT2_RW_CONTEXT    _SEH2_VOLATILE pContext = NULL;
+    PEXT2_EXTENT        _SEH2_VOLATILE Extent;
+#else
     PEXT2_RW_CONTEXT    pContext = NULL;
     PEXT2_EXTENT        Extent;
+#endif
     KEVENT              Wait;
+#ifdef __REACTOS__
+    NTSTATUS            _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    BOOLEAN             _SEH2_VOLATILE bMasterCompleted = FALSE;
+    BOOLEAN             _SEH2_VOLATILE bBugCheck = FALSE;
+#else
     NTSTATUS            Status = STATUS_SUCCESS;
     BOOLEAN             bMasterCompleted = FALSE;
     BOOLEAN             bBugCheck = FALSE;
+#endif
 
     ASSERT(MasterIrp);
 
@@ -485,7 +504,11 @@ Ext2ReadSync(
     BOOLEAN             bVerify
 )
 {
+#ifdef __REACTOS__
+    PKEVENT         _SEH2_VOLATILE Event = NULL;
+#else
     PKEVENT         Event = NULL;
+#endif
 
     PIRP            Irp;
     IO_STATUS_BLOCK IoStatus;

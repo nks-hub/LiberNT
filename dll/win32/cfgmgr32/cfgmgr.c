@@ -644,7 +644,7 @@ BOOL
 IsValidRangeList(
     _In_opt_ PINTERNAL_RANGE_LIST pRangeList)
 {
-    BOOL bValid = TRUE;
+    BOOL _SEH2_VOLATILE bValid = TRUE;
 
     if (pRangeList == NULL)
         return FALSE;
@@ -668,7 +668,7 @@ BOOL
 IsValidLogConf(
     _In_opt_ PLOG_CONF_INFO pLogConfInfo)
 {
-    BOOL bValid = TRUE;
+    BOOL _SEH2_VOLATILE bValid = TRUE;
 
     if (pLogConfInfo == NULL)
         return FALSE;
@@ -692,7 +692,7 @@ BOOL
 IsValidResDes(
     _In_opt_ PRES_DES_INFO pResDesInfo)
 {
-    BOOL bValid = TRUE;
+    BOOL _SEH2_VOLATILE bValid = TRUE;
 
     if (pResDesInfo == NULL)
         return FALSE;
@@ -716,7 +716,7 @@ BOOL
 IsValidConflictData(
     _In_opt_ PCONFLICT_DATA pConflictData)
 {
-    BOOL bValid = TRUE;
+    BOOL _SEH2_VOLATILE bValid = TRUE;
 
     if (pConflictData == NULL)
         return FALSE;

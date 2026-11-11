@@ -152,7 +152,7 @@ KsReadFile(
     PDEVICE_OBJECT DeviceObject;
     PIO_STACK_LOCATION IoStack;
     PIRP Irp;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     BOOLEAN Result;
 
     if (Event)
@@ -261,7 +261,7 @@ KsWriteFile(
     PDEVICE_OBJECT DeviceObject;
     PIO_STACK_LOCATION IoStack;
     PIRP Irp;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
     BOOLEAN Result;
 
     if (Event)
@@ -475,7 +475,7 @@ KsSetInformationFile(
     KEVENT Event;
     LARGE_INTEGER Offset;
     IO_STATUS_BLOCK IoStatus;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     /* get related device object */
     DeviceObject = IoGetRelatedDeviceObject(FileObject);
@@ -684,13 +684,13 @@ KsProbeStreamIrp(
     IN  ULONG ProbeFlags,
     IN  ULONG HeaderSize)
 {
-    PMDL Mdl;
-    PVOID Buffer;
+    PMDL _SEH2_VOLATILE Mdl;
+    PVOID _SEH2_VOLATILE Buffer;
     LOCK_OPERATION Operation;
     NTSTATUS Status = STATUS_SUCCESS;
-    PKSSTREAM_HEADER StreamHeader;
+    PKSSTREAM_HEADER _SEH2_VOLATILE StreamHeader;
     PIO_STACK_LOCATION IoStack;
-    ULONG Length;
+    ULONG _SEH2_VOLATILE Length;
     //BOOLEAN AllocateMdl = FALSE;
 
     /* get current irp stack */
@@ -1160,7 +1160,7 @@ KsAllocateExtraData(
     if (!NT_SUCCESS(Status))
     {
         /* free buffer on exception */
-        FreeItem(Buffer);
+        FreeItem(BufferOrg);
         return Status;
     }
 

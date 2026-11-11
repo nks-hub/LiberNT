@@ -95,8 +95,8 @@ KspEnableEvent(
     IN  ULONG EventItemSize OPTIONAL)
 {
     PIO_STACK_LOCATION IoStack;
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    KSEVENT Event;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    KSEVENT _SEH2_VOLATILE Event;
     PKSEVENT_ITEM EventItem, FoundEventItem;
     PKSEVENTDATA EventData;
     const KSEVENT_SET *FoundEventSet;
@@ -122,7 +122,7 @@ KspEnableEvent(
         _SEH2_TRY
         {
            ProbeForRead(IoStack->Parameters.DeviceIoControl.Type3InputBuffer, sizeof(KSEVENT), sizeof(UCHAR));
-           RtlMoveMemory(&Event, IoStack->Parameters.DeviceIoControl.Type3InputBuffer, sizeof(KSEVENT));
+           RtlMoveMemory((void *)&Event, IoStack->Parameters.DeviceIoControl.Type3InputBuffer, sizeof(KSEVENT));
            Status = STATUS_SUCCESS;
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -142,7 +142,7 @@ KspEnableEvent(
     else
     {
         /* copy event struct */
-        RtlMoveMemory(&Event, IoStack->Parameters.DeviceIoControl.Type3InputBuffer, sizeof(KSEVENT));
+        RtlMoveMemory((void *)&Event, IoStack->Parameters.DeviceIoControl.Type3InputBuffer, sizeof(KSEVENT));
     }
 
     FoundEventItem = NULL;
@@ -235,7 +235,7 @@ KspEnableEvent(
     {
         UNICODE_STRING GuidString;
 
-        if (!NT_SUCCESS(RtlStringFromGUID(&Event.Set, &GuidString)))
+        if (!NT_SUCCESS(RtlStringFromGUID((const GUID *)&Event.Set, &GuidString)))
             RtlInitEmptyUnicodeString(&GuidString, NULL, 0);
 
         DPRINT("Guid %S Id %u Flags %x not found\n", GuidString.Buffer, Event.Id, Event.Flags);

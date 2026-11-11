@@ -570,7 +570,7 @@ NtUserScrollDC(
    BOOL Ret = FALSE;
    DWORD Result;
    NTSTATUS Status = STATUS_SUCCESS;
-   RECTL rcScroll, rcClip, rcUpdate;
+   RECTL _SEH2_VOLATILE rcScroll, rcClip, rcUpdate;
 
    TRACE("Enter NtUserScrollDC\n");
    UserEnterExclusive();
@@ -618,11 +618,11 @@ NtUserScrollDC(
    Result = UserScrollDC( hDC,
                           dx,
                           dy,
-                          prcUnsafeScroll ? &rcScroll : NULL,
-                          prcUnsafeClip   ? &rcClip   : NULL,
+                          prcUnsafeScroll ? (const RECTL *)&rcScroll : NULL,
+                          prcUnsafeClip   ? (const RECTL *)&rcClip   : NULL,
                           hrgnUpdate,
                           NULL,
-                          prcUnsafeUpdate ? &rcUpdate : NULL);
+                          prcUnsafeUpdate ? (RECTL *)&rcUpdate : NULL);
    if(Result == ERROR)
    {
       /* FIXME: Only if hRgnUpdate is invalid we should SetLastError(ERROR_INVALID_HANDLE) */
@@ -678,7 +678,7 @@ NtUserScrollWindowEx(
    DWORD Result = ERROR;
    NTSTATUS Status = STATUS_SUCCESS;
    PWND Window = NULL;
-   RECTL rcScroll, rcClip, rcUpdate;
+   RECTL _SEH2_VOLATILE rcScroll, rcClip, rcUpdate;
    USER_REFERENCE_ENTRY Ref;
 
    TRACE("Enter NtUserScrollWindowEx\n");
@@ -720,10 +720,10 @@ NtUserScrollWindowEx(
 
    Result = IntScrollWindowEx(Window,
                               dx, dy,
-                              prcUnsafeScroll ? &rcScroll : NULL,
-                              prcUnsafeClip   ? &rcClip   : NULL,
+                              prcUnsafeScroll ? (const RECTL *)&rcScroll : NULL,
+                              prcUnsafeClip   ? (const RECTL *)&rcClip   : NULL,
                               hrgnUpdate,
-                              prcUnsafeUpdate ? &rcUpdate : NULL,
+                              prcUnsafeUpdate ? (LPRECTL)&rcUpdate : NULL,
                               flags);
 
    if (prcUnsafeUpdate)

@@ -789,12 +789,12 @@ LDEVOBJ_bProbeAndCaptureDevmode(
     _Inout_ PGRAPHICS_DEVICE pGraphicsDevice,
     _In_ PDEVMODEW RequestedMode,
     _Out_ PDEVMODEW *pSelectedMode,
-    _In_ BOOL bSearchClosestMode)
+    _In_ BOOL _SEH2_VOLATILE bSearchClosestMode)
 {
     DEVMODEW dmSearch;
     PDEVMODEW pdmCurrent, pdm, pdmSelected = NULL;
     ULONG i;
-    ULONG ulVirtualWidth = 0, ulVirtualHeight = 0;
+    ULONG _SEH2_VOLATILE ulVirtualWidth = 0, ulVirtualHeight = 0;
     BOOL bResult = TRUE;
     NTSTATUS Status;
 

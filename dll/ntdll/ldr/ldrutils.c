@@ -2761,7 +2761,7 @@ LdrpLookupProcedureAddress(
     PIMAGE_EXPORT_DIRECTORY ExportDir;
     ULONG ExportDirSize;
     BOOLEAN Found, Ready;
-    NTSTATUS Status;
+    NTSTATUS _SEH2_VOLATILE Status;
 
     RtlAcquireSRWLockShared(&LdrpModuleDatatableLock);
     Found = LdrpCheckForLoadedDllHandle(BaseAddress, &LdrEntry);
@@ -2803,7 +2803,7 @@ LdrpGetProcedureAddress(
     _In_ BOOLEAN ExecuteInit,
     _In_opt_ PWSTR DllPath)
 {
-    NTSTATUS Status = STATUS_SUCCESS;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
     UCHAR ImportBuffer[64]; // 128 since NT6.2
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     IMAGE_THUNK_DATA Thunk, LookupThunk;

@@ -305,8 +305,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT IrpContext = NULL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
 
     BOOLEAN TopLevel;
     BOOLEAN ExceptionCompletedIrp = FALSE;
@@ -576,7 +576,7 @@ Return Value:
 
 {
     NTSTATUS Status;
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
     PIO_STACK_LOCATION IrpSp;
 
     PFILE_OBJECT FileObject;
@@ -606,34 +606,34 @@ Return Value:
     ULONG CreateDisposition;
 
     PVCB Vcb;
-    PFCB Fcb = NULL;
+    PFCB _SEH2_VOLATILE Fcb = NULL;
     PCCB Ccb;
     PDCB ParentDcb;
-    PDCB FinalDcb = NULL;
+    PDCB _SEH2_VOLATILE FinalDcb = NULL;
 
     UNICODE_STRING FinalName = {0};
     UNICODE_STRING RemainingPart;
     UNICODE_STRING NextRemainingPart = {0};
-    UNICODE_STRING UpcasedFinalName;
+    UNICODE_STRING _SEH2_VOLATILE UpcasedFinalName;
     WCHAR UpcasedBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE];
 
-    OEM_STRING OemFinalName;
+    OEM_STRING _SEH2_VOLATILE OemFinalName;
     UCHAR OemBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE*2];
 
     PDIRENT Dirent;
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG LfnByteOffset;
     ULONG DirentByteOffset;
 
     BOOLEAN PostIrp = FALSE;
-    BOOLEAN OplockPostIrp = FALSE;
+    BOOLEAN _SEH2_VOLATILE OplockPostIrp = FALSE;
     BOOLEAN TrailingBackslash;
     BOOLEAN FirstLoop = TRUE;
 
     ULONG MatchFlags = 0;
 
     CCB LocalCcb;
-    UNICODE_STRING Lfn;
+    UNICODE_STRING _SEH2_VOLATILE Lfn;
     UNICODE_STRING OrigLfn = {0};
 
     WCHAR LfnBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE];
@@ -910,7 +910,7 @@ Return Value:
             if (RelatedFileObject == NULL ||
                 FatDecodeFileObject( RelatedFileObject,
                                      &DecodeVcb,
-                                     &Fcb,
+                                     (PFCB *)&Fcb,
                                      &Ccb ) == UserVolumeOpen) {
 
                 NT_ASSERT( RelatedFileObject == NULL || Vcb == DecodeVcb );
@@ -1148,10 +1148,10 @@ Return Value:
                 //  we have to try with the UNICODE name instead.
                 //
 
-                FatEnsureStringBufferEnough( &OemFinalName,
+                FatEnsureStringBufferEnough( (PVOID)&OemFinalName,
                                              FinalName.Length);
 
-                Status = RtlUpcaseUnicodeStringToCountedOemString( &OemFinalName, &FinalName, FALSE );
+                Status = RtlUpcaseUnicodeStringToCountedOemString( (POEM_STRING)&OemFinalName, &FinalName, FALSE );
 
 
                 if (NT_SUCCESS(Status)) {
@@ -1187,13 +1187,13 @@ Return Value:
                     // strucsup.c, FatConstructNamesInFcb()).
                     //
 
-                    FatEnsureStringBufferEnough( &UpcasedFinalName,
+                    FatEnsureStringBufferEnough( (PVOID)&UpcasedFinalName,
                                                  FinalName.Length);
 
-                    Status = RtlDowncaseUnicodeString(&UpcasedFinalName, &FinalName, FALSE );
+                    Status = RtlDowncaseUnicodeString((PUNICODE_STRING)&UpcasedFinalName, &FinalName, FALSE );
                     NT_ASSERT( NT_SUCCESS( Status ));
 
-                    Status = RtlUpcaseUnicodeString( &UpcasedFinalName, &UpcasedFinalName, FALSE );
+                    Status = RtlUpcaseUnicodeString( (PUNICODE_STRING)&UpcasedFinalName, (PCUNICODE_STRING)&UpcasedFinalName, FALSE );
                     NT_ASSERT( NT_SUCCESS( Status ));
 
 
@@ -1375,7 +1375,7 @@ Return Value:
                                            DeleteOnClose,
                                            OpenRequiringOplock,
                                            FileNameOpenedDos,
-                                           &OplockPostIrp );
+                                           (PBOOLEAN)&OplockPostIrp );
 
                 if (Iosb.Status != STATUS_PENDING) {
 
@@ -1438,7 +1438,7 @@ Return Value:
                                            DeleteOnClose,
                                            OpenRequiringOplock,
                                            FileNameOpenedDos,
-                                           &OplockPostIrp );
+                                           (PBOOLEAN)&OplockPostIrp );
 
                 if (Iosb.Status != STATUS_PENDING) {
 
@@ -1550,10 +1550,10 @@ Return Value:
                 //  name instead.
                 //
 
-                FatEnsureStringBufferEnough( &OemFinalName,
+                FatEnsureStringBufferEnough( (PVOID)&OemFinalName,
                                              FinalName.Length);
 
-                Status = RtlUpcaseUnicodeStringToCountedOemString( &OemFinalName, &FinalName, FALSE );
+                Status = RtlUpcaseUnicodeStringToCountedOemString( (POEM_STRING)&OemFinalName, &FinalName, FALSE );
             }
 
             if (NT_SUCCESS(Status)) {
@@ -1610,10 +1610,10 @@ Return Value:
             DebugTrace(0, Dbg, "FinalName is %wZ\n", &FinalName);
             DebugTrace(0, Dbg, "RemainingPart is %wZ\n", &RemainingPart);
 
-            FatEnsureStringBufferEnough( &UpcasedFinalName,
+            FatEnsureStringBufferEnough( (PVOID)&UpcasedFinalName,
                                          FinalName.Length);
 
-            if (!NT_SUCCESS(Status = RtlUpcaseUnicodeString( &UpcasedFinalName, &FinalName, FALSE))) {
+            if (!NT_SUCCESS(Status = RtlUpcaseUnicodeString( (PUNICODE_STRING)&UpcasedFinalName, &FinalName, FALSE))) {
 
                 try_return( Iosb.Status = Status );
             }
@@ -1630,10 +1630,10 @@ Return Value:
                              0,
                              &MatchFlags,
                              &Dirent,
-                             &DirentBcb,
+                             (PBCB *)&DirentBcb,
                              (PVBO)&DirentByteOffset,
                              &FileNameOpenedDos,
-                             &Lfn,
+                             (PUNICODE_STRING)&Lfn,
                              &OrigLfn);
 
             //
@@ -1690,7 +1690,7 @@ Return Value:
                                       LfnByteOffset,
                                       DirentByteOffset,
                                       Dirent,
-                                      &Lfn );
+                                      (PUNICODE_STRING)&Lfn );
 
             //
             //  Remember we created this Dcb for error recovery.
@@ -1753,12 +1753,12 @@ Return Value:
                                                  IrpSp,
                                                  FileObject,
                                                  Vcb,
-                                                 &Fcb,
+                                                 (PDCB *)&Fcb,
                                                  ParentDcb,
                                                  Dirent,
                                                  LfnByteOffset,
                                                  DirentByteOffset,
-                                                 &Lfn,
+                                                 (PUNICODE_STRING)&Lfn,
                                                  DesiredAccess,
                                                  ShareAccess,
                                                  CreateDisposition,
@@ -1793,12 +1793,12 @@ Return Value:
             Iosb = FatOpenExistingFile( IrpContext,
                                         FileObject,
                                         Vcb,
-                                        &Fcb,
+                                        (PFCB *)&Fcb,
                                         ParentDcb,
                                         Dirent,
                                         LfnByteOffset,
                                         DirentByteOffset,
-                                        &Lfn,
+                                        (PUNICODE_STRING)&Lfn,
                                         &OrigLfn,
                                         DesiredAccess,
                                         ShareAccess,
@@ -1903,7 +1903,7 @@ Return Value:
                                           FileObject,
                                           Vcb,
                                           ParentDcb,
-                                          &OemFinalName,
+                                          (POEM_STRING)&OemFinalName,
                                           &FinalName,
                                           DesiredAccess,
                                           ShareAccess,
@@ -1952,7 +1952,7 @@ Return Value:
                                  FileObject,
                                  Vcb,
                                  ParentDcb,
-                                 &OemFinalName,
+                                 (POEM_STRING)&OemFinalName,
                                  &FinalName,
                                  DesiredAccess,
                                  ShareAccess,
@@ -1960,7 +1960,7 @@ Return Value:
                                  EaBuffer,
                                  EaLength,
                                  FileAttributes,
-                                 &Lfn,
+                                 (PUNICODE_STRING)&Lfn,
                                  IsPagingFile,
                                  NoEaKnowledge,
                                  DeleteOnClose,
@@ -2098,11 +2098,11 @@ Return Value:
         //  Free up any string buffers we allocated
         //
 
-        FatFreeStringBuffer( &OemFinalName);
+        FatFreeStringBuffer( (PVOID)&OemFinalName);
 
-        FatFreeStringBuffer( &UpcasedFinalName);
+        FatFreeStringBuffer( (PVOID)&UpcasedFinalName);
 
-        FatFreeStringBuffer( &Lfn);
+        FatFreeStringBuffer( (PVOID)&Lfn);
     } _SEH2_END;
 
     //
@@ -2326,13 +2326,13 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION IrpSp;
 
 #ifndef __REACTOS__
-    IO_STATUS_BLOCK Iosb = {0,0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0,0};
 #else
-    IO_STATUS_BLOCK Iosb = {{0}};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {{0}};
 #endif
 
     BOOLEAN CleanedVolume = FALSE;
@@ -2341,10 +2341,10 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN UnwindCounts = FALSE;
-    BOOLEAN UnwindVolumeLock = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindCounts = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindVolumeLock = FALSE;
 
     PAGED_CODE();
 
@@ -2568,7 +2568,7 @@ Return Value:
                 Vcb->OpenFileCount -= 1;
                 if (IsFileObjectReadOnly(FileObject)) { Vcb->ReadOnlyCount -= 1; }
             }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Vcb->ShareAccess ); }
             if (UnwindVolumeLock) { Vcb->VcbState &= ~VCB_STATE_FLAG_LOCKED; }
         }
@@ -2624,16 +2624,16 @@ Arguments:
 
 {
     PDCB RootDcb;
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     //
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN UnwindCounts = FALSE;
-    BOOLEAN RootDcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindCounts = FALSE;
+    BOOLEAN _SEH2_VOLATILE RootDcbAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -2740,7 +2740,7 @@ Arguments:
                 Vcb->OpenFileCount -= 1;
                 if (IsFileObjectReadOnly(FileObject)) { Vcb->ReadOnlyCount -= 1; }
             }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &RootDcb->ShareAccess ); }
         }
 
@@ -2810,17 +2810,17 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
-    PBCB DirentBcb = NULL;
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     PDIRENT Dirent;
 
     //
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN DcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE DcbAcquired = FALSE;
 
 #if (NTDDI_VERSION <= NTDDI_WIN7)
     UNREFERENCED_PARAMETER( OpenRequiringOplock );
@@ -2898,7 +2898,7 @@ Return Value:
                                       Dcb,
                                       FALSE,
                                       &Dirent,
-                                      &DirentBcb );
+                                      (PBCB *)&DirentBcb );
 
             FatGetNeedEaCount( IrpContext,
                                Vcb,
@@ -3160,7 +3160,7 @@ Return Value:
 
         if (_SEH2_AbnormalTermination()) {
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Dcb->ShareAccess ); }
         }
 
@@ -3253,9 +3253,9 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
-    PBCB DirentBcb = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     PDIRENT Dirent;
 
     ACCESS_MASK AddedAccess = 0;
@@ -3264,10 +3264,10 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN DecrementFcbOpenCount = FALSE;
-    BOOLEAN FcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE DecrementFcbOpenCount = FALSE;
+    BOOLEAN _SEH2_VOLATILE FcbAcquired = FALSE;
 
 
     PAGED_CODE();
@@ -3677,7 +3677,7 @@ Return Value:
                                           Fcb,
                                           FALSE,
                                           &Dirent,
-                                          &DirentBcb );
+                                          (PBCB *)&DirentBcb );
 
                 FatGetNeedEaCount( IrpContext,
                                    Vcb,
@@ -3890,7 +3890,7 @@ Return Value:
 
         if (_SEH2_AbnormalTermination()) {
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Fcb->ShareAccess ); }
         }
 
@@ -3962,15 +3962,15 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     //
     //  The following variables are for abnormal termination
     //
 
-    BOOLEAN UnwindShareAccess = FALSE;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN DcbAcquired = FALSE;
+    BOOLEAN _SEH2_VOLATILE UnwindShareAccess = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE DcbAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -4110,7 +4110,7 @@ Return Value:
 
         if (_SEH2_AbnormalTermination()) {
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
             if (UnwindShareAccess) { IoRemoveShareAccess( FileObject, &Dcb->ShareAccess ); }
         }
 
@@ -4206,16 +4206,16 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     //
     //  The following variables are for abnormal termination
     //
 
-    PDCB UnwindDcb = NULL;
-    PCCB UnwindCcb = NULL;
+    PDCB _SEH2_VOLATILE UnwindDcb = NULL;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
 
-    BOOLEAN CountsIncremented = FALSE;
+    BOOLEAN _SEH2_VOLATILE CountsIncremented = FALSE;
 
     UNREFERENCED_PARAMETER( DeleteOnClose );
 #if (NTDDI_VERSION <= NTDDI_WIN7)
@@ -4394,10 +4394,10 @@ Return Value:
                 if (ARGUMENT_PRESENT( FileObject )) {
                     FileObject->SectionObjectPointer = NULL;
                 }
-                FatDeleteFcb( IrpContext, &UnwindDcb );
+                FatDeleteFcb( IrpContext, (PDCB *)&UnwindDcb );
                 *Dcb = NULL;
             }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
         }
 
         DebugTrace(-1, Dbg, "FatOpenExistingDirectory -> Iosb.Status = %08lx\n", Iosb.Status);
@@ -4502,7 +4502,7 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     ACCESS_MASK AddedAccess = 0;
 
@@ -4512,9 +4512,9 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    PFCB UnwindFcb = NULL;
-    PCCB UnwindCcb = NULL;
-    BOOLEAN CountsIncremented = FALSE;
+    PFCB _SEH2_VOLATILE UnwindFcb = NULL;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    BOOLEAN _SEH2_VOLATILE CountsIncremented = FALSE;
 
 
 #if (NTDDI_VERSION < NTDDI_WIN7)
@@ -4873,11 +4873,11 @@ Return Value:
                 if (ARGUMENT_PRESENT( FileObject )) {
                     FileObject->SectionObjectPointer = NULL;
                 }
-                FatDeleteFcb( IrpContext, &UnwindFcb );
+                FatDeleteFcb( IrpContext, (PFCB *)&UnwindFcb );
                 *Fcb = NULL;
             }
 
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
         }
 
         DebugTrace(-1, Dbg, "FatOpenExistingFile -> Iosb.Status = %08lx\n", Iosb.Status);
@@ -4961,11 +4961,11 @@ Return Value:
 {
     IO_STATUS_BLOCK Iosb;
 
-    PDCB Dcb = NULL;
-    PCCB Ccb = NULL;
+    PDCB _SEH2_VOLATILE Dcb = NULL;
+    PCCB _SEH2_VOLATILE Ccb = NULL;
 
-    PDIRENT Dirent = NULL;
-    PBCB DirentBcb = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG DirentsNeeded;
     ULONG DirentByteOffset;
 
@@ -4979,14 +4979,14 @@ Return Value:
     BOOLEAN CreateLfn;
 
     ULONG BytesInFirstPage = 0;
-    ULONG DirentsInFirstPage = 0;
-    PDIRENT FirstPageDirent = 0;
+    ULONG _SEH2_VOLATILE DirentsInFirstPage = 0;
+    PDIRENT _SEH2_VOLATILE FirstPageDirent = 0;
 
-    PBCB SecondPageBcb = NULL;
+    PBCB _SEH2_VOLATILE SecondPageBcb = NULL;
     ULONG SecondPageOffset = 0;
-    PDIRENT SecondPageDirent = NULL;
+    PDIRENT _SEH2_VOLATILE SecondPageDirent = NULL;
 
-    BOOLEAN DirentFromPool = FALSE;
+    BOOLEAN _SEH2_VOLATILE DirentFromPool = FALSE;
 
 
     OEM_STRING ShortName;
@@ -5071,7 +5071,7 @@ Return Value:
                                       ParentDcb,
                                       DirentByteOffset,
                                       sizeof(DIRENT),
-                                      &DirentBcb,
+                                      (PBCB *)&DirentBcb,
 #ifndef __REACTOS__
                                       &Dirent,
 #else
@@ -5105,7 +5105,7 @@ Return Value:
                                           ParentDcb,
                                           SecondPageOffset,
                                           sizeof(DIRENT),
-                                          &SecondPageBcb,
+                                          (PBCB *)&SecondPageBcb,
 #ifndef __REACTOS__
                                           &SecondPageDirent,
 #else
@@ -5370,7 +5370,7 @@ Return Value:
 
         if ( Ccb != NULL ) {
 
-            FatDeleteCcb( IrpContext, &Ccb );
+            FatDeleteCcb( IrpContext, (PCCB *)&Ccb );
         }
 
 #ifdef _MSC_VER
@@ -5593,7 +5593,7 @@ Return Value:
                 if (ARGUMENT_PRESENT( FileObject )) {
                     FileObject->SectionObjectPointer = NULL;
                 }
-                FatDeleteFcb( IrpContext, &Dcb );
+                FatDeleteFcb( IrpContext, (PFCB *)&Dcb );
             }
         }
 
@@ -5695,12 +5695,12 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
-    PFCB Fcb = NULL;
+    PFCB _SEH2_VOLATILE Fcb = NULL;
 
-    PDIRENT Dirent = NULL;
-    PBCB DirentBcb = NULL;
+    PDIRENT _SEH2_VOLATILE Dirent = NULL;
+    PBCB _SEH2_VOLATILE DirentBcb = NULL;
     ULONG DirentsNeeded;
     ULONG DirentByteOffset;
 
@@ -5714,14 +5714,14 @@ Return Value:
     BOOLEAN CreateLfn;
 
     ULONG BytesInFirstPage = 0;
-    ULONG DirentsInFirstPage = 0;
-    PDIRENT FirstPageDirent = NULL;
+    ULONG _SEH2_VOLATILE DirentsInFirstPage = 0;
+    PDIRENT _SEH2_VOLATILE FirstPageDirent = NULL;
 
-    PBCB SecondPageBcb = NULL;
+    PBCB _SEH2_VOLATILE SecondPageBcb = NULL;
     ULONG SecondPageOffset;
-    PDIRENT SecondPageDirent = NULL;
+    PDIRENT _SEH2_VOLATILE SecondPageDirent = NULL;
 
-    BOOLEAN DirentFromPool = FALSE;
+    BOOLEAN _SEH2_VOLATILE DirentFromPool = FALSE;
 
     OEM_STRING ShortName;
     UCHAR ShortNameBuffer[12];
@@ -5742,11 +5742,11 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    PDIRENT UnwindDirent = NULL;
-    PFCB UnwindFcb = NULL;
-    BOOLEAN UnwindAllocation = FALSE;
-    BOOLEAN CountsIncremented = FALSE;
-    PCCB UnwindCcb = NULL;
+    PDIRENT _SEH2_VOLATILE UnwindDirent = NULL;
+    PFCB _SEH2_VOLATILE UnwindFcb = NULL;
+    BOOLEAN _SEH2_VOLATILE UnwindAllocation = FALSE;
+    BOOLEAN _SEH2_VOLATILE CountsIncremented = FALSE;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
 
     ULONG LocalAbnormalTermination = FALSE;
 
@@ -5879,15 +5879,15 @@ Return Value:
                                       ParentDcb,
                                       DirentByteOffset,
                                       sizeof(DIRENT),
-                                      &DirentBcb,
+                                      (PBCB *)&DirentBcb,
 #ifndef __REACTOS__
-                                      &Dirent,
+                                      (PDIRENT *)&Dirent,
 #else
                                       (PVOID *)&Dirent,
 #endif
                                       FALSE,
                                       TRUE,
-                                      &Iosb.Status );
+                                      (PNTSTATUS)&Iosb.Status );
 
         NT_ASSERT( NT_SUCCESS( Iosb.Status ) );
 
@@ -5915,15 +5915,15 @@ Return Value:
                                           ParentDcb,
                                           SecondPageOffset,
                                           sizeof(DIRENT),
-                                          &SecondPageBcb,
+                                          (PBCB *)&SecondPageBcb,
 #ifndef __REACTOS__
-                                          &SecondPageDirent,
+                                          (PDIRENT *)&SecondPageDirent,
 #else
                                           (PVOID *)&SecondPageDirent,
 #endif
                                           FALSE,
                                           TRUE,
-                                          &Iosb.Status );
+                                          (PNTSTATUS)&Iosb.Status );
 
             NT_ASSERT( NT_SUCCESS( Iosb.Status ) );
 
@@ -6330,9 +6330,9 @@ Return Value:
                         if (ARGUMENT_PRESENT( FileObject )) {
                             FileObject->SectionObjectPointer = NULL;
                         }
-                        FatDeleteFcb( IrpContext, &UnwindFcb );
+                        FatDeleteFcb( IrpContext, (PFCB *)&UnwindFcb );
                     }
-                    if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+                    if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
                 }
 
                 //
@@ -6408,14 +6408,14 @@ Return Value:
 --*/
 
 {
-    IO_STATUS_BLOCK Iosb = {0};
+    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb = {0};
 
     PDIRENT Dirent;
-    PBCB DirentBcb;
+    PBCB _SEH2_VOLATILE DirentBcb;
 
     USHORT EaHandle = 0;
     BOOLEAN EaChange = FALSE;
-    BOOLEAN ReleasePaging = FALSE;
+    BOOLEAN _SEH2_VOLATILE ReleasePaging = FALSE;
 
     PCCB Ccb;
 
@@ -6427,8 +6427,8 @@ Return Value:
     //  The following variables are for abnormal termination
     //
 
-    PCCB UnwindCcb = NULL;
-    USHORT UnwindEa = 0;
+    PCCB _SEH2_VOLATILE UnwindCcb = NULL;
+    USHORT _SEH2_VOLATILE UnwindEa = 0;
 
     PAGED_CODE();
 
@@ -6577,7 +6577,7 @@ Return Value:
                                   Fcb,
                                   FALSE,
                                   &Dirent,
-                                  &DirentBcb );
+                                  (PBCB *)&DirentBcb );
         //
         //  We should get the dirent since this Fcb is in good condition, verified as
         //  we crawled down the prefix tree.
@@ -6712,7 +6712,7 @@ Return Value:
         if (_SEH2_AbnormalTermination()) {
 
             if (UnwindEa != 0) { FatDeleteEa( IrpContext, Fcb->Vcb, UnwindEa, &Fcb->ShortName.Name.Oem ); }
-            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, &UnwindCcb ); }
+            if (UnwindCcb != NULL) { FatDeleteCcb( IrpContext, (PCCB *)&UnwindCcb ); }
         }
 
         FatUnpinBcb( IrpContext, DirentBcb );

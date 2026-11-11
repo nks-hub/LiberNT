@@ -3001,6 +3001,65 @@ ScmDelayedAutoStartThread(
     return 0;
 }
 
+static
+VOID
+ScmPromoteDelayedDependencies(
+    _Inout_ PSERVICE *Delayed,
+    _Inout_ PULONG DelayedCount)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE Service;
+    LPWSTR lpDependencies, lpName;
+    DWORD cchDependencies;
+    HKEY hServiceKey;
+    BOOL bPromoted;
+    ULONG i;
+
+    do
+    {
+        bPromoted = FALSE;
+
+        for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead && *DelayedCount != 0; ServiceEntry = ServiceEntry->Flink)
+        {
+            Service = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+            if (Service->dwStartType != SERVICE_AUTO_START || Service->ServiceVisited)
+                continue;
+
+            if (ScmOpenServiceKey(Service->lpServiceName, KEY_READ, &hServiceKey) != ERROR_SUCCESS)
+                continue;
+            ScmReadDependencies(hServiceKey, &lpDependencies, &cchDependencies);
+            RegCloseKey(hServiceKey);
+            if (lpDependencies == NULL)
+                continue;
+
+            for (lpName = lpDependencies; *lpName != 0; lpName += wcslen(lpName) + 1)
+            {
+                i = 0;
+                while (i < *DelayedCount)
+                {
+                    if (*lpName == SC_GROUP_IDENTIFIERW ?
+                        (Delayed[i]->lpGroup != NULL && _wcsicmp(Delayed[i]->lpGroup->lpGroupName, lpName + 1) == 0) :
+                        _wcsicmp(Delayed[i]->lpServiceName, lpName) == 0)
+                    {
+                        Delayed[i]->ServiceVisited = FALSE;
+                        ScmLockDatabaseExclusive();
+                        ScmDereferenceService(Delayed[i]);
+                        ScmUnlockDatabase();
+                        Delayed[i] = Delayed[--*DelayedCount];
+                        bPromoted = TRUE;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+                }
+            }
+
+            HeapFree(GetProcessHeap(), 0, lpDependencies);
+        }
+    } while (bPromoted);
+}
+
 VOID
 ScmAutoStartServices(VOID)
 {
@@ -3061,6 +3120,9 @@ ScmAutoStartServices(VOID)
 
         ServiceEntry = ServiceEntry->Flink;
     }
+
+    if (Delayed != NULL)
+        ScmPromoteDelayedDependencies(Delayed, &DelayedCount);
 
     /* Close the SafeBoot key now, it's no longer needed */
     if (hSafeBootKey != NULL)

@@ -57,7 +57,8 @@ TestGetBestRoute2(
     PNETIOIPHLP_BEST_ROUTE Request = Buffer;
     PMIB_IPFORWARD_TABLE2 Table;
     SOCKADDR_INET Destination, Source;
-    NTSTATUS Status;
+    MIB_IPFORWARD_ROW2 LuidRoute;
+    NTSTATUS Status, LuidStatus;
     ULONG i;
 
     UNREFERENCED_PARAMETER(DeviceObject);
@@ -96,6 +97,14 @@ TestGetBestRoute2(
     Request->Destination = Destination.Ipv4.sin_addr.s_addr;
     Status = GetBestRoute2(NULL, 0, NULL, &Destination, 0, &Request->Route, &Source);
     ok_irql(PASSIVE_LEVEL);
+    if (NT_SUCCESS(Status) && Request->Route.InterfaceLuid.Value != 0)
+    {
+        RtlZeroMemory(&LuidRoute, sizeof(LuidRoute));
+        LuidStatus = GetBestRoute2(&Request->Route.InterfaceLuid, 0xdeadbeef, NULL, &Destination, 0, &LuidRoute, &Source);
+        ok_eq_hex(LuidStatus, STATUS_SUCCESS);
+        ok_eq_ulong(LuidRoute.InterfaceIndex, Request->Route.InterfaceIndex);
+        ok_eq_ulonglong(LuidRoute.InterfaceLuid.Value, Request->Route.InterfaceLuid.Value);
+    }
     *OutLength = NT_SUCCESS(Status) ? sizeof(*Request) : 0;
     return Status;
 }

@@ -3734,6 +3734,9 @@ StopSoftwareDeviceWatch(
     HeapFree(GetProcessHeap(), 0, Watch);
 }
 
+#define SOFTWARE_DEVICE_REMOVE_TRIES 10
+#define SOFTWARE_DEVICE_REMOVE_DELAY 500
+
 static VOID
 CALLBACK
 SoftwareDeviceOwnerEnded(
@@ -3742,21 +3745,32 @@ SoftwareDeviceOwnerEnded(
 {
     PSOFTWARE_DEVICE_WATCH Watch = Context;
     PLIST_ENTRY Entry;
-    BOOL Listed = FALSE;
+    BOOL Listed;
     CONFIGRET ret;
+    ULONG Try;
 
     UNREFERENCED_PARAMETER(TimedOut);
 
-    AcquireSRWLockShared(&SoftwareDeviceWatchLock);
-    for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches && !Listed; Entry = Entry->Flink)
-        Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
-    ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
+    for (Try = 1; ; Try++)
+    {
+        Listed = FALSE;
+        AcquireSRWLockShared(&SoftwareDeviceWatchLock);
+        for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches && !Listed; Entry = Entry->Flink)
+            Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
+        ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
 
-    if (!Listed)
-        return;
+        if (!Listed)
+            return;
 
-    ret = RemoveSoftwareDeviceInstance(Watch->szDeviceInstance);
-    DPRINT("Owner of %S ended, removing it returned %lu\n", Watch->szDeviceInstance, ret);
+        ret = RemoveSoftwareDeviceInstance(Watch->szDeviceInstance);
+        DPRINT("Owner of %S ended, removing it returned %lu\n", Watch->szDeviceInstance, ret);
+        if (ret == CR_SUCCESS || Try == SOFTWARE_DEVICE_REMOVE_TRIES)
+            break;
+        Sleep(SOFTWARE_DEVICE_REMOVE_DELAY);
+    }
+
+    if (ret != CR_SUCCESS)
+        DPRINT1("%S stays until it is created again: removing it failed %lu times (CR %lu)\n", Watch->szDeviceInstance, Try, ret);
     if (!TakeSoftwareDeviceWatch(NULL, Watch))
         return;
     UnregisterWait(Watch->Wait);
@@ -3796,7 +3810,7 @@ WatchSoftwareDeviceInstance(
 
     AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
     if (!RegisterWaitForSingleObject(&Watch->Wait, Watch->Process, SoftwareDeviceOwnerEnded, Watch,
-                                     INFINITE, WT_EXECUTEONLYONCE))
+                                     INFINITE, WT_EXECUTEONLYONCE | WT_EXECUTELONGFUNCTION))
     {
         ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
         DPRINT1("Cannot watch the owner of %S (error %lu)\n", pszDeviceInstance, GetLastError());

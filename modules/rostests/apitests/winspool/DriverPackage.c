@@ -2050,6 +2050,22 @@ TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
         skip("Moving %S away failed with %lu\n", StoreDir, GetLastError());
     }
 
+    /* The state an upload leaves when it cannot delete its staging directory */
+    StringCchPrintfW(Backup, ARRAYSIZE(Backup), L"%s.stage-0-0", StoreDir);
+    if (CreateDirectoryW(Backup, NULL) && WriteTestFile(Backup, L"TESTKEEP.DAT", Text, sizeof(Text) - 1))
+    {
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx over a staging directory\n", hr);
+        ok(GetFileAttributesW(Backup) == INVALID_FILE_ATTRIBUTES, "%S was left behind\n", Backup);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S is gone after an upload over a staging directory\n", StoreInf);
+    }
+    else
+    {
+        skip("Creating %S failed with %lu\n", Backup, GetLastError());
+        RemoveDirectoryW(Backup);
+    }
+
     ok(WriteTestFile(Dir, L"TESTPKG.HLP", Text, sizeof(Text) - 1), "Restoring TESTPKG.HLP failed\n");
     Length = ARRAYSIZE(Again);
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);

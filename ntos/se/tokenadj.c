@@ -276,7 +276,7 @@ SepAdjustGroups(
     ChangeCount = 0;
     SidsLength = 0;
 
-    /* Begin looping all the groups in the token, the first entry is the user */
+    /* Begin looping all the groups in the token */
     for (GroupsInToken = 1; GroupsInToken < Token->UserAndGroupCount; GroupsInToken++)
     {
         Attributes = Token->UserAndGroups[GroupsInToken].Attributes;
@@ -724,7 +724,6 @@ NtAdjustGroupsToken(
             if (PreviousState != NULL)
             {
                 ProbeForWrite(PreviousState, BufferLength, sizeof(ULONG));
-                /* Windows 11 answers a misaligned length with an access violation, not with a misalignment */
                 ProbeForWrite(ReturnLength, sizeof(*ReturnLength), sizeof(UCHAR));
             }
         }

@@ -10,6 +10,10 @@
 static const WCHAR RepositoryPath[] = L"\\System32\\DriverStore\\FileRepository";
 static const WCHAR VersionSection[] = L"Version";
 static const WCHAR CatalogFile[] = L"CatalogFile";
+static const WCHAR BackupPattern[] = L".stage-*.old";
+
+#define RESTORE_ATTEMPTS 5
+#define RESTORE_DELAY 100
 
 static BOOL
 DeleteDirectoryTree(
@@ -986,7 +990,7 @@ ReplaceStoreDirectory(
     IN PCWSTR Store)
 {
     WCHAR Old[MAX_PATH];
-    DWORD Error;
+    DWORD Error, RestoreError, Attempt;
 
     if (GetFileAttributesW(Store) == INVALID_FILE_ATTRIBUTES)
         return MoveFileW(Staging, Store);
@@ -1010,12 +1014,76 @@ ReplaceStoreDirectory(
     if (!MoveFileW(Staging, Store))
     {
         Error = GetLastError();
-        MoveFileW(Old, Store);
+        for (Attempt = 1; !MoveFileW(Old, Store); Attempt++)
+        {
+            RestoreError = GetLastError();
+            /* A package another caller put in place makes the backup stale; the next staging deletes it */
+            if (GetFileAttributesW(Store) != INVALID_FILE_ATTRIBUTES)
+                break;
+            if (Attempt == RESTORE_ATTEMPTS)
+            {
+                ERR("Driver package %s is left in %s, restoring it failed with error %lu\n",
+                    debugstr_w(Store), debugstr_w(Old), RestoreError);
+                Error = RestoreError;
+                break;
+            }
+            Sleep(RESTORE_DELAY);
+        }
         SetLastError(Error);
         return FALSE;
     }
 
     DeleteDirectoryTree(Old);
+    return TRUE;
+}
+
+static BOOL
+RestoreStoreBackup(
+    IN PCWSTR Store)
+{
+    WCHAR Backup[MAX_PATH];
+    WIN32_FIND_DATAW FindData;
+    HANDLE hFind;
+    PWSTR Name;
+    DWORD Error = ERROR_SUCCESS;
+
+    if (lstrlenW(Store) + ARRAY_SIZE(BackupPattern) > MAX_PATH)
+        return TRUE;
+    lstrcpyW(Backup, Store);
+    lstrcatW(Backup, BackupPattern);
+
+    hFind = FindFirstFileW(Backup, &FindData);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return TRUE;
+
+    Name = wcsrchr(Backup, L'\\');
+    do
+    {
+        if (!Name || !(FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (Name - Backup) + 1 + lstrlenW(FindData.cFileName) >= MAX_PATH)
+        {
+            continue;
+        }
+        lstrcpyW(Name + 1, FindData.cFileName);
+
+        if (GetFileAttributesW(Store) != INVALID_FILE_ATTRIBUTES)
+        {
+            DeleteDirectoryTree(Backup);
+        }
+        else if (!MoveFileW(Backup, Store))
+        {
+            Error = GetLastError();
+            ERR("Driver package %s is left in %s, restoring it failed with error %lu\n",
+                debugstr_w(Store), debugstr_w(Backup), Error);
+        }
+    } while (Error == ERROR_SUCCESS && FindNextFileW(hFind, &FindData));
+
+    FindClose(hFind);
+    if (Error != ERROR_SUCCESS)
+    {
+        SetLastError(Error);
+        return FALSE;
+    }
     return TRUE;
 }
 
@@ -1055,6 +1123,7 @@ StageDriverPackage(
 
     if (!BuildStoreDirectory(Source, BaseName, Architecture, Store) ||
         !CreateDirectoryPath(Root) ||
+        !RestoreStoreBackup(Store) ||
         !CreateStagingDirectory(Store, Staging))
     {
         return FALSE;

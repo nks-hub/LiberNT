@@ -1493,6 +1493,84 @@ TestConcurrentInstall(PCWSTR InfPath, PCWSTR StoreInf)
     ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
 }
 
+static VOID
+TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
+{
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Changed[] = "changed for the held store\r\n";
+    WCHAR StoreDir[MAX_PATH], StoreFile[MAX_PATH], SourceFile[MAX_PATH], Backup[MAX_PATH], Again[MAX_PATH];
+    WIN32_FIND_DATAW Find;
+    HANDLE hHeld, hFind;
+    ULONG Length;
+    HRESULT hr;
+    PWSTR Last;
+
+    StringCchCopyW(StoreDir, ARRAYSIZE(StoreDir), StoreInf);
+    Last = wcsrchr(StoreDir, L'\\');
+    if (!Last)
+    {
+        skip("%S is not a path\n", StoreInf);
+        return;
+    }
+    *Last = UNICODE_NULL;
+
+    StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTDRV.DLL", StoreDir);
+    hHeld = CreateFileW(StoreFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(hHeld != INVALID_HANDLE_VALUE, "Opening %S failed with %lu\n", StoreFile, GetLastError());
+    if (hHeld == INVALID_HANDLE_VALUE)
+        return;
+
+    StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTPKG.HLP", StoreDir);
+    StringCchPrintfW(SourceFile, ARRAYSIZE(SourceFile), L"%s\\TESTPKG.GPD", Dir);
+    ok(WriteTestFile(Dir, L"TESTPKG.HLP", Changed, sizeof(Changed) - 1), "Changing the source TESTPKG.HLP failed\n");
+
+    Length = ARRAYSIZE(Again);
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED), "UploadPrinterDriverPackageW returned 0x%lx over a held package\n", hr);
+    ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S is gone after an upload over a held package\n", StoreInf);
+    ok(FilesMatch(StoreFile, SourceFile), "%S was replaced by an upload over a held package\n", StoreFile);
+    Length = ARRAYSIZE(Again);
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, Again, &Length);
+    ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx for the held package\n", hr);
+    CloseHandle(hHeld);
+
+    StringCchPrintfW(SourceFile, ARRAYSIZE(SourceFile), L"%s\\TESTPKG.HLP", Dir);
+    Length = ARRAYSIZE(Again);
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+    ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx after the package was released\n", hr);
+    ok(FilesMatch(StoreFile, SourceFile), "%S was not replaced after the package was released\n", StoreFile);
+
+    /* The state a replacement leaves when its backup cannot be moved back */
+    StringCchPrintfW(Backup, ARRAYSIZE(Backup), L"%s.stage-0-0.old", StoreDir);
+    ok(WriteTestFile(StoreDir, L"TESTKEEP.DAT", Text, sizeof(Text) - 1), "Writing TESTKEEP.DAT failed\n");
+    if (MoveFileW(StoreDir, Backup))
+    {
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx over a backup\n", hr);
+        ok(GetFileAttributesW(Backup) == INVALID_FILE_ATTRIBUTES, "%S was left behind\n", Backup);
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTKEEP.DAT", StoreDir);
+        ok(GetFileAttributesW(StoreFile) != INVALID_FILE_ATTRIBUTES, "The backup was not put back as %S\n", StoreDir);
+    }
+    else
+    {
+        skip("Moving %S away failed with %lu\n", StoreDir, GetLastError());
+    }
+
+    ok(WriteTestFile(Dir, L"TESTPKG.HLP", Text, sizeof(Text) - 1), "Restoring TESTPKG.HLP failed\n");
+    Length = ARRAYSIZE(Again);
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+    ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
+    StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s\\TESTPKG.HLP", StoreDir);
+    ok(FilesMatch(StoreFile, SourceFile), "%S was not replaced\n", StoreFile);
+
+    StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%s.stage-*", StoreDir);
+    hFind = FindFirstFileW(StoreFile, &Find);
+    ok(hFind == INVALID_HANDLE_VALUE, "%S was left behind\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+    if (hFind != INVALID_HANDLE_VALUE)
+        FindClose(hFind);
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -1634,6 +1712,8 @@ START_TEST(DriverPackage)
         ok(WriteTestFile(Dir, L"TESTPKG.HLP", Text, sizeof(Text) - 1), "Restoring TESTPKG.HLP failed\n");
         ok(WriteTestFile(Dir, L"TESTPKG.DAT", Text, sizeof(Text) - 1), "Restoring TESTPKG.DAT failed\n");
     }
+
+    TestStoreReplacement(Dir, InfPath, StoreInf);
 
     hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, BROKEN_DRIVER_NAME, NULL, 0);
     ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);

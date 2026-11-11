@@ -286,21 +286,24 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     STAGE_NAME_LIST Installs;
     STAGE_NAME_LIST Includes;
     PSP_ALTPLATFORM_INFO Platform;
+    WORD Architecture;
     BOOL Required;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
 static BOOL
 MarkNameSeen(
     IN OUT PSTAGE_NAME_LIST List,
-    IN PCWSTR Name)
+    IN PCWSTR Name,
+    OUT PBOOL Added)
 {
     PWSTR Copy;
     DWORD i;
 
+    *Added = FALSE;
     for (i = 0; i < List->Count; i++)
     {
         if (!_wcsicmp(List->Names[i], Name))
-            return FALSE;
+            return TRUE;
     }
 
     if (List->Count == List->Capacity)
@@ -310,16 +313,23 @@ MarkNameSeen(
                                    : MyMalloc(Capacity * sizeof(PWSTR));
 
         if (!Names)
-            return TRUE;
+        {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
         List->Names = Names;
         List->Capacity = Capacity;
     }
 
     Copy = MyMalloc((lstrlenW(Name) + 1) * sizeof(WCHAR));
     if (!Copy)
-        return TRUE;
+    {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return FALSE;
+    }
     lstrcpyW(Copy, Name);
     List->Names[List->Count++] = Copy;
+    *Added = TRUE;
     return TRUE;
 }
 
@@ -479,27 +489,57 @@ StagePackageFile(
 }
 
 static BOOL
+FindSourceDisksLine(
+    IN HINF hInf,
+    IN PCWSTR Section,
+    IN WORD Architecture,
+    IN PCWSTR Key,
+    OUT PINFCONTEXT Context)
+{
+    WCHAR Decorated[64];
+
+    swprintf(Decorated, ARRAY_SIZE(Decorated), L"%s.%s", Section, GetArchitectureName(Architecture));
+    return SetupFindFirstLineW(hInf, Decorated, Key, Context) ||
+           SetupFindFirstLineW(hInf, Section, Key, Context);
+}
+
+static BOOL
 StageCopyFile(
     IN HINF hInf,
     IN PCWSTR FileName,
     IN OUT PSTAGE_PACKAGE_CONTEXT Package)
 {
-    WCHAR SubDir[MAX_PATH], DiskPath[MAX_PATH], Tag[MAX_PATH], Relative[MAX_PATH], Cabinet[MAX_PATH];
+    WCHAR SubDir[MAX_PATH], DiskPath[MAX_PATH], Tag[MAX_PATH], Relative[MAX_PATH], Cabinet[MAX_PATH], DiskName[16];
     PCWSTR CabinetPath = NULL;
+    INFCONTEXT Line;
     SIZE_T Length;
-    UINT DiskId;
+    INT DiskId;
+    BOOL Added;
 
-    if (!MarkNameSeen(&Package->Files, FileName))
+    if (!MarkNameSeen(&Package->Files, FileName, &Added))
+        return FALSE;
+    if (!Added)
         return TRUE;
 
-    SubDir[0] = UNICODE_NULL;
-    if (!SetupGetSourceFileLocationW(hInf, NULL, FileName, &DiskId, SubDir, ARRAY_SIZE(SubDir), NULL))
-        return TRUE;
+    /* A file without a SourceDisksFiles line is taken from the package directory itself */
+    if (!FindSourceDisksLine(hInf, L"SourceDisksFiles", Package->Architecture, FileName, &Line) ||
+        !SetupGetIntField(&Line, 1, &DiskId))
+    {
+        return StagePackageFile(Package->SourceRoot, Package->StoreRoot, FileName, NULL, Package->Required);
+    }
+    if (!SetupGetStringFieldW(&Line, 2, SubDir, ARRAY_SIZE(SubDir), NULL))
+        SubDir[0] = UNICODE_NULL;
 
     DiskPath[0] = UNICODE_NULL;
-    SetupGetSourceInfoW(hInf, DiskId, SRCINFO_PATH, DiskPath, ARRAY_SIZE(DiskPath), NULL);
     Tag[0] = UNICODE_NULL;
-    SetupGetSourceInfoW(hInf, DiskId, SRCINFO_TAGFILE, Tag, ARRAY_SIZE(Tag), NULL);
+    swprintf(DiskName, ARRAY_SIZE(DiskName), L"%d", DiskId);
+    if (FindSourceDisksLine(hInf, L"SourceDisksNames", Package->Architecture, DiskName, &Line))
+    {
+        if (!SetupGetStringFieldW(&Line, 4, DiskPath, ARRAY_SIZE(DiskPath), NULL))
+            DiskPath[0] = UNICODE_NULL;
+        if (!SetupGetStringFieldW(&Line, 2, Tag, ARRAY_SIZE(Tag), NULL))
+            Tag[0] = UNICODE_NULL;
+    }
 
     if (!CombinePath(Relative, DiskPath, SubDir) ||
         lstrlenW(Relative) + 1 + lstrlenW(FileName) >= MAX_PATH)
@@ -537,12 +577,14 @@ StageCopyFilesSection(
 {
     WCHAR Target[MAX_PATH], Source[MAX_PATH];
     INFCONTEXT Context;
+    BOOL Added;
 
     if (Section[0] == L'@')
         return StageCopyFile(hInf, Section + 1, Package);
 
-    if (!MarkNameSeen(&Package->Sections, Section) ||
-        !SetupFindFirstLineW(hInf, Section, NULL, &Context))
+    if (!MarkNameSeen(&Package->Sections, Section, &Added))
+        return FALSE;
+    if (!Added || !SetupFindFirstLineW(hInf, Section, NULL, &Context))
         return TRUE;
 
     do
@@ -595,7 +637,7 @@ StageIncludedInfs(
     WCHAR Name[MAX_PATH], Path[MAX_PATH];
     DWORD Field, FieldCount;
     INFCONTEXT Context;
-    BOOL Found;
+    BOOL Found, Added;
 
     for (Found = SetupFindFirstLineW(hInf, Section, L"Include", &Context);
          Found;
@@ -608,11 +650,15 @@ StageIncludedInfs(
             if (!SetupGetStringFieldW(&Context, Field, Name, ARRAY_SIZE(Name), NULL) || !Name[0] ||
                 !IsSafeRelativePath(Name) ||
                 !CombinePath(Path, Package->SourceRoot, Name) ||
-                GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES ||
-                !MarkNameSeen(&Package->Includes, Name))
+                GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES)
             {
                 continue;
             }
+
+            if (!MarkNameSeen(&Package->Includes, Name, &Added))
+                return FALSE;
+            if (!Added)
+                continue;
 
             if (!StagePackageFile(Package->SourceRoot, Package->StoreRoot, Name, NULL, TRUE) ||
                 !SetupOpenAppendInfFileW(Path, hInf, NULL))
@@ -634,9 +680,11 @@ StageInstallSection(
     DWORD Index = Package->Installs.Count, Field, FieldCount;
     INFCONTEXT Context;
     PCWSTR Current;
-    BOOL Found;
+    BOOL Found, Added;
 
-    if (!MarkNameSeen(&Package->Installs, Section))
+    if (!MarkNameSeen(&Package->Installs, Section, &Added))
+        return FALSE;
+    if (!Added)
         return TRUE;
 
     for (; Index < Package->Installs.Count; Index++)
@@ -655,8 +703,11 @@ StageInstallSection(
             FieldCount = SetupGetFieldCount(&Context);
             for (Field = 1; Field <= FieldCount; Field++)
             {
-                if (SetupGetStringFieldW(&Context, Field, Needs, ARRAY_SIZE(Needs), NULL) && Needs[0])
-                    MarkNameSeen(&Package->Installs, Needs);
+                if (SetupGetStringFieldW(&Context, Field, Needs, ARRAY_SIZE(Needs), NULL) && Needs[0] &&
+                    !MarkNameSeen(&Package->Installs, Needs, &Added))
+                {
+                    return FALSE;
+                }
             }
         }
     }
@@ -938,7 +989,7 @@ StageDriverPackage(
     PWSTR BaseName;
     HINF hInf;
     DWORD Length, Error;
-    BOOL Staged;
+    BOOL Staged, Added;
 
     Length = GetFullPathNameW(SourceInfFileName, ARRAY_SIZE(Source), Source, &BaseName);
     if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName)
@@ -970,6 +1021,7 @@ StageDriverPackage(
         ZeroMemory(&Package, sizeof(Package));
         Package.SourceRoot = SourceRoot;
         Package.StoreRoot = Staging;
+        Package.Architecture = Architecture;
         if (Architecture != GetProcessArchitecture())
         {
             ZeroMemory(&Platform, sizeof(Platform));
@@ -980,8 +1032,8 @@ StageDriverPackage(
             Platform.ProcessorArchitecture = Architecture;
             Package.Platform = &Platform;
         }
-        MarkNameSeen(&Package.Includes, BaseName);
-        Staged = StageCatalogFiles(hInf, SourceRoot, Staging) && StageCopyFiles(hInf, &Package);
+        Staged = MarkNameSeen(&Package.Includes, BaseName, &Added) &&
+                 StageCatalogFiles(hInf, SourceRoot, Staging) && StageCopyFiles(hInf, &Package);
         Error = GetLastError();
         FreeNameList(&Package.Sections);
         FreeNameList(&Package.Files);

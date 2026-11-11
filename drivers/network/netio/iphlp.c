@@ -971,6 +971,162 @@ Done:
     return Status;
 }
 
+#define NETIO_GUID_LENGTH 38
+#define NETIO_NET_CLASS L"{4D36E972-E325-11CE-BFC1-08002BE10318}"
+#define NETIO_CONNECTIONS_KEY L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\Network\\" NETIO_NET_CLASS L"\\"
+#define NETIO_ADAPTERS_KEY L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\Class\\" NETIO_NET_CLASS
+#define NETIO_CONNECTION_SUBKEY L"\\Connection"
+#define NETIO_MAX_ADAPTER_KEY_NAME 64
+
+static
+BOOLEAN
+NetioInterfaceGuid(
+    _In_ const IFEntry *Entry,
+    _Out_writes_z_(NETIO_GUID_LENGTH + 1) PWCHAR Text)
+{
+    UNICODE_STRING String;
+    ULONG Start = 0, i;
+    GUID Guid;
+
+    while (Start < Entry->if_descrlen && Entry->if_descr[Start] != '{')
+        Start++;
+    if (Entry->if_descrlen - Start < NETIO_GUID_LENGTH)
+        return FALSE;
+
+    for (i = 0; i < NETIO_GUID_LENGTH; i++)
+        Text[i] = Entry->if_descr[Start + i];
+    Text[NETIO_GUID_LENGTH] = UNICODE_NULL;
+    RtlInitUnicodeString(&String, Text);
+    return NT_SUCCESS(RtlGUIDFromString(&String, &Guid));
+}
+
+static
+NTSTATUS
+NetioOpenKey(
+    _In_opt_ HANDLE Parent,
+    _In_ PUNICODE_STRING Name,
+    _Out_ PHANDLE Key)
+{
+    OBJECT_ATTRIBUTES Attributes;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    InitializeObjectAttributes(&Attributes, Name, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, Parent, NULL);
+    return ZwOpenKey(Key, KEY_READ, &Attributes);
+}
+
+static
+BOOLEAN
+NetioQueryString(
+    _In_ HANDLE Key,
+    _In_ PCWSTR ValueName,
+    _Out_writes_z_(Count) PWCHAR Text,
+    _In_ ULONG Count)
+{
+    union
+    {
+        KEY_VALUE_PARTIAL_INFORMATION Info;
+        UCHAR Buffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) + (IF_MAX_STRING_SIZE + 1) * sizeof(WCHAR)];
+    } Value;
+    UNICODE_STRING Name;
+    const WCHAR *Data;
+    ULONG Returned, Length, i = 0;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(Count != 0 && Count <= IF_MAX_STRING_SIZE + 1);
+
+    RtlInitUnicodeString(&Name, ValueName);
+    if (!NT_SUCCESS(ZwQueryValueKey(Key, &Name, KeyValuePartialInformation, &Value, sizeof(Value), &Returned)) ||
+        Value.Info.Type != REG_SZ)
+    {
+        return FALSE;
+    }
+
+    Data = (const WCHAR *)(Value.Buffer + FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data));
+    Length = Value.Info.DataLength / sizeof(WCHAR);
+    while (i < Length && Data[i])
+        i++;
+    if (i == 0 || i >= Count)
+        return FALSE;
+
+    RtlCopyMemory(Text, Data, i * sizeof(WCHAR));
+    Text[i] = UNICODE_NULL;
+    return TRUE;
+}
+
+static
+BOOLEAN
+NetioInterfaceAlias(
+    _In_ PCWSTR Guid,
+    _Out_writes_z_(IF_MAX_STRING_SIZE + 1) PWCHAR Alias)
+{
+    WCHAR Buffer[sizeof(NETIO_CONNECTIONS_KEY) / sizeof(WCHAR) + NETIO_GUID_LENGTH + sizeof(NETIO_CONNECTION_SUBKEY) / sizeof(WCHAR)];
+    UNICODE_STRING Path;
+    BOOLEAN Found;
+    HANDLE Key;
+
+    RtlInitEmptyUnicodeString(&Path, Buffer, sizeof(Buffer));
+    if (!NT_SUCCESS(RtlAppendUnicodeToString(&Path, NETIO_CONNECTIONS_KEY)) ||
+        !NT_SUCCESS(RtlAppendUnicodeToString(&Path, Guid)) ||
+        !NT_SUCCESS(RtlAppendUnicodeToString(&Path, NETIO_CONNECTION_SUBKEY)) ||
+        !NT_SUCCESS(NetioOpenKey(NULL, &Path, &Key)))
+    {
+        return FALSE;
+    }
+
+    Found = NetioQueryString(Key, L"Name", Alias, IF_MAX_STRING_SIZE + 1);
+    ZwClose(Key);
+    return Found;
+}
+
+static
+BOOLEAN
+NetioInterfaceDescription(
+    _In_ PCWSTR Guid,
+    _Out_writes_z_(IF_MAX_STRING_SIZE + 1) PWCHAR Description)
+{
+    union
+    {
+        KEY_BASIC_INFORMATION Info;
+        UCHAR Buffer[FIELD_OFFSET(KEY_BASIC_INFORMATION, Name) + NETIO_MAX_ADAPTER_KEY_NAME * sizeof(WCHAR)];
+    } Adapter;
+    WCHAR Instance[NETIO_GUID_LENGTH + 1];
+    UNICODE_STRING Name, InstanceId, Wanted;
+    BOOLEAN Match, Found = FALSE;
+    ULONG Index, Returned;
+    HANDLE Class, Key;
+
+    RtlInitUnicodeString(&Name, NETIO_ADAPTERS_KEY);
+    if (!NT_SUCCESS(NetioOpenKey(NULL, &Name, &Class)))
+        return FALSE;
+
+    RtlInitUnicodeString(&Wanted, Guid);
+    for (Index = 0;
+         NT_SUCCESS(ZwEnumerateKey(Class, Index, KeyBasicInformation, &Adapter, sizeof(Adapter), &Returned));
+         Index++)
+    {
+        Name.Buffer = Adapter.Info.Name;
+        Name.Length = Name.MaximumLength = (USHORT)Adapter.Info.NameLength;
+        if (!NT_SUCCESS(NetioOpenKey(Class, &Name, &Key)))
+            continue;
+
+        Match = NetioQueryString(Key, L"NetCfgInstanceId", Instance, RTL_NUMBER_OF(Instance));
+        if (Match)
+        {
+            RtlInitUnicodeString(&InstanceId, Instance);
+            Match = RtlEqualUnicodeString(&InstanceId, &Wanted, TRUE);
+        }
+        if (Match)
+            Found = NetioQueryString(Key, L"DriverDesc", Description, IF_MAX_STRING_SIZE + 1);
+        ZwClose(Key);
+        if (Match)
+            break;
+    }
+
+    ZwClose(Class);
+    return Found;
+}
+
 NTSTATUS
 NTAPI
 GetIfEntry2(
@@ -979,8 +1135,9 @@ GetIfEntry2(
     PUCHAR Entries;
     IFEntry *Entry;
     IP4_INTERFACE_INFO Info;
+    WCHAR Guid[NETIO_GUID_LENGTH + 1];
     ULONG Count, Index, Length, i;
-    BOOLEAN Loopback;
+    BOOLEAN Loopback, HasAlias = FALSE, HasDescription = FALSE;
     NTSTATUS Status;
 
     if (Row == NULL)
@@ -1012,9 +1169,19 @@ GetIfEntry2(
     RtlZeroMemory(Row, sizeof(*Row));
     Row->InterfaceLuid = NetioInterfaceLuid(Entry->if_index, Entry->if_type);
     Row->InterfaceIndex = Entry->if_index;
+    if (!Loopback && NetioInterfaceGuid(Entry, Guid))
+    {
+        HasAlias = NetioInterfaceAlias(Guid, Row->Alias);
+        HasDescription = NetioInterfaceDescription(Guid, Row->Description);
+    }
     Length = min(Entry->if_descrlen, IF_MAX_STRING_SIZE);
     for (i = 0; i < Length && Entry->if_descr[i]; i++)
-        Row->Alias[i] = Row->Description[i] = Entry->if_descr[i];
+    {
+        if (!HasAlias)
+            Row->Alias[i] = Entry->if_descr[i];
+        if (!HasDescription)
+            Row->Description[i] = Entry->if_descr[i];
+    }
     Row->PhysicalAddressLength = min(Entry->if_physaddrlen, MAX_PHYSADDR_SIZE);
     RtlCopyMemory(Row->PhysicalAddress, Entry->if_physaddr, Row->PhysicalAddressLength);
     RtlCopyMemory(Row->PermanentPhysicalAddress, Entry->if_physaddr, Row->PhysicalAddressLength);

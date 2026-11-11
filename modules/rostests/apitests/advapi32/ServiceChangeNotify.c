@@ -567,6 +567,75 @@ test_ChangeDuringCallback(PCSTR NameA, PCWSTR NameW, void *Param)
     CloseServiceHandle(Manager);
 }
 
+static volatile LONG StatusSeen;
+
+static VOID CALLBACK
+StatusRecorded(DWORD Notify, PVOID Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    trace("Status callback 0x%lx\n", Notify);
+    InterlockedOr(&StatusSeen, Notify);
+}
+
+/* A running service that is marked for delete still reports that it stopped */
+static void
+test_StopAfterDelete(PCSTR NameA, PCWSTR NameW, void *Param)
+{
+    PSC_NOTIFICATION_REGISTRATION Subscription = NULL;
+    SC_HANDLE Manager, Service;
+    SERVICE_STATUS Status;
+    DWORD Error, Start;
+
+    UNREFERENCED_PARAMETER(NameA);
+    UNREFERENCED_PARAMETER(Param);
+
+    Manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_ALL_ACCESS);
+    if (!Manager)
+    {
+        skip("Cannot open the service manager (%lu)\n", GetLastError());
+        return;
+    }
+    Service = register_serviceW(Manager, L"ServiceChangeNotify", NameW, NULL);
+    if (!Service)
+    {
+        skip("Cannot create the test service (%lu)\n", GetLastError());
+        CloseServiceHandle(Manager);
+        return;
+    }
+
+    StatusSeen = 0;
+    Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, StatusRecorded, NULL, &Subscription);
+    ok(Error == ERROR_SUCCESS, "Status subscription returned %lu\n", Error);
+    if (Error == ERROR_SUCCESS)
+    {
+        ok(StartServiceW(Service, 0, NULL), "StartServiceW failed (%lu)\n", GetLastError());
+        ok(WaitState(Service, SERVICE_RUNNING), "The service is not running\n");
+        for (Start = GetTickCount(); !(StatusSeen & SERVICE_NOTIFY_RUNNING) && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(StatusSeen & SERVICE_NOTIFY_RUNNING, "No callback for SERVICE_RUNNING (0x%lx)\n", StatusSeen);
+
+        ok(DeleteService(Service), "DeleteService failed (%lu)\n", GetLastError());
+        /* The subscription is renewed after this callback, while the service is marked for delete and still running */
+        for (Start = GetTickCount(); !(StatusSeen & SERVICE_NOTIFY_DELETE_PENDING) && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(StatusSeen & SERVICE_NOTIFY_DELETE_PENDING, "No callback for SERVICE_NOTIFY_DELETE_PENDING (0x%lx)\n", StatusSeen);
+        Sleep(500);
+        InterlockedExchange(&StatusSeen, 0);
+        ok(ControlService(Service, SERVICE_CONTROL_STOP, &Status), "ControlService failed (%lu)\n", GetLastError());
+        for (Start = GetTickCount(); !(StatusSeen & SERVICE_NOTIFY_STOPPED) && GetTickCount() - Start < 5000; )
+            Sleep(50);
+        ok(StatusSeen & SERVICE_NOTIFY_STOPPED, "No callback for SERVICE_STOPPED (0x%lx)\n", StatusSeen);
+        pUnsubscribe(Subscription);
+    }
+    else
+    {
+        DeleteService(Service);
+    }
+
+    CloseServiceHandle(Service);
+    CloseServiceHandle(Manager);
+}
+
 static volatile LONG DatabaseCalls, DatabaseSeen;
 
 static VOID CALLBACK
@@ -678,6 +747,7 @@ START_TEST(ServiceChangeNotify)
         test_SubscribeCleanup(Manager);
         test_SubscribeHandleClosed();
         test_runner(test_ChangeDuringCallback, NULL);
+        test_runner(test_StopAfterDelete, NULL);
         test_DatabaseChangeDuringCallback(Manager);
     }
     else

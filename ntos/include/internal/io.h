@@ -1233,6 +1233,13 @@ IopAbortInterruptedIrp(
     IN PIRP Irp
 );
 
+BOOLEAN
+NTAPI
+IopCancelIrp(
+    _Inout_ PIRP Irp,
+    _Out_ PBOOLEAN WasCancelled
+);
+
 PIRP
 NTAPI
 IopAllocateIrpMustSucceed(

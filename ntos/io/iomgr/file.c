@@ -4700,7 +4700,6 @@ IopCancelMatchingIrpsInCurrentThread(
         }
     }
 
-    /* As on Windows 11, a synchronous request that has no cancel routine leaves its thread alerted in kernel mode */
     if (SynchronousLeft)
         KeAlertThread(&Thread->Tcb, KernelMode);
 

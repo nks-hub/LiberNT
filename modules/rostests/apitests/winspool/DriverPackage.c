@@ -235,7 +235,7 @@ static VOID
 DeleteTestDriver(VOID)
 {
     static const PCWSTR Names[] = { L"TESTDRV.DLL", L"TESTUI.DLL", L"TESTPKG.GPD", L"TESTPKG.HLP", L"TESTPKG.DAT",
-                                    L"TESTREN.DAT", L"TESTROLL.DAT" };
+                                    L"TESTREN.DAT", L"TESTROLL.DAT", L"TESTROLL.DAT.apd-new", L"TESTROLL.DAT.apd-old" };
     static const PCWSTR Drivers[] = { TEST_DRIVER_NAME, NEEDS_DRIVER_NAME, BROKEN_DRIVER_NAME, LOCK_DRIVER_NAME };
     WCHAR Key[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
     DWORD Size = sizeof(Dir);
@@ -1633,12 +1633,23 @@ TestDriverUpdate(PLOCK_TEST Test, PCWSTR SourceDir, PCWSTR Gone)
 {
     static const char First[] = "version A\r\n";
     static const char Second[] = "version B, longer\r\n";
-    WCHAR Fresh[MAX_PATH], Path[MAX_PATH], Value[MAX_PATH] = L"";
+    static const char Foreign[] = "not a file of the update\r\n";
+    WCHAR Fresh[MAX_PATH], Path[MAX_PATH] = L"", Value[MAX_PATH] = L"";
     PWSTR DataFile = Test->Info.pDataFile, ConfigFile = Test->Info.pConfigFile;
     DWORD Size = sizeof(Path);
     WIN32_FIND_DATAW Find;
+    BOOL HasForeign = FALSE;
     HANDLE hFind;
     HKEY hKey;
+
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Path, Size, &Size))
+    {
+        StringCchCatW(Path, ARRAYSIZE(Path), L"\\3");
+        CreateDirectoryW(Path, NULL);
+        HasForeign = WriteTestFile(Path, L"TESTROLL.DAT.apd-new", Foreign, sizeof(Foreign) - 1) &&
+                     WriteTestFile(Path, L"TESTROLL.DAT.apd-old", Foreign, sizeof(Foreign) - 1);
+    }
+    ok(HasForeign, "Cannot write TESTROLL.DAT.apd-new and TESTROLL.DAT.apd-old (%lu)\n", GetLastError());
 
     StringCchPrintfW(Fresh, ARRAYSIZE(Fresh), L"%s\\TESTROLL.DAT", SourceDir);
     if (!WriteTestFile(SourceDir, L"TESTROLL.DAT", First, sizeof(First) - 1))
@@ -1662,6 +1673,25 @@ TestDriverUpdate(PLOCK_TEST Test, PCWSTR SourceDir, PCWSTR Gone)
 
     TestLockedDestination(Test, SourceDir);
     ok(DriverFileIs(L"TESTROLL.DAT", First), "TESTROLL.DAT was not restored after an update that failed\n");
+
+    if (HasForeign)
+    {
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-new", Foreign), "An update that failed changed TESTROLL.DAT.apd-new\n");
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-old", Foreign), "An update that failed changed TESTROLL.DAT.apd-old\n");
+    }
+    ok(AddPrinterDriverExW(NULL, 8, (PBYTE)&Test->Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+       "AddPrinterDriverExW failed with %lu\n", GetLastError());
+    ok(DriverFileIs(L"TESTROLL.DAT", Second), "TESTROLL.DAT is not the second version\n");
+    if (HasForeign)
+    {
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-new", Foreign), "The update changed TESTROLL.DAT.apd-new\n");
+        ok(DriverFileIs(L"TESTROLL.DAT.apd-old", Foreign), "The update changed TESTROLL.DAT.apd-old\n");
+    }
+    StringCchPrintfW(Value, ARRAYSIZE(Value), L"%s\\TESTROLL.DAT.apd-new", Path);
+    DeleteFileW(Value);
+    StringCchPrintfW(Value, ARRAYSIZE(Value), L"%s\\TESTROLL.DAT.apd-old", Path);
+    DeleteFileW(Value);
+    Value[0] = UNICODE_NULL;
 
     hKey = OpenDriverKey(LOCK_DRIVER_NAME);
     ok(hKey != NULL, "Driver %S is not registered any more\n", LOCK_DRIVER_NAME);

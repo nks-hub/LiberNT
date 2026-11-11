@@ -465,8 +465,12 @@ NetioPassiveWorker(
             break;
 
         case NetioPassiveClose:
+            /* The reference of the request must be gone before the IRP completes: the last one closes the address */
+            ASSERT(Socket->RefCount > 1);
+            DereferenceSocket(Socket);
             NetioCloseSocket(Socket, Request->Irp);
-            break;
+            ExFreePoolWithTag(Request, TAG_NETIO);
+            return;
     }
 
     DereferenceSocket(Socket);

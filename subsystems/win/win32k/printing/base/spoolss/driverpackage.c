@@ -220,16 +220,36 @@ FindSourceDisksLine(HINF hInf, PCWSTR Section, PCWSTR Decoration, PCWSTR Key, PI
 }
 
 static BOOL
-IsBelowDirectory(PCWSTR Directory, PCWSTR Path)
+IsBelowDirectory(PCWSTR Directory, PWSTR Path)
 {
     WCHAR Base[MAX_PATH];
-    DWORD Length = GetFullPathNameW(Directory, ARRAYSIZE(Base), Base, NULL);
+    DWORD Length = GetFullPathNameW(Directory, ARRAYSIZE(Base), Base, NULL), Attributes;
+    PWSTR Cursor;
+    WCHAR Saved;
 
     if (Length == 0 || Length >= ARRAYSIZE(Base))
         return FALSE;
     if (Base[Length - 1] == L'\\')
         Length--;
-    return _wcsnicmp(Path, Base, Length) == 0 && Path[Length] == L'\\' && Path[Length + 1];
+    if (_wcsnicmp(Path, Base, Length) != 0 || Path[Length] != L'\\' || !Path[Length + 1])
+        return FALSE;
+
+    /* A junction or a link below the directory leads out of it although the path does not */
+    for (Cursor = Path + Length + 1; ; Cursor++)
+    {
+        Saved = *Cursor;
+        if (Saved != L'\\' && Saved != UNICODE_NULL)
+            continue;
+
+        *Cursor = UNICODE_NULL;
+        Attributes = GetFileAttributesW(Path);
+        *Cursor = Saved;
+        if (Attributes != INVALID_FILE_ATTRIBUTES && (Attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            return FALSE;
+        if (Saved == UNICODE_NULL)
+            break;
+    }
+    return TRUE;
 }
 
 static BOOL

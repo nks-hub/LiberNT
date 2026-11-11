@@ -261,7 +261,9 @@ ResolvePackagePath(
     OUT PWSTR Path)
 {
     WCHAR Joined[MAX_PATH], Base[MAX_PATH];
-    DWORD Length, BaseLength;
+    DWORD Length, BaseLength, Attributes;
+    PWSTR Cursor;
+    WCHAR Saved;
 
     if (!CombinePath(Joined, Root, Relative))
         return ERROR_FILENAME_EXCED_RANGE;
@@ -277,6 +279,22 @@ ResolvePackagePath(
         BaseLength--;
     if (_wcsnicmp(Path, Base, BaseLength) != 0 || Path[BaseLength] != L'\\' || !Path[BaseLength + 1])
         return ERROR_BAD_PATHNAME;
+
+    /* A junction or a link below the root leads out of it although the path does not */
+    for (Cursor = Path + BaseLength + 1; ; Cursor++)
+    {
+        Saved = *Cursor;
+        if (Saved != L'\\' && Saved != UNICODE_NULL)
+            continue;
+
+        *Cursor = UNICODE_NULL;
+        Attributes = GetFileAttributesW(Path);
+        *Cursor = Saved;
+        if (Attributes != INVALID_FILE_ATTRIBUTES && (Attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            return ERROR_BAD_PATHNAME;
+        if (Saved == UNICODE_NULL)
+            break;
+    }
     return ERROR_SUCCESS;
 }
 
@@ -437,7 +455,7 @@ StagePackageFile(
     WCHAR Source[MAX_PATH], Target[MAX_PATH], Compressed[MAX_PATH];
     STAGE_CABINET_CONTEXT Stage;
     PWSTR Last;
-    DWORD Error;
+    DWORD Error, Attributes;
 
     Error = IsSafeRelativePath(Relative) ? ResolvePackagePath(SourceRoot, Relative, Source) : ERROR_BAD_PATHNAME;
     if (Error == ERROR_SUCCESS)
@@ -455,7 +473,8 @@ StagePackageFile(
     if (GetFileAttributesW(Source) == INVALID_FILE_ATTRIBUTES)
     {
         if (!GetCompressedSourceName(Source, Compressed, ARRAY_SIZE(Compressed)) ||
-            GetFileAttributesW(Compressed) == INVALID_FILE_ATTRIBUTES)
+            (Attributes = GetFileAttributesW(Compressed)) == INVALID_FILE_ATTRIBUTES ||
+            (Attributes & FILE_ATTRIBUTE_REPARSE_POINT))
         {
             Compressed[0] = UNICODE_NULL;
             if (!Cabinet || GetFileAttributesW(Cabinet) == INVALID_FILE_ATTRIBUTES)

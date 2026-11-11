@@ -10,6 +10,7 @@
 #define WIN32_NO_STATUS
 #include <windef.h>
 #include <winbase.h>
+#include <winioctl.h>
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
@@ -938,6 +939,154 @@ TestOtherEnvironment(VOID)
     RemoveDirectoryW(Dir);
 }
 
+static const char JunctionInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Junction Printer\"=TESTJNC,LiberNT_Package_Junction\r\n"
+    "\r\n"
+    "[TESTJNC]\r\n"
+    "CopyFiles=TESTJNC_FILES\r\n"
+    "DriverFile=TESTJNC.DLL\r\n"
+    "ConfigFile=TESTJNC.DLL\r\n"
+    "DataFile=TESTJNC.GPD\r\n"
+    "\r\n"
+    "[TESTJNC_FILES]\r\n"
+    "TESTJNC.DLL\r\n"
+    "TESTJNC.GPD\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "2=\"Disk\",,,\\link\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTJNC.GPD=1\r\n"
+    "TESTJNC.DLL=2\r\n";
+
+typedef struct _TEST_MOUNT_POINT
+{
+    ULONG ReparseTag;
+    USHORT ReparseDataLength;
+    USHORT Reserved;
+    USHORT SubstituteNameOffset;
+    USHORT SubstituteNameLength;
+    USHORT PrintNameOffset;
+    USHORT PrintNameLength;
+    WCHAR PathBuffer[MAX_PATH + 8];
+} TEST_MOUNT_POINT;
+
+static BOOL
+CreateTestJunction(PCWSTR Link, PCWSTR Target)
+{
+    TEST_MOUNT_POINT Buffer;
+    DWORD Length, Returned, Error;
+    HANDLE hLink;
+
+    ZeroMemory(&Buffer, sizeof(Buffer));
+    if (FAILED(StringCchPrintfW(Buffer.PathBuffer, MAX_PATH + 4, L"\\??\\%s", Target)) || !CreateDirectoryW(Link, NULL))
+        return FALSE;
+
+    /* The substitute name is followed by its terminator and by an empty print name */
+    Length = (DWORD)wcslen(Buffer.PathBuffer) * sizeof(WCHAR);
+    Buffer.ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    Buffer.SubstituteNameLength = (USHORT)Length;
+    Buffer.PrintNameOffset = (USHORT)(Length + sizeof(WCHAR));
+    Buffer.ReparseDataLength = (USHORT)(4 * sizeof(USHORT) + Length + 2 * sizeof(WCHAR));
+
+    hLink = CreateFileW(Link, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    if (hLink != INVALID_HANDLE_VALUE &&
+        DeviceIoControl(hLink, FSCTL_SET_REPARSE_POINT, &Buffer, FIELD_OFFSET(TEST_MOUNT_POINT, SubstituteNameOffset) + Buffer.ReparseDataLength,
+                        NULL, 0, &Returned, NULL))
+    {
+        CloseHandle(hLink);
+        return TRUE;
+    }
+
+    Error = GetLastError();
+    if (hLink != INVALID_HANDLE_VALUE)
+        CloseHandle(hLink);
+    RemoveDirectoryW(Link);
+    SetLastError(Error);
+    return FALSE;
+}
+
+/* The INF takes TESTJNC.DLL from a directory of the package that is a junction to a directory outside of it */
+static VOID
+TestJunctionPackage(VOID)
+{
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], Outside[MAX_PATH], Link[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    HRESULT hr;
+    HKEY hKey;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCopyW(Outside, ARRAYSIZE(Outside), Dir);
+    StringCchCatW(Dir, ARRAYSIZE(Dir), L"lntprnjnc");
+    StringCchCatW(Outside, ARRAYSIZE(Outside), L"lntprnjnco");
+    StringCchPrintfW(Link, ARRAYSIZE(Link), L"%s\\link", Dir);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnjnc.inf", Dir);
+    CreateDirectoryW(Dir, NULL);
+    CreateDirectoryW(Outside, NULL);
+
+    if (!WriteTestFile(Dir, L"lntprnjnc.inf", JunctionInf, sizeof(JunctionInf) - 1) ||
+        !WriteTestFile(Dir, L"TESTJNC.GPD", Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Outside, L"TESTJNC.DLL", Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnjnc.inf (%lu)\n", GetLastError());
+    }
+    else if (!CreateTestJunction(Link, Outside))
+    {
+        skip("The file system does not take a junction (%lu)\n", GetLastError());
+    }
+    else
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(FAILED(hr), "UploadPrinterDriverPackageW returned 0x%lx for a file behind a junction\n", hr);
+        if (hr == S_OK)
+            DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+
+        hr = InstallPrinterDriverFromPackageW(NULL, InfPath, L"LiberNT Package Junction Printer", NULL, 0);
+        ok(FAILED(hr), "InstallPrinterDriverFromPackageW returned 0x%lx for a file behind a junction\n", hr);
+        hKey = OpenDriverKey(L"LiberNT Package Junction Printer");
+        ok(hKey == NULL, "A driver was registered with a file from outside the package\n");
+        if (hKey)
+            RegCloseKey(hKey);
+        ok(!DriverFileExists(L"TESTJNC.DLL"), "TESTJNC.DLL was installed from outside the package\n");
+
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\LiberNT Package Junction Printer");
+        Length = sizeof(Path);
+        if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Path, Length, &Length))
+        {
+            StringCchCatW(Path, ARRAYSIZE(Path), L"\\3\\TESTJNC.DLL");
+            DeleteFileW(Path);
+            *wcsrchr(Path, L'.') = UNICODE_NULL;
+            StringCchCatW(Path, ARRAYSIZE(Path), L".GPD");
+            DeleteFileW(Path);
+        }
+        RemoveDirectoryW(Link);
+    }
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTJNC.DLL", Outside);
+    DeleteFileW(Path);
+    RemoveDirectoryW(Outside);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTJNC.GPD", Dir);
+    DeleteFileW(Path);
+    DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+}
+
 /* Only <name>.inf in FileRepository\<name>.inf_<architecture>_<hash> is a staged package; any other INF is a package source */
 static VOID
 TestMisplacedPackage(PCWSTR Parent, PCWSTR Directory, PCWSTR InfName)
@@ -1696,6 +1845,7 @@ START_TEST(DriverPackage)
     TestMisplacedPackage(L"FileRepository-backup", L"lntprnsib", L"lntprnsib.inf");
     TestMisplacedPackage(L"FileRepository", L"lntprnbadh.inf_" TEST_STORE_ARCHITECTURE L"_0000000000000000", L"lntprnbadh.inf");
     TestIncompleteUpdate();
+    TestJunctionPackage();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

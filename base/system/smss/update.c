@@ -133,7 +133,7 @@ SmpInitializeUpdateRegistry(VOID)
     Query[0].QueryRoutine = SmpExecuteUpdate;
     Query[0].Name = L"UpdateExecute";
     Status = RtlQueryRegistryValues(RTL_REGISTRY_CONTROL,
-                                    L"Session Manager", Query, NULL, NULL);
+                                    L"Session Manager", Query, NULL, SmpDefaultEnvironment);
     if (!NT_SUCCESS(Status))
         DPRINT1("SMSS: UpdateExecute query failed: %lx\n", Status);
     return STATUS_SUCCESS;

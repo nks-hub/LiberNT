@@ -5,8 +5,7 @@
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
-#ifndef _KMTEST_NETIO_IPHLP_H_
-#define _KMTEST_NETIO_IPHLP_H_
+#pragma once
 
 #define IOCTL_NETIOIPHLP_GET_IF_ENTRY2 1
 #define IOCTL_NETIOIPHLP_GET_BEST_ROUTE2 2
@@ -18,5 +17,3 @@ typedef struct _NETIOIPHLP_BEST_ROUTE
     ULONG Destination;
     MIB_IPFORWARD_ROW2 Route;
 } NETIOIPHLP_BEST_ROUTE, *PNETIOIPHLP_BEST_ROUTE;
-
-#endif

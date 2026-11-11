@@ -281,8 +281,8 @@ ResolvePackagePath(
     if (_wcsnicmp(Path, Base, BaseLength) != 0 || Path[BaseLength] != L'\\' || !Path[BaseLength + 1])
         return ERROR_BAD_PATHNAME;
 
-    /* A junction or a link below the root leads out of it although the path does not */
-    for (Cursor = Path + BaseLength + 1; ; Cursor++)
+    /* A junction or a link, the root itself or below it, leads out of the root although the path does not */
+    for (Cursor = Path + BaseLength; ; Cursor++)
     {
         Saved = *Cursor;
         if (Saved != L'\\' && Saved != UNICODE_NULL)
@@ -1185,6 +1185,14 @@ StageLockedDriverPackage(
         FindStoreInf(Source, BaseName, Architecture, StoreInfFileName ? StoreInfFileName : Store))
     {
         return TRUE;
+    }
+
+    Error = ResolvePackagePath(SourceRoot, BaseName, Target);
+    if (Error != ERROR_SUCCESS)
+    {
+        ERR("INF %s cannot be taken from the package directory\n", debugstr_w(Source));
+        SetLastError(Error);
+        return FALSE;
     }
 
     if (!BuildStoreDirectory(Source, BaseName, Architecture, Store) ||

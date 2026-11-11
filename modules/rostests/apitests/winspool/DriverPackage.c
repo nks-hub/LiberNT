@@ -1106,6 +1106,40 @@ CreateTestJunction(PCWSTR Link, PCWSTR Target)
     return FALSE;
 }
 
+static VOID
+TestLinkedInf(PCWSTR InfPath, PCSTR What)
+{
+    static const PCWSTR Names[] = { L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    WCHAR StoreInf[MAX_PATH], Dir[MAX_PATH], Path[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    DWORD Size = sizeof(Dir);
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(FAILED(hr), "UploadPrinterDriverPackageW returned 0x%lx for %s\n", hr, What);
+    if (hr == S_OK)
+        DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+
+    hr = InstallPrinterDriverFromPackageW(NULL, InfPath, L"LiberNT Package Plain Printer", NULL, 0);
+    ok(FAILED(hr), "InstallPrinterDriverFromPackageW returned 0x%lx for %s\n", hr, What);
+    hKey = OpenDriverKey(L"LiberNT Package Plain Printer");
+    ok(hKey == NULL, "A driver was registered from %s\n", What);
+    if (hKey)
+        RegCloseKey(hKey);
+
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\LiberNT Package Plain Printer");
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Dir, Size, &Size))
+    {
+        for (i = 0; i < ARRAYSIZE(Names); i++)
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", Dir, Names[i]);
+            DeleteFileW(Path);
+        }
+    }
+}
+
 /* The INF takes TESTJNC.DLL from a directory of the package that is a junction to a directory outside of it */
 static VOID
 TestJunctionPackage(VOID)
@@ -1163,6 +1197,46 @@ TestJunctionPackage(VOID)
         RemoveDirectoryW(Link);
     }
 
+    /* A whole package whose directory is reached through a junction, and whose INF is reached through a link */
+    if (!WriteTestFile(Outside, L"lntprnroot.inf", PlainInf, sizeof(PlainInf) - 1) ||
+        !WriteTestFile(Outside, L"TESTPLAIN.DLL", Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Outside, L"TESTPLAIN.GPD", Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnroot.inf (%lu)\n", GetLastError());
+    }
+    else
+    {
+        StringCchPrintfW(Link, ARRAYSIZE(Link), L"%sr", Outside);
+        if (CreateTestJunction(Link, Outside))
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\lntprnroot.inf", Link);
+            TestLinkedInf(Path, "a package directory that is a junction");
+            RemoveDirectoryW(Link);
+        }
+        else
+        {
+            skip("The file system does not take a junction (%lu)\n", GetLastError());
+        }
+
+        StringCchPrintfW(Link, ARRAYSIZE(Link), L"%s\\lntprnlink.inf", Outside);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\lntprnroot.inf", Outside);
+        if (CreateSymbolicLinkW(Link, Path, 0))
+        {
+            TestLinkedInf(Link, "an INF that is a link");
+            DeleteFileW(Link);
+        }
+        else
+        {
+            skip("The file system does not take a link (%lu)\n", GetLastError());
+        }
+    }
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\lntprnroot.inf", Outside);
+    DeleteFileW(Path);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTPLAIN.DLL", Outside);
+    DeleteFileW(Path);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTPLAIN.GPD", Outside);
+    DeleteFileW(Path);
     StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTJNC.DLL", Outside);
     DeleteFileW(Path);
     RemoveDirectoryW(Outside);

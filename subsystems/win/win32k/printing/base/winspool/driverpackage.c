@@ -32,15 +32,16 @@ static const struct
 {
     PCWSTR Environment;
     WORD Architecture;
+    PCWSTR Decoration;
 }
 EnvironmentArchitectures[] =
 {
-    { L"Windows NT x86", PROCESSOR_ARCHITECTURE_INTEL },
-    { L"Windows x64", PROCESSOR_ARCHITECTURE_AMD64 },
-    { L"Windows ARM64", PROCESSOR_ARCHITECTURE_ARM64 },
-    { L"Windows ARM", PROCESSOR_ARCHITECTURE_ARM },
-    { L"ReactOS RISC-V64", PROCESSOR_ARCHITECTURE_RISCV64 },
-    { L"Windows NT PowerPC", PROCESSOR_ARCHITECTURE_PPC },
+    { L"Windows NT x86", PROCESSOR_ARCHITECTURE_INTEL, L"x86" },
+    { L"Windows x64", PROCESSOR_ARCHITECTURE_AMD64, L"amd64" },
+    { L"Windows ARM64", PROCESSOR_ARCHITECTURE_ARM64, L"arm64" },
+    { L"Windows ARM", PROCESSOR_ARCHITECTURE_ARM, L"arm" },
+    { L"ReactOS RISC-V64", PROCESSOR_ARCHITECTURE_RISCV64, L"riscv64" },
+    { L"Windows NT PowerPC", PROCESSOR_ARCHITECTURE_PPC, L"ppc" },
 };
 
 static HRESULT
@@ -421,13 +422,33 @@ FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, PCWSTR DriverName, PW
 }
 
 static BOOL
-LocatePackageFile(HINF hInf, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
+FindSourceDisksLine(HINF hInf, PCWSTR Section, PCWSTR Decoration, PCWSTR Key, PINFCONTEXT Context)
 {
-    WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"";
-    UINT SourceId;
+    WCHAR Decorated[64];
 
-    if (SetupGetSourceFileLocationW(hInf, NULL, Name, &SourceId, SubDir, ARRAYSIZE(SubDir), NULL))
-        SetupGetSourceInfoW(hInf, SourceId, SRCINFO_PATH, SourcePath, ARRAYSIZE(SourcePath), NULL);
+    return (SUCCEEDED(StringCchPrintfW(Decorated, ARRAYSIZE(Decorated), L"%s.%s", Section, Decoration)) &&
+            SetupFindFirstLineW(hInf, Decorated, Key, Context)) ||
+           SetupFindFirstLineW(hInf, Section, Key, Context);
+}
+
+static BOOL
+LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
+{
+    WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"", DiskName[16];
+    INFCONTEXT Line;
+    INT SourceId;
+
+    if (FindSourceDisksLine(hInf, L"SourceDisksFiles", Decoration, Name, &Line) && SetupGetIntField(&Line, 1, &SourceId))
+    {
+        if (!SetupGetStringFieldW(&Line, 2, SubDir, ARRAYSIZE(SubDir), NULL))
+            *SubDir = UNICODE_NULL;
+        StringCchPrintfW(DiskName, ARRAYSIZE(DiskName), L"%d", SourceId);
+        if (!FindSourceDisksLine(hInf, L"SourceDisksNames", Decoration, DiskName, &Line) ||
+            !SetupGetStringFieldW(&Line, 4, SourcePath, ARRAYSIZE(SourcePath), NULL))
+        {
+            *SourcePath = UNICODE_NULL;
+        }
+    }
 
     if (SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s%s%s%s%s\\%s", PackageDir,
                                    *SourcePath ? L"\\" : L"", SourcePath,
@@ -448,7 +469,7 @@ LocatePackageFile(HINF hInf, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, P
 }
 
 static BOOL
-ResolvePackageFile(HINF hInf, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name,
+ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name,
                    PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
 {
     WCHAR Copy[MAX_PATH];
@@ -461,7 +482,7 @@ ResolvePackageFile(HINF hInf, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR Dr
             Source = Files->Sources[i];
     }
 
-    if (!LocatePackageFile(hInf, PackageDir, DriverDir, Source, Path, PathSize))
+    if (!LocatePackageFile(hInf, Decoration, PackageDir, DriverDir, Source, Path, PathSize))
         return FALSE;
     if (Source == Name)
         return TRUE;
@@ -518,7 +539,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     SP_ALTPLATFORM_INFO OtherPlatform;
     RTL_OSVERSIONINFOW Version;
     INFCONTEXT Context;
-    PCWSTR Environment;
+    PCWSTR Environment, Decoration = L"";
     WORD Architecture;
     HINF hInf;
     HRESULT hr;
@@ -535,6 +556,12 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
     if (FAILED(hr))
         return hr;
+
+    for (i = 0; i < ARRAYSIZE(EnvironmentArchitectures); i++)
+    {
+        if (EnvironmentArchitectures[i].Architecture == Architecture)
+            Decoration = EnvironmentArchitectures[i].Decoration;
+    }
 
     if (_wcsicmp(Environment, wszCurrentEnvironment) != 0)
     {
@@ -664,11 +691,11 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         }
     }
 
-    if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DriverFile, StagingDir, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
-        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, ConfigFile, StagingDir, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, DataFile, StagingDir, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
+    if (!ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, DriverFile, StagingDir, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, ConfigFile, StagingDir, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, DataFile, StagingDir, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
         (*HelpFile &&
-         !ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, HelpFile, StagingDir, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
+         !ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, HelpFile, StagingDir, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         goto Cleanup;
@@ -676,7 +703,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 
     for (i = 0; i < Files.Count; i++)
     {
-        if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -701,7 +728,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             continue;
         }
 
-        if (!ResolvePackageFile(hInf, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)) ||
             FAILED(StringCchCopyW(Next, DependentLength - (DWORD)(Next - DependentFiles), FilePath)))
         {

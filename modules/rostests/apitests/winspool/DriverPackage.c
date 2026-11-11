@@ -316,6 +316,36 @@ static const char NeedsMissingInf[] =
     "TESTNM.DAT=1\r\n"
     "TESTNMGONE.DLL=1\r\n";
 
+static const char UnlistedInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Unlisted Printer\"=TESTUNL,LiberNT_Package_Unlisted\r\n"
+    "\r\n"
+    "[TESTUNL]\r\n"
+    "CopyFiles=TESTUNL_FILES\r\n"
+    "\r\n"
+    "[TESTUNL_FILES]\r\n"
+    "TESTUNL.DAT\r\n"
+    "TESTUNLGONE.DLL\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTUNL.DAT=1\r\n";
+
 static const char EscapeInf[] =
     "[Version]\r\n"
     "Signature=\"$Windows NT$\"\r\n"
@@ -430,8 +460,7 @@ static const char PlainInf[] =
     "1=\"Disk\",,,\r\n"
     "\r\n"
     "[SourceDisksFiles]\r\n"
-    "TESTPLAIN.DLL=1\r\n"
-    "TESTPLAIN.GPD=1\r\n";
+    "TESTPLAIN.DLL=1\r\n";
 
 #define BIG_SECTIONS 20
 #define BIG_SECTION_FILES 7
@@ -685,10 +714,16 @@ static const char CrossInf[] =
     "1=\"Disk\",,,\r\n"
     "\r\n"
     "[SourceDisksFiles]\r\n"
-    "TESTA64.DLL=1\r\n"
-    "TESTX86.DLL=1\r\n"
-    "TESTARM.DLL=1\r\n"
-    "TESTCROSS.GPD=1\r\n";
+    "TESTCROSS.GPD=1\r\n"
+    "\r\n"
+    "[SourceDisksFiles.amd64]\r\n"
+    "TESTA64.DLL=1,bin\r\n"
+    "\r\n"
+    "[SourceDisksFiles.x86]\r\n"
+    "TESTX86.DLL=1,bin\r\n"
+    "\r\n"
+    "[SourceDisksFiles.arm64]\r\n"
+    "TESTARM.DLL=1,bin\r\n";
 
 static VOID
 TestOtherEnvironment(VOID)
@@ -707,9 +742,11 @@ TestOtherEnvironment(VOID)
     StringCchCatW(Dir, MAX_PATH, L"lntprncross");
     CreateDirectoryW(Dir, NULL);
     StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprncross.inf", Dir);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\bin", Dir);
+    CreateDirectoryW(Path, NULL);
 
     if (WriteTestFile(Dir, L"lntprncross.inf", CrossInf, sizeof(CrossInf) - 1) &&
-        WriteTestFile(Dir, OTHER_DRIVER_FILE, Text, sizeof(Text) - 1) &&
+        WriteTestFile(Dir, L"bin\\" OTHER_DRIVER_FILE, Text, sizeof(Text) - 1) &&
         WriteTestFile(Dir, L"TESTCROSS.GPD", Text, sizeof(Text) - 1))
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, OTHER_ENVIRONMENT, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
@@ -774,6 +811,10 @@ TestOtherEnvironment(VOID)
             DeleteFileW(Path);
         }
     }
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\bin\\%s", Dir, OTHER_DRIVER_FILE);
+    DeleteFileW(Path);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\bin", Dir);
+    RemoveDirectoryW(Path);
     RemoveDirectoryW(Dir);
 }
 
@@ -929,7 +970,8 @@ START_TEST(DriverPackage)
 
     TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
     TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnbad", MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
+    TestRefusedPackage(L"lntprnunl", UnlistedInf, sizeof(UnlistedInf) - 1, L"TESTUNL.DAT", HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+    TestRefusedPackage(L"lntprnbad",MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", S_OK);
     TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
                        L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL, NULL);

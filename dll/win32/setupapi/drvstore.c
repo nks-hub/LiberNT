@@ -286,6 +286,7 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     STAGE_NAME_LIST Installs;
     STAGE_NAME_LIST Includes;
     PSP_ALTPLATFORM_INFO Platform;
+    WORD Architecture;
     BOOL Required;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
@@ -488,15 +489,31 @@ StagePackageFile(
 }
 
 static BOOL
+FindSourceDisksLine(
+    IN HINF hInf,
+    IN PCWSTR Section,
+    IN WORD Architecture,
+    IN PCWSTR Key,
+    OUT PINFCONTEXT Context)
+{
+    WCHAR Decorated[64];
+
+    swprintf(Decorated, ARRAY_SIZE(Decorated), L"%s.%s", Section, GetArchitectureName(Architecture));
+    return SetupFindFirstLineW(hInf, Decorated, Key, Context) ||
+           SetupFindFirstLineW(hInf, Section, Key, Context);
+}
+
+static BOOL
 StageCopyFile(
     IN HINF hInf,
     IN PCWSTR FileName,
     IN OUT PSTAGE_PACKAGE_CONTEXT Package)
 {
-    WCHAR SubDir[MAX_PATH], DiskPath[MAX_PATH], Tag[MAX_PATH], Relative[MAX_PATH], Cabinet[MAX_PATH];
+    WCHAR SubDir[MAX_PATH], DiskPath[MAX_PATH], Tag[MAX_PATH], Relative[MAX_PATH], Cabinet[MAX_PATH], DiskName[16];
     PCWSTR CabinetPath = NULL;
+    INFCONTEXT Line;
     SIZE_T Length;
-    UINT DiskId;
+    INT DiskId;
     BOOL Added;
 
     if (!MarkNameSeen(&Package->Files, FileName, &Added))
@@ -504,14 +521,25 @@ StageCopyFile(
     if (!Added)
         return TRUE;
 
-    SubDir[0] = UNICODE_NULL;
-    if (!SetupGetSourceFileLocationW(hInf, NULL, FileName, &DiskId, SubDir, ARRAY_SIZE(SubDir), NULL))
-        return TRUE;
+    /* A file without a SourceDisksFiles line is taken from the package directory itself */
+    if (!FindSourceDisksLine(hInf, L"SourceDisksFiles", Package->Architecture, FileName, &Line) ||
+        !SetupGetIntField(&Line, 1, &DiskId))
+    {
+        return StagePackageFile(Package->SourceRoot, Package->StoreRoot, FileName, NULL, Package->Required);
+    }
+    if (!SetupGetStringFieldW(&Line, 2, SubDir, ARRAY_SIZE(SubDir), NULL))
+        SubDir[0] = UNICODE_NULL;
 
     DiskPath[0] = UNICODE_NULL;
-    SetupGetSourceInfoW(hInf, DiskId, SRCINFO_PATH, DiskPath, ARRAY_SIZE(DiskPath), NULL);
     Tag[0] = UNICODE_NULL;
-    SetupGetSourceInfoW(hInf, DiskId, SRCINFO_TAGFILE, Tag, ARRAY_SIZE(Tag), NULL);
+    swprintf(DiskName, ARRAY_SIZE(DiskName), L"%d", DiskId);
+    if (FindSourceDisksLine(hInf, L"SourceDisksNames", Package->Architecture, DiskName, &Line))
+    {
+        if (!SetupGetStringFieldW(&Line, 4, DiskPath, ARRAY_SIZE(DiskPath), NULL))
+            DiskPath[0] = UNICODE_NULL;
+        if (!SetupGetStringFieldW(&Line, 2, Tag, ARRAY_SIZE(Tag), NULL))
+            Tag[0] = UNICODE_NULL;
+    }
 
     if (!CombinePath(Relative, DiskPath, SubDir) ||
         lstrlenW(Relative) + 1 + lstrlenW(FileName) >= MAX_PATH)
@@ -993,6 +1021,7 @@ StageDriverPackage(
         ZeroMemory(&Package, sizeof(Package));
         Package.SourceRoot = SourceRoot;
         Package.StoreRoot = Staging;
+        Package.Architecture = Architecture;
         if (Architecture != GetProcessArchitecture())
         {
             ZeroMemory(&Platform, sizeof(Platform));

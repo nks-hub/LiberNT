@@ -537,6 +537,14 @@ ScmCreateServiceSidToken(
     PTOKEN_STATISTICS pStatistics = NULL;
     PSID pServiceSid = NULL;
     ULONG ulSidLength = 0;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    union
+    {
+        SID Sid;
+        BYTE Buffer[SECURITY_MAX_SID_SIZE];
+    } LogonSid;
+    LUID LogonId;
+    BOOL bHasLogonSid = FALSE;
     BOOLEAN bWasEnabled;
     NTSTATUS Status;
     DWORD i;
@@ -569,17 +577,37 @@ ScmCreateServiceSidToken(
     }
 
     pNewGroups = HeapAlloc(GetProcessHeap(), 0,
-                           FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 1]));
+                           FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 2]));
     if (pNewGroups == NULL)
     {
         Status = STATUS_NO_MEMORY;
         goto done;
     }
-    pNewGroups->GroupCount = pGroups->GroupCount + 1;
     for (i = 0; i < pGroups->GroupCount; i++)
+    {
         pNewGroups->Groups[i] = pGroups->Groups[i];
+        if ((pGroups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID)
+            bHasLogonSid = TRUE;
+    }
     pNewGroups->Groups[i].Sid = pServiceSid;
     pNewGroups->Groups[i].Attributes = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_OWNER;
+    i++;
+
+    /* The token of the SCM, the base of a LocalSystem service, comes from no logon and has no logon SID */
+    if (!bHasLogonSid)
+    {
+        Status = NtAllocateLocallyUniqueId(&LogonId);
+        if (!NT_SUCCESS(Status))
+            goto done;
+        RtlInitializeSid(&LogonSid.Sid, &NtAuthority, SECURITY_LOGON_IDS_RID_COUNT);
+        *RtlSubAuthoritySid(&LogonSid.Sid, 0) = SECURITY_LOGON_IDS_RID;
+        *RtlSubAuthoritySid(&LogonSid.Sid, 1) = (ULONG)LogonId.HighPart;
+        *RtlSubAuthoritySid(&LogonSid.Sid, 2) = LogonId.LowPart;
+        pNewGroups->Groups[i].Sid = &LogonSid.Sid;
+        pNewGroups->Groups[i].Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_LOGON_ID;
+        i++;
+    }
+    pNewGroups->GroupCount = i;
 
     InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
     ObjectAttributes.SecurityQualityOfService = &Qos;

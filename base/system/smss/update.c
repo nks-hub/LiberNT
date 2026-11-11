@@ -10,8 +10,11 @@
 #define NDEBUG
 #include <debug.h>
 
-static VOID
-SmpTerminateUpdate(HANDLE ProcessHandle, NTSTATUS ExitStatus)
+static
+VOID
+SmpTerminateUpdate(
+    _In_ HANDLE ProcessHandle,
+    _In_ NTSTATUS ExitStatus)
 {
     NTSTATUS Status;
 
@@ -110,9 +113,16 @@ SmpRunUpdateCommand(
         RtlFreeHeap(RtlGetProcessHeap(), 0, Expanded.Buffer);
 }
 
-static NTSTATUS NTAPI
-SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
-                 ULONG ValueLength, PVOID Context, PVOID EntryContext)
+static
+NTSTATUS
+NTAPI
+SmpExecuteUpdate(
+    _In_ PWSTR ValueName,
+    _In_ ULONG ValueType,
+    _In_reads_bytes_(ValueLength) PVOID ValueData,
+    _In_ ULONG ValueLength,
+    _In_opt_ PVOID Context,
+    _In_opt_ PVOID EntryContext)
 {
     PWSTR String = ValueData, End;
 

@@ -253,6 +253,27 @@ IsBelowDirectory(PCWSTR Directory, PWSTR Path)
 }
 
 static BOOL
+IsSafeRelativePath(PCWSTR Relative)
+{
+    PCWSTR Cursor = Relative;
+    SIZE_T Length;
+
+    if (wcschr(Relative, L':') || *Relative == L'\\' || *Relative == L'/')
+        return FALSE;
+
+    while (*Cursor)
+    {
+        Length = wcscspn(Cursor, L"\\/");
+        if (Length == 2 && Cursor[0] == L'.' && Cursor[1] == L'.')
+            return FALSE;
+        Cursor += Length;
+        if (*Cursor)
+            Cursor++;
+    }
+    return TRUE;
+}
+
+static BOOL
 LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
 {
     WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"", DiskName[16], Joined[MAX_PATH];
@@ -456,11 +477,29 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
                 if (Includes.Count == Size)
                     continue;
 
-                InPackage = !wcspbrk(Include, L"\\/:") &&
-                            SUCCEEDED(StringCchPrintfW(IncludePath, ARRAYSIZE(IncludePath), L"%s\\%s", PackageDir, Include)) &&
+                if (!IsSafeRelativePath(Include))
+                {
+                    ERR("Included INF %S is not a name in the package directory\n", Include);
+                    hr = HRESULT_FROM_WIN32(ERROR_BAD_PATHNAME);
+                    goto Cleanup;
+                }
+
+                InPackage = SUCCEEDED(StringCchPrintfW(FilePath, ARRAYSIZE(FilePath), L"%s\\%s", PackageDir, Include)) &&
+                            (Size = GetFullPathNameW(FilePath, ARRAYSIZE(IncludePath), IncludePath, NULL)) != 0 &&
+                            Size < ARRAYSIZE(IncludePath) &&
+                            IsBelowDirectory(PackageDir, IncludePath) &&
                             GetFileAttributesW(IncludePath) != INVALID_FILE_ATTRIBUTES;
                 if (!InPackage)
+                {
+                    /* Only an INF without a directory is one of the system */
+                    if (wcspbrk(Include, L"\\/"))
+                    {
+                        ERR("Included INF %S not found\n", Include);
+                        hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+                        goto Cleanup;
+                    }
                     StringCchCopyW(IncludePath, ARRAYSIZE(IncludePath), Include);
+                }
                 if (!SetupOpenAppendInfFileW(IncludePath, hInf, NULL) ||
                     (InPackage && !SetupOpenAppendInfFileW(IncludePath, hPackage, NULL)))
                 {

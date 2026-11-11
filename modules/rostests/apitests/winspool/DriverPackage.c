@@ -650,34 +650,40 @@ BuildBigInf(VOID)
     return (DWORD)strlen(BigInf);
 }
 
-static const char IncludeInf[] =
-    "[Version]\r\n"
-    "Signature=\"$Windows NT$\"\r\n"
-    "Class=Printer\r\n"
-    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
-    "Provider=LiberNT\r\n"
-    "DriverVer=11/06/2026,1.0.0.0\r\n"
-    "\r\n"
-    "[Manufacturer]\r\n"
-    "LiberNT=Models\r\n"
-    "\r\n"
-    "[Models]\r\n"
-    "\"LiberNT Package Include Printer\"=TESTINC,LiberNT_Package_Include\r\n"
-    "\r\n"
-    "[TESTINC]\r\n"
-    "Include=lntprncmn.inf\r\n"
-    "Needs=TESTINC_COMMON\r\n"
-    "\r\n"
-    "[DestinationDirs]\r\n"
-    "DefaultDestDir=66000\r\n"
-    "\r\n"
-    "[SourceDisksNames]\r\n"
-    "1=\"Disk\",,,\r\n"
-    "\r\n"
-    "[SourceDisksFiles]\r\n"
-    "TESTINC.DLL=1\r\n"
-    "TESTINC0.DAT=1\r\n"
-    "TESTINC1.DAT=1\r\n";
+#define INCLUDE_INF(Model, Include) \
+    "[Version]\r\n" \
+    "Signature=\"$Windows NT$\"\r\n" \
+    "Class=Printer\r\n" \
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n" \
+    "Provider=LiberNT\r\n" \
+    "DriverVer=11/06/2026,1.0.0.0\r\n" \
+    "\r\n" \
+    "[Manufacturer]\r\n" \
+    "LiberNT=Models\r\n" \
+    "\r\n" \
+    "[Models]\r\n" \
+    "\"" Model "\"=TESTINC,LiberNT_Package_Include\r\n" \
+    "\r\n" \
+    "[TESTINC]\r\n" \
+    "Include=" Include "\r\n" \
+    "Needs=TESTINC_COMMON\r\n" \
+    "\r\n" \
+    "[DestinationDirs]\r\n" \
+    "DefaultDestDir=66000\r\n" \
+    "\r\n" \
+    "[SourceDisksNames]\r\n" \
+    "1=\"Disk\",,,\r\n" \
+    "\r\n" \
+    "[SourceDisksFiles]\r\n" \
+    "TESTINC.DLL=1\r\n" \
+    "TESTINC0.DAT=1\r\n" \
+    "TESTINC1.DAT=1\r\n"
+
+#define ABSOLUTE_DRIVER_NAME L"LiberNT Package Absolute Include Printer"
+
+static const char IncludeInf[] = INCLUDE_INF("LiberNT Package Include Printer", "lntprncmn.inf");
+static const char SubdirIncludeInf[] = INCLUDE_INF("LiberNT Package Subdir Include Printer", "sub\\lntprncmn.inf");
+static const char AbsoluteIncludeInf[] = INCLUDE_INF("LiberNT Package Absolute Include Printer", "\"%S\"");
 
 #define INCLUDED_INF(Files) \
     "[Version]\r\n" \
@@ -702,7 +708,7 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
                    PCWSTR FilePattern, UINT FileCount, PCWSTR Dependent, PCWSTR IncludeName)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
-    WCHAR SystemInfDir[MAX_PATH];
+    WCHAR SystemInfDir[MAX_PATH], IncludeDir[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
     static WCHAR Value[4096];
     WCHAR DriverDir[MAX_PATH] = L"";
@@ -732,7 +738,13 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
 
     GetWindowsDirectoryW(SystemInfDir, ARRAYSIZE(SystemInfDir));
     StringCchCatW(SystemInfDir, ARRAYSIZE(SystemInfDir), L"\\inf");
-    if (Created && IncludeName)
+    IncludeDir[0] = UNICODE_NULL;
+    if (Created && IncludeName && wcschr(IncludeName, L'\\'))
+    {
+        StringCchPrintfW(IncludeDir, ARRAYSIZE(IncludeDir), L"%s\\%.*s", Dir, (int)(wcschr(IncludeName, L'\\') - IncludeName), IncludeName);
+        Created = CreateDirectoryW(IncludeDir, NULL) && WriteTestFile(Dir, IncludeName, IncludedInf, sizeof(IncludedInf) - 1);
+    }
+    else if (Created && IncludeName)
     {
         Created = WriteTestFile(Dir, IncludeName, IncludedInf, sizeof(IncludedInf) - 1) &&
                   WriteTestFile(SystemInfDir, IncludeName, SystemIncludedInf, sizeof(SystemIncludedInf) - 1);
@@ -800,6 +812,71 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
         StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", SystemInfDir, IncludeName);
         DeleteFileW(Path);
     }
+    if (IncludeDir[0])
+        RemoveDirectoryW(IncludeDir);
+    DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+}
+
+/* The INF outside the package has all that the driver needs, so only the refusal of its path stops the installation */
+static VOID
+TestAbsoluteInclude(VOID)
+{
+    WCHAR Temp[MAX_PATH], Dir[MAX_PATH], InfPath[MAX_PATH], Outside[MAX_PATH], Path[MAX_PATH], StoreInf[MAX_PATH];
+    static const char Text[] = "LiberNT package test file\r\n";
+    static char Inf[sizeof(AbsoluteIncludeInf) + MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    DWORD Size = sizeof(Path);
+    HRESULT hr;
+    HKEY hKey;
+
+    GetTempPathW(ARRAYSIZE(Temp), Temp);
+    StringCchPrintfW(Dir, ARRAYSIZE(Dir), L"%slntprnabs", Temp);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnabs.inf", Dir);
+    StringCchPrintfW(Outside, ARRAYSIZE(Outside), L"%slntprnabsc.inf", Temp);
+    CreateDirectoryW(Dir, NULL);
+
+    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
+    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchPrintfW(StoreInf, ARRAYSIZE(StoreInf), L"%s\\TESTINC.DLL", Dir);
+    if (SUCCEEDED(StringCchPrintfA(Inf, ARRAYSIZE(Inf), AbsoluteIncludeInf, Outside)) &&
+        CopyFileW(Path, StoreInf, FALSE) &&
+        WriteTestFile(Dir, L"lntprnabs.inf", Inf, (DWORD)strlen(Inf)) &&
+        WriteTestFile(Dir, L"TESTINC0.DAT", Text, sizeof(Text) - 1) &&
+        WriteTestFile(Temp, L"lntprnabsc.inf", SystemIncludedInf, sizeof(SystemIncludedInf) - 1))
+    {
+        hr = InstallPrinterDriverFromPackageW(NULL, InfPath, ABSOLUTE_DRIVER_NAME, NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_BAD_PATHNAME), "InstallPrinterDriverFromPackageW returned 0x%lx for an INF that includes %S\n", hr, Outside);
+        hKey = OpenDriverKey(ABSOLUTE_DRIVER_NAME);
+        ok(hKey == NULL, "Driver %S is registered\n", ABSOLUTE_DRIVER_NAME);
+        if (hKey)
+            RegCloseKey(hKey);
+
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(FAILED(hr), "UploadPrinterDriverPackageW returned 0x%lx for an INF that includes %S\n", hr, Outside);
+        if (hr == S_OK)
+            DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+    }
+    else
+    {
+        skip("Failed to create the package lntprnabs.inf (%lu)\n", GetLastError());
+    }
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", TEST_DRIVERS_KEY, ABSOLUTE_DRIVER_NAME);
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, Path);
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Path, Size, &Size))
+    {
+        StringCchCopyW(StoreInf, ARRAYSIZE(StoreInf), Path);
+        StringCchCatW(StoreInf, ARRAYSIZE(StoreInf), L"\\3\\TESTINC.DLL");
+        DeleteFileW(StoreInf);
+        StringCchCatW(Path, ARRAYSIZE(Path), L"\\3\\TESTINC0.DAT");
+        DeleteFileW(Path);
+    }
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTINC.DLL", Dir);
+    DeleteFileW(Path);
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTINC0.DAT", Dir);
+    DeleteFileW(Path);
+    DeleteFileW(Outside);
     DeleteFileW(InfPath);
     RemoveDirectoryW(Dir);
 }
@@ -1942,6 +2019,9 @@ START_TEST(DriverPackage)
                        L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT", NULL);
     TestInstallPackage(L"lntprninc", L"LiberNT Package Include Printer", IncludeInf, sizeof(IncludeInf) - 1,
                        L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"lntprncmn.inf");
+    TestInstallPackage(L"lntprnsub", L"LiberNT Package Subdir Include Printer", SubdirIncludeInf, sizeof(SubdirIncludeInf) - 1,
+                       L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"sub\\lntprncmn.inf");
+    TestAbsoluteInclude();
     TestOtherEnvironment();
     TestMisplacedPackage(L"FileRepository-backup", L"lntprnsib", L"lntprnsib.inf");
     TestMisplacedPackage(L"FileRepository", L"lntprnbadh.inf_" TEST_STORE_ARCHITECTURE L"_0000000000000000", L"lntprnbadh.inf");

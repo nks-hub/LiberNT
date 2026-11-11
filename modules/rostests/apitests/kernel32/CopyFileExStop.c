@@ -187,8 +187,7 @@ test_StopAfterRename(void)
     {
         ok(GetFileAttributesW(Dest) != INVALID_FILE_ATTRIBUTES,
            "The stopped copy deleted the file that replaced its destination (%lu)\n", GetLastError());
-        trace("The renamed destination %s after the stop\n",
-              GetFileAttributesW(Renamed) == INVALID_FILE_ATTRIBUTES ? "is gone" : "is still there");
+        ok(GetFileAttributesW(Renamed) == INVALID_FILE_ATTRIBUTES, "The stopped copy left its renamed destination behind\n");
     }
     DeleteFileW(Renamed);
     DeleteFileW(Dest);

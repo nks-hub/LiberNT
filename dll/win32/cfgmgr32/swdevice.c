@@ -289,13 +289,23 @@ done:
 #define SW_DEVICE_OWNERS L"SYSTEM\\CurrentControlSet\\Control\\SoftwareDevices"
 
 static VOID
-OwnerKeyName(_In_ PCWSTR InstanceId, _Out_writes_(MAX_DEVICE_ID_LEN) PWSTR Name)
+OwnerKeyName(_In_ PCWSTR InstanceId, _Out_writes_(2 * MAX_DEVICE_ID_LEN) PWSTR Name)
 {
-    ULONG i;
+    ULONG i, Length = 0;
 
     for (i = 0; i < MAX_DEVICE_ID_LEN - 1 && InstanceId[i]; i++)
-        Name[i] = (InstanceId[i] == L'\\') ? L'#' : InstanceId[i];
-    Name[i] = UNICODE_NULL;
+    {
+        if (InstanceId[i] == L'\\' || InstanceId[i] == L'#')
+        {
+            Name[Length++] = L'#';
+            Name[Length++] = (InstanceId[i] == L'#') ? L'#' : L'0';
+        }
+        else
+        {
+            Name[Length++] = InstanceId[i];
+        }
+    }
+    Name[Length] = UNICODE_NULL;
 }
 
 static BOOL
@@ -312,7 +322,7 @@ GetProcessStart(_In_ HANDLE Process, _Out_ PULONGLONG Start)
 static HRESULT
 RecordOwner(_In_ PCWSTR InstanceId, _In_ DWORD ProcessId, _In_ SW_DEVICE_LIFETIME Lifetime)
 {
-    WCHAR Name[MAX_DEVICE_ID_LEN];
+    WCHAR Name[2 * MAX_DEVICE_ID_LEN];
     ULONGLONG Start = 0;
     DWORD Value = Lifetime;
     HKEY Owners, Key;
@@ -342,7 +352,7 @@ RecordOwner(_In_ PCWSTR InstanceId, _In_ DWORD ProcessId, _In_ SW_DEVICE_LIFETIM
 static VOID
 ForgetOwner(_In_ PCWSTR InstanceId)
 {
-    WCHAR Name[MAX_DEVICE_ID_LEN];
+    WCHAR Name[2 * MAX_DEVICE_ID_LEN];
     HKEY Owners;
 
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, DELETE | KEY_ENUMERATE_SUB_KEYS, &Owners))
@@ -363,7 +373,7 @@ typedef enum _SW_DEVICE_OWNER
 static SW_DEVICE_OWNER
 GetOwner(_In_ PCWSTR InstanceId)
 {
-    WCHAR Path[ARRAYSIZE(SW_DEVICE_OWNERS) + 1 + MAX_DEVICE_ID_LEN];
+    WCHAR Path[ARRAYSIZE(SW_DEVICE_OWNERS) + 1 + 2 * MAX_DEVICE_ID_LEN];
     DWORD ProcessId, Lifetime, Size;
     ULONGLONG Recorded, Start;
     HANDLE Process;

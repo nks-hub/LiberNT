@@ -9,8 +9,9 @@
 
 #include "IoCancelSync.h"
 
-static KMT_MESSAGE_HANDLER TestMessageHandler;
+static KMT_IRP_HANDLER TestDeviceControl;
 static KEVENT NeverSetEvent;
+static LONG CancelCalls;
 
 NTSTATUS
 TestEntry(
@@ -27,8 +28,7 @@ TestEntry(
 
     *DeviceName = L"IoCancelSync";
     KeInitializeEvent(&NeverSetEvent, NotificationEvent, FALSE);
-    KmtRegisterMessageHandler(0, NULL, TestMessageHandler);
-    return STATUS_SUCCESS;
+    return KmtRegisterIrpHandler(IRP_MJ_DEVICE_CONTROL, NULL, TestDeviceControl);
 }
 
 VOID
@@ -41,41 +41,67 @@ TestUnload(
 }
 
 static
-NTSTATUS
-TestMessageHandler(
+VOID
+NTAPI
+TestCancelRoutine(
     IN PDEVICE_OBJECT DeviceObject,
-    IN ULONG ControlCode,
-    IN PVOID Buffer OPTIONAL,
-    IN SIZE_T InLength,
-    IN OUT PSIZE_T OutLength)
+    IN PIRP Irp)
 {
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    IoReleaseCancelSpinLock(Irp->CancelIrql);
+    InterlockedIncrement(&CancelCalls);
+}
+
+static
+NTSTATUS
+TestDeviceControl(
+    IN PDEVICE_OBJECT DeviceObject,
+    IN PIRP Irp,
+    IN PIO_STACK_LOCATION IoStackLocation)
+{
+    PULONG Buffer = Irp->AssociatedIrp.SystemBuffer;
     LARGE_INTEGER Timeout;
-    NTSTATUS WaitStatus;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     UNREFERENCED_PARAMETER(DeviceObject);
-    UNREFERENCED_PARAMETER(InLength);
 
-    if (!Buffer || *OutLength < sizeof(ULONG))
-        return STATUS_BUFFER_TOO_SMALL;
-
-    /* The request stays in the dispatch routine and has no cancel routine */
-    switch (ControlCode)
+    if (!Buffer || IoStackLocation->Parameters.DeviceIoControl.OutputBufferLength < sizeof(ULONG))
     {
-        case IOCTL_IOCANCELSYNC_WAIT_ALERTABLE:
-            Timeout.QuadPart = -10000LL * IOCANCELSYNC_ALERTABLE_TIMEOUT_MS;
-            WaitStatus = KeWaitForSingleObject(&NeverSetEvent, Executive, UserMode, TRUE, &Timeout);
-            break;
+        Status = STATUS_BUFFER_TOO_SMALL;
+    }
+    else
+    {
+        /* The request stays in the dispatch routine; only the last one has a cancel routine, which leaves it there */
+        switch (IoStackLocation->Parameters.DeviceIoControl.IoControlCode)
+        {
+            case KMT_MAKE_CODE(IOCTL_IOCANCELSYNC_WAIT_ALERTABLE):
+                Timeout.QuadPart = -10000LL * IOCANCELSYNC_ALERTABLE_TIMEOUT_MS;
+                *Buffer = (ULONG)KeWaitForSingleObject(&NeverSetEvent, Executive, UserMode, TRUE, &Timeout);
+                break;
 
-        case IOCTL_IOCANCELSYNC_WAIT_PLAIN:
-            Timeout.QuadPart = -10000LL * IOCANCELSYNC_PLAIN_DELAY_MS;
-            WaitStatus = KeDelayExecutionThread(KernelMode, FALSE, &Timeout);
-            break;
+            case KMT_MAKE_CODE(IOCTL_IOCANCELSYNC_WAIT_PLAIN):
+                Timeout.QuadPart = -10000LL * IOCANCELSYNC_PLAIN_DELAY_MS;
+                *Buffer = (ULONG)KeDelayExecutionThread(KernelMode, FALSE, &Timeout);
+                break;
 
-        default:
-            return STATUS_NOT_SUPPORTED;
+            case KMT_MAKE_CODE(IOCTL_IOCANCELSYNC_WAIT_CANCELLABLE):
+                InterlockedExchange(&CancelCalls, 0);
+                IoSetCancelRoutine(Irp, TestCancelRoutine);
+                Timeout.QuadPart = -10000LL * IOCANCELSYNC_PLAIN_DELAY_MS;
+                KeDelayExecutionThread(KernelMode, FALSE, &Timeout);
+                IoSetCancelRoutine(Irp, NULL);
+                *Buffer = (ULONG)InterlockedCompareExchange(&CancelCalls, 0, 0);
+                break;
+
+            default:
+                Status = STATUS_NOT_SUPPORTED;
+                break;
+        }
     }
 
-    *(PULONG)Buffer = (ULONG)WaitStatus;
-    *OutLength = sizeof(ULONG);
-    return STATUS_SUCCESS;
+    Irp->IoStatus.Status = Status;
+    Irp->IoStatus.Information = NT_SUCCESS(Status) ? sizeof(ULONG) : 0;
+    IoCompleteRequest(Irp, IO_NO_INCREMENT);
+    return Status;
 }

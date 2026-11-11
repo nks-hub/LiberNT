@@ -5,11 +5,8 @@
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
-#ifndef _KMTEST_WSK_EVENTS_H_
-#define _KMTEST_WSK_EVENTS_H_
+#pragma once
 
 #define IOCTL_WSKEVENTS_RUN 1
 
 #define WSKEVENTS_PORT 47377
-
-#endif

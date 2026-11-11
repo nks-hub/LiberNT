@@ -973,10 +973,12 @@ CreateStagingDirectory(
 static BOOL
 IsTreeInStore(
     IN PCWSTR Directory,
-    IN PCWSTR Store)
+    IN PCWSTR Store,
+    IN BOOL Contents)
 {
     WCHAR Path[MAX_PATH], Other[MAX_PATH];
     WIN32_FIND_DATAW FindData;
+    DWORD Attributes;
     HANDLE hFind;
     BOOL Result = TRUE;
 
@@ -995,10 +997,15 @@ IsTreeInStore(
         if (!CombinePath(Path, Directory, FindData.cFileName) || !CombinePath(Other, Store, FindData.cFileName))
             Result = FALSE;
         else if (FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-            Result = IsTreeInStore(Path, Other);
-        else
+            Result = IsTreeInStore(Path, Other, Contents);
+        else if (Contents)
             Result = FilesAreIdentical(Path, Other);
+        else
+            Result = (Attributes = GetFileAttributesW(Other)) != INVALID_FILE_ATTRIBUTES && !(Attributes & FILE_ATTRIBUTE_DIRECTORY);
     } while (Result && FindNextFileW(hFind, &FindData));
+
+    if (Result && GetLastError() != ERROR_NO_MORE_FILES)
+        Result = FALSE;
 
     FindClose(hFind);
     return Result;
@@ -1015,7 +1022,8 @@ ReplaceStoreDirectory(
     if (GetFileAttributesW(Store) == INVALID_FILE_ATTRIBUTES)
         return MoveFileW(Staging, Store);
 
-    if (IsTreeInStore(Staging, Store))
+    /* The contents are compared one way; the other way finds what only the store has */
+    if (IsTreeInStore(Staging, Store, TRUE) && IsTreeInStore(Store, Staging, FALSE))
     {
         DeleteDirectoryTree(Staging);
         return TRUE;
@@ -1107,6 +1115,43 @@ RestoreStoreBackup(
     return TRUE;
 }
 
+/* What a deletion that could not finish left of the packages of an INF */
+static BOOL
+DeleteStoreLeftovers(
+    IN PCWSTR InfFileName)
+{
+    WCHAR Root[MAX_PATH], Name[64], Path[MAX_PATH];
+    WIN32_FIND_DATAW FindData;
+    DWORD Error = ERROR_SUCCESS;
+    ULONGLONG Hash;
+    HANDLE hFind;
+
+    if (!GetRepositoryRoot(Root, ARRAY_SIZE(Root)) || !HashFileContents(InfFileName, &Hash))
+        return TRUE;
+
+    swprintf(Name, ARRAY_SIZE(Name), L"*_%016I64x.delete-*", Hash);
+    if (!CombinePath(Path, Root, Name))
+        return TRUE;
+
+    hFind = FindFirstFileW(Path, &FindData);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return TRUE;
+
+    do
+    {
+        if ((FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) &&
+            CombinePath(Path, Root, FindData.cFileName) &&
+            !DeleteDirectoryTree(Path))
+        {
+            Error = GetLastError();
+        }
+    } while (FindNextFileW(hFind, &FindData));
+
+    FindClose(hFind);
+    SetLastError(Error);
+    return Error == ERROR_SUCCESS;
+}
+
 static BOOL
 StageLockedDriverPackage(
     IN PCWSTR SourceInfFileName,
@@ -1149,6 +1194,7 @@ StageLockedDriverPackage(
     {
         return FALSE;
     }
+    DeleteStoreLeftovers(Source);
 
     Staged = CombinePath(Target, Staging, BaseName);
     Error = ERROR_FILENAME_EXCED_RANGE;
@@ -1492,7 +1538,10 @@ DeleteDirectoryTree(
     HANDLE hFind;
 
     if (!CombinePath(Path, Directory, L"*"))
+    {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
         return FALSE;
+    }
 
     hFind = FindFirstFileW(Path, &FindData);
     if (hFind != INVALID_HANDLE_VALUE)
@@ -1545,7 +1594,8 @@ SETUPAPI_DeleteDriverStorePackage(
 {
     WCHAR StoreInf[MAX_PATH], Aside[MAX_PATH];
     HANDLE Namespace, Lock;
-    BOOL Deleted = TRUE;
+    BOOL Deleted;
+    DWORD Error;
     PWSTR Last;
 
     if (!AcquirePackageLock(&Namespace, &Lock))
@@ -1554,13 +1604,16 @@ SETUPAPI_DeleteDriverStorePackage(
         return FALSE;
     }
 
-    if (SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf) && (Last = wcsrchr(StoreInf, L'\\')) != NULL)
+    Deleted = DeleteStoreLeftovers(PublishedInfFileName);
+    if (Deleted && SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf) && (Last = wcsrchr(StoreInf, L'\\')) != NULL)
     {
         *Last = UNICODE_NULL;
         Deleted = MoveStoreDirectoryAside(StoreInf, Aside) && DeleteDirectoryTree(Aside);
     }
 
+    Error = GetLastError();
     ReleasePackageLock(Namespace, Lock);
+    SetLastError(Error);
     return Deleted;
 }
 
@@ -1618,15 +1671,57 @@ FindSourceStoreInf(
     return FindStoreInf(Source, BaseName, Architecture, StoreInfFileName);
 }
 
+typedef struct _PUBLISHED_INFS
+{
+    STAGE_NAME_LIST Names;
+    PHANDLE Handles;
+    DWORD Held;
+} PUBLISHED_INFS, *PPUBLISHED_INFS;
+
 static BOOL
-DeletePublishedInfs(
-    IN PCWSTR StoreInfFileName)
+ReleasePublishedInfs(
+    IN OUT PPUBLISHED_INFS Infs,
+    IN BOOL Delete)
+{
+    DWORD Error = ERROR_SUCCESS, i;
+    PWSTR Extension;
+
+    for (i = 0; i < Infs->Held; i++)
+    {
+        if (Delete)
+        {
+            if (!DeleteFileW(Infs->Names.Names[i]))
+            {
+                Error = GetLastError();
+            }
+            else if ((Extension = wcsrchr(Infs->Names.Names[i], L'.')) != NULL)
+            {
+                lstrcpyW(Extension, L".pnf");
+                DeleteFileW(Infs->Names.Names[i]);
+            }
+        }
+        CloseHandle(Infs->Handles[i]);
+    }
+
+    MyFree(Infs->Handles);
+    Infs->Handles = NULL;
+    Infs->Held = 0;
+    FreeNameList(&Infs->Names);
+    SetLastError(Error);
+    return Error == ERROR_SUCCESS;
+}
+
+/* A file that is open for deletion cannot be opened by anyone who would prevent deleting it later */
+static BOOL
+HoldPublishedInfs(
+    IN PCWSTR StoreInfFileName,
+    IN OUT PPUBLISHED_INFS Infs)
 {
     WCHAR InfDirectory[MAX_PATH], Pattern[MAX_PATH], Published[MAX_PATH];
     WIN32_FIND_DATAW FindData;
     DWORD Error = ERROR_SUCCESS;
     HANDLE hFind;
-    PWSTR Extension;
+    BOOL Added;
     UINT Length;
 
     Length = GetSystemWindowsDirectoryW(InfDirectory, ARRAY_SIZE(InfDirectory));
@@ -1639,7 +1734,10 @@ DeletePublishedInfs(
 
     hFind = FindFirstFileW(Pattern, &FindData);
     if (hFind == INVALID_HANDLE_VALUE)
-        return TRUE;
+    {
+        Error = GetLastError();
+        return Error == ERROR_FILE_NOT_FOUND || Error == ERROR_PATH_NOT_FOUND || Error == ERROR_NO_MORE_FILES;
+    }
 
     do
     {
@@ -1650,22 +1748,41 @@ DeletePublishedInfs(
             continue;
         }
 
-        if (!DeleteFileW(Published))
-        {
+        if (FindData.dwFileAttributes & FILE_ATTRIBUTE_READONLY)
+            Error = ERROR_ACCESS_DENIED;
+        else if (!MarkNameSeen(&Infs->Names, Published, &Added))
             Error = GetLastError();
-            break;
-        }
-        Extension = wcsrchr(Published, L'.');
-        if (Extension)
-        {
-            lstrcpyW(Extension, L".pnf");
-            DeleteFileW(Published);
-        }
-    } while (FindNextFileW(hFind, &FindData));
+    } while (Error == ERROR_SUCCESS && FindNextFileW(hFind, &FindData));
+
+    if (Error == ERROR_SUCCESS && GetLastError() != ERROR_NO_MORE_FILES)
+        Error = GetLastError();
 
     FindClose(hFind);
-    SetLastError(Error);
-    return Error == ERROR_SUCCESS;
+
+    if (Error == ERROR_SUCCESS && Infs->Names.Count)
+    {
+        Infs->Handles = MyMalloc(Infs->Names.Count * sizeof(HANDLE));
+        if (!Infs->Handles)
+            Error = ERROR_NOT_ENOUGH_MEMORY;
+    }
+    while (Error == ERROR_SUCCESS && Infs->Held < Infs->Names.Count)
+    {
+        Infs->Handles[Infs->Held] = CreateFileW(Infs->Names.Names[Infs->Held], DELETE,
+                                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                NULL, OPEN_EXISTING, 0, NULL);
+        if (Infs->Handles[Infs->Held] == INVALID_HANDLE_VALUE)
+            Error = GetLastError();
+        else
+            Infs->Held++;
+    }
+
+    if (Error != ERROR_SUCCESS)
+    {
+        ReleasePublishedInfs(Infs, FALSE);
+        SetLastError(Error);
+        return FALSE;
+    }
+    return TRUE;
 }
 
 HRESULT
@@ -1750,16 +1867,18 @@ DeleteLockedDriverPackage(
     IN PCWSTR InfPath)
 {
     WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Aside[MAX_PATH];
+    PUBLISHED_INFS Infs;
     PWSTR Last, BaseName;
     DWORD Length, Error;
     BOOL Published, Deleted = TRUE;
 
     Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
-    if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName ||
-        !FindStoreInfOfAnyArchitecture(Source, BaseName, StoreInf))
-    {
+    if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName)
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-    }
+
+    DeleteStoreLeftovers(Source);
+    if (!FindStoreInfOfAnyArchitecture(Source, BaseName, StoreInf))
+        return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
 
     /* Only the package of the native architecture is published */
     Published = FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source);
@@ -1772,10 +1891,11 @@ DeleteLockedDriverPackage(
     if (!MoveStoreDirectoryAside(StoreInf, Aside))
         return HRESULT_FROM_WIN32(GetLastError());
 
+    ZeroMemory(&Infs, sizeof(Infs));
     if (Published)
     {
         SetLastError(ERROR_FILENAME_EXCED_RANGE);
-        Deleted = CombinePath(Source, Aside, Last + 1) && DeletePublishedInfs(Source);
+        Deleted = CombinePath(Source, Aside, Last + 1) && HoldPublishedInfs(Source, &Infs);
     }
     if (!Deleted)
     {
@@ -1786,9 +1906,17 @@ DeleteLockedDriverPackage(
         return HRESULT_FROM_WIN32(Error);
     }
 
+    /* The deleted files cannot be put back, so the INF stays published and the package can be staged from it again */
     if (!DeleteDirectoryTree(Aside))
-        ERR("The deleted driver package %s is left in %s (%lu)\n", debugstr_w(StoreInf), debugstr_w(Aside), GetLastError());
+    {
+        Error = GetLastError();
+        ERR("The driver package %s is left partly deleted in %s (%lu)\n", debugstr_w(StoreInf), debugstr_w(Aside), Error);
+        ReleasePublishedInfs(&Infs, FALSE);
+        return HRESULT_FROM_WIN32(Error);
+    }
 
+    if (!ReleasePublishedInfs(&Infs, TRUE))
+        return HRESULT_FROM_WIN32(GetLastError());
     return S_OK;
 }
 

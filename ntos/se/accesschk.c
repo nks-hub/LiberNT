@@ -1160,9 +1160,26 @@ SepUseSidSet(
 }
 
 static
+ACCESS_MASK
+SepSidSetConstrainedAccess(
+    _In_ PACCESS_TOKEN Token,
+    _In_ ULONG SidSet,
+    _In_ PGENERIC_MAPPING GenericMapping)
+{
+    ASSERT(SepUseSidSet(Token, SidSet));
+    ASSERT(!SeTokenIsWriteRestricted(Token) || SeTokenIsRestricted(Token));
+
+    if (SidSet == SEP_SID_SET_RESTRICTED && SeTokenIsWriteRestricted(Token))
+        return GenericMapping->GenericWrite & ~(READ_CONTROL | SYNCHRONIZE);
+
+    return ~(ACCESS_MASK)0;
+}
+
+static
 VOID
 SepIntersectSecondaryPass(
     _In_ ULONG SidSet,
+    _In_ ACCESS_MASK ConstrainedAccess,
     _In_ PACL Dacl,
     _In_ PACCESS_TOKEN Token,
     _In_ PACCESS_TOKEN PrimaryAccessToken,
@@ -1210,14 +1227,16 @@ SepIntersectSecondaryPass(
                            UseResultList,
                            &Second);
 
-    AccessCheckRights->GrantedAccessRights &= Second.GrantedAccessRights;
-    AccessCheckRights->DeniedAccessRights |= Second.DeniedAccessRights;
+    AccessCheckRights->GrantedAccessRights &= Second.GrantedAccessRights | ~ConstrainedAccess;
+    AccessCheckRights->DeniedAccessRights |= Second.DeniedAccessRights & ConstrainedAccess;
 
     if (Saved)
     {
         for (Index = 0; Index < ObjectTypeListLength; Index++)
         {
+            ObjectTypeList[Index].ObjectAccessRights.GrantedAccessRights |= ~ConstrainedAccess;
             ObjectTypeList[Index].ObjectAccessRights.GrantedAccessRights &= Saved[Index].GrantedAccessRights;
+            ObjectTypeList[Index].ObjectAccessRights.DeniedAccessRights &= ConstrainedAccess;
             ObjectTypeList[Index].ObjectAccessRights.DeniedAccessRights |= Saved[Index].DeniedAccessRights;
         }
         ExFreePoolWithTag(Saved, TAG_SE_ACCESS_PASS);
@@ -1258,6 +1277,7 @@ SepAccessCheckWorker(
     ACCESS_CHECK_RIGHTS AccessCheckRights = {0};
     ACCESS_MASK MandatoryDenied = 0;
     ULONG SidSet;
+    ACCESS_MASK ConstrainedAccess;
     BOOLEAN TokenIsOwner;
 
     PAGED_CODE();
@@ -1438,6 +1458,7 @@ SepAccessCheckWorker(
                 continue;
 
             SepIntersectSecondaryPass(SidSet,
+                                      SepSidSetConstrainedAccess(Token, SidSet, GenericMapping),
                                       Dacl,
                                       Token,
                                       PrimaryAccessToken,
@@ -1648,8 +1669,12 @@ SepAccessCheckWorker(
         if (!SepUseSidSet(Token, SidSet))
             continue;
 
+        ConstrainedAccess = RemainingAccess & SepSidSetConstrainedAccess(Token, SidSet, GenericMapping);
+        if (ConstrainedAccess == 0)
+            continue;
+
         SepAnalyzeAcesFromDacl(AccessCheckRegular,
-                               RemainingAccess,
+                               ConstrainedAccess,
                                Dacl,
                                Token,
                                PrimaryAccessToken,

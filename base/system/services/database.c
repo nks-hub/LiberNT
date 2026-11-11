@@ -646,18 +646,71 @@ ScmSharesServiceImage(
 }
 
 static DWORD
+ScmWriteRestrictServiceToken(
+    _Inout_ PSERVICE_IMAGE pImage)
+{
+    static SID WorldSid = { SID_REVISION, 1, { SECURITY_WORLD_SID_AUTHORITY }, { SECURITY_WORLD_RID } };
+    static SID WriteRestrictedSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_WRITE_RESTRICTED_CODE_RID } };
+    static const SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    PTOKEN_GROUPS pGroups, pRestricted;
+    HANDLE hToken;
+    NTSTATUS Status;
+    PISID pSid;
+    DWORD i;
+
+    pGroups = ScmQueryTokenInfo(pImage->hToken, TokenGroups);
+    if (pGroups == NULL)
+        return ERROR_NOT_ENOUGH_MEMORY;
+    pRestricted = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 2]));
+    if (pRestricted == NULL)
+    {
+        HeapFree(GetProcessHeap(), 0, pGroups);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+
+    for (i = 0; i < pGroups->GroupCount; i++)
+    {
+        pSid = pGroups->Groups[i].Sid;
+        if ((pGroups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID ||
+            (pSid->SubAuthorityCount == SECURITY_SERVICE_ID_RID_COUNT &&
+             pSid->SubAuthority[0] == SECURITY_SERVICE_ID_BASE_RID &&
+             RtlEqualMemory(&pSid->IdentifierAuthority, &NtAuthority, sizeof(NtAuthority))))
+        {
+            pRestricted->Groups[pRestricted->GroupCount++].Sid = pSid;
+        }
+    }
+    pRestricted->Groups[pRestricted->GroupCount++].Sid = &WorldSid;
+    pRestricted->Groups[pRestricted->GroupCount++].Sid = &WriteRestrictedSid;
+
+    Status = NtFilterToken(pImage->hToken, WRITE_RESTRICTED, NULL, NULL, pRestricted, &hToken);
+    HeapFree(GetProcessHeap(), 0, pRestricted);
+    HeapFree(GetProcessHeap(), 0, pGroups);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("Restricting the service token of %S failed (Status 0x%lx)\n", pImage->pszImagePath, Status);
+        return RtlNtStatusToDosError(Status);
+    }
+
+    CloseHandle(pImage->hToken);
+    pImage->hToken = hToken;
+    return ERROR_SUCCESS;
+}
+
+static DWORD
 ScmAddServiceSid(
     _In_ PSERVICE pService,
-    _Inout_ PSERVICE_IMAGE pImage)
+    _Inout_ PSERVICE_IMAGE pImage,
+    _Inout_ PBOOL pbRestricted)
 {
     DWORD dwSidType;
     HANDLE hBaseToken = pImage->hToken, hToken;
     DWORD dwError;
 
     dwSidType = ScmGetServiceDword(pService, L"ServiceSidType", SERVICE_SID_TYPE_NONE);
-    /* NtFilterToken ignores WRITE_RESTRICTED: the restricted SID list of SERVICE_SID_TYPE_RESTRICTED would deny reads too */
     if (dwSidType != SERVICE_SID_TYPE_UNRESTRICTED && dwSidType != SERVICE_SID_TYPE_RESTRICTED)
         return ERROR_SUCCESS;
+    if (dwSidType == SERVICE_SID_TYPE_RESTRICTED)
+        *pbRestricted = TRUE;
 
     if (hBaseToken == NULL &&
         !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_QUERY_SOURCE | TOKEN_DUPLICATE, &hBaseToken))
@@ -688,25 +741,33 @@ ScmApplyServiceSid(
     PLIST_ENTRY ServiceEntry;
     PSERVICE CurrentService;
     DWORD dwError = ERROR_SUCCESS;
+    BOOL bRestricted = FALSE;
 
     if (pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS)
-        return ScmAddServiceSid(pService, pImage);
-
-    /* The token of a started process cannot get a SID later, so it takes the SID of every service that can join the process */
-    ScmLockDatabaseShared();
-    for (ServiceEntry = ServiceListHead.Flink;
-         ServiceEntry != &ServiceListHead && dwError == ERROR_SUCCESS;
-         ServiceEntry = ServiceEntry->Flink)
     {
-        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
-        if ((CurrentService->Status.dwServiceType & SERVICE_WIN32_SHARE_PROCESS) &&
-            !CurrentService->bDeleted &&
-            ScmSharesServiceImage(CurrentService, pImage))
-        {
-            dwError = ScmAddServiceSid(CurrentService, pImage);
-        }
+        dwError = ScmAddServiceSid(pService, pImage, &bRestricted);
     }
-    ScmUnlockDatabase();
+    else
+    {
+        /* The token of a started process cannot get a SID later, so it takes the SID of every service that can join the process */
+        ScmLockDatabaseShared();
+        for (ServiceEntry = ServiceListHead.Flink;
+             ServiceEntry != &ServiceListHead && dwError == ERROR_SUCCESS;
+             ServiceEntry = ServiceEntry->Flink)
+        {
+            CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+            if ((CurrentService->Status.dwServiceType & SERVICE_WIN32_SHARE_PROCESS) &&
+                !CurrentService->bDeleted &&
+                ScmSharesServiceImage(CurrentService, pImage))
+            {
+                dwError = ScmAddServiceSid(CurrentService, pImage, &bRestricted);
+            }
+        }
+        ScmUnlockDatabase();
+    }
+
+    if (dwError == ERROR_SUCCESS && bRestricted)
+        dwError = ScmWriteRestrictServiceToken(pImage);
     return dwError;
 }
 
@@ -730,13 +791,7 @@ ScmLogonService(
     if (ScmIsLocalSystemAccount(pImage->pszAccountName) ||
         ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName)))
     {
-        dwError = ScmApplyServiceSid(pService, pImage);
-        if (dwError != ERROR_SUCCESS && pImage->hToken != NULL)
-        {
-            CloseHandle(pImage->hToken);
-            pImage->hToken = NULL;
-        }
-        return dwError;
+        return ERROR_SUCCESS;
     }
 
     /* Get the user and domain names */
@@ -815,9 +870,6 @@ done:
 
     if (ptr != NULL)
         *ptr = L'\\';
-
-    if (dwError == ERROR_SUCCESS)
-        dwError = ScmApplyServiceSid(pService, pImage);
 
     if (dwError != ERROR_SUCCESS)
     {
@@ -935,13 +987,17 @@ ScmCreateOrReferenceServiceImage(PSERVICE pService)
 
         bSecurityService = ScmIsSecurityService(pServiceImage);
 
-        /* Create the control pipe */
-        dwError = ScmCreateNewControlPipe(pServiceImage,
-                                          bSecurityService);
+        dwError = ScmApplyServiceSid(pService, pServiceImage);
+        if (dwError == ERROR_SUCCESS)
+        {
+            /* Create the control pipe */
+            dwError = ScmCreateNewControlPipe(pServiceImage,
+                                              bSecurityService);
+            if (dwError != ERROR_SUCCESS)
+                DPRINT1("ScmCreateNewControlPipe() failed (Error %lu)\n", dwError);
+        }
         if (dwError != ERROR_SUCCESS)
         {
-            DPRINT1("ScmCreateNewControlPipe() failed (Error %lu)\n", dwError);
-
             /* Unload the user profile */
             if (pServiceImage->hProfile != NULL)
             {
@@ -2668,13 +2724,25 @@ ScmLoadService(PSERVICE Service,
         if (dwError == ERROR_SUCCESS)
         {
             ScmLockDatabaseExclusive();
-            Service->Status.dwCurrentState = SERVICE_START_PENDING;
-            Service->Status.dwControlsAccepted = 0;
-            ScmNotifyServiceStatus(Service);
-            ScmReferenceService(Service);
+            if (Service->bDeleted)
+            {
+                dwError = ERROR_SERVICE_MARKED_FOR_DELETE;
+            }
+            else if (Service->dwStartType == SERVICE_DISABLED)
+            {
+                dwError = ERROR_SERVICE_DISABLED;
+            }
+            else
+            {
+                Service->Status.dwCurrentState = SERVICE_START_PENDING;
+                Service->Status.dwControlsAccepted = 0;
+                ScmNotifyServiceStatus(Service);
+                ScmReferenceService(Service);
+            }
             ScmUnlockDatabase();
 
-            dwError = ScmStartUserModeService(Service, argc, argv);
+            if (dwError == ERROR_SUCCESS)
+                dwError = ScmStartUserModeService(Service, argc, argv);
             if (dwError == ERROR_SUCCESS)
             {
                 ScmLockDatabaseExclusive();
@@ -3117,10 +3185,14 @@ ScmPreshutdownServices(VOID)
         dwResumeCount = CurrentService->dwResumeCount;
         ScmUnlockDatabase();
         if (hControlPipe == NULL)
+        {
+            Waits[i].Deadline = 0;
             continue;
+        }
 
         DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
-        ScmControlService(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN, dwResumeCount);
+        if (ScmControlService(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN, dwResumeCount) != ERROR_SUCCESS)
+            Waits[i].Deadline = 0;
         CloseHandle(hControlPipe);
     }
 

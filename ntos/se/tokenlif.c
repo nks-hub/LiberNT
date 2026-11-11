@@ -1276,7 +1276,20 @@ SepPerformTokenFiltering(
          * it as restricted.
          */
         AccessToken->TokenFlags |= TOKEN_IS_RESTRICTED;
+
+        /* A token whose restricted SIDs already apply to every access never becomes write restricted */
+        if ((PrivilegeFlags & WRITE_RESTRICTED) &&
+            (!SeTokenIsRestricted(Token) || SeTokenIsWriteRestricted(Token)))
+        {
+            AccessToken->TokenFlags |= TOKEN_WRITE_RESTRICTED;
+        }
+        else
+        {
+            AccessToken->TokenFlags &= ~TOKEN_WRITE_RESTRICTED;
+        }
     }
+
+    ASSERT(!SeTokenIsWriteRestricted(AccessToken) || SeTokenIsRestricted(AccessToken));
 
     /* Search for the primary group */
     Status = SepFindPrimaryGroupAndDefaultOwner(AccessToken,

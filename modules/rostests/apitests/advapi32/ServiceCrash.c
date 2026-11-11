@@ -237,14 +237,17 @@ static void make_command(WCHAR *path, SIZE_T path_size, WCHAR *command, SIZE_T c
     DeleteFileW(path);
 }
 
-static void test_run_command(SC_HANDLE scm)
+static void test_run_command(SC_HANDLE scm, DWORD type)
 {
     SC_ACTION action = { SC_ACTION_RUN_COMMAND, 0 };
     WCHAR name[64], path[MAX_PATH], command[2 * MAX_PATH];
     SERVICE_STATUS_PROCESS status;
     char text[64];
-    SC_HANDLE service = create_test_service(scm, L"LntRunTest", NULL, name, sizeof(name));
+    SC_HANDLE service;
 
+    StringCbPrintfW(name, sizeof(name), L"LntRunTest%lx%lu", type, GetTickCount());
+    service = register_service_exW(scm, L"ServiceCrash", name, NULL, SERVICE_ALL_ACCESS, type, SERVICE_DEMAND_START,
+                                   SERVICE_ERROR_IGNORE, NULL, NULL, NULL, NULL, NULL);
     if (!service)
         return;
     make_command(path, sizeof(path), command, sizeof(command), name);
@@ -253,7 +256,7 @@ static void test_run_command(SC_HANDLE scm)
         ok(StartServiceW(service, 0, NULL), "StartServiceW failed: %lu\n", GetLastError());
         ok(wait_stopped(service, &status), "service still in state %lu\n", status.dwCurrentState);
         ok(read_marker(path, 10000, text, sizeof(text)) && !strncmp(text, "fail=1", 6),
-           "recovery program output '%s'\n", text);
+           "type %#lx: recovery program output '%s'\n", type, text);
     }
     DeleteFileW(path);
     delete_test_service(service);
@@ -334,7 +337,8 @@ START_TEST(ServiceCrash)
     }
     test_crash(scm);
     test_restart(scm);
-    test_run_command(scm);
+    test_run_command(scm, SERVICE_WIN32_OWN_PROCESS);
+    test_run_command(scm, SERVICE_WIN32_SHARE_PROCESS);
     test_non_crash_flag(scm);
     CloseServiceHandle(scm);
 }

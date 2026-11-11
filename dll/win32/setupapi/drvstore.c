@@ -1586,7 +1586,9 @@ DriverStoreDeleteDriverPackageW(
         return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
     }
 
-    DeletePublishedInfs(StoreInf);
+    /* Only the package of the native architecture is published */
+    if (FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source))
+        DeletePublishedInfs(StoreInf);
 
     Last = wcsrchr(StoreInf, L'\\');
     if (!Last)

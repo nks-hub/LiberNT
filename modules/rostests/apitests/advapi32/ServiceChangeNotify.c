@@ -633,6 +633,14 @@ test_StopAfterDelete(PCSTR NameA, PCWSTR NameW, void *Param)
     }
 
     CloseServiceHandle(Service);
+    /* The service goes when the service manager finished the stop; a later test must not see that as a change */
+    for (Start = GetTickCount(); GetTickCount() - Start < 5000; Sleep(50))
+    {
+        Service = OpenServiceW(Manager, NameW, SERVICE_QUERY_STATUS);
+        if (!Service)
+            break;
+        CloseServiceHandle(Service);
+    }
     CloseServiceHandle(Manager);
 }
 

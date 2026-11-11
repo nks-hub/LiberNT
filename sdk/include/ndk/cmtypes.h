@@ -256,7 +256,9 @@ typedef enum _PLUGPLAY_CONTROL_CLASS
     MaxPlugPlayControl,
 #ifdef __REACTOS__
     /* Not a class of Windows, which changes the state of an interface through its device API driver */
-    PlugPlayControlSetDeviceInterfaceState = 0x100
+    PlugPlayControlSetDeviceInterfaceState = 0x100,
+    /* Not a class of Windows, whose software device bus reports the capabilities given to SwDeviceCreate */
+    PlugPlayControlSetDeviceCapabilities = 0x101
 #endif
 } PLUGPLAY_CONTROL_CLASS;
 
@@ -605,6 +607,14 @@ typedef struct _PLUGPLAY_CONTROL_INTERFACE_STATE_DATA
     UNICODE_STRING SymbolicLinkName;
     BOOLEAN Enable;
 } PLUGPLAY_CONTROL_INTERFACE_STATE_DATA, *PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA;
+
+typedef struct _PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA
+{
+    UNICODE_STRING DeviceInstance;
+    BOOLEAN Removable;
+    BOOLEAN SilentInstall;
+    BOOLEAN NoDisplayInUI;
+} PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA, *PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA;
 #endif
 
 //

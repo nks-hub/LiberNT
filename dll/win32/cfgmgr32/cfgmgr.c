@@ -2473,6 +2473,15 @@ CfgmgrSetSoftwareDeviceInterfaceState(
 }
 
 
+CONFIGRET
+CfgmgrSetSoftwareDeviceCapabilities(
+    _In_ PCWSTR pszInstanceId,
+    _In_ ULONG ulCapabilities)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_SOFTWARE_CAPABILITIES, ulCapabilities, pszInstanceId);
+}
+
+
 
 
 

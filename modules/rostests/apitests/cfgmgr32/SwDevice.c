@@ -221,6 +221,87 @@ test_DriverRequiredNoIds(CREATED *State)
 }
 
 static void
+test_Capabilities(CREATED *State)
+{
+    static const struct
+    {
+        ULONG Flags;
+        BOOL Ids;
+    } Tests[] =
+    {
+        { SWDeviceCapabilitiesNone, FALSE },
+        { SWDeviceCapabilitiesRemovable, FALSE },
+        { SWDeviceCapabilitiesNoDisplayInUI, FALSE },
+        { SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI, FALSE },
+        { SWDeviceCapabilitiesSilentInstall, TRUE },
+        { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable, TRUE },
+        { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI, TRUE },
+        { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI, TRUE },
+    };
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    ULONG i, Flags, Status, Problem, Capabilities, Policy, Default, Size, Expected;
+    WCHAR Instance[32];
+    HSWDEVICE Device;
+    DEVINST DevInst;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    Info.pszInstanceId = Instance;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    for (i = 0; i < ARRAYSIZE(Tests); i++)
+    {
+        Flags = Tests[i].Flags;
+        _snwprintf(Instance, ARRAYSIZE(Instance), L"Capabilities%lu", Flags);
+        Info.pszzHardwareIds = Tests[i].Ids ? TEST_HARDWARE_ID : L"";
+        Info.CapabilityFlags = Flags;
+        ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+        State->Result = E_PENDING;
+        ResetEvent(State->Event);
+        hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, State, &Device);
+        ok(hr == S_OK, "SwDeviceCreate with the capabilities 0x%lx returned 0x%08lx\n", Flags, hr);
+        if (FAILED(hr))
+            continue;
+        ok(WaitForSingleObject(State->Event, 30000) == WAIT_OBJECT_0, "The creation with the capabilities 0x%lx did not complete\n", Flags);
+        ok(State->Result == S_OK, "The creation with the capabilities 0x%lx reported 0x%08lx\n", Flags, State->Result);
+
+        Cr = CM_Locate_DevNodeW(&DevInst, State->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
+        ok(Cr == CR_SUCCESS, "CM_Locate_DevNodeW of %S returned CR %lu\n", State->InstanceId, Cr);
+        if (Cr == CR_SUCCESS)
+        {
+            Status = Problem = 0;
+            Cr = CM_Get_DevNode_Status(&Status, &Problem, DevInst, 0);
+            Expected = ((Flags & SWDeviceCapabilitiesRemovable) ? DN_REMOVABLE : 0) |
+                       ((Flags & SWDeviceCapabilitiesNoDisplayInUI) ? DN_NO_SHOW_IN_DM : 0);
+            ok(Cr == CR_SUCCESS && (Status & (DN_REMOVABLE | DN_NO_SHOW_IN_DM)) == Expected,
+               "With the capabilities 0x%lx the status is CR %lu, 0x%08lx\n", Flags, Cr, Status);
+
+            Capabilities = 0;
+            Size = sizeof(Capabilities);
+            Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_CAPABILITIES, NULL, &Capabilities, &Size, 0);
+            Expected = ((Flags & SWDeviceCapabilitiesRemovable) ? CM_DEVCAP_REMOVABLE : 0) |
+                       ((Flags & SWDeviceCapabilitiesSilentInstall) ? CM_DEVCAP_SILENTINSTALL : 0);
+            trace("With the capabilities 0x%lx the device reports CR %lu, 0x%lx\n", Flags, Cr, Capabilities);
+            ok(Cr == CR_SUCCESS && (Capabilities & (CM_DEVCAP_REMOVABLE | CM_DEVCAP_SILENTINSTALL)) == Expected,
+               "With the capabilities 0x%lx the device reports CR %lu, 0x%lx\n", Flags, Cr, Capabilities);
+
+            Policy = Default = 0;
+            Size = sizeof(Policy);
+            Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_REMOVAL_POLICY, NULL, &Policy, &Size, 0);
+            Expected = (Flags & SWDeviceCapabilitiesRemovable) ? CM_REMOVAL_POLICY_EXPECT_ORDERLY_REMOVAL
+                                                               : CM_REMOVAL_POLICY_EXPECT_NO_REMOVAL;
+            ok(Cr == CR_SUCCESS && Policy == Expected, "With the capabilities 0x%lx the removal policy is CR %lu, %lu\n", Flags, Cr, Policy);
+            Size = sizeof(Default);
+            Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_REMOVAL_POLICY_HW_DEFAULT, NULL, &Default, &Size, 0);
+            ok(Cr == CR_SUCCESS && Default == Expected,
+               "With the capabilities 0x%lx the default removal policy is CR %lu, %lu\n", Flags, Cr, Default);
+        }
+
+        SwDeviceClose(Device);
+        ok(WaitGone(State->InstanceId), "%S stayed after its handle closed\n", State->InstanceId);
+    }
+}
+
+static void
 test_CloseInCallback(CREATED *State)
 {
     static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\CloseInCallback";
@@ -677,6 +758,7 @@ START_TEST(SwDevice)
     test_SimilarIds(&State);
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
+    test_Capabilities(&State);
     test_CloseInCallback(&State);
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);

@@ -83,6 +83,7 @@ extern CONFIGRET CfgmgrGetDevNodeRegistryPropertyA( DEVINST node, ULONG property
 extern CONFIGRET CfgmgrRemoveSoftwareDevice( PCWSTR instance_id );
 extern CONFIGRET CfgmgrWatchSoftwareDevice( PCWSTR instance_id, DWORD process_id );
 extern CONFIGRET CfgmgrSetSoftwareDeviceInterfaceState( PCWSTR device_interface, BOOL enable );
+extern CONFIGRET CfgmgrSetSoftwareDeviceCapabilities( PCWSTR instance_id, ULONG capabilities );
 
 #endif
 struct device_interface

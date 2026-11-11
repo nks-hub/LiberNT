@@ -1391,6 +1391,13 @@ NTSTATUS
 PnpRootRegisterDevice(
     IN PDEVICE_OBJECT DeviceObject);
 
+NTSTATUS
+PnpRootSetDeviceCapabilities(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ BOOLEAN Removable,
+    _In_ BOOLEAN SilentInstall,
+    _In_ BOOLEAN NoDisplayInUI);
+
 VOID
 PnpRootRetireDevice(
     _In_ PDEVICE_OBJECT DeviceObject);

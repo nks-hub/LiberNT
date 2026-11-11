@@ -612,6 +612,10 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     if (FAILED(hr))
         return hr;
 
+    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities & ~SWDeviceCapabilitiesDriverRequired);
+    if (Cr != CR_SUCCESS)
+        return CrToHresult(Cr);
+
     if (Device->HardwareIds && *Device->HardwareIds)
     {
         Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_HARDWAREID, Device->HardwareIds,
@@ -733,13 +737,6 @@ SwDeviceCreate(
                                           SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
     {
         return E_INVALIDARG;
-    }
-
-    /* TODO: Removable and NoDisplayInUI need the root bus to report the capabilities of the device */
-    if (pCreateInfo->CapabilityFlags & (SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI))
-    {
-        FIXME("Capabilities 0x%lx are not supported\n", pCreateInfo->CapabilityFlags);
-        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
 
     if (CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS ||

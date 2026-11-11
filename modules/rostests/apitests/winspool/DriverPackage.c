@@ -967,9 +967,21 @@ TestSharedInf(PCWSTR InfPath, PCWSTR StoreInf)
 {
     WCHAR Published[MAX_PATH], Other[MAX_PATH];
     ULONG Length = ARRAYSIZE(Other);
+    HANDLE hFile = INVALID_HANDLE_VALUE;
     HRESULT hr;
 
-    ok(FindPublishedInf(InfPath, Published), "%S is not published\n", InfPath);
+    /* A published INF that is open without delete sharing cannot be deleted */
+    if (FindPublishedInf(InfPath, Published))
+        hFile = CreateFileW(Published, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(hFile != INVALID_HANDLE_VALUE, "%S is not published or cannot be opened (%lu)\n", InfPath, GetLastError());
+    if (hFile != INVALID_HANDLE_VALUE)
+    {
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(FAILED(hr), "DeletePrinterDriverPackageW returned 0x%lx while the published INF could not be deleted\n", hr);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was deleted and %S was not\n", StoreInf, Published);
+        CloseHandle(hFile);
+        ok(GetFileAttributesW(Published) != INVALID_FILE_ATTRIBUTES, "%S was deleted\n", Published);
+    }
 
     hr = UploadPrinterDriverPackageW(NULL, InfPath, OTHER_ENVIRONMENT, UPDP_SILENT_UPLOAD, NULL, Other, &Length);
     ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);

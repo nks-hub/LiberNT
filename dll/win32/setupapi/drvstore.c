@@ -1461,27 +1461,28 @@ FindSourceStoreInf(
     return FindStoreInf(Source, BaseName, Architecture, StoreInfFileName);
 }
 
-static VOID
+static BOOL
 DeletePublishedInfs(
     IN PCWSTR StoreInfFileName)
 {
     WCHAR InfDirectory[MAX_PATH], Pattern[MAX_PATH], Published[MAX_PATH];
     WIN32_FIND_DATAW FindData;
+    DWORD Error = ERROR_SUCCESS;
     HANDLE hFind;
     PWSTR Extension;
     UINT Length;
 
     Length = GetSystemWindowsDirectoryW(InfDirectory, ARRAY_SIZE(InfDirectory));
-    if (Length == 0 || Length + 5 >= ARRAY_SIZE(InfDirectory))
-        return;
-    lstrcatW(InfDirectory, L"\\inf");
-
-    if (!CombinePath(Pattern, InfDirectory, L"oem*.inf"))
-        return;
+    if (Length == 0 || Length + 5 >= ARRAY_SIZE(InfDirectory) ||
+        !CombinePath(Pattern, lstrcatW(InfDirectory, L"\\inf"), L"oem*.inf"))
+    {
+        SetLastError(ERROR_FILENAME_EXCED_RANGE);
+        return FALSE;
+    }
 
     hFind = FindFirstFileW(Pattern, &FindData);
     if (hFind == INVALID_HANDLE_VALUE)
-        return;
+        return TRUE;
 
     do
     {
@@ -1492,7 +1493,11 @@ DeletePublishedInfs(
             continue;
         }
 
-        DeleteFileW(Published);
+        if (!DeleteFileW(Published))
+        {
+            Error = GetLastError();
+            break;
+        }
         Extension = wcsrchr(Published, L'.');
         if (Extension)
         {
@@ -1502,6 +1507,8 @@ DeletePublishedInfs(
     } while (FindNextFileW(hFind, &FindData));
 
     FindClose(hFind);
+    SetLastError(Error);
+    return Error == ERROR_SUCCESS;
 }
 
 HRESULT
@@ -1587,8 +1594,8 @@ DriverStoreDeleteDriverPackageW(
     }
 
     /* Only the package of the native architecture is published */
-    if (FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source))
-        DeletePublishedInfs(StoreInf);
+    if (FindStoreInf(StoreInf, NULL, GetNativeArchitecture(), Source) && !DeletePublishedInfs(StoreInf))
+        return HRESULT_FROM_WIN32(GetLastError());
 
     Last = wcsrchr(StoreInf, L'\\');
     if (!Last)

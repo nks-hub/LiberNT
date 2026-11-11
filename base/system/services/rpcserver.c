@@ -60,6 +60,7 @@ typedef struct _SERVICE_HANDLE
     PSERVICE ServiceEntry;
     LIST_ENTRY HandleListEntry;
     BOOL bStatusNotified;
+    BOOL bDeleteNotified;
     LIST_ENTRY NotifyList;
 } SERVICE_HANDLE, *PSERVICE_HANDLE;
 
@@ -339,7 +340,8 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
 static BOOL
 ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
                          PSERVICE lpService,
-                         DWORD dwTrigger)
+                         DWORD dwTrigger,
+                         PBOOL pbSubscription)
 {
     PLIST_ENTRY Entry, Next;
     PNOTIFY_HANDLE pNotify;
@@ -356,6 +358,8 @@ ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
         InitializeListHead(Entry);
         if (!pNotify->bSubscription)
             bCompleted = TRUE;
+        else if (pbSubscription != NULL)
+            *pbSubscription = TRUE;
         ScmFillNotify(pNotify, lpService, dwTrigger, NULL);
         ScmReleaseNotify(pNotify);
     }
@@ -383,7 +387,7 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
 
-        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask);
+        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask, NULL);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -403,7 +407,7 @@ ScmNotifyServiceDeletePending(PSERVICE lpService)
          Entry = Entry->Flink)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
-        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING);
+        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING, &hSvc->bDeleteNotified);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -7107,7 +7111,7 @@ RNotifyServiceStatusChange(
     PSERVICE lpService;
     PNOTIFY_HANDLE pNotify;
     DWORD dwMask, dwSequence;
-    BOOL bReport;
+    BOOL bReport, bDeletePending;
 
     DPRINT("RNotifyServiceStatusChange() called\n");
 
@@ -7187,13 +7191,20 @@ RNotifyServiceStatusChange(
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
     /* A renewed subscription names the last change it saw, so one made since is not lost */
     dwSequence = NotifyParams.pStatusChangeParam2->dwSequence;
+    if (lpService->dwNotifySequence == 0)
+        lpService->dwNotifySequence = 1;
+    /* The first request of a subscription carries no sequence and gets the current state */
     if (pNotify->bSubscription)
-        bReport = dwSequence != 0 && dwSequence != lpService->dwNotifySequence;
+        bReport = dwSequence != lpService->dwNotifySequence;
     else
         bReport = !hSvc->bStatusNotified;
 
-    /* A subscription to a deleted service lasts until it has seen the service stopped */
-    if (lpService->bDeleted && !(pNotify->bSubscription && (bReport || lpService->Status.dwCurrentState != SERVICE_STOPPED)))
+    bDeletePending = pNotify->bSubscription && lpService->bDeleted && !hSvc->bDeleteNotified &&
+                     (pNotify->dwNotifyMask & SERVICE_NOTIFY_DELETE_PENDING);
+
+    /* A subscription to a deleted service lasts until it has seen the delete and the service stopped */
+    if (lpService->bDeleted &&
+        !(pNotify->bSubscription && (bDeletePending || bReport || lpService->Status.dwCurrentState != SERVICE_STOPPED)))
     {
         LeaveCriticalSection(&ScmNotifyLock);
         ScmUnlockDatabase();
@@ -7201,7 +7212,15 @@ RNotifyServiceStatusChange(
         return ERROR_SERVICE_MARKED_FOR_DELETE;
     }
 
-    if (bReport && (pNotify->dwNotifyMask & dwMask))
+    if (bDeletePending)
+    {
+        /* The delete came while no request was waiting; the sequence stays, so a state change missed as well is reported next */
+        ScmFillNotify(pNotify, lpService, SERVICE_NOTIFY_DELETE_PENDING, NULL);
+        if (pNotify->pParamsList != NULL)
+            pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->dwSequence = dwSequence;
+        hSvc->bDeleteNotified = TRUE;
+    }
+    else if (bReport && (pNotify->dwNotifyMask & dwMask))
     {
         ScmFillNotify(pNotify, lpService, dwMask, NULL);
         if (!pNotify->bSubscription)

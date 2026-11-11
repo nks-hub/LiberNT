@@ -22,45 +22,40 @@ SmpTerminateUpdate(HANDLE ProcessHandle, NTSTATUS ExitStatus)
         DPRINT1("SMSS: UpdateExecute cannot terminate its process: %lx\n", Status);
 }
 
-static NTSTATUS NTAPI
-SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
-                 ULONG ValueLength, PVOID Context, PVOID EntryContext)
+static
+VOID
+SmpRunUpdateCommand(
+    _In_ PCWSTR CommandLine,
+    _In_ BOOLEAN Expand)
 {
-    UNICODE_STRING Command, Expanded = {0}, FileName = {0}, Directory = {0}, Arguments = {0};
+    UNICODE_STRING Command = {0}, Expanded = {0}, FileName = {0}, Directory = {0}, Arguments = {0};
     RTL_USER_PROCESS_INFORMATION ProcessInfo;
     PROCESS_BASIC_INFORMATION BasicInfo;
     ULONG Flags = 0, Length = 0;
     NTSTATUS Status;
 
-    UNREFERENCED_PARAMETER(ValueName);
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(EntryContext);
-    if ((ValueType != REG_SZ && ValueType != REG_EXPAND_SZ) || ValueLength < sizeof(WCHAR) ||
-        ValueLength > MAXUSHORT || ValueLength % sizeof(WCHAR) ||
-        ((PWSTR)ValueData)[ValueLength / sizeof(WCHAR) - 1])
-        return STATUS_INVALID_PARAMETER;
-
-    RtlInitUnicodeString(&Command, ValueData);
-    /* RtlQueryRegistryValues does not expand the strings of a REG_MULTI_SZ value */
-    Status = RtlExpandEnvironmentStrings_U(SmpDefaultEnvironment, &Command, &Expanded, &Length);
-    if (Status == STATUS_BUFFER_TOO_SMALL && Length <= MAXUSHORT)
+    Status = RtlInitUnicodeStringEx(&Command, CommandLine);
+    if (NT_SUCCESS(Status) && Expand)
     {
-        Expanded.Buffer = RtlAllocateHeap(RtlGetProcessHeap(), 0, Length);
-        if (Expanded.Buffer)
+        Status = RtlExpandEnvironmentStrings_U(SmpDefaultEnvironment, &Command, &Expanded, &Length);
+        if (Status == STATUS_BUFFER_TOO_SMALL && Length <= MAXUSHORT)
         {
-            Expanded.MaximumLength = (USHORT)Length;
-            Status = RtlExpandEnvironmentStrings_U(SmpDefaultEnvironment, &Command, &Expanded, &Length);
+            Expanded.Buffer = RtlAllocateHeap(RtlGetProcessHeap(), 0, Length);
+            if (Expanded.Buffer)
+            {
+                Expanded.MaximumLength = (USHORT)Length;
+                Status = RtlExpandEnvironmentStrings_U(SmpDefaultEnvironment, &Command, &Expanded, &Length);
+            }
+            else
+            {
+                Status = STATUS_NO_MEMORY;
+            }
         }
-        else
-        {
-            Status = STATUS_NO_MEMORY;
-        }
+        if (NT_SUCCESS(Status))
+            Command = Expanded;
     }
     if (NT_SUCCESS(Status))
-    {
-        Command = Expanded;
         Status = SmpParseCommandLine(&Command, &Flags, &FileName, &Directory, &Arguments);
-    }
     if (NT_SUCCESS(Status))
     {
         if (Flags & (SMP_ASYNC_FLAG | SMP_DEBUG_FLAG | SMP_AUTOCHK_FLAG |
@@ -113,7 +108,36 @@ SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
         DPRINT1("SMSS: UpdateExecute failed for %wZ: %lx\n", &Command, Status);
     if (Expanded.Buffer)
         RtlFreeHeap(RtlGetProcessHeap(), 0, Expanded.Buffer);
+}
+
+static NTSTATUS NTAPI
+SmpExecuteUpdate(PWSTR ValueName, ULONG ValueType, PVOID ValueData,
+                 ULONG ValueLength, PVOID Context, PVOID EntryContext)
+{
+    PWSTR String = ValueData, End;
+
+    UNREFERENCED_PARAMETER(ValueName);
+    UNREFERENCED_PARAMETER(Context);
+    UNREFERENCED_PARAMETER(EntryContext);
+    if ((ValueType != REG_SZ && ValueType != REG_EXPAND_SZ && ValueType != REG_MULTI_SZ) ||
+        ValueLength < sizeof(WCHAR) || ValueLength % sizeof(WCHAR) ||
+        String[ValueLength / sizeof(WCHAR) - 1])
+        return STATUS_INVALID_PARAMETER;
+
     /* The updater journal owns recovery; a missing updater must not stop boot. */
+    if (ValueType != REG_MULTI_SZ)
+    {
+        SmpRunUpdateCommand(String, ValueType == REG_EXPAND_SZ);
+        return STATUS_SUCCESS;
+    }
+
+    /* A multi-string has no expandable type, so its commands are always expanded */
+    End = String + ValueLength / sizeof(WCHAR);
+    while (String < End && *String)
+    {
+        SmpRunUpdateCommand(String, TRUE);
+        String += wcslen(String) + 1;
+    }
     return STATUS_SUCCESS;
 }
 
@@ -152,9 +176,10 @@ SmpInitializeUpdateRegistry(VOID)
     }
 
     Query[0].QueryRoutine = SmpExecuteUpdate;
+    Query[0].Flags = RTL_QUERY_REGISTRY_NOEXPAND;
     Query[0].Name = L"UpdateExecute";
     Status = RtlQueryRegistryValues(RTL_REGISTRY_CONTROL,
-                                    L"Session Manager", Query, NULL, SmpDefaultEnvironment);
+                                    L"Session Manager", Query, NULL, NULL);
     if (!NT_SUCCESS(Status))
         DPRINT1("SMSS: UpdateExecute query failed: %lx\n", Status);
     return STATUS_SUCCESS;

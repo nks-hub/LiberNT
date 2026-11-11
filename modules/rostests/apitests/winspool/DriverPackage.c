@@ -19,6 +19,11 @@
 
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
 
+BOOL WINAPI SetupCopyOEMInfW(PCWSTR SourceInfFileName, PCWSTR OEMSourceMediaLocation, DWORD OEMSourceMediaType, DWORD CopyStyle,
+                             PWSTR DestinationInfFileName, DWORD DestinationInfFileNameSize, PDWORD RequiredSize,
+                             PWSTR *DestinationInfFileNameComponent);
+BOOL WINAPI SetupUninstallOEMInfW(PCWSTR InfFileName, DWORD Flags, PVOID Reserved);
+
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"
 #define NEEDS_DRIVER_NAME L"LiberNT Package Needs Printer"
 #define BROKEN_DRIVER_NAME L"LiberNT Package Broken Printer"
@@ -1279,6 +1284,102 @@ RunWhileLocked(PLOCK_TEST Test, PCSTR What)
     }
 }
 
+typedef struct _OEM_INF_TEST
+{
+    PCWSTR InfPath;
+    WCHAR Published[MAX_PATH];
+    PWSTR Component;
+    BOOL Uninstall;
+    BOOL Result;
+    DWORD Error;
+} OEM_INF_TEST, *POEM_INF_TEST;
+
+static DWORD WINAPI
+OemInfThread(PVOID Parameter)
+{
+    POEM_INF_TEST Test = Parameter;
+
+    if (Test->Uninstall)
+        Test->Result = SetupUninstallOEMInfW(Test->Component, 0, NULL);
+    else
+        Test->Result = SetupCopyOEMInfW(Test->InfPath, NULL, 0, 0, Test->Published, ARRAYSIZE(Test->Published), NULL, &Test->Component);
+    Test->Error = GetLastError();
+    return 0;
+}
+
+/* The Setup API stages and removes a package under the lock that the package functions of the spooler hold */
+static VOID
+TestSetupLock(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnoem.inf", L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], Pattern[MAX_PATH], Path[MAX_PATH];
+    static OEM_INF_TEST Test;
+    HANDLE Namespace, Lock, hThread, hFind;
+    WIN32_FIND_DATAW Find;
+    BOOL Published = FALSE;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnoem");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    GetWindowsDirectoryW(Pattern, ARRAYSIZE(Pattern));
+    StringCchCatW(Pattern, ARRAYSIZE(Pattern), L"\\System32\\DriverStore\\FileRepository\\lntprnoem.inf_*");
+
+    if (WriteTestFile(Dir, Names[0], PlainInf, sizeof(PlainInf) - 1) &&
+        WriteTestFile(Dir, Names[1], Text, sizeof(Text) - 1) &&
+        WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1))
+    {
+        Test.InfPath = InfPath;
+        for (i = 0; i < 2; i++)
+        {
+            PCSTR What = i ? "SetupUninstallOEMInfW" : "SetupCopyOEMInfW";
+
+            if (!AcquirePackageLock(&Namespace, &Lock))
+            {
+                skip("Cannot take the package lock (%lu)\n", GetLastError());
+                break;
+            }
+            Test.Uninstall = i;
+            Test.Result = FALSE;
+            hThread = CreateThread(NULL, 0, OemInfThread, &Test, 0, NULL);
+            ok(hThread != NULL, "CreateThread failed with %lu\n", GetLastError());
+            if (hThread)
+                ok(WaitForSingleObject(hThread, 2000) == WAIT_TIMEOUT, "%s did not wait for the package lock\n", What);
+            ReleasePackageLock(Namespace, Lock);
+            if (hThread)
+            {
+                ok(WaitForSingleObject(hThread, 60000) == WAIT_OBJECT_0, "%s did not finish\n", What);
+                CloseHandle(hThread);
+            }
+            ok(Test.Result, "%s failed with %lu\n", What, Test.Error);
+            if (!Test.Result)
+                break;
+            Published = !i;
+
+            hFind = FindFirstFileW(Pattern, &Find);
+            ok((hFind != INVALID_HANDLE_VALUE) == Published, "After %s the store %s the package\n", What,
+               hFind != INVALID_HANDLE_VALUE ? "holds" : "does not hold");
+            if (hFind != INVALID_HANDLE_VALUE)
+                FindClose(hFind);
+        }
+        if (Published)
+            SetupUninstallOEMInfW(Test.Component, 0, NULL);
+    }
+    else
+    {
+        skip("Failed to create the package lntprnoem.inf (%lu)\n", GetLastError());
+    }
+
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 static BOOL
 DriverFileIs(PCWSTR Name, PCSTR Text)
 {
@@ -1846,6 +1947,7 @@ START_TEST(DriverPackage)
     TestMisplacedPackage(L"FileRepository", L"lntprnbadh.inf_" TEST_STORE_ARCHITECTURE L"_0000000000000000", L"lntprnbadh.inf");
     TestIncompleteUpdate();
     TestJunctionPackage();
+    TestSetupLock();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

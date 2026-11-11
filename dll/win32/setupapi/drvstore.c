@@ -6,6 +6,7 @@
  */
 
 #include "setupapi_private.h"
+#include <drvpkglock.h>
 
 static const WCHAR RepositoryPath[] = L"\\System32\\DriverStore\\FileRepository";
 static const WCHAR VersionSection[] = L"Version";
@@ -1107,7 +1108,7 @@ RestoreStoreBackup(
 }
 
 static BOOL
-StageDriverPackage(
+StageLockedDriverPackage(
     IN PCWSTR SourceInfFileName,
     IN WORD Architecture,
     OUT PWSTR StoreInfFileName OPTIONAL)
@@ -1198,6 +1199,29 @@ StageDriverPackage(
     {
         CombinePath(StoreInfFileName, Store, BaseName);
     }
+    return Staged;
+}
+
+static BOOL
+StageDriverPackage(
+    IN PCWSTR SourceInfFileName,
+    IN WORD Architecture,
+    OUT PWSTR StoreInfFileName OPTIONAL)
+{
+    HANDLE Namespace, Lock;
+    DWORD Error;
+    BOOL Staged;
+
+    if (!AcquirePackageLock(&Namespace, &Lock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+
+    Staged = StageLockedDriverPackage(SourceInfFileName, Architecture, StoreInfFileName);
+    Error = GetLastError();
+    ReleasePackageLock(Namespace, Lock);
+    SetLastError(Error);
     return Staged;
 }
 
@@ -1520,17 +1544,24 @@ SETUPAPI_DeleteDriverStorePackage(
     IN PCWSTR PublishedInfFileName)
 {
     WCHAR StoreInf[MAX_PATH], Aside[MAX_PATH];
+    HANDLE Namespace, Lock;
+    BOOL Deleted = TRUE;
     PWSTR Last;
 
-    if (!SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf))
-        return TRUE;
+    if (!AcquirePackageLock(&Namespace, &Lock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
 
-    Last = wcsrchr(StoreInf, L'\\');
-    if (!Last)
-        return TRUE;
+    if (SETUPAPI_FindDriverStoreInf(PublishedInfFileName, StoreInf) && (Last = wcsrchr(StoreInf, L'\\')) != NULL)
+    {
+        *Last = UNICODE_NULL;
+        Deleted = MoveStoreDirectoryAside(StoreInf, Aside) && DeleteDirectoryTree(Aside);
+    }
 
-    *Last = UNICODE_NULL;
-    return MoveStoreDirectoryAside(StoreInf, Aside) && DeleteDirectoryTree(Aside);
+    ReleasePackageLock(Namespace, Lock);
+    return Deleted;
 }
 
 static HRESULT
@@ -1714,12 +1745,9 @@ DriverStoreAddDriverPackageW(
     return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
 }
 
-HRESULT
-WINAPI
-DriverStoreDeleteDriverPackageW(
-    IN PCWSTR InfPath,
-    IN PVOID Reserved1,
-    IN PVOID Reserved2)
+static HRESULT
+DeleteLockedDriverPackage(
+    IN PCWSTR InfPath)
 {
     WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Aside[MAX_PATH];
     PWSTR Last, BaseName;
@@ -1762,6 +1790,24 @@ DriverStoreDeleteDriverPackageW(
         ERR("The deleted driver package %s is left in %s (%lu)\n", debugstr_w(StoreInf), debugstr_w(Aside), GetLastError());
 
     return S_OK;
+}
+
+HRESULT
+WINAPI
+DriverStoreDeleteDriverPackageW(
+    IN PCWSTR InfPath,
+    IN PVOID Reserved1,
+    IN PVOID Reserved2)
+{
+    HANDLE Namespace, Lock;
+    HRESULT hr;
+
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+
+    hr = DeleteLockedDriverPackage(InfPath);
+    ReleasePackageLock(Namespace, Lock);
+    return hr;
 }
 
 static PWSTR

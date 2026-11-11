@@ -1767,6 +1767,44 @@ PiControlDeviceClassAssociation(
     return Status;
 }
 
+static
+NTSTATUS
+PiControlSetDeviceInterfaceState(
+    _In_ PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA ControlData)
+{
+    UNICODE_STRING SymbolicLinkName;
+    BOOLEAN Enable = FALSE;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(KeGetPreviousMode() == UserMode);
+
+    _SEH2_TRY
+    {
+        Enable = ControlData->Enable;
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        _SEH2_YIELD(return _SEH2_GetExceptionCode());
+    }
+    _SEH2_END;
+
+    Status = IopCaptureUnicodeString(&SymbolicLinkName, &ControlData->SymbolicLinkName);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    if (SymbolicLinkName.Buffer == NULL)
+        return STATUS_INVALID_PARAMETER;
+    ASSERT(SymbolicLinkName.Length <= SymbolicLinkName.MaximumLength);
+
+    if (SymbolicLinkName.Length % sizeof(WCHAR))
+        Status = STATUS_INVALID_PARAMETER;
+    else
+        Status = IoSetDeviceInterfaceState(&SymbolicLinkName, Enable != FALSE);
+
+    ExFreePool(SymbolicLinkName.Buffer);
+    return Status;
+}
+
 
 /* PUBLIC FUNCTIONS **********************************************************/
 
@@ -2103,6 +2141,11 @@ NtPlugPlayControl(IN PLUGPLAY_CONTROL_CLASS PlugPlayControlClass,
             if (!Buffer || BufferLength < sizeof(PLUGPLAY_CONTROL_DEVICE_RELATIONS_DATA))
                 return STATUS_INVALID_PARAMETER;
             return IopGetDeviceRelations((PPLUGPLAY_CONTROL_DEVICE_RELATIONS_DATA)Buffer);
+
+        case PlugPlayControlSetDeviceInterfaceState:
+            if (!Buffer || BufferLength < sizeof(PLUGPLAY_CONTROL_INTERFACE_STATE_DATA))
+                return STATUS_INVALID_PARAMETER;
+            return PiControlSetDeviceInterfaceState((PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA)Buffer);
 
 //        case PlugPlayControlTargetDeviceRelation:
 //        case PlugPlayControlQueryConflictList:

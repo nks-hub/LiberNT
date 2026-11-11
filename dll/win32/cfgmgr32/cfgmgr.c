@@ -2464,6 +2464,15 @@ CfgmgrWatchSoftwareDevice(
 }
 
 
+CONFIGRET
+CfgmgrSetSoftwareDeviceInterfaceState(
+    _In_ PCWSTR pszDeviceInterface,
+    _In_ BOOL bEnable)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_SOFTWARE_INTERFACE, bEnable != FALSE, pszDeviceInterface);
+}
+
+
 
 
 

@@ -1170,7 +1170,7 @@ SepSidSetConstrainedAccess(
     ASSERT(!SeTokenIsWriteRestricted(Token) || SeTokenIsRestricted(Token));
 
     if (SidSet == SEP_SID_SET_RESTRICTED && SeTokenIsWriteRestricted(Token))
-        return GenericMapping->GenericWrite & ~(READ_CONTROL | SYNCHRONIZE);
+        return (GenericMapping->GenericWrite | DELETE | WRITE_DAC | WRITE_OWNER) & ~(READ_CONTROL | SYNCHRONIZE);
 
     return ~(ACCESS_MASK)0;
 }

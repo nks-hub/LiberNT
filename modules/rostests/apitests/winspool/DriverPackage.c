@@ -1328,6 +1328,95 @@ FindPublishedInf(PCWSTR InfPath, PWSTR Published)
     return Found;
 }
 
+static const char NoSectionInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package No Section Printer\"=TESTNOSEC,LiberNT_Package_No_Section\r\n"
+    "\r\n"
+    "[TESTNOSEC]\r\n"
+    "CopyFiles=@TESTNOSEC.DLL,@TESTNOSEC.GPD,TESTNOSEC_MISSING\r\n"
+    "DriverFile=TESTNOSEC.DLL\r\n"
+    "ConfigFile=TESTNOSEC.DLL\r\n"
+    "DataFile=TESTNOSEC.GPD\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTNOSEC.DLL=1\r\n"
+    "TESTNOSEC.GPD=1\r\n";
+
+/* Windows 11 uploads and publishes a signed package whose CopyFiles names a section that no INF of it has */
+static VOID
+TestMissingCopyFilesSection(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnnosec.inf", L"TESTNOSEC.DLL", L"TESTNOSEC.GPD" };
+    static const PCWSTR DriverName = L"LiberNT Package No Section Printer";
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], File[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnnosec");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
+    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\%s", Dir, Names[1]);
+
+    if (CopyFileW(Path, File, FALSE) &&
+        WriteTestFile(Dir, Names[0], NoSectionInf, sizeof(NoSectionInf) - 1) &&
+        WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1))
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(lntprnnosec.inf) returned 0x%lx\n", hr);
+        if (hr == S_OK)
+        {
+            ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S does not exist\n", StoreInf);
+            ok(FindPublishedInf(InfPath, Path), "lntprnnosec.inf is not published\n");
+
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, DriverName, NULL, 0);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+            hKey = OpenDriverKey(DriverName);
+            ok(hKey == NULL, "Driver %S is registered\n", DriverName);
+            if (hKey)
+                RegCloseKey(hKey);
+            ok(!DriverFileExists(Names[1]), "%S was installed\n", Names[1]);
+
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", StoreInf, hr);
+            ok(GetFileAttributesW(StoreInf) == INVALID_FILE_ATTRIBUTES, "%S still exists\n", StoreInf);
+            ok(!FindPublishedInf(InfPath, Path), "%S is still published\n", Path);
+        }
+    }
+    else
+    {
+        skip("Failed to create the package lntprnnosec.inf (%lu)\n", GetLastError());
+    }
+
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 /* The package of the test environment and the one of the other environment are staged from the same INF */
 static VOID
 TestSharedInf(PCWSTR InfPath, PCWSTR StoreInf)
@@ -2483,6 +2572,7 @@ START_TEST(DriverPackage)
     TestJunctionPackage();
     TestSetupLock();
     TestOemInfRace();
+    TestMissingCopyFilesSection();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

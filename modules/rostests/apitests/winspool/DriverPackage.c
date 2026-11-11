@@ -14,10 +14,12 @@
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
+#include <lm.h>
 #include <strsafe.h>
 #include <drvpkglock.h>
 
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
+#define SP_COPY_NOOVERWRITE 0x0000008
 
 BOOL WINAPI SetupCopyOEMInfW(PCWSTR SourceInfFileName, PCWSTR OEMSourceMediaLocation, DWORD OEMSourceMediaType, DWORD CopyStyle,
                              PWSTR DestinationInfFileName, DWORD DestinationInfFileNameSize, PDWORD RequiredSize,
@@ -2256,6 +2258,152 @@ Cleanup:
     RemoveDirectoryW(Dir);
 }
 
+#define STANDARD_USER L"LntPkgTest"
+#define STANDARD_PASSWORD L"Lnt!Pkg#2026q"
+
+typedef struct _OEM_INF_RESULT
+{
+    BOOL Result;
+    DWORD Error;
+    DWORD Required;
+    WCHAR Published[MAX_PATH];
+    PWSTR Component;
+} OEM_INF_RESULT, *POEM_INF_RESULT;
+
+static VOID
+CopyOemInf(PCWSTR InfPath, DWORD Style, POEM_INF_RESULT Out)
+{
+    Out->Required = 0xdeadbeef;
+    Out->Component = NULL;
+    StringCchCopyW(Out->Published, ARRAYSIZE(Out->Published), L"untouched");
+    SetLastError(0xdeadbeef);
+    Out->Result = SetupCopyOEMInfW(InfPath, NULL, 0, Style, Out->Published, ARRAYSIZE(Out->Published), &Out->Required, &Out->Component);
+    Out->Error = GetLastError();
+}
+
+/* Windows 11 22621 tells a standard user about a published INF and refuses with ERROR_ACCESS_DENIED to publish a new one */
+static VOID
+TestStandardUserOemInf(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnstd.inf", L"lntprnstdnew.inf", L"TESTPLAIN.DLL", L"TESTPLAIN.GPD" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Marker[] = "; lntprnstd\r\n", NewMarker[] = "; lntprnstd new\r\n";
+    static char Inf[sizeof(NewMarker) + sizeof(PlainInf)];
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], NewInfPath[MAX_PATH], Path[MAX_PATH], Pattern[MAX_PATH];
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    OEM_INF_RESULT Admin, NoOverwrite, Again, New;
+    USER_INFO_1 UserInfo = { 0 };
+    WIN32_FIND_DATAW Find;
+    HANDLE hToken = NULL, hFind;
+    NET_API_STATUS Status;
+    BOOL Created, Readable = FALSE;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnstd");
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;OICI;GA;;;WD)", SDDL_REVISION_1, &Security.lpSecurityDescriptor, NULL))
+    {
+        CreateDirectoryW(Dir, &Security);
+        LocalFree(Security.lpSecurityDescriptor);
+    }
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
+    StringCchPrintfW(NewInfPath, ARRAYSIZE(NewInfPath), L"%s\\%s", Dir, Names[1]);
+    GetWindowsDirectoryW(Pattern, ARRAYSIZE(Pattern));
+    StringCchCatW(Pattern, ARRAYSIZE(Pattern), L"\\System32\\DriverStore\\FileRepository\\lntprnstdnew.inf_*");
+
+    memcpy(Inf, Marker, sizeof(Marker) - 1);
+    memcpy(Inf + sizeof(Marker) - 1, PlainInf, sizeof(PlainInf) - 1);
+    Created = WriteTestFile(Dir, Names[0], Inf, sizeof(Marker) - 1 + sizeof(PlainInf) - 1);
+    memcpy(Inf, NewMarker, sizeof(NewMarker) - 1);
+    memcpy(Inf + sizeof(NewMarker) - 1, PlainInf, sizeof(PlainInf) - 1);
+    if (!Created ||
+        !WriteTestFile(Dir, Names[1], Inf, sizeof(NewMarker) - 1 + sizeof(PlainInf) - 1) ||
+        !WriteTestFile(Dir, Names[2], Text, sizeof(Text) - 1) ||
+        !WriteTestFile(Dir, Names[3], Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the package lntprnstd.inf (%lu)\n", GetLastError());
+        goto Cleanup;
+    }
+
+    CopyOemInf(InfPath, 0, &Admin);
+    if (!Admin.Result)
+    {
+        skip("lntprnstd.inf cannot be published (%lu)\n", Admin.Error);
+        goto Cleanup;
+    }
+
+    NetUserDel(NULL, STANDARD_USER);
+    UserInfo.usri1_name = STANDARD_USER;
+    UserInfo.usri1_password = STANDARD_PASSWORD;
+    UserInfo.usri1_priv = USER_PRIV_USER;
+    UserInfo.usri1_flags = UF_SCRIPT | UF_DONT_EXPIRE_PASSWD;
+    Status = NetUserAdd(NULL, 1, (PBYTE)&UserInfo, NULL);
+    if (Status != NERR_Success ||
+        !LogonUserW(STANDARD_USER, L".", STANDARD_PASSWORD, LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT, &hToken))
+    {
+        skip("No standard user to call SetupCopyOEMInfW as (NetUserAdd %lu, LogonUserW %lu)\n", Status, GetLastError());
+    }
+    else if (!ImpersonateLoggedOnUser(hToken))
+    {
+        skip("ImpersonateLoggedOnUser failed with %lu\n", GetLastError());
+    }
+    else
+    {
+        Readable = GetFileAttributesW(InfPath) != INVALID_FILE_ATTRIBUTES && GetFileAttributesW(Admin.Published) != INVALID_FILE_ATTRIBUTES;
+        if (Readable)
+        {
+            CopyOemInf(InfPath, SP_COPY_NOOVERWRITE, &NoOverwrite);
+            CopyOemInf(InfPath, 0, &Again);
+            CopyOemInf(NewInfPath, 0, &New);
+        }
+        RevertToSelf();
+
+        if (!Readable)
+        {
+            skip("The standard user cannot read %S or %S\n", InfPath, Admin.Published);
+        }
+        else
+        {
+            ok(!NoOverwrite.Result && NoOverwrite.Error == ERROR_FILE_EXISTS,
+               "SP_COPY_NOOVERWRITE returned %d with error %lu for a published INF\n", NoOverwrite.Result, NoOverwrite.Error);
+            ok(!_wcsicmp(NoOverwrite.Published, Admin.Published) && NoOverwrite.Required == wcslen(Admin.Published) + 1,
+               "SP_COPY_NOOVERWRITE returned %S and size %lu\n", NoOverwrite.Published, NoOverwrite.Required);
+            ok(NoOverwrite.Component && !_wcsicmp(NoOverwrite.Component, Admin.Component),
+               "SP_COPY_NOOVERWRITE returned the component %S\n", NoOverwrite.Component ? NoOverwrite.Component : L"(null)");
+
+            ok(Again.Result && Again.Error == ERROR_SUCCESS, "A published INF returned %d with error %lu\n", Again.Result, Again.Error);
+            ok(!_wcsicmp(Again.Published, Admin.Published) && Again.Required == wcslen(Admin.Published) + 1,
+               "A published INF returned %S and size %lu\n", Again.Published, Again.Required);
+            ok(Again.Component && !_wcsicmp(Again.Component, Admin.Component),
+               "A published INF returned the component %S\n", Again.Component ? Again.Component : L"(null)");
+
+            ok(!New.Result && New.Error == ERROR_ACCESS_DENIED, "A new INF returned %d with error %lu\n", New.Result, New.Error);
+            ok(!wcscmp(New.Published, L"untouched") && New.Required == 0xdeadbeef && !New.Component,
+               "A new INF returned %S and size %lu\n", New.Published, New.Required);
+            ok(!FindPublishedInf(NewInfPath, Path), "The standard user published %S\n", Path);
+            hFind = FindFirstFileW(Pattern, &Find);
+            ok(hFind == INVALID_HANDLE_VALUE, "The standard user staged %S\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+            if (hFind != INVALID_HANDLE_VALUE)
+                FindClose(hFind);
+        }
+    }
+
+    if (hToken)
+        CloseHandle(hToken);
+    NetUserDel(NULL, STANDARD_USER);
+    if (FindPublishedInf(NewInfPath, Path))
+        SetupUninstallOEMInfW(wcsrchr(Path, L'\\') + 1, 0, NULL);
+    ok(SetupUninstallOEMInfW(Admin.Component, 0, NULL), "SetupUninstallOEMInfW failed with %lu\n", GetLastError());
+
+Cleanup:
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 static VOID
 TestStoreReplacement(PCWSTR Dir, PCWSTR InfPath, PCWSTR StoreInf)
 {
@@ -2572,6 +2720,7 @@ START_TEST(DriverPackage)
     TestJunctionPackage();
     TestSetupLock();
     TestOemInfRace();
+    TestStandardUserOemInf();
     TestMissingCopyFilesSection();
 
     if (!CreateTestPackage(Dir, InfPath))

@@ -2873,13 +2873,8 @@ BOOL WINAPI SetupCopyOEMInfW(
             goto cleanup;
         }
 
-        /* Held until the INF, its package in the store and its database entry all exist or none does */
+        /* Held until the INF, its package and its database entry all exist; without it only a published INF is reported */
         Locked = AcquirePackageLock(&hNamespace, &hLock);
-        if (!Locked)
-        {
-            SetLastError(ERROR_ACCESS_DENIED);
-            goto cleanup;
-        }
 
         /* Prepare .inf file specification */
         len = MAX_PATH + 1 + strlenW(InfDirectory) + 13;
@@ -2959,7 +2954,7 @@ BOOL WINAPI SetupCopyOEMInfW(
                 if (DestinationInfFileNameComponent)
                     *DestinationInfFileNameComponent = &DestinationInfFileName[pFileName - pFullFileName];
             }
-            if (HasSourcePath)
+            if (HasSourcePath && Locked)
             {
                 DWORD LastError = GetLastError();
 
@@ -2985,15 +2980,24 @@ BOOL WINAPI SetupCopyOEMInfW(
                     *DestinationInfFileNameComponent = &DestinationInfFileName[pFileName - pFullFileName];
             }
 
-            if (HasSourcePath && !SETUPAPI_StageLockedDriverPackage(SourceInfFileName))
-                goto cleanup;
+            if (Locked)
+            {
+                if (HasSourcePath && !SETUPAPI_StageLockedDriverPackage(SourceInfFileName))
+                    goto cleanup;
 
-            SETUPAPI_RecordPublishedDriverPackage(pFullFileName, SourceInfFileName);
+                SETUPAPI_RecordPublishedDriverPackage(pFullFileName, SourceInfFileName);
+            }
 
             if ((CopyStyle & SP_COPY_DELETESOURCE) && !DeleteFileW(SourceInfFileName))
                 goto cleanup;
 
             ret = TRUE;
+            goto cleanup;
+        }
+
+        if (!Locked)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
             goto cleanup;
         }
 

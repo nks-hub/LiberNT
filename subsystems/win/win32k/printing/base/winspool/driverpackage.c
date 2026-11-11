@@ -639,26 +639,29 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             }
         }
 
-        if (!SetupFindFirstLineW(hInf, Sections.Names[i], L"Needs", &Context))
-            continue;
-        FieldCount = SetupGetFieldCount(&Context);
-        for (Field = 1; Field <= FieldCount; Field++)
+        for (Found = SetupFindFirstLineW(hInf, Sections.Names[i], L"Needs", &Context);
+             Found;
+             Found = SetupFindNextMatchLineW(&Context, L"Needs", &Context))
         {
-            if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL) ||
-                !*NeedsSection)
+            FieldCount = SetupGetFieldCount(&Context);
+            for (Field = 1; Field <= FieldCount; Field++)
             {
-                continue;
-            }
-            if (SetupGetLineCountW(hInf, NeedsSection) < 0)
-            {
-                ERR("Needed section %S not found\n", NeedsSection);
-                hr = HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND);
-                goto Cleanup;
-            }
-            if (!AddPackageFile(&Sections, NeedsSection, NULL))
-            {
-                hr = E_OUTOFMEMORY;
-                goto Cleanup;
+                if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL) ||
+                    !*NeedsSection)
+                {
+                    continue;
+                }
+                if (SetupGetLineCountW(hInf, NeedsSection) < 0)
+                {
+                    ERR("Needed section %S not found\n", NeedsSection);
+                    hr = HRESULT_FROM_WIN32(ERROR_SECTION_NOT_FOUND);
+                    goto Cleanup;
+                }
+                if (!AddPackageFile(&Sections, NeedsSection, NULL))
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto Cleanup;
+                }
             }
         }
     }

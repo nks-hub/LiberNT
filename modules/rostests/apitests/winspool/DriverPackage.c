@@ -462,6 +462,45 @@ static const char PlainInf[] =
     "[SourceDisksFiles]\r\n"
     "TESTPLAIN.DLL=1\r\n";
 
+static const char TwoNeedsInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Two Needs Printer\"=TESTTWO,LiberNT_Package_Two_Needs\r\n"
+    "\r\n"
+    "[TESTTWO]\r\n"
+    "CopyFiles=@TESTTWO.DLL\r\n"
+    "DriverFile=TESTTWO.DLL\r\n"
+    "ConfigFile=TESTTWO.DLL\r\n"
+    "DataFile=TESTTWO0.DAT\r\n"
+    "Needs=TESTTWO_A\r\n"
+    "Needs=TESTTWO_B\r\n"
+    "\r\n"
+    "[TESTTWO_A]\r\n"
+    "CopyFiles=@TESTTWO0.DAT\r\n"
+    "\r\n"
+    "[TESTTWO_B]\r\n"
+    "CopyFiles=@TESTTWO1.DAT\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTTWO.DLL=1\r\n"
+    "TESTTWO0.DAT=1\r\n"
+    "TESTTWO1.DAT=1\r\n";
+
 #define BIG_SECTIONS 20
 #define BIG_SECTION_FILES 7
 
@@ -625,6 +664,11 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
         {
             hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, DriverName, NULL, 0);
             ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", DriverName, hr);
+            for (i = 0; i < FileCount; i++)
+            {
+                StringCchPrintfW(File, ARRAYSIZE(File), FilePattern, i);
+                ok(DriverFileExists(File), "%S of %S was not installed\n", File, DriverName);
+            }
             hKey = OpenDriverKey(DriverName);
             ok(hKey != NULL, "Driver %S is not registered\n", DriverName);
             if (hKey && Dependent)
@@ -975,7 +1019,9 @@ START_TEST(DriverPackage)
     TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", S_OK);
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
                        L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL, NULL);
-    TestInstallPackage(L"lntprnbig", L"LiberNT Package Big Printer", BigInf, BuildBigInf(),
+    TestInstallPackage(L"lntprntwo", L"LiberNT Package Two Needs Printer", TwoNeedsInf, sizeof(TwoNeedsInf) - 1,
+                       L"TESTTWO.DLL", L"TESTTWO%u.DAT", 2, L"TESTTWO1.DAT", NULL);
+    TestInstallPackage(L"lntprnbig",L"LiberNT Package Big Printer", BigInf, BuildBigInf(),
                        L"TESTBIG.DLL", L"TESTBIG%03u.DAT", BIG_SECTIONS * BIG_SECTION_FILES, L"TESTBIG139.DAT", NULL);
     TestInstallPackage(L"lntprninc", L"LiberNT Package Include Printer", IncludeInf, sizeof(IncludeInf) - 1,
                        L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"lntprncmn.inf");

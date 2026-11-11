@@ -391,7 +391,7 @@ GetOwner(_In_ PCWSTR InstanceId)
     if (Error)
         return SwOwnerUnknown;
     if (!ProcessId)
-        return SwOwnerReleased;
+        return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
 
     /* A reused process ID has another start time */
     Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, ProcessId);
@@ -510,9 +510,16 @@ ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
     if (Remove)
     {
         Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId);
-        if (Cr != CR_SUCCESS)
+        if (Cr == CR_SUCCESS)
+        {
+            ForgetOwner(Device->InstanceId);
+        }
+        else
+        {
+            /* No owner and the lifetime of a handle: the next creation removes the node that is left */
             WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
-        ForgetOwner(Device->InstanceId);
+            RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeHandle);
+        }
     }
     else
     {

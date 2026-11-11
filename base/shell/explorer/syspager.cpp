@@ -1120,7 +1120,8 @@ HRESULT CNotifyToolbar::GetIconRect(IN CONST NOTIFYICONIDENTIFIER *Identifier, O
             hwndChevron = ::FindWindowExW(::GetParent(GetParent()), NULL, L"TrayChevronButton", NULL);
             if (!hwndChevron || !::IsWindowVisible(hwndChevron) || !::GetWindowRect(hwndChevron, IconRect))
                 return E_FAIL;
-            return S_OK;
+            /* As on Windows 11, the button of the closed overflow area comes with S_FALSE */
+            return S_FALSE;
         }
 
         if (!GetItemRect(Index, IconRect))

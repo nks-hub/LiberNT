@@ -264,8 +264,7 @@ test_NoDeleteAccess(LPCWSTR Dir, LPCWSTR FileSystem)
         Ret = Copy(0, STOP_AT, PROGRESS_STOP);
         Error = GetLastError();
         ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Stopped copy over a destination without DELETE access returned %d (%lu)\n", Ret, Error);
-        trace("Stopped copy over a destination without DELETE access returned %d (%lu), the destination %s\n",
-              Ret, Error, GetFileAttributesW(Dest) == INVALID_FILE_ATTRIBUTES ? "is gone" : "still exists");
+        ok(GetFileAttributesW(Dest) != INVALID_FILE_ATTRIBUTES, "The destination without DELETE access is gone after the stopped copy\n");
     }
 
     RemoveNoDeleteDir(SubDir);

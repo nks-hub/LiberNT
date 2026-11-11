@@ -981,7 +981,10 @@ static BOOL apd_commit( apd_data_t *apd )
         {
             apd->error = GetLastError();
             if (existed)
-                MoveFileW( old, file->dst );
+            {
+                DeleteFileW( tmp );
+                file->state = APD_REPLACED;
+            }
             return FALSE;
         }
         file->state = existed ? APD_REPLACED : APD_CREATED;
@@ -989,9 +992,10 @@ static BOOL apd_commit( apd_data_t *apd )
     return TRUE;
 }
 
-static void apd_release( apd_data_t *apd, BOOL rollback )
+static DWORD apd_release( apd_data_t *apd, BOOL rollback )
 {
     WCHAR name[APD_NAME_SIZE];
+    DWORD error = ERROR_SUCCESS;
     apd_file_t *file;
     DWORD i;
 
@@ -1005,13 +1009,17 @@ static void apd_release( apd_data_t *apd, BOOL rollback )
         }
         else if (file->state == APD_CREATED && rollback)
         {
-            DeleteFileW( file->dst );
+            if (!DeleteFileW( file->dst ) && error == ERROR_SUCCESS)
+                error = GetLastError();
         }
         else if (file->state == APD_REPLACED)
         {
             apd_side_name( file->dst, L".apd-old", name );
             if (rollback)
-                MoveFileExW( name, file->dst, MOVEFILE_REPLACE_EXISTING );
+            {
+                if (!MoveFileExW( name, file->dst, MOVEFILE_REPLACE_EXISTING ) && error == ERROR_SUCCESS)
+                    error = GetLastError();
+            }
             else if (!DeleteFileW( name ))
                 MoveFileExW( name, NULL, MOVEFILE_DELAY_UNTIL_REBOOT );
         }
@@ -1026,6 +1034,7 @@ static void apd_release( apd_data_t *apd, BOOL rollback )
         HeapFree( GetProcessHeap(), 0, apd->saved[i] );
         apd->saved[i] = NULL;
     }
+    return error;
 }
 
 static BOOL apd_save_values( apd_data_t *apd, HKEY hkey )
@@ -1057,17 +1066,49 @@ static BOOL apd_save_values( apd_data_t *apd, HKEY hkey )
     return TRUE;
 }
 
-static void apd_restore_values( apd_data_t *apd, HKEY hkey )
+static LONG apd_restore_values( apd_data_t *apd, HKEY hkey )
 {
+    LONG lres, error = ERROR_SUCCESS;
     DWORD i;
 
     for (i = 0; i < APD_VALUE_COUNT; i++)
     {
         if (apd->saved[i])
-            RegSetValueExW( hkey, apd_value_names[i], 0, apd->saved_type[i], apd->saved[i], apd->saved_size[i] );
+        {
+            lres = RegSetValueExW( hkey, apd_value_names[i], 0, apd->saved_type[i], apd->saved[i], apd->saved_size[i] );
+        }
         else
-            RegDeleteValueW( hkey, apd_value_names[i] );
+        {
+            lres = RegDeleteValueW( hkey, apd_value_names[i] );
+            if (lres == ERROR_FILE_NOT_FOUND)
+                lres = ERROR_SUCCESS;
+        }
+        if (lres != ERROR_SUCCESS && error == ERROR_SUCCESS)
+            error = lres;
     }
+    return error;
+}
+
+static DWORD apd_rollback( apd_data_t *apd, HKEY hroot, HKEY hdrv, const WCHAR *name, BOOL created, BOOL written )
+{
+    DWORD error = ERROR_SUCCESS, res;
+
+    if (written && !created)
+        error = apd_restore_values( apd, hdrv );
+    RegCloseKey( hdrv );
+    if (created)
+        error = RegDeleteKeyW( hroot, name );
+    res = apd_release( apd, TRUE );
+    if (error == ERROR_SUCCESS)
+        error = res;
+    RegCloseKey( hroot );
+
+    if (error != ERROR_SUCCESS)
+    {
+        ERR("driver %s is left in an inconsistent state: %lu\n", debugstr_w(name), error);
+        apd->error = error;
+    }
+    return apd->error;
 }
 
 static void apd_setvalue( apd_data_t *apd, HKEY hkey, const WCHAR *name, DWORD type, const BYTE *data, DWORD size )
@@ -1286,12 +1327,7 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
         if (!apd_copy_all(&di, &apd) || !apd_commit(&apd) || !apd_save_values(&apd, hdrv))
         {
             ERR("can't install the files of driver %s: %lu\n", debugstr_w(di.pName), apd.error);
-            apd_release(&apd, TRUE);
-            RegCloseKey(hdrv);
-            if (disposition == REG_CREATED_NEW_KEY)
-                RegDeleteKeyW(hroot, di.pName);
-            RegCloseKey(hroot);
-            SetLastError(apd.error);
+            SetLastError(apd_rollback(&apd, hroot, hdrv, di.pName, disposition == REG_CREATED_NEW_KEY, FALSE));
             return FALSE;
         }
         apd.copied = TRUE;
@@ -1371,14 +1407,7 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
     if (apd.strict && apd.error != ERROR_SUCCESS)
     {
         ERR("can't register driver %s: %lu\n", debugstr_w(di.pName), apd.error);
-        if (disposition != REG_CREATED_NEW_KEY)
-            apd_restore_values(&apd, hdrv);
-        RegCloseKey(hdrv);
-        if (disposition == REG_CREATED_NEW_KEY)
-            RegDeleteKeyW(hroot, di.pName);
-        apd_release(&apd, TRUE);
-        RegCloseKey(hroot);
-        SetLastError(apd.error);
+        SetLastError(apd_rollback(&apd, hroot, hdrv, di.pName, disposition == REG_CREATED_NEW_KEY, TRUE));
         return FALSE;
     }
     RegCloseKey(hdrv);

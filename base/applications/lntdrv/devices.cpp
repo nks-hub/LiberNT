@@ -118,7 +118,8 @@ bool IsSpecificId(const std::wstring &id)
     if (upper.empty() || upper[0] == L'*')
         return false;
     if (StartsWith(upper, L"ACPI\\"))
-        return !StartsWith(upper, L"ACPI\\PNP");
+        return !StartsWith(upper, L"ACPI\\PNP") && !StartsWith(upper, L"ACPI\\VEN_PNP&") &&
+               !StartsWith(upper, L"ACPI\\ACPI") && !StartsWith(upper, L"ACPI\\VEN_ACPI&");
     if (upper.find(L"DEV_") != std::wstring::npos || upper.find(L"PID_") != std::wstring::npos)
         return true;
     return (upper.find(L"VEN_") != std::wstring::npos || upper.find(L"VID_") != std::wstring::npos) &&
@@ -368,6 +369,45 @@ bool BetterDriver(const PackageDriver &candidate, const PackageDriver &current)
     if (order)
         return order > 0;
     return candidate.Version > current.Version;
+}
+
+bool HasId(const DeviceInfo &device, const std::wstring &id)
+{
+    const std::vector<std::wstring> *lists[] = { &device.HardwareIds, &device.CompatibleIds };
+
+    for (const std::vector<std::wstring> *list : lists)
+    {
+        for (const std::wstring &own : *list)
+        {
+            if (!id.empty() && _wcsicmp(own.c_str(), id.c_str()) == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+DWORD RemoveDevice(const std::wstring &instanceId, BOOL &reboot)
+{
+    HDEVINFO set = SetupDiCreateDeviceInfoList(NULL, NULL);
+    SP_DEVINFO_DATA data = { sizeof(data) };
+    SP_REMOVEDEVICE_PARAMS remove = { { sizeof(SP_CLASSINSTALL_HEADER), DIF_REMOVE }, DI_REMOVEDEVICE_GLOBAL, 0 };
+    SP_DEVINSTALL_PARAMS_W params = { sizeof(params) };
+    DWORD error = ERROR_SUCCESS;
+
+    if (set == INVALID_HANDLE_VALUE)
+        return GetLastError();
+    if (!SetupDiOpenDeviceInfoW(set, instanceId.c_str(), NULL, 0, &data) ||
+        !SetupDiSetClassInstallParamsW(set, &data, &remove.ClassInstallHeader, sizeof(remove)) ||
+        !SetupDiCallClassInstaller(DIF_REMOVE, set, &data))
+    {
+        error = GetLastError();
+    }
+    else if (SetupDiGetDeviceInstallParamsW(set, &data, &params) && (params.Flags & (DI_NEEDREBOOT | DI_NEEDRESTART)))
+    {
+        reboot = TRUE;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return error;
 }
 
 void Rescan()
@@ -908,33 +948,20 @@ DWORD InstallPackageDriver(HWND owner, const PackageDriver &driver, bool force, 
 
 DWORD RemoveCatalogDriver(const HistoryEntry &entry, BOOL &reboot)
 {
-    DeviceInfo device;
-    DWORD error = ERROR_SUCCESS;
+    std::vector<DeviceInfo> devices;
+    DWORD error;
 
     reboot = FALSE;
     if (entry.Inf.empty())
         return ERROR_LNTDRV_NOT_IN_USE;
-    if (FindDevice(entry.InstanceId, device) && _wcsicmp(device.Inf.c_str(), entry.Inf.c_str()) == 0)
+    error = EnumerateDevices(devices);
+    if (error)
+        return error;
+    for (const DeviceInfo &device : devices)
     {
-        HDEVINFO set = SetupDiCreateDeviceInfoList(NULL, NULL);
-        SP_DEVINFO_DATA data = { sizeof(data) };
-        SP_REMOVEDEVICE_PARAMS remove = { { sizeof(SP_CLASSINSTALL_HEADER), DIF_REMOVE }, DI_REMOVEDEVICE_GLOBAL, 0 };
-        SP_DEVINSTALL_PARAMS_W params = { sizeof(params) };
-
-        if (set == INVALID_HANDLE_VALUE)
-            return GetLastError();
-        if (!SetupDiOpenDeviceInfoW(set, entry.InstanceId.c_str(), NULL, 0, &data) ||
-            !SetupDiSetClassInstallParamsW(set, &data, &remove.ClassInstallHeader, sizeof(remove)) ||
-            !SetupDiCallClassInstaller(DIF_REMOVE, set, &data))
-        {
-            error = GetLastError();
-        }
-        else if (SetupDiGetDeviceInstallParamsW(set, &data, &params) &&
-                 (params.Flags & (DI_NEEDREBOOT | DI_NEEDRESTART)))
-        {
-            reboot = TRUE;
-        }
-        SetupDiDestroyDeviceInfoList(set);
+        if (_wcsicmp(device.Inf.c_str(), entry.Inf.c_str()) != 0)
+            continue;
+        error = RemoveDevice(device.InstanceId, reboot);
         if (error)
             return error;
     }
@@ -1053,9 +1080,8 @@ const HistoryEntry *CatalogEntryInUse(const DeviceInfo &device, const std::vecto
         return NULL;
     for (const HistoryEntry &entry : history)
     {
-        if (!entry.Result && entry.Action == L"install" &&
-            _wcsicmp(entry.InstanceId.c_str(), device.InstanceId.c_str()) == 0 &&
-            _wcsicmp(entry.Inf.c_str(), device.Inf.c_str()) == 0)
+        if (!entry.Result && entry.Action == L"install" && _wcsicmp(entry.Inf.c_str(), device.Inf.c_str()) == 0 &&
+            (_wcsicmp(entry.InstanceId.c_str(), device.InstanceId.c_str()) == 0 || HasId(device, entry.HardwareId)))
         {
             return &entry;
         }

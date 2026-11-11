@@ -2011,6 +2011,132 @@ TestHeldPackageDelete(PCWSTR InfPath, PCWSTR StoreInf)
     CloseHandle(hHeld);
 }
 
+static BOOL
+SetTestDacl(PCWSTR Path, PCWSTR Sddl)
+{
+    PSECURITY_DESCRIPTOR Descriptor;
+    BOOL Ret;
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(Sddl, SDDL_REVISION_1, &Descriptor, NULL))
+        return FALSE;
+    Ret = SetFileSecurityW(Path, DACL_SECURITY_INFORMATION, Descriptor);
+    LocalFree(Descriptor);
+    return Ret;
+}
+
+/* A file that grants only reading in a directory that grants only reading is deleted by nobody, and the directory above is still renamed */
+static BOOL
+BlockPackageDelete(PCWSTR PackageDir)
+{
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], File[MAX_PATH];
+    HANDLE hFile;
+
+    StringCchPrintfW(Dir, ARRAYSIZE(Dir), L"%s\\TESTACL", PackageDir);
+    StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\TESTACL.DAT", Dir);
+    if (!CreateDirectoryW(Dir, NULL) ||
+        !WriteTestFile(Dir, L"TESTACL.DAT", Text, sizeof(Text) - 1) ||
+        !SetTestDacl(File, L"D:P(A;;0x1200a9;;;WD)") ||
+        !SetTestDacl(Dir, L"D:P(A;;0x1200a9;;;WD)"))
+    {
+        return FALSE;
+    }
+
+    hFile = CreateFileW(File, DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return TRUE;
+    CloseHandle(hFile);
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+static VOID
+UnblockPackageDelete(PCWSTR PackageDir)
+{
+    WCHAR Dir[MAX_PATH], File[MAX_PATH];
+
+    StringCchPrintfW(Dir, ARRAYSIZE(Dir), L"%s\\TESTACL", PackageDir);
+    StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\TESTACL.DAT", Dir);
+    SetTestDacl(Dir, L"D:(A;;FA;;;WD)");
+    SetTestDacl(File, L"D:(A;;FA;;;WD)");
+    DeleteFileW(File);
+    RemoveDirectoryW(Dir);
+}
+
+static UINT
+UnblockLeftovers(PCWSTR StoreDir)
+{
+    WCHAR Pattern[MAX_PATH], Path[MAX_PATH];
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+    UINT Count = 0;
+
+    StringCchPrintfW(Pattern, ARRAYSIZE(Pattern), L"%s.delete-*", StoreDir);
+    hFind = FindFirstFileW(Pattern, &Find);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return 0;
+    do
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%.*s\\%s", (int)(wcsrchr(StoreDir, L'\\') - StoreDir), StoreDir, Find.cFileName);
+        UnblockPackageDelete(Path);
+        Count++;
+    } while (FindNextFileW(hFind, &Find));
+    FindClose(hFind);
+    return Count;
+}
+
+static VOID
+TestFailedPackageDelete(PCWSTR InfPath, PCWSTR StoreInf)
+{
+    WCHAR StoreDir[MAX_PATH], Published[MAX_PATH], Again[MAX_PATH];
+    ULONG Length;
+    HRESULT hr;
+    PWSTR Last;
+    BOOL Ret;
+    UINT i;
+
+    StringCchCopyW(StoreDir, ARRAYSIZE(StoreDir), StoreInf);
+    Last = wcsrchr(StoreDir, L'\\');
+    if (!Last || !FindPublishedInf(InfPath, Published))
+    {
+        skip("%S is not a published package\n", StoreInf);
+        return;
+    }
+    *Last = UNICODE_NULL;
+
+    for (i = 0; i < 2; i++)
+    {
+        PCSTR What = i ? "DeletePrinterDriverPackageW" : "SetupUninstallOEMInfW";
+
+        if (!BlockPackageDelete(StoreDir))
+        {
+            skip("A file in %S cannot be protected from deletion (%lu)\n", StoreDir, GetLastError());
+            UnblockPackageDelete(StoreDir);
+            return;
+        }
+
+        if (i)
+        {
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            Ret = SUCCEEDED(hr);
+        }
+        else
+        {
+            Ret = SetupUninstallOEMInfW(wcsrchr(Published, L'\\') + 1, 0, NULL);
+        }
+        ok(!Ret, "%s succeeded for a package with a file that cannot be deleted\n", What);
+        ok(GetFileAttributesW(Published) != INVALID_FILE_ATTRIBUTES, "%s deleted %S and left a part of its package\n", What, Published);
+        ok(UnblockLeftovers(StoreDir) == 1, "%s left no directory for the part of the package it could not delete\n", What);
+
+        Length = ARRAYSIZE(Again);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "UploadPrinterDriverPackageW returned 0x%lx after %s failed\n", hr, What);
+        ok(GetFileAttributesW(StoreInf) != INVALID_FILE_ATTRIBUTES, "%S was not staged again after %s failed\n", StoreInf, What);
+        ok(UnblockLeftovers(StoreDir) == 0, "The upload after %s failed left the partly deleted package behind\n", What);
+    }
+}
+
 START_TEST(DriverPackage)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
@@ -2379,6 +2505,7 @@ START_TEST(DriverPackage)
     }
 
     TestHeldPackageDelete(InfPath, StoreInf);
+    TestFailedPackageDelete(InfPath, StoreInf);
 
     hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
     ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);

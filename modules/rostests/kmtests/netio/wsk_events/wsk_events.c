@@ -20,6 +20,7 @@
 static KMT_MESSAGE_HANDLER TestMessageHandler;
 
 static volatile LONG ReceiveCount;
+static KSPIN_LOCK ReceiveLock;
 static volatile BOOLEAN Refuse;
 static CHAR Seen[MAX_SEEN][9];
 static ULONG LastControlLength;
@@ -34,6 +35,7 @@ ReceiveFromEvent(
 {
     PCHAR Data;
     LONG Index;
+    KIRQL OldIrql;
 
     UNREFERENCED_PARAMETER(SocketContext);
     UNREFERENCED_PARAMETER(Flags);
@@ -41,11 +43,14 @@ ReceiveFromEvent(
     if (DataIndication == NULL)
         return STATUS_SUCCESS;
 
-    Index = InterlockedIncrement(&ReceiveCount) - 1;
     Data = MmGetSystemAddressForMdlSafe(DataIndication->Buffer.Mdl, NormalPagePriority);
+    KeAcquireSpinLock(&ReceiveLock, &OldIrql);
+    Index = ReceiveCount;
     if (Index < MAX_SEEN && Data != NULL && DataIndication->Buffer.Length >= 8)
         RtlCopyMemory(Seen[Index], Data + DataIndication->Buffer.Offset, 8);
     LastControlLength = DataIndication->ControlInfoLength;
+    InterlockedIncrement(&ReceiveCount);
+    KeReleaseSpinLock(&ReceiveLock, OldIrql);
     return Refuse ? STATUS_DATA_NOT_ACCEPTED : STATUS_SUCCESS;
 }
 
@@ -764,6 +769,7 @@ TestEntry(
     UNREFERENCED_PARAMETER(Flags);
 
     *DeviceName = L"WskEvents";
+    KeInitializeSpinLock(&ReceiveLock);
     KmtRegisterMessageHandler(0, NULL, TestMessageHandler);
     return STATUS_SUCCESS;
 }

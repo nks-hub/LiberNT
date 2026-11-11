@@ -10,6 +10,16 @@
 #include <strsafe.h>
 #include <drvpkglock.h>
 
+#define APD_VALUE_COUNT 10
+#define APD_NAME_SIZE (MAX_PATH + MAX_PATH + 16)
+
+enum apd_state { APD_STAGED, APD_CREATED, APD_REPLACED, APD_KEPT };
+
+typedef struct {
+    WCHAR  *dst;
+    enum apd_state state;
+} apd_file_t;
+
 typedef struct {
     WCHAR   src[MAX_PATH+MAX_PATH];
     WCHAR   dst[MAX_PATH+MAX_PATH];
@@ -20,8 +30,11 @@ typedef struct {
     BOOL    strict;
     BOOL    copied;
     DWORD   error;
-    WCHAR  *created;
-    DWORD   created_len;
+    apd_file_t *files;
+    DWORD   file_count;
+    BYTE   *saved[APD_VALUE_COUNT];
+    DWORD   saved_type[APD_VALUE_COUNT];
+    DWORD   saved_size[APD_VALUE_COUNT];
 } apd_data_t;
 
 static const WCHAR backslashW[] = {'\\',0};
@@ -851,42 +864,210 @@ BOOL WINAPI LocalGetPrinterDriverDirectory(PWSTR pName, PWSTR pEnvironment, DWOR
 
 static BOOL apd_same_file( const WCHAR *first, const WCHAR *second )
 {
-    WIN32_FILE_ATTRIBUTE_DATA a, b;
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    BYTE a[4096], b[4096];
+    DWORD read_a, read_b;
+    HANDLE ha, hb;
+    BOOL same = FALSE;
 
-    return GetFileAttributesExW( first, GetFileExInfoStandard, &a ) &&
-           GetFileAttributesExW( second, GetFileExInfoStandard, &b ) &&
-           a.nFileSizeHigh == b.nFileSizeHigh && a.nFileSizeLow == b.nFileSizeLow &&
-           CompareFileTime( &a.ftLastWriteTime, &b.ftLastWriteTime ) == 0;
-}
-
-static BOOL apd_remember( apd_data_t *apd )
-{
-    DWORD len = lstrlenW( apd->dst ) + 1;
-    WCHAR *list;
-
-    if (apd->created)
-        list = HeapReAlloc( GetProcessHeap(), 0, apd->created, (apd->created_len + len + 1) * sizeof(WCHAR) );
-    else
-        list = HeapAlloc( GetProcessHeap(), 0, (len + 1) * sizeof(WCHAR) );
-    if (!list)
+    ha = CreateFileW( first, GENERIC_READ, share, NULL, OPEN_EXISTING, 0, NULL );
+    if (ha == INVALID_HANDLE_VALUE)
         return FALSE;
 
-    memcpy( list + apd->created_len, apd->dst, len * sizeof(WCHAR) );
-    apd->created_len += len;
-    list[apd->created_len] = 0;
-    apd->created = list;
+    hb = CreateFileW( second, GENERIC_READ, share, NULL, OPEN_EXISTING, 0, NULL );
+    if (hb == INVALID_HANDLE_VALUE)
+    {
+        CloseHandle( ha );
+        return FALSE;
+    }
+
+    while (ReadFile( ha, a, sizeof(a), &read_a, NULL ) && ReadFile( hb, b, sizeof(b), &read_b, NULL ) &&
+           read_a == read_b && !memcmp( a, b, read_a ))
+    {
+        if (!read_a)
+        {
+            same = TRUE;
+            break;
+        }
+    }
+
+    CloseHandle( hb );
+    CloseHandle( ha );
+    return same;
+}
+
+static const WCHAR * const apd_value_names[APD_VALUE_COUNT] =
+{
+    L"InfPath", versionW, driverW, data_fileW, configuration_fileW, help_fileW,
+    dependent_filesW, monitorW, datatypeW, previous_namesW
+};
+
+static void apd_side_name( const WCHAR *dst, const WCHAR *suffix, WCHAR *name )
+{
+    lstrcpyW( name, dst );
+    lstrcatW( name, suffix );
+}
+
+static BOOL apd_stage( const WCHAR *srcname, apd_data_t *apd )
+{
+    WCHAR tmp[APD_NAME_SIZE];
+    apd_file_t *files;
+    WCHAR *dst;
+    DWORD i;
+
+    for (i = 0; i < apd->file_count; i++)
+    {
+        if (!lstrcmpiW( apd->files[i].dst, apd->dst ))
+            return TRUE;
+    }
+
+    if (apd->files)
+        files = HeapReAlloc( GetProcessHeap(), 0, apd->files, (apd->file_count + 1) * sizeof(*files) );
+    else
+        files = HeapAlloc( GetProcessHeap(), 0, sizeof(*files) );
+    if (files)
+        apd->files = files;
+    dst = HeapAlloc( GetProcessHeap(), 0, (lstrlenW( apd->dst ) + 1) * sizeof(WCHAR) );
+    if (!files || !dst)
+    {
+        HeapFree( GetProcessHeap(), 0, dst );
+        apd->error = ERROR_NOT_ENOUGH_MEMORY;
+        return FALSE;
+    }
+    lstrcpyW( dst, apd->dst );
+
+    apd_side_name( dst, L".apd-new", tmp );
+    if (!CopyFileW( srcname, tmp, FALSE ))
+    {
+        apd->error = GetLastError();
+        DeleteFileW( tmp );
+        HeapFree( GetProcessHeap(), 0, dst );
+        return FALSE;
+    }
+
+    apd->files[apd->file_count].dst = dst;
+    apd->files[apd->file_count].state = APD_STAGED;
+    apd->file_count++;
     return TRUE;
 }
 
-static void apd_release( apd_data_t *apd, BOOL delete_created )
+static BOOL apd_commit( apd_data_t *apd )
 {
-    WCHAR *file;
+    WCHAR tmp[APD_NAME_SIZE], old[APD_NAME_SIZE];
+    apd_file_t *file;
+    BOOL existed;
+    DWORD i;
 
-    for (file = apd->created; delete_created && file && *file; file += lstrlenW( file ) + 1)
-        DeleteFileW( file );
+    for (i = 0; i < apd->file_count; i++)
+    {
+        file = &apd->files[i];
+        apd_side_name( file->dst, L".apd-new", tmp );
+        apd_side_name( file->dst, L".apd-old", old );
 
-    HeapFree( GetProcessHeap(), 0, apd->created );
-    apd->created = NULL;
+        existed = GetFileAttributesW( file->dst ) != INVALID_FILE_ATTRIBUTES;
+        if (existed && apd_same_file( tmp, file->dst ))
+        {
+            DeleteFileW( tmp );
+            file->state = APD_KEPT;
+            continue;
+        }
+
+        if (existed && !MoveFileExW( file->dst, old, MOVEFILE_REPLACE_EXISTING ))
+        {
+            apd->error = GetLastError();
+            return FALSE;
+        }
+        if (!MoveFileW( tmp, file->dst ))
+        {
+            apd->error = GetLastError();
+            if (existed)
+                MoveFileW( old, file->dst );
+            return FALSE;
+        }
+        file->state = existed ? APD_REPLACED : APD_CREATED;
+    }
+    return TRUE;
+}
+
+static void apd_release( apd_data_t *apd, BOOL rollback )
+{
+    WCHAR name[APD_NAME_SIZE];
+    apd_file_t *file;
+    DWORD i;
+
+    for (i = apd->file_count; i-- > 0;)
+    {
+        file = &apd->files[i];
+        if (file->state == APD_STAGED)
+        {
+            apd_side_name( file->dst, L".apd-new", name );
+            DeleteFileW( name );
+        }
+        else if (file->state == APD_CREATED && rollback)
+        {
+            DeleteFileW( file->dst );
+        }
+        else if (file->state == APD_REPLACED)
+        {
+            apd_side_name( file->dst, L".apd-old", name );
+            if (rollback)
+                MoveFileExW( name, file->dst, MOVEFILE_REPLACE_EXISTING );
+            else if (!DeleteFileW( name ))
+                MoveFileExW( name, NULL, MOVEFILE_DELAY_UNTIL_REBOOT );
+        }
+        HeapFree( GetProcessHeap(), 0, file->dst );
+    }
+    HeapFree( GetProcessHeap(), 0, apd->files );
+    apd->files = NULL;
+    apd->file_count = 0;
+
+    for (i = 0; i < APD_VALUE_COUNT; i++)
+    {
+        HeapFree( GetProcessHeap(), 0, apd->saved[i] );
+        apd->saved[i] = NULL;
+    }
+}
+
+static BOOL apd_save_values( apd_data_t *apd, HKEY hkey )
+{
+    DWORD i, size;
+    LONG lres;
+
+    for (i = 0; i < APD_VALUE_COUNT; i++)
+    {
+        size = 0;
+        lres = RegQueryValueExW( hkey, apd_value_names[i], NULL, &apd->saved_type[i], NULL, &size );
+        if (lres == ERROR_FILE_NOT_FOUND)
+            continue;
+        if (lres == ERROR_SUCCESS)
+        {
+            apd->saved[i] = HeapAlloc( GetProcessHeap(), 0, size + 1 );
+            if (apd->saved[i])
+                lres = RegQueryValueExW( hkey, apd_value_names[i], NULL, NULL, apd->saved[i], &size );
+            else
+                lres = ERROR_NOT_ENOUGH_MEMORY;
+            apd->saved_size[i] = size;
+        }
+        if (lres != ERROR_SUCCESS)
+        {
+            apd->error = lres;
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static void apd_restore_values( apd_data_t *apd, HKEY hkey )
+{
+    DWORD i;
+
+    for (i = 0; i < APD_VALUE_COUNT; i++)
+    {
+        if (apd->saved[i])
+            RegSetValueExW( hkey, apd_value_names[i], 0, apd->saved_type[i], apd->saved[i], apd->saved_size[i] );
+        else
+            RegDeleteValueW( hkey, apd_value_names[i] );
+    }
 }
 
 static void apd_setvalue( apd_data_t *apd, HKEY hkey, const WCHAR *name, DWORD type, const BYTE *data, DWORD size )
@@ -910,8 +1091,7 @@ static void apd_setvalue( apd_data_t *apd, HKEY hkey, const WCHAR *name, DWORD t
 static BOOL apd_copyfile( WCHAR *pathname, WCHAR *file_part, apd_data_t *apd )
 {
     WCHAR *srcname;
-    BOOL res, existed;
-    DWORD error;
+    BOOL res;
 
     if (apd->copied)
         return TRUE;
@@ -935,26 +1115,12 @@ static BOOL apd_copyfile( WCHAR *pathname, WCHAR *file_part, apd_data_t *apd )
 
     FIXME("%s => %s\n", debugstr_w(srcname), debugstr_w(apd->dst));
 
+    if (apd->strict)
+        return apd_stage(srcname, apd);
+
     /* FIXME: handle APD_COPY_NEW_FILES */
-    existed = apd->strict && GetFileAttributesW(apd->dst) != INVALID_FILE_ATTRIBUTES;
     res = CopyFileW(srcname, apd->dst, FALSE);
-    error = GetLastError();
-    FIXME("got %d with %u\n", res, error);
-
-    /* The destination can be in use or be the source itself; it is the wanted file when it matches the source */
-    if (!res && apd->strict && apd_same_file(srcname, apd->dst))
-        res = TRUE;
-
-    if (!res)
-    {
-        apd->error = error;
-    }
-    else if (apd->strict && !existed && !apd_remember(apd))
-    {
-        DeleteFileW(apd->dst);
-        apd->error = ERROR_NOT_ENOUGH_MEMORY;
-        res = FALSE;
-    }
+    FIXME("got %d with %u\n", res, GetLastError());
 
     return apd->lazy || res;
 }
@@ -1091,8 +1257,9 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
     apd.lazy = lazy && !apd.strict;
     apd.copied = FALSE;
     apd.error = ERROR_SUCCESS;
-    apd.created = NULL;
-    apd.created_len = 0;
+    apd.files = NULL;
+    apd.file_count = 0;
+    ZeroMemory(apd.saved, sizeof(apd.saved));
     CreateDirectoryW(apd.src, NULL);
     CreateDirectoryW(apd.dst, NULL);
 
@@ -1116,24 +1283,20 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
 
     if (apd.strict)
     {
-        if (apd_copy_all(&di, &apd))
-            lres = RegSetValueExW(hdrv, L"InfPath", 0, REG_SZ, (const BYTE*)di.pszInfPath,
-                                  (lstrlenW(di.pszInfPath) + 1) * sizeof(WCHAR));
-        else
-            lres = apd.error;
-        apd.copied = TRUE;
-
-        if (lres != ERROR_SUCCESS)
+        if (!apd_copy_all(&di, &apd) || !apd_commit(&apd) || !apd_save_values(&apd, hdrv))
         {
-            ERR("can't copy the files or record the package of driver %s: %u\n", debugstr_w(di.pName), lres);
+            ERR("can't install the files of driver %s: %lu\n", debugstr_w(di.pName), apd.error);
             apd_release(&apd, TRUE);
             RegCloseKey(hdrv);
             if (disposition == REG_CREATED_NEW_KEY)
                 RegDeleteKeyW(hroot, di.pName);
             RegCloseKey(hroot);
-            SetLastError(lres);
+            SetLastError(apd.error);
             return FALSE;
         }
+        apd.copied = TRUE;
+        apd_setvalue(&apd, hdrv, L"InfPath", REG_SZ, (const BYTE*)di.pszInfPath,
+                     (lstrlenW(di.pszInfPath) + 1) * sizeof(WCHAR));
     }
 
     /* Verified with the Adobe PS Driver, that w2k does not use di.Version */
@@ -1205,18 +1368,20 @@ static BOOL add_printer_driver(DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopy
 
     if (level > 5) FIXME("level %u for Driver %s is incomplete\n", level, debugstr_w(di.pName));
 
-    RegCloseKey(hdrv);
-
     if (apd.strict && apd.error != ERROR_SUCCESS)
     {
         ERR("can't register driver %s: %lu\n", debugstr_w(di.pName), apd.error);
+        if (disposition != REG_CREATED_NEW_KEY)
+            apd_restore_values(&apd, hdrv);
+        RegCloseKey(hdrv);
         if (disposition == REG_CREATED_NEW_KEY)
             RegDeleteKeyW(hroot, di.pName);
-        apd_release(&apd, disposition == REG_CREATED_NEW_KEY);
+        apd_release(&apd, TRUE);
         RegCloseKey(hroot);
         SetLastError(apd.error);
         return FALSE;
     }
+    RegCloseKey(hdrv);
     apd_release(&apd, FALSE);
     RegCloseKey(hroot);
 

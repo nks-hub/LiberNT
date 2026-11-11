@@ -1552,6 +1552,30 @@ START_TEST(DriverPackage)
     ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
 
     {
+        WCHAR Slashed[MAX_PATH], Value[MAX_PATH];
+        DWORD Size = sizeof(Value);
+        HKEY hNeeds;
+        PWSTR Next;
+
+        StringCchCopyW(Slashed, ARRAYSIZE(Slashed), StoreInf);
+        for (Next = Slashed; *Next; Next++)
+        {
+            if (*Next == L'\\')
+                *Next = L'/';
+        }
+        hr = InstallPrinterDriverFromPackageW(NULL, Slashed, NEEDS_DRIVER_NAME, NULL, IPDFP_COPY_ALL_FILES);
+        ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Slashed, hr);
+        hNeeds = OpenDriverKey(NEEDS_DRIVER_NAME);
+        ok(hNeeds != NULL, "Driver %S is not registered\n", NEEDS_DRIVER_NAME);
+        if (hNeeds)
+        {
+            ok(RegQueryValueExW(hNeeds, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+               !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
+            RegCloseKey(hNeeds);
+        }
+    }
+
+    {
         WCHAR DriverDir[MAX_PATH];
         DWORD Size = sizeof(DriverDir);
         static const char Keep[] = "not the package file\r\n";

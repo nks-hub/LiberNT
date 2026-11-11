@@ -556,7 +556,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 }, Owned = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH], IncludePath[MAX_PATH];
+    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH], IncludePath[MAX_PATH], InfPath[MAX_PATH];
     BOOL Found, InPackage;
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
@@ -601,7 +601,9 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
         Platform = &OtherPlatform;
     }
 
-    if (FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), pszInfPath)) ||
+    Size = GetFullPathNameW(pszInfPath, ARRAYSIZE(InfPath), InfPath, NULL);
+    if (Size == 0 || Size >= ARRAYSIZE(InfPath) ||
+        FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), InfPath)) ||
         !(Slash = wcsrchr(PackageDir, L'\\')))
     {
         return E_INVALIDARG;
@@ -612,12 +614,12 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)Environment, 1, (PBYTE)DriverDir, Size, &Size))
         return HRESULT_FROM_WIN32(GetLastError());
 
-    hInf = SetupOpenInfFileW(pszInfPath, NULL, INF_STYLE_WIN4, NULL);
+    hInf = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
     if (hInf == INVALID_HANDLE_VALUE)
         return HRESULT_FROM_WIN32(GetLastError());
 
     /* The INFs of the package alone, to tell the files it copies from those a system INF copies */
-    hPackage = SetupOpenInfFileW(pszInfPath, NULL, INF_STYLE_WIN4, NULL);
+    hPackage = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
     if (hPackage == INVALID_HANDLE_VALUE)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
@@ -786,8 +788,8 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
-    ResolvePackageInf(pszInfPath, Architecture, RecordedInf);
-    DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : (PWSTR)pszInfPath;
+    ResolvePackageInf(InfPath, Architecture, RecordedInf);
+    DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : InfPath;
 
     if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
                              APD_COPY_FROM_DIRECTORY |

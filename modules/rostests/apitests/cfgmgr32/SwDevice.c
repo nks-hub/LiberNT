@@ -359,6 +359,8 @@ static void
 test_DevNodeProperty(CREATED *State)
 {
     static const DEVPROPKEY Key = { { 0x4c6e7453, 0x7754, 0x4465, { 0x76, 0x69, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } }, 4 };
+    static const WCHAR Text[] = L"Text";
+    static const BYTE Bytes[16] = { 0 };
     ULONG Value = 0x1234, Read, Size;
     DEVPROPTYPE Type;
     HSWDEVICE Device;
@@ -426,6 +428,36 @@ test_DevNodeProperty(CREATED *State)
     Size = sizeof(Read);
     Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
     trace("After the rejected types the property is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_UINT32, NULL, 0, 0);
+    trace("Setting a UINT32 without a buffer returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A UINT32 without a buffer was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_UINT32, Bytes, 1, 0);
+    trace("Setting a UINT32 from 1 byte returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A UINT32 of 1 byte was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_UINT32, Bytes, 8, 0);
+    trace("Setting a UINT32 from 8 bytes returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A UINT32 of 8 bytes was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_UINT32 | DEVPROP_TYPEMOD_ARRAY, Bytes, 6, 0);
+    trace("Setting an array of UINT32 from 6 bytes returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "An array of UINT32 of 6 bytes was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_STRING, (const BYTE *)Text, sizeof(Text) - 1, 0);
+    trace("Setting a string of an odd size returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A string of an odd size was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_STRING, (const BYTE *)Text, sizeof(Text) - sizeof(WCHAR), 0);
+    trace("Setting a string without a terminator returned CR %lu\n", Cr);
+    ok(Cr != CR_SUCCESS, "A string without a terminator was set\n");
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_GUID, Bytes, sizeof(GUID) - 1, 0);
+    trace("Setting a GUID from %lu bytes returned CR %lu\n", (ULONG)sizeof(GUID) - 1, Cr);
+    ok(Cr != CR_SUCCESS, "A GUID of a wrong size was set\n");
+    Type = DEVPROP_TYPE_EMPTY;
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &Key, &Type, (PBYTE)&Read, &Size, 0);
+    trace("After the rejected values the property is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    ok(Cr != CR_SUCCESS, "A rejected value left a property of type 0x%lx, size %lu\n", Type, Size);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, Bytes, 1, 0);
+    ok(Cr == CR_SUCCESS, "Setting a BOOLEAN from 1 byte returned CR %lu\n", Cr);
     CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
 
 Done:

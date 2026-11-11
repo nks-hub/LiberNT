@@ -27,6 +27,7 @@ static volatile BOOLEAN Refuse;
 static CHAR Seen[MAX_SEEN][9];
 static ULONG SeenSource[MAX_SEEN];
 static ULONG LastControlLength;
+static BOOLEAN SendAtDispatch;
 
 #define BURST_COUNT 256
 #define BURST_SIZE 1400
@@ -296,6 +297,12 @@ SendToControl(
     SOCKADDR_IN Address;
     WSK_BUF_LIST List;
     WSK_BUF Buffer;
+    union
+    {
+        CMSGHDR Header;
+        UCHAR Space[64];
+    } Local;
+    KIRQL OldIrql = PASSIVE_LEVEL;
     KEVENT Event;
     NTSTATUS Status;
     PCHAR Data;
@@ -324,6 +331,16 @@ SendToControl(
     Irp = NewIrp(&Event);
     if (Irp != NULL)
     {
+        if (SendAtDispatch)
+        {
+            if (Control != NULL)
+            {
+                ASSERT(ControlLength <= sizeof(Local));
+                RtlCopyMemory(&Local, Control, ControlLength);
+                Control = &Local.Header;
+            }
+            KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+        }
         if (Messages)
         {
             List.Next = NULL;
@@ -333,6 +350,14 @@ SendToControl(
         else
         {
             Status = Dispatch->WskSendTo(Socket, &Buffer, 0, (PSOCKADDR)&Address, ControlLength, Control, Irp);
+        }
+        if (SendAtDispatch)
+        {
+            /* The worker that sends cannot run on this processor before the IRQL is lowered */
+            RtlFillMemory(&Address, sizeof(Address), 0xff);
+            RtlFillMemory(&Local, sizeof(Local), 0xff);
+            RtlZeroMemory(&List, sizeof(List));
+            KeLowerIrql(OldIrql);
         }
         Status = WaitIrp(Irp, &Event, Status);
         IoFreeIrp(Irp);
@@ -947,6 +972,24 @@ TestSendControl(VOID)
     Source = RtlUlongByteSwap(SeenSource[1]);
     ok_eq_hex(Source, 0x7f000001UL);
 
+    SendAtDispatch = TRUE;
+    Status = SendToControl(Sender, "CTRL0014", WSKEVENTS_PORT + 5, FALSE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(3, 2000);
+    ok_eq_long(Count, 3L);
+    ok(WasSeen("CTRL0014"), "CTRL0014 did not reach the address it was sent to at DISPATCH_LEVEL\n");
+    Source = RtlUlongByteSwap(SeenSource[2]);
+    ok_eq_hex(Source, 0x7f000001UL);
+
+    Status = SendToControl(Sender, "CTRL0015", WSKEVENTS_PORT + 5, TRUE, ControlLength, &Control.Header);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(4, 2000);
+    ok_eq_long(Count, 4L);
+    ok(WasSeen("CTRL0015"), "CTRL0015 did not reach the address it was sent to at DISPATCH_LEVEL\n");
+    Source = RtlUlongByteSwap(SeenSource[3]);
+    ok_eq_hex(Source, 0x7f000001UL);
+    SendAtDispatch = FALSE;
+
     /* 192.0.2.1 is reserved for documentation and is not an address of this machine */
     PktInfo.ipi_addr.s_addr = RtlUlongByteSwap(0xc0000201);
     RtlCopyMemory(WSA_CMSG_DATA(&Control.Header), &PktInfo, sizeof(PktInfo));
@@ -987,8 +1030,8 @@ TestSendControl(VOID)
     Status = SendToControl(Sender, "CTRL0013", WSKEVENTS_PORT + 5, TRUE, ControlLength + 4, &Control.Header);
     ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
 
-    Count = WaitReceives(3, 500);
-    ok_eq_long(Count, 2L);
+    Count = WaitReceives(5, 500);
+    ok_eq_long(Count, 4L);
 
 close:
     if (Receiver != NULL)

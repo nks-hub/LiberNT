@@ -2148,9 +2148,11 @@ typedef struct _NETIO_DEFERRED_SEND
     PWSK_BUF_LIST BufferList;
     ULONG Flags;
     PSOCKADDR RemoteAddress;
+    SOCKADDR Address;
     ULONG ControlInfoLength;
     PCMSGHDR ControlInfo;
     PIRP Irp;
+    WSK_BUF_LIST List[ANYSIZE_ARRAY];
 } NETIO_DEFERRED_SEND, *PNETIO_DEFERRED_SEND;
 
 static VOID NTAPI
@@ -2186,7 +2188,17 @@ NetioDeferSend(
     _In_opt_ PCMSGHDR ControlInfo,
     _Inout_ PIRP Irp)
 {
-    PNETIO_DEFERRED_SEND Send = ExAllocatePoolZero(NonPagedPool, sizeof(*Send), TAG_NETIO);
+    PNETIO_DEFERRED_SEND Send = NULL;
+    SIZE_T Count = 0, Size, ControlSize = ControlInfo ? ControlInfoLength : 0;
+    PWSK_BUF_LIST Entry;
+
+    ASSERT(KeGetCurrentIrql() <= DISPATCH_LEVEL);
+
+    for (Entry = BufferList; Entry != NULL; Entry = Entry->Next)
+        Count++;
+    Size = FIELD_OFFSET(NETIO_DEFERRED_SEND, List) + Count * sizeof(WSK_BUF_LIST);
+    if (ControlSize <= MAXULONG_PTR - Size)
+        Send = ExAllocatePoolZero(NonPagedPool, Size + ControlSize, TAG_NETIO);
 
     if (Send == NULL)
     {
@@ -2199,11 +2211,25 @@ NetioDeferSend(
     Send->Socket = SocketParam;
     if (Buffer)
         Send->Buffer = *Buffer;
-    Send->BufferList = BufferList;
+    for (Count = 0, Entry = BufferList; Entry != NULL; Entry = Entry->Next, Count++)
+    {
+        Send->List[Count].Buffer = Entry->Buffer;
+        Send->List[Count].Next = Entry->Next ? &Send->List[Count + 1] : NULL;
+    }
+    if (BufferList)
+        Send->BufferList = Send->List;
     Send->Flags = Flags;
-    Send->RemoteAddress = RemoteAddress;
+    if (RemoteAddress)
+    {
+        Send->Address = *RemoteAddress;
+        Send->RemoteAddress = &Send->Address;
+    }
     Send->ControlInfoLength = ControlInfoLength;
-    Send->ControlInfo = ControlInfo;
+    if (ControlInfo)
+    {
+        Send->ControlInfo = (PCMSGHDR)&Send->List[Count];
+        RtlCopyMemory(Send->ControlInfo, ControlInfo, ControlInfoLength);
+    }
     Send->Irp = Irp;
     ReferenceSocket(CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket));
     InterlockedIncrement(&CONTAINING_RECORD(SocketParam, WSK_SOCKET_INTERNAL, Socket)->DeferredSends);

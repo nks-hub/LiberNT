@@ -71,8 +71,9 @@ START_TEST(Shell_NotifyIconGetRect)
     SHELL_NOTIFYICONGETRECT GetRect;
     NOTIFYICONIDENTIFIER Identifier = { 0 };
     NOTIFYICONDATAW Icon = { 0 };
-    RECT Rect;
+    RECT Rect, Button;
     HRESULT Result;
+    BOOL InOverflow = FALSE;
     HWND Window;
     BOOL Added;
 
@@ -130,8 +131,8 @@ START_TEST(Shell_NotifyIconGetRect)
         /* S_FALSE comes with the rectangle of the overflow button: the new icon is in the closed overflow area */
         if (Result == S_FALSE)
         {
-            RECT Button = Rect;
-
+            Button = Rect;
+            InOverflow = TRUE;
             Click(Button);
             Result = QueryUntil(GetRect, Identifier, S_OK, S_OK, &Rect);
             ok_hex(Result, S_OK);
@@ -156,7 +157,18 @@ START_TEST(Shell_NotifyIconGetRect)
         Icon.dwState = NIS_HIDDEN;
         ok(Shell_NotifyIconW(NIM_MODIFY, &Icon), "hiding icon failed with %lu\n", GetLastError());
         Sleep(100);
-        CheckQueryResult(GetRect, Identifier, E_FAIL);
+        if (InOverflow)
+        {
+            /* On Windows 11 an icon with NIS_HIDDEN still gets the button of the closed overflow area */
+            Rect = g_SentinelRect;
+            Result = GetRect(&Identifier, &Rect);
+            ok_hex(Result, S_FALSE);
+            ok(EqualRect(&Rect, &Button), "the hidden icon gives (%ld,%ld)-(%ld,%ld), not the button\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
+        }
+        else
+        {
+            CheckQueryResult(GetRect, Identifier, E_FAIL);
+        }
 
         ok(Shell_NotifyIconW(NIM_DELETE, &Icon), "NIM_DELETE failed with %lu\n", GetLastError());
         CheckQueryResult(GetRect, Identifier, E_FAIL);

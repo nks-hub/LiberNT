@@ -1108,15 +1108,20 @@ HRESULT CNotifyToolbar::GetIconRect(IN CONST NOTIFYICONIDENTIFIER *Identifier, O
         if (!Matches)
             continue;
 
-        if (Data->dwState & NIS_HIDDEN)
-            return E_FAIL;
-
-        if (!IsItemVisible(Data))
+        if ((Data->dwState & NIS_HIDDEN) || !IsItemVisible(Data))
         {
             HWND hwndChevron;
 
-            if (TrayOverflow_GetIconRect(Data->hWnd, Data->uID, IconRect))
+            /* As on Windows 11, an icon with NIS_HIDDEN has no rectangle in the open overflow area and gets the button of a closed one */
+            if (Data->dwState & NIS_HIDDEN)
+            {
+                if (TrayOverflow_IsOpen())
+                    return E_FAIL;
+            }
+            else if (TrayOverflow_GetIconRect(Data->hWnd, Data->uID, IconRect))
+            {
                 return S_OK;
+            }
             hwndChevron = ::FindWindowExW(::GetParent(GetParent()), NULL, L"TrayChevronButton", NULL);
             if (!hwndChevron || !::IsWindowVisible(hwndChevron) || !::GetWindowRect(hwndChevron, IconRect))
                 return E_FAIL;

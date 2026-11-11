@@ -3809,6 +3809,33 @@ WatchSoftwareDeviceInstance(
     return CR_SUCCESS;
 }
 
+static CONFIGRET
+SetSoftwareDeviceInterfaceState(
+    _In_opt_ LPWSTR pszDeviceInterface,
+    _In_ DWORD dwEnable)
+{
+    PLUGPLAY_CONTROL_INTERFACE_STATE_DATA ControlData;
+    NTSTATUS Status;
+
+    if (dwEnable > TRUE)
+        return CR_INVALID_FLAG;
+    if (pszDeviceInterface == NULL ||
+        _wcsnicmp(pszDeviceInterface, L"\\\\?\\SWD#", 8) != 0 ||
+        wcslen(pszDeviceInterface) > MAXUSHORT / sizeof(WCHAR) - 1)
+    {
+        return CR_INVALID_DATA;
+    }
+
+    RtlInitUnicodeString(&ControlData.SymbolicLinkName, pszDeviceInterface);
+    ControlData.Enable = (BOOLEAN)dwEnable;
+    Status = NtPlugPlayControl(PlugPlayControlSetDeviceInterfaceState, &ControlData, sizeof(ControlData));
+
+    /* An interface that is not enabled has nothing to disable */
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND && !dwEnable)
+        return CR_SUCCESS;
+    return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
+}
+
 
 /* Function 29 */
 DWORD
@@ -3867,6 +3894,15 @@ PNP_DeviceInstanceAction(
                 break;
             }
             ret = WatchSoftwareDeviceInstance(pszDeviceInstance1, ulMinorAction);
+            break;
+
+        case PNP_DEVINST_SOFTWARE_INTERFACE:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
+            ret = SetSoftwareDeviceInterfaceState(pszDeviceInstance1, ulMinorAction);
             break;
 
         default:

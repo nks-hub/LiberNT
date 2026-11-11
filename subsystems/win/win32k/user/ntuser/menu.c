@@ -6400,7 +6400,7 @@ NtUserGetTitleBarInfo(
         goto Exit;
     }
     if (UserDpiIsVirtualCaller())
-        UserDpiRectToLogical(&bartitleinfo.rcTitleBar);
+        UserDpiRectToLogical((PRECT)&bartitleinfo.rcTitleBar);
 
     /* Copy local buffer back to user mode buffer */
     _SEH2_TRY
@@ -7323,7 +7323,7 @@ NtUserTrackPopupMenuEx(
         x = UserDpiToPhysical(x);
         y = UserDpiToPhysical(y);
         if (lptpm)
-            UserDpiRectToPhysical(&tpm.rcExclude);
+            UserDpiRectToPhysical((PRECT)&tpm.rcExclude);
     }
 
     UserRefObjectCo(pWnd, &WndRef);

@@ -1123,6 +1123,9 @@ SwDeviceInterfaceSetState(
         return E_HANDLE;
 
     hr = Device->DevInst ? SetInterfaceProperties(Device, pszDeviceInterfaceId, 0, NULL) : E_INVALIDARG;
+    /* Windows 11 answers ERROR_NOT_FOUND for an interface the device has not registered */
+    if (hr == E_INVALIDARG && Device->DevInst)
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
     if (SUCCEEDED(hr))
         hr = CrToHresult(CfgmgrSetSoftwareDeviceInterfaceState(pszDeviceInterfaceId, fEnabled));
     LeaveSwDevice(Device);

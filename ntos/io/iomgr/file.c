@@ -4672,6 +4672,7 @@ IopCancelMatchingIrpsInCurrentThread(
     KIRQL OldIrql;
     BOOLEAN Found = FALSE;
     BOOLEAN SynchronousLeft = FALSE;
+    BOOLEAN AlreadyCancelled;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4688,7 +4689,8 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            if (!IoCancelIrp(Irp) && IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
+            AlreadyCancelled = Irp->Cancel;
+            if (!IoCancelIrp(Irp) && !AlreadyCancelled && IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
                 SynchronousLeft = TRUE;
             Found = TRUE;
         }

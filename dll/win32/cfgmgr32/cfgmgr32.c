@@ -218,7 +218,11 @@ static LSTATUS query_property( HKEY root, const WCHAR *prefix, DEVPROPTYPE type,
         RegCloseKey( hkey );
     }
 
+#ifdef __REACTOS__
+    if (!err && !prop->buffer && *prop->size) err = ERROR_MORE_DATA;
+#else
     if (!err && !prop->buffer) err = ERROR_MORE_DATA;
+#endif
     if ((!err || err == ERROR_MORE_DATA) && prop->type) *prop->type = type;
     if (err == ERROR_FILE_NOT_FOUND) return ERROR_NOT_FOUND;
     return err;
@@ -2926,6 +2930,26 @@ CONFIGRET WINAPI CM_Get_DevNode_PropertyW( DEVINST node, const DEVPROPKEY *key, 
 }
 
 #ifdef __REACTOS__
+static BOOL is_valid_property_type( DEVPROPTYPE prop_type )
+{
+    DWORD type = prop_type & DEVPROP_MASK_TYPE;
+    DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
+
+    if (prop_type & ~(DEVPROP_MASK_TYPE | DEVPROP_MASK_TYPEMOD)) return FALSE;
+    if (type > MAX_DEVPROP_TYPE || typemod > MAX_DEVPROP_TYPEMOD) return FALSE;
+
+    if (typemod == DEVPROP_TYPEMOD_ARRAY &&
+        (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL ||
+         type == DEVPROP_TYPE_STRING || type == DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING))
+        return FALSE;
+
+    if (typemod == DEVPROP_TYPEMOD_LIST &&
+        type != DEVPROP_TYPE_STRING && type != DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING)
+        return FALSE;
+
+    return TRUE;
+}
+
 /***********************************************************************
  *           CM_Set_DevNode_Property_ExW (cfgmgr32.@)
  *
@@ -2945,6 +2969,10 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
     if (!key) return CR_INVALID_POINTER;
     if (flags) return CR_INVALID_FLAG;
     if (size && !buffer) return CR_INVALID_POINTER;
+    if (!is_valid_property_type( type ) ||
+        (buffer && !size && type != DEVPROP_TYPE_EMPTY && type != DEVPROP_TYPE_NULL) ||
+        (size && (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)))
+        return CR_INVALID_DATA;
     if (devnode_get_device( node, &dev )) return CR_INVALID_DEVNODE;
 
     if (!memcmp( &key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid, sizeof(key->fmtid) ) && key->pid >= 2)
@@ -2966,13 +2994,6 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
     {
         case DEVPROP_TYPE_EMPTY:
             err = RegDeleteKeyW( dev_key, path );
-            break;
-        case DEVPROP_TYPE_NULL:
-            if (!(err = RegOpenKeyExW( dev_key, path, 0, KEY_SET_VALUE, &prop_key )))
-            {
-                err = RegDeleteValueW( prop_key, NULL );
-                RegCloseKey( prop_key );
-            }
             break;
         default:
             if (!(err = RegCreateKeyExW( dev_key, path, 0, NULL, 0, KEY_SET_VALUE, NULL, &prop_key, NULL )))

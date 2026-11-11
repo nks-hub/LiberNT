@@ -4656,9 +4656,9 @@ NtUserSetWindowPlacement(HWND hWnd,
         Flags |= PLACE_MIN;
     if (UserDpiIsVirtualCaller())
     {
-        UserDpiPointToPhysical(&Safepl.ptMinPosition);
-        UserDpiPointToPhysical(&Safepl.ptMaxPosition);
-        UserDpiRectToPhysical(&Safepl.rcNormalPosition);
+        UserDpiPointToPhysical((PPOINT)&Safepl.ptMinPosition);
+        UserDpiPointToPhysical((PPOINT)&Safepl.ptMaxPosition);
+        UserDpiRectToPhysical((PRECT)&Safepl.rcNormalPosition);
     }
 
     Wnd = UserGetWindowObject(hWnd);

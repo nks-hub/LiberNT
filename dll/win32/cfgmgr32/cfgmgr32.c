@@ -2950,6 +2950,59 @@ static BOOL is_valid_property_type( DEVPROPTYPE prop_type )
     return TRUE;
 }
 
+static BOOL is_valid_property_data( DEVPROPTYPE prop_type, const BYTE *buffer, ULONG size )
+{
+    DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
+    const WCHAR *str = (const WCHAR *)buffer;
+    ULONG len = size / sizeof(WCHAR), width;
+
+    switch (prop_type & DEVPROP_MASK_TYPE)
+    {
+        case DEVPROP_TYPE_SBYTE:
+        case DEVPROP_TYPE_BYTE:
+        case DEVPROP_TYPE_BOOLEAN:
+            width = 1;
+            break;
+        case DEVPROP_TYPE_INT16:
+        case DEVPROP_TYPE_UINT16:
+            width = 2;
+            break;
+        case DEVPROP_TYPE_INT32:
+        case DEVPROP_TYPE_UINT32:
+        case DEVPROP_TYPE_FLOAT:
+        case DEVPROP_TYPE_DEVPROPTYPE:
+        case DEVPROP_TYPE_ERROR:
+        case DEVPROP_TYPE_NTSTATUS:
+            width = 4;
+            break;
+        case DEVPROP_TYPE_INT64:
+        case DEVPROP_TYPE_UINT64:
+        case DEVPROP_TYPE_DOUBLE:
+        case DEVPROP_TYPE_CURRENCY:
+        case DEVPROP_TYPE_DATE:
+        case DEVPROP_TYPE_FILETIME:
+            width = 8;
+            break;
+        case DEVPROP_TYPE_DECIMAL:
+        case DEVPROP_TYPE_GUID:
+            width = 16;
+            break;
+        case DEVPROP_TYPE_DEVPROPKEY:
+            width = sizeof(DEVPROPKEY);
+            break;
+        case DEVPROP_TYPE_STRING:
+        case DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING:
+        case DEVPROP_TYPE_STRING_INDIRECT:
+            if ((size % sizeof(WCHAR)) || !len || str[len - 1]) return FALSE;
+            return typemod != DEVPROP_TYPEMOD_LIST || (len >= 2 && !str[len - 2]);
+        default:
+            return TRUE;
+    }
+
+    if (typemod == DEVPROP_TYPEMOD_ARRAY) return !(size % width);
+    return size == width;
+}
+
 /***********************************************************************
  *           CM_Set_DevNode_Property_ExW (cfgmgr32.@)
  *
@@ -2969,7 +3022,7 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
     if (!key) return CR_INVALID_POINTER;
     if (flags) return CR_INVALID_FLAG;
     if (size && !buffer) return CR_INVALID_POINTER;
-    if (!is_valid_property_type( type ) ||
+    if (!is_valid_property_type( type ) || !is_valid_property_data( type, buffer, size ) ||
         (buffer && !size && type != DEVPROP_TYPE_EMPTY && type != DEVPROP_TYPE_NULL) ||
         (size && (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)))
         return CR_INVALID_DATA;
@@ -2979,7 +3032,6 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
     {
         if (type == DEVPROP_TYPE_GUID)
         {
-            if (size != sizeof(GUID)) return CR_INVALID_DATA;
             guid_string( (const GUID *)buffer, guid, ARRAY_SIZE(guid) );
             wcsupr( guid );
             return CM_Set_DevNode_Registry_Property_ExW( node, key->pid - 1, guid, sizeof(guid), 0, machine );

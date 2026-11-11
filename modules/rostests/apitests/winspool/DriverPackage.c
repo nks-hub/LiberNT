@@ -993,6 +993,65 @@ TestLockedDestination(PLOCK_TEST Test, PCWSTR SourceDir)
 }
 
 static VOID
+TestDriverUpdate(PLOCK_TEST Test, PCWSTR SourceDir, PCWSTR Gone)
+{
+    static const char First[] = "version A\r\n";
+    static const char Second[] = "version B, longer\r\n";
+    WCHAR Fresh[MAX_PATH], Path[MAX_PATH], Value[MAX_PATH] = L"";
+    PWSTR DataFile = Test->Info.pDataFile, ConfigFile = Test->Info.pConfigFile;
+    DWORD Size = sizeof(Path);
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+    HKEY hKey;
+
+    StringCchPrintfW(Fresh, ARRAYSIZE(Fresh), L"%s\\TESTROLL.DAT", SourceDir);
+    if (!WriteTestFile(SourceDir, L"TESTROLL.DAT", First, sizeof(First) - 1))
+    {
+        skip("Cannot write %S (%lu)\n", Fresh, GetLastError());
+        TestLockedDestination(Test, SourceDir);
+        return;
+    }
+
+    Test->Info.pDataFile = Fresh;
+    ok(AddPrinterDriverExW(NULL, 8, (PBYTE)&Test->Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+       "AddPrinterDriverExW failed with %lu\n", GetLastError());
+    ok(DriverFileIs(L"TESTROLL.DAT", First), "TESTROLL.DAT is not the first version\n");
+
+    ok(WriteTestFile(SourceDir, L"TESTROLL.DAT", Second, sizeof(Second) - 1), "Cannot change %S\n", Fresh);
+    Test->Info.pConfigFile = (PWSTR)Gone;
+    ok(!AddPrinterDriverExW(NULL, 8, (PBYTE)&Test->Info, APD_COPY_ALL_FILES | APD_COPY_FROM_DIRECTORY),
+       "AddPrinterDriverExW succeeded although %S does not exist\n", Gone);
+    Test->Info.pConfigFile = ConfigFile;
+    ok(DriverFileIs(L"TESTROLL.DAT", First), "TESTROLL.DAT was replaced by an update that failed\n");
+
+    TestLockedDestination(Test, SourceDir);
+    ok(DriverFileIs(L"TESTROLL.DAT", First), "TESTROLL.DAT was not restored after an update that failed\n");
+
+    hKey = OpenDriverKey(LOCK_DRIVER_NAME);
+    ok(hKey != NULL, "Driver %S is not registered any more\n", LOCK_DRIVER_NAME);
+    if (hKey)
+    {
+        Size = sizeof(Value);
+        ok(RegQueryValueExW(hKey, L"Configuration File", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+           !_wcsicmp(Value, L"TESTUI.DLL"), "Configuration File is %S\n", Value);
+        RegCloseKey(hKey);
+    }
+
+    Size = sizeof(Path);
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Path, Size, &Size))
+    {
+        StringCchCatW(Path, ARRAYSIZE(Path), L"\\3\\*.apd-*");
+        hFind = FindFirstFileW(Path, &Find);
+        ok(hFind == INVALID_HANDLE_VALUE, "%S was left behind\n", hFind == INVALID_HANDLE_VALUE ? L"" : Find.cFileName);
+        if (hFind != INVALID_HANDLE_VALUE)
+            FindClose(hFind);
+    }
+
+    Test->Info.pDataFile = DataFile;
+    DeleteFileW(Fresh);
+}
+
+static VOID
 TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
 {
     WCHAR Driver[MAX_PATH], Config[MAX_PATH], Data[MAX_PATH], Missing[MAX_PATH], Value[MAX_PATH];
@@ -1066,7 +1125,7 @@ TestPackageLock(PCWSTR InfPath, PCWSTR StoreInf)
         ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE), "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
     }
 
-    TestLockedDestination(&Test, SourceDir);
+    TestDriverUpdate(&Test, SourceDir, Gone);
 }
 
 START_TEST(DriverPackage)

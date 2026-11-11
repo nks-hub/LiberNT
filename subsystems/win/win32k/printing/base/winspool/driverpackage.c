@@ -313,7 +313,7 @@ FreePackageFiles(PPACKAGE_FILES Files)
 }
 
 static BOOL
-CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
+CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files, BOOL Required)
 {
     WCHAR Entry[MAX_PATH], Name[MAX_PATH], Source[MAX_PATH];
     INFCONTEXT Context, FileContext;
@@ -337,7 +337,7 @@ CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
                 continue;
             }
 
-            if (SetupGetLineCountW(hInf, Entry) < 0)
+            if (Required && SetupGetLineCountW(hInf, Entry) < 0)
             {
                 ERR("CopyFiles section %S not found\n", Entry);
                 SetLastError(ERROR_SECTION_NOT_FOUND);
@@ -475,7 +475,8 @@ LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR Driver
         return TRUE;
     }
 
-    if (!wcspbrk(Name, L"\\/:") &&
+    /* Only a file that the package does not copy itself is taken from the driver directory */
+    if (DriverDir && !wcspbrk(Name, L"\\/:") &&
         SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
         GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
     {
@@ -487,8 +488,8 @@ LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR Driver
 }
 
 static BOOL
-ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name,
-                   PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
+ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_FILES Owned, PCWSTR PackageDir, PCWSTR DriverDir,
+                   PCWSTR Name, PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
 {
     WCHAR Copy[MAX_PATH];
     PCWSTR Source = Name;
@@ -500,7 +501,8 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PCWSTR Pa
             Source = Files->Sources[i];
     }
 
-    if (!LocatePackageFile(hInf, Decoration, PackageDir, DriverDir, Source, Path, PathSize))
+    for (i = 0; i < Owned->Count && _wcsicmp(Owned->Names[i], Name) != 0; i++);
+    if (!LocatePackageFile(hInf, Decoration, PackageDir, i == Owned->Count ? DriverDir : NULL, Source, Path, PathSize))
         return FALSE;
     if (Source == Name)
         return TRUE;
@@ -553,9 +555,9 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     WCHAR DefaultDataType[MAX_PATH], PackageDir[MAX_PATH], DriverDir[MAX_PATH];
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
-    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 };
+    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 }, Owned = { 0 };
     WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH], IncludePath[MAX_PATH];
-    BOOL Found;
+    BOOL Found, InPackage;
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     PSP_ALTPLATFORM_INFO Platform = NULL;
@@ -564,7 +566,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     INFCONTEXT Context;
     PCWSTR Environment, Decoration = L"";
     WORD Architecture;
-    HINF hInf;
+    HINF hInf, hPackage;
     HRESULT hr;
 
     TRACE("InstallPrinterDriverFromPackageW(%S, %S, %S, %S, 0x%lx)\n",
@@ -614,6 +616,15 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (hInf == INVALID_HANDLE_VALUE)
         return HRESULT_FROM_WIN32(GetLastError());
 
+    /* The INFs of the package alone, to tell the files it copies from those a system INF copies */
+    hPackage = SetupOpenInfFileW(pszInfPath, NULL, INF_STYLE_WIN4, NULL);
+    if (hPackage == INVALID_HANDLE_VALUE)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        SetupCloseInfFile(hInf);
+        return hr;
+    }
+
     if (!FindModelSection(hInf, Platform, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
         !SetupDiGetActualSectionToInstallExW(hInf, InstallSection, Platform, ActualSection, ARRAYSIZE(ActualSection),
                                              NULL, NULL, NULL))
@@ -648,13 +659,13 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
                 if (Includes.Count == Size)
                     continue;
 
-                if (wcspbrk(Include, L"\\/:") ||
-                    FAILED(StringCchPrintfW(IncludePath, ARRAYSIZE(IncludePath), L"%s\\%s", PackageDir, Include)) ||
-                    GetFileAttributesW(IncludePath) == INVALID_FILE_ATTRIBUTES)
-                {
+                InPackage = !wcspbrk(Include, L"\\/:") &&
+                            SUCCEEDED(StringCchPrintfW(IncludePath, ARRAYSIZE(IncludePath), L"%s\\%s", PackageDir, Include)) &&
+                            GetFileAttributesW(IncludePath) != INVALID_FILE_ATTRIBUTES;
+                if (!InPackage)
                     StringCchCopyW(IncludePath, ARRAYSIZE(IncludePath), Include);
-                }
-                if (!SetupOpenAppendInfFileW(IncludePath, hInf, NULL))
+                if (!SetupOpenAppendInfFileW(IncludePath, hInf, NULL) ||
+                    (InPackage && !SetupOpenAppendInfFileW(IncludePath, hPackage, NULL)))
                 {
                     hr = HRESULT_FROM_WIN32(GetLastError());
                     goto Cleanup;
@@ -710,18 +721,19 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     for (i = 0; i < Sections.Count; i++)
     {
         SetLastError(ERROR_NOT_ENOUGH_MEMORY);
-        if (!CollectCopyFiles(hInf, Sections.Names[i], &Files))
+        if (!CollectCopyFiles(hInf, Sections.Names[i], &Files, TRUE) ||
+            !CollectCopyFiles(hPackage, Sections.Names[i], &Owned, FALSE))
         {
             hr = HRESULT_FROM_WIN32(GetLastError());
             goto Cleanup;
         }
     }
 
-    if (!ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, DriverFile, StagingDir, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
-        !ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, ConfigFile, StagingDir, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, DataFile, StagingDir, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
+    if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DriverFile, StagingDir, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, ConfigFile, StagingDir, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DataFile, StagingDir, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
         (*HelpFile &&
-         !ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, HelpFile, StagingDir, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
+         !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, HelpFile, StagingDir, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         goto Cleanup;
@@ -729,7 +741,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
 
     for (i = 0; i < Files.Count; i++)
     {
-        if (!ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -754,7 +766,7 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
             continue;
         }
 
-        if (!ResolvePackageFile(hInf, Decoration, &Files, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)) ||
             FAILED(StringCchCopyW(Next, DependentLength - (DWORD)(Next - DependentFiles), FilePath)))
         {
@@ -796,8 +808,10 @@ Cleanup:
         RemoveDirectoryW(StagingDir);
     FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
+    FreePackageFiles(&Owned);
     FreePackageFiles(&Sections);
     FreePackageFiles(&Includes);
+    SetupCloseInfFile(hPackage);
     SetupCloseInfFile(hInf);
     return hr;
 }

@@ -1012,6 +1012,99 @@ DriverFileIs(PCWSTR Name, PCSTR Text)
     return Read == strlen(Text) && !memcmp(Buffer, Text, Read);
 }
 
+static const char UpdateInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "LiberNT=Models\r\n"
+    "\r\n"
+    "[Models]\r\n"
+    "\"LiberNT Package Update Printer\"=TESTUPD,LiberNT_Package_Update\r\n"
+    "\r\n"
+    "[TESTUPD]\r\n"
+    "CopyFiles=TESTUPD_FILES\r\n"
+    "DriverFile=TESTUPD.DLL\r\n"
+    "ConfigFile=TESTUPD.DLL\r\n"
+    "DataFile=TESTUPD.GPD\r\n"
+    "\r\n"
+    "[TESTUPD_FILES]\r\n"
+    "TESTUPD.DLL\r\n"
+    "TESTUPD.GPD\r\n"
+    "TESTUPD.DAT\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTUPD.DLL=1\r\n"
+    "TESTUPD.GPD=1\r\n"
+    "TESTUPD.DAT=1\r\n";
+
+/* The package lacks TESTUPD.DAT, and the driver directory holds a file of that name */
+static VOID
+TestIncompleteUpdate(VOID)
+{
+    static const PCWSTR Names[] = { L"lntprnupd.inf", L"TESTUPD.DLL", L"TESTUPD.GPD", L"TESTUPD.DAT" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Installed[] = "the installed file\r\n";
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], DriverDir[MAX_PATH], Path[MAX_PATH];
+    DWORD Size = sizeof(DriverDir);
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+    {
+        skip("No printer driver directory (%lu)\n", GetLastError());
+        return;
+    }
+    StringCchCatW(DriverDir, ARRAYSIZE(DriverDir), L"\\3");
+    CreateDirectoryW(DriverDir, NULL);
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnupd");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnupd.inf", Dir);
+
+    if (WriteTestFile(Dir, L"lntprnupd.inf", UpdateInf, sizeof(UpdateInf) - 1) &&
+        WriteTestFile(Dir, L"TESTUPD.DLL", Text, sizeof(Text) - 1) &&
+        WriteTestFile(Dir, L"TESTUPD.GPD", Text, sizeof(Text) - 1) &&
+        WriteTestFile(DriverDir, L"TESTUPD.DAT", Installed, sizeof(Installed) - 1))
+    {
+        hr = InstallPrinterDriverFromPackageW(NULL, InfPath, L"LiberNT Package Update Printer", NULL, IPDFP_COPY_ALL_FILES);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+
+        hKey = OpenDriverKey(L"LiberNT Package Update Printer");
+        ok(hKey == NULL, "A driver was registered from a package without TESTUPD.DAT\n");
+        if (hKey)
+            RegCloseKey(hKey);
+        ok(DriverFileIs(L"TESTUPD.DAT", Installed), "The installed TESTUPD.DAT was changed\n");
+        ok(!DriverFileExists(L"TESTUPD.GPD"), "TESTUPD.GPD was installed from a package without TESTUPD.DAT\n");
+    }
+    else
+    {
+        skip("Failed to create the package lntprnupd.inf (%lu)\n", GetLastError());
+    }
+
+    RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\LiberNT Package Update Printer");
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", DriverDir, Names[i]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
 /* The driver directory holds a file of the size and the write time of the source, with other content, that cannot be replaced */
 static VOID
 TestLockedDestination(PLOCK_TEST Test, PCWSTR SourceDir)
@@ -1240,6 +1333,7 @@ START_TEST(DriverPackage)
     TestInstallPackage(L"lntprninc", L"LiberNT Package Include Printer", IncludeInf, sizeof(IncludeInf) - 1,
                        L"TESTINC.DLL", L"TESTINC%u.DAT", 2, L"TESTINC1.DAT", L"lntprncmn.inf");
     TestOtherEnvironment();
+    TestIncompleteUpdate();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

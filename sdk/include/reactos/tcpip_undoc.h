@@ -116,6 +116,7 @@ typedef struct _IP4_INTERFACE_INFO
     ULONG AccessType;
     BOOLEAN ConnectorPresent;
     ULONG64 NetLuid;
+    ULONG64 LinkSpeed;
 } IP4_INTERFACE_INFO, *PIP4_INTERFACE_INFO;
 
 typedef struct _IP_BEST_SOURCE

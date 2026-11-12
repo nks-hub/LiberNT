@@ -1269,7 +1269,7 @@ GetIfEntry2(
     Row->MediaConnectState = (Row->OperStatus == IfOperStatusUp) ? MediaConnectStateConnected :
                                                                    MediaConnectStateDisconnected;
     Row->ConnectionType = NET_IF_CONNECTION_DEDICATED;
-    Row->TransmitLinkSpeed = Row->ReceiveLinkSpeed = (ULONG64)Entry->if_speed * 100;
+    Row->TransmitLinkSpeed = Row->ReceiveLinkSpeed = Info.LinkSpeed ? Info.LinkSpeed : Entry->if_speed;
     Row->InOctets = Row->InUcastOctets = Entry->if_inoctets;
     Row->InUcastPkts = Entry->if_inucastpkts;
     Row->InNUcastPkts = Entry->if_innucastpkts;

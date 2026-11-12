@@ -143,18 +143,14 @@ START_TEST(KernelBaseModuleHandle)
         HookThreadWait = WAIT_FAILED;
         Module = NULL;
         Result = pGetModuleHandleExW(FromAddress, (LPCWSTR)Memory, &Module);
-        ok(Result, "GetModuleHandleExW failed with %lu
-", GetLastError());
-        ok(HookThreadWait == WAIT_OBJECT_0, "A thread started inside the lookup did not run: wait %lu
-", HookThreadWait);
+        ok(Result, "GetModuleHandleExW failed with %lu\n", GetLastError());
+        ok(HookThreadWait == WAIT_OBJECT_0, "A thread started inside the lookup did not run: wait %lu\n", HookThreadWait);
 
         HookThreadWait = WAIT_FAILED;
         Module = NULL;
         Result = pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)Memory, &Module);
-        ok(Result, "GetModuleHandleExW with a reference failed with %lu
-", GetLastError());
-        ok(HookThreadWait == WAIT_OBJECT_0, "A thread started inside the referencing lookup did not run: wait %lu
-", HookThreadWait);
+        ok(Result, "GetModuleHandleExW with a reference failed with %lu\n", GetLastError());
+        ok(HookThreadWait == WAIT_OBJECT_0, "A thread started inside the referencing lookup did not run: wait %lu\n", HookThreadWait);
         HookStartsThread = FALSE;
 
         /* A copy of the image headers, which the loader did not map */

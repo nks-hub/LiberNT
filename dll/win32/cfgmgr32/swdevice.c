@@ -606,7 +606,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 break;
 
             case SwOwnerEnded:
-                if (CfgmgrRemoveSoftwareDevice(Device->InstanceId, 0) == CR_SUCCESS)
+                if (CfgmgrRemoveAnySoftwareDevice(Device->InstanceId) == CR_SUCCESS)
                 {
                     TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
                     Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,

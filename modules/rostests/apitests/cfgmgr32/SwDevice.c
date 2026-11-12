@@ -1638,6 +1638,137 @@ test_RestrictedServiceLock(CREATED *State)
     }
 }
 
+static BOOL
+EnablePrivilege(PCWSTR Name)
+{
+    TOKEN_PRIVILEGES Privileges;
+    HANDLE Token;
+    BOOL Enabled;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &Token))
+        return FALSE;
+    Privileges.PrivilegeCount = 1;
+    Privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    Enabled = LookupPrivilegeValueW(NULL, Name, &Privileges.Privileges[0].Luid) &&
+              AdjustTokenPrivileges(Token, FALSE, &Privileges, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS;
+    CloseHandle(Token);
+    return Enabled;
+}
+
+/* SYSTEM may change the DACL of a key below Enum; an administrator needs SeRestorePrivilege */
+static LONG
+SetControlKeyDacl(PCWSTR InstanceId, PCWSTR Dacl, BOOL Empty)
+{
+    WCHAR Path[MAX_PATH];
+    PSECURITY_DESCRIPTOR Security;
+    HKEY Key;
+    LONG Error;
+
+    _snwprintf(Path, ARRAYSIZE(Path), L"SYSTEM\\CurrentControlSet\\Enum\\%s\\Control", InstanceId);
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(Dacl, SDDL_REVISION_1, &Security, NULL))
+        return GetLastError();
+    /* Nothing the device that was there left in the key may stand in for what the next creation writes */
+    if (Empty)
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, Path);
+    Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, Path, 0, NULL, 0, WRITE_DAC, NULL, &Key, NULL);
+    if (Error == ERROR_ACCESS_DENIED)
+        Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, Path, 0, NULL, REG_OPTION_BACKUP_RESTORE, 0, NULL, &Key, NULL);
+    if (!Error)
+    {
+        Error = RegSetKeySecurity(Key, DACL_SECURITY_INFORMATION, Security);
+        RegCloseKey(Key);
+    }
+    LocalFree(Security);
+    return Error;
+}
+
+#define CONTROL_DACL_NO_SYSTEM_WRITE L"D:(D;;0x2;;;SY)(A;;KA;;;SY)(A;;KA;;;BA)"
+#define CONTROL_DACL_RESTORED L"D:(A;;KA;;;SY)(A;;KA;;;BA)"
+
+/* A creation that cannot record which device it made must not leave a handle that removes a later device of the instance ID */
+static void
+test_UnnumberedDevice(CREATED *State)
+{
+    static const WCHAR ParentId[] = L"SWD\\" TEST_ENUMERATOR L"\\UnnumberedParent";
+    static const WCHAR ChildId[] = L"SWD\\" TEST_ENUMERATOR L"\\Unnumbered";
+    HSWDEVICE Parent, Child, Device;
+    DEVINST Root, DevInst;
+    CONFIGRET Cr;
+    LONG Error;
+    HRESULT hr;
+
+    /* The instance key exists as a creation leaves it, before its Control key gets the DACL */
+    hr = Create(L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr))
+        return;
+    SwDeviceClose(Device);
+    ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+
+    EnablePrivilege(L"SeRestorePrivilege");
+    if ((Error = SetControlKeyDacl(ChildId, CONTROL_DACL_NO_SYSTEM_WRITE, TRUE)) != ERROR_SUCCESS)
+    {
+        skip("The Control key of %S cannot get a DACL (%ld)\n", ChildId, Error);
+        return;
+    }
+    hr = Create(L"UnnumberedParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Parent);
+    ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr))
+    {
+        SetControlKeyDacl(ChildId, CONTROL_DACL_RESTORED, FALSE);
+        return;
+    }
+    hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Child);
+    Error = SetControlKeyDacl(ChildId, CONTROL_DACL_RESTORED, FALSE);
+    ok(Error == ERROR_SUCCESS, "Restoring the DACL of the Control key of %S failed (%ld)\n", ChildId, Error);
+    ok(hr == S_OK, "SwDeviceCreate below %S returned 0x%08lx\n", ParentId, hr);
+    if (FAILED(hr))
+    {
+        SwDeviceClose(Parent);
+        WaitGone(ParentId);
+        return;
+    }
+
+    trace("The creation with a Control key that SYSTEM cannot write reported 0x%08lx\n", State->Result);
+    if (FAILED(State->Result))
+    {
+        ok(!IsPresent(ChildId), "%S is present after its creation failed\n", ChildId);
+        SwDeviceClose(Child);
+        hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Child);
+        ok(hr == S_OK && State->Result == S_OK, "Creating %S once more returned 0x%08lx and reported 0x%08lx\n", ChildId, hr, State->Result);
+        if (SUCCEEDED(hr))
+        {
+            SwDeviceClose(Child);
+            ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+        }
+        SwDeviceClose(Parent);
+        ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+        return;
+    }
+
+    SwDeviceClose(Parent);
+    ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+    ok(WaitGone(ChildId), "%S stayed after its parent was removed\n", ChildId);
+    Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
+    if (Cr == CR_SUCCESS)
+        Cr = CM_Create_DevNodeW(&DevInst, (DEVINSTID_W)ChildId, Root, CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    if (Cr != CR_SUCCESS)
+    {
+        skip("CM_Create_DevNodeW cannot create %S (CR %lu)\n", ChildId, Cr);
+        SwDeviceClose(Child);
+        return;
+    }
+    SwDeviceClose(Child);
+    Sleep(3000);
+    ok(IsPresent(ChildId), "%S left with the handle of the device that was created first\n", ChildId);
+
+    hr = Create(L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "Taking over %S returned 0x%08lx and reported 0x%08lx\n", ChildId, hr, State->Result);
+    if (SUCCEEDED(hr))
+        SwDeviceClose(Device);
+    ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+}
+
 START_TEST(SwDevice)
 {
     CREATED State;
@@ -1672,5 +1803,6 @@ START_TEST(SwDevice)
     test_StaleHandle(&State);
     test_ParentRemovalRace(&State);
     test_RestrictedServiceLock(&State);
+    test_UnnumberedDevice(&State);
     CloseHandle(State.Event);
 }

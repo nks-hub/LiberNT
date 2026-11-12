@@ -2457,6 +2457,14 @@ CfgmgrRemoveSoftwareDevice(
 
 
 CONFIGRET
+CfgmgrRemoveAnySoftwareDevice(
+    _In_ PCWSTR pszInstanceId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, PNP_SOFTWARE_DEVICE_ANY_GENERATION, pszInstanceId);
+}
+
+
+CONFIGRET
 CfgmgrWatchSoftwareDevice(
     _In_ PCWSTR pszInstanceId,
     _In_ DWORD dwProcessId)

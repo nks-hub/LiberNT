@@ -797,7 +797,7 @@ StageModelCopyFiles(
         Found = SetupGetFieldCount(&Manufacturer) < 2
                     ? SetupGetStringFieldW(&Manufacturer, 1, Models, ARRAY_SIZE(Models), NULL)
                     : SetupDiGetActualModelsSectionW(&Manufacturer, Package->Platform, Models, ARRAY_SIZE(Models), NULL, NULL);
-        if (!Found || !SetupFindFirstLineW(hInf, Models, NULL, &Model))
+        if (!Found || !SetupFindFirstLineW(hInf, Models, NULL, &Model) || Model.CurrentInf != Model.Inf)
             continue;
         /* Windows 11 does not install a 64-bit model from a section without the decoration, so its files can be missing */
         if (Package->Architecture != PROCESSOR_ARCHITECTURE_INTEL &&
@@ -819,8 +819,9 @@ StageModelCopyFiles(
             lstrcatW(Actual, L".CoInstallers");
             if (!StageInstallSection(hInf, Actual, Package))
                 return FALSE;
-        } while (SetupFindNextLine(&Model, &Model));
-    } while (SetupFindNextLine(&Manufacturer, &Manufacturer));
+        } while (SetupFindNextLine(&Model, &Model) && Model.CurrentInf == Model.Inf);
+        /* The models of an INF that a model includes are not of this package */
+    } while (SetupFindNextLine(&Manufacturer, &Manufacturer) && Manufacturer.CurrentInf == Manufacturer.Inf);
     return TRUE;
 }
 

@@ -1769,6 +1769,233 @@ test_UnnumberedDevice(CREATED *State)
     ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
 }
 
+#define CONTEND_START_EVENT L"LntSwTestContendStart"
+#define CONTEND_RELEASE_EVENT L"LntSwTestContendRelease"
+#define CONTEND_ID L"SWD\\" TEST_ENUMERATOR L"\\Contended"
+#define CONTENDERS 4
+#define CONTEND_CREATED 0x10
+#define CONTEND_REFUSED 0x11
+#define CONTEND_REPORTED 0x12
+
+/* Creates the contended device when the test signals and holds it until the test releases it */
+static void
+RunContender(void)
+{
+    HANDLE Start = OpenEventW(SYNCHRONIZE, FALSE, CONTEND_START_EVENT), Release = OpenEventW(SYNCHRONIZE, FALSE, CONTEND_RELEASE_EVENT);
+    CREATED State;
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!Start || !Release || WaitForSingleObject(Start, 60000) != WAIT_OBJECT_0)
+        ExitProcess(1);
+    hr = Create(L"Contended", SWDeviceCapabilitiesSilentInstall, NULL, &State, &Device);
+    if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS))
+        ExitProcess(CONTEND_REFUSED);
+    if (FAILED(hr))
+        ExitProcess(1);
+    if (State.Result != S_OK)
+    {
+        SwDeviceClose(Device);
+        ExitProcess(State.Result == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) ? CONTEND_REPORTED : 1);
+    }
+    WaitForSingleObject(Release, 60000);
+    SwDeviceClose(Device);
+    ExitProcess(CONTEND_CREATED);
+}
+
+/* Windows 11 gives the instance ID to one of the processes that create it at the same time and refuses it to the others at once */
+static void
+test_Contention(void)
+{
+    HANDLE Start = CreateEventW(NULL, TRUE, FALSE, CONTEND_START_EVENT), Release = CreateEventW(NULL, TRUE, FALSE, CONTEND_RELEASE_EVENT);
+    ULONG Count = 0, Ended, Created = 0, Refused = 0, Reported = 0, i;
+    PROCESS_INFORMATION Process;
+    HANDLE Processes[CONTENDERS];
+    DWORD Begin, ExitCode;
+
+    while (Count < CONTENDERS && StartChild(L"contend", &Process))
+    {
+        CloseHandle(Process.hThread);
+        Processes[Count++] = Process.hProcess;
+    }
+    SetEvent(Start);
+    if (Count < 2)
+        skip("Only %lu processes started\n", Count);
+
+    /* The processes that lose end at once; the one that wins holds the device */
+    Begin = GetTickCount();
+    do
+    {
+        Sleep(200);
+        for (i = Ended = 0; i < Count; i++)
+            Ended += WaitForSingleObject(Processes[i], 0) == WAIT_OBJECT_0;
+    } while (Ended + 1 < Count && GetTickCount() - Begin < 60000);
+    ok(IsPresent(CONTEND_ID), "%S is not present while the process that created it holds it\n", CONTEND_ID);
+
+    SetEvent(Release);
+    for (i = 0; i < Count; i++)
+    {
+        ExitCode = 1;
+        WaitForSingleObject(Processes[i], 60000);
+        GetExitCodeProcess(Processes[i], &ExitCode);
+        CloseHandle(Processes[i]);
+        Created += ExitCode == CONTEND_CREATED;
+        Refused += ExitCode == CONTEND_REFUSED;
+        Reported += ExitCode == CONTEND_REPORTED;
+    }
+    trace("Of %lu processes %lu created %S, %lu were refused at once and %lu through the callback\n", Count, Created, CONTEND_ID, Refused, Reported);
+    ok(Created == 1, "%lu processes created %S at the same time\n", Created, CONTEND_ID);
+    ok(Refused + 1 == Count, "Of %lu processes %lu were refused at once and %lu through the callback\n", Count, Refused, Reported);
+    ok(WaitGone(CONTEND_ID), "%S stayed after its handle closed\n", CONTEND_ID);
+    CloseHandle(Start);
+    CloseHandle(Release);
+}
+
+/* A thread that impersonates a user who is neither an administrator nor SYSTEM */
+static HANDLE
+CreateUserToken(void)
+{
+    BYTE Admins[SECURITY_MAX_SID_SIZE], System[SECURITY_MAX_SID_SIZE];
+    DWORD AdminsSize = sizeof(Admins), SystemSize = sizeof(System);
+    SID_AND_ATTRIBUTES Disabled[2];
+    HANDLE Token, Restricted, Impersonation = NULL;
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &AdminsSize) ||
+        !CreateWellKnownSid(WinLocalSystemSid, NULL, System, &SystemSize) ||
+        !OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &Token))
+    {
+        return NULL;
+    }
+    Disabled[0].Sid = Admins;
+    Disabled[0].Attributes = 0;
+    Disabled[1].Sid = System;
+    Disabled[1].Attributes = 0;
+    if (CreateRestrictedToken(Token, DISABLE_MAX_PRIVILEGE, ARRAYSIZE(Disabled), Disabled, 0, NULL, 0, NULL, &Restricted))
+    {
+        DuplicateTokenEx(Restricted, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &Impersonation);
+        CloseHandle(Restricted);
+    }
+    CloseHandle(Token);
+    return Impersonation;
+}
+
+/* Windows 11 removes the device of a handle that a thread closes while it impersonates a user who could not create it */
+static void
+test_ImpersonatedClose(CREATED *State)
+{
+    static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\ImpersonatedClose";
+    HANDLE Token = CreateUserToken();
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    if (!Token)
+    {
+        skip("No token of a user (error %lu)\n", GetLastError());
+        return;
+    }
+    hr = Create(L"ImpersonatedClose", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (SUCCEEDED(hr))
+    {
+        ok(SetThreadToken(NULL, Token), "SetThreadToken failed (%lu)\n", GetLastError());
+        SwDeviceClose(Device);
+        RevertToSelf();
+        ok(WaitGone(InstanceId), "%S stayed after an impersonating thread closed its handle\n", InstanceId);
+
+        hr = Create(L"ImpersonatedClose", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+        ok(hr == S_OK && State->Result == S_OK, "Creating %S again returned 0x%08lx and reported 0x%08lx\n", InstanceId, hr, State->Result);
+        if (SUCCEEDED(hr))
+            SwDeviceClose(Device);
+        ok(WaitGone(InstanceId), "%S stayed after its handle closed\n", InstanceId);
+    }
+    CloseHandle(Token);
+}
+
+#define UNLOAD_DONE 0x10
+#define UNLOAD_NO_COPY 0x11
+
+/* Loads a copy of the library, creates and removes a device through it and frees it, twice, and reports the step that failed */
+static void
+RunUnloadChild(void)
+{
+    typedef HRESULT (WINAPI *PFN_SWDEVICECREATE)(PCWSTR, PCWSTR, const SW_DEVICE_CREATE_INFO *, ULONG, const DEVPROPERTY *,
+                                                 SW_DEVICE_CREATE_CALLBACK, PVOID, PHSWDEVICE);
+    typedef void (WINAPI *PFN_SWDEVICECLOSE)(HSWDEVICE);
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    WCHAR Library[MAX_PATH], Copy[MAX_PATH];
+    PFN_SWDEVICECREATE pSwDeviceCreate;
+    PFN_SWDEVICECLOSE pSwDeviceClose;
+    HSWDEVICE Device;
+    HMODULE Module;
+    CREATED State;
+    DWORD Start;
+    ULONG Round;
+    HRESULT hr;
+
+    GetSystemDirectoryW(Library, ARRAYSIZE(Library));
+    lstrcatW(Library, L"\\cfgmgr32.dll");
+    GetTempPathW(ARRAYSIZE(Copy), Copy);
+    lstrcatW(Copy, L"LntSwTestCfgmgr32.dll");
+    if (!CopyFileW(Library, Copy, FALSE))
+        ExitProcess(UNLOAD_NO_COPY);
+
+    Info.pszInstanceId = L"Unload";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    for (Round = 0; Round < 2; Round++)
+    {
+        Module = LoadLibraryW(Copy);
+        if (!Module)
+            ExitProcess(1 + 4 * Round);
+        pSwDeviceCreate = (PFN_SWDEVICECREATE)GetProcAddress(Module, "SwDeviceCreate");
+        pSwDeviceClose = (PFN_SWDEVICECLOSE)GetProcAddress(Module, "SwDeviceClose");
+        if (!pSwDeviceCreate || !pSwDeviceClose)
+            ExitProcess(1 + 4 * Round);
+        State.Result = E_PENDING;
+        ResetEvent(State.Event);
+        hr = pSwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, &State, &Device);
+        if (FAILED(hr) || WaitForSingleObject(State.Event, 30000) != WAIT_OBJECT_0 || State.Result != S_OK ||
+            !IsPresent(L"SWD\\" TEST_ENUMERATOR L"\\Unload"))
+        {
+            printf("Round %lu: SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", Round, hr, State.Result);
+            ExitProcess(2 + 4 * Round);
+        }
+        pSwDeviceClose(Device);
+        if (!WaitGone(L"SWD\\" TEST_ENUMERATOR L"\\Unload"))
+            ExitProcess(3 + 4 * Round);
+        FreeLibrary(Module);
+        Start = GetTickCount();
+        while (GetModuleHandleW(Copy) && GetTickCount() - Start < 10000)
+            Sleep(100);
+        if (GetModuleHandleW(Copy))
+            ExitProcess(4 + 4 * Round);
+    }
+    DeleteFileW(Copy);
+    ExitProcess(UNLOAD_DONE);
+}
+
+/* The library frees what it holds for the device owners when a process frees it, and works again when the process loads it again */
+static void
+test_Unload(void)
+{
+    PROCESS_INFORMATION Process;
+    DWORD ExitCode = 1;
+
+    if (!StartChild(L"unload", &Process))
+        return;
+    WaitForSingleObject(Process.hProcess, 120000);
+    GetExitCodeProcess(Process.hProcess, &ExitCode);
+    CloseHandle(Process.hThread);
+    CloseHandle(Process.hProcess);
+    if (ExitCode == UNLOAD_NO_COPY)
+        skip("The library cannot be copied\n");
+    else
+        ok(ExitCode == UNLOAD_DONE, "Loading and freeing a copy of the library failed at step %lu\n", ExitCode);
+}
+
 START_TEST(SwDevice)
 {
     CREATED State;
@@ -1780,6 +2007,10 @@ START_TEST(SwDevice)
         RunOwnerChild();
     if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "restricted"))
         RunRestrictedChild();
+    if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "contend"))
+        RunContender();
+    if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "unload"))
+        RunUnloadChild();
 
     State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
     test_Lifetime(&State);
@@ -1804,5 +2035,8 @@ START_TEST(SwDevice)
     test_ParentRemovalRace(&State);
     test_RestrictedServiceLock(&State);
     test_UnnumberedDevice(&State);
+    test_Contention();
+    test_ImpersonatedClose(&State);
+    test_Unload();
     CloseHandle(State.Event);
 }

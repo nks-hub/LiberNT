@@ -341,6 +341,7 @@ KMT_TESTFUNC Test_IoPciExpressInterfaces;
 KMT_TESTFUNC Test_IoPciEnumeration;
 KMT_TESTFUNC Test_IoPciRom;
 KMT_TESTFUNC Test_IoStackLimits;
+KMT_TESTFUNC Test_IoBootDriverKey;
 KMT_TESTFUNC Test_SmcLib;
 KMT_TESTFUNC Test_SmcLibRemove;
 KMT_TESTFUNC Test_KeCriticalRegionKM;
@@ -524,6 +525,7 @@ const KMT_TEST TestList[] =
     { "IoPciEnumeration",                   Test_IoPciEnumeration },
     { "IoPciRom",                           Test_IoPciRom },
     { "IoStackLimits",                      Test_IoStackLimits },
+    { "IoBootDriverKey",                    Test_IoBootDriverKey },
     { "SmcLib",                             Test_SmcLib },
     { "SmcLibRemove",                       Test_SmcLibRemove },
     { "IoDeviceNumaNode",                    Test_IoDeviceNumaNode },

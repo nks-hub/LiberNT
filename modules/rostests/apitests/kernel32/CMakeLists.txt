@@ -18,6 +18,7 @@ list(APPEND SOURCE
     ConsoleProcessInheritance.c
     ConsoleVirtualTerminal.c
     CopyContext.c
+    CopyFileExStop.c
     CreateAfterMissingName.c
     CreateDirectoryRoot.c
     CreateProcess.c

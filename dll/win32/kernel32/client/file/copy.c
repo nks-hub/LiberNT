@@ -21,6 +21,20 @@ DEBUG_CHANNEL(kernel32file);
 
 /* FUNCTIONS ****************************************************************/
 
+/* A file whose device cannot be queried is not known to be local */
+static BOOL
+BasepIsLocalFile(HANDLE FileHandle)
+{
+    FILE_FS_DEVICE_INFORMATION FileFsDevice;
+    IO_STATUS_BLOCK IoStatusBlock;
+
+    return NT_SUCCESS(NtQueryVolumeInformationFile(FileHandle,
+                                                   &IoStatusBlock,
+                                                   &FileFsDevice,
+                                                   sizeof(FileFsDevice),
+                                                   FileFsDeviceInformation)) &&
+           !(FileFsDevice.Characteristics & FILE_REMOTE_DEVICE);
+}
 
 static NTSTATUS
 CopyLoop (
@@ -30,6 +44,7 @@ CopyLoop (
     LPPROGRESS_ROUTINE	lpProgressRoutine,
     LPVOID			lpData,
     BOOL			*pbCancel,
+    DWORD                CopyFlags,
     BOOL                 *KeepDest
 )
 {
@@ -40,6 +55,7 @@ CopyLoop (
     LARGE_INTEGER BytesCopied;
     DWORD CallbackReason;
     DWORD ProgressResult;
+    DWORD RemoteFiles;
     BOOL EndOfFileFound;
 
     *KeepDest = FALSE;
@@ -79,7 +95,10 @@ CopyLoop (
                 case PROGRESS_STOP:
                     TRACE("Progress callback requested stop\n");
                     errCode = STATUS_REQUEST_ABORTED;
-                    *KeepDest = TRUE;
+                    /* Measured on Windows 11: kept before the first chunk, between two remote files, and when restartable with one */
+                    RemoteFiles = !BasepIsLocalFile(FileHandleSource) + !BasepIsLocalFile(FileHandleDest);
+                    *KeepDest = CallbackReason == CALLBACK_STREAM_SWITCH || RemoteFiles == 2 ||
+                                (RemoteFiles && (CopyFlags & COPY_FILE_RESTARTABLE));
                     break;
                 case PROGRESS_QUIET:
                     lpProgressRoutine = NULL;
@@ -259,7 +278,6 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
     BOOL RC = FALSE;
     BOOL KeepDestOnError = FALSE;
     BOOL NoDeleteAccess = FALSE;
-    DWORD SystemError;
 
     FileHandleSource = CreateFileW(lpExistingFileName,
                                    GENERIC_READ,
@@ -306,7 +324,8 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                                              (dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS) ? CREATE_NEW : CREATE_ALWAYS,
                                              FileBasic.FileAttributes,
                                              NULL);
-                if (INVALID_HANDLE_VALUE == FileHandleDest && GetLastError() == ERROR_SHARING_VIOLATION)
+                if (INVALID_HANDLE_VALUE == FileHandleDest &&
+                    (GetLastError() == ERROR_SHARING_VIOLATION || GetLastError() == ERROR_ACCESS_DENIED))
                 {
                     NoDeleteAccess = TRUE;
                     FileHandleDest = CreateFileW(lpNewFileName,
@@ -327,6 +346,7 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                                        lpProgressRoutine,
                                        lpData,
                                        pbCancel,
+                                       dwCopyFlags,
                                        &KeepDestOnError);
                     if (!NT_SUCCESS(errCode))
                     {
@@ -347,14 +367,26 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                             RC = TRUE;
                         }
                     }
-                    NtClose(FileHandleDest);
                     if (! RC && ! KeepDestOnError && ! NoDeleteAccess)
                     {
-                        SystemError = GetLastError();
-                        SetFileAttributesW(lpNewFileName, FILE_ATTRIBUTE_NORMAL);
-                        DeleteFileW(lpNewFileName);
-                        SetLastError(SystemError);
+                        FILE_DISPOSITION_INFORMATION FileDisposition;
+
+                        /* By handle: the progress routine may have put another file at lpNewFileName */
+                        RtlZeroMemory(&FileBasic, sizeof(FileBasic));
+                        FileBasic.FileAttributes = FILE_ATTRIBUTE_NORMAL;
+                        NtSetInformationFile(FileHandleDest,
+                                             &IoStatusBlock,
+                                             &FileBasic,
+                                             sizeof(FileBasic),
+                                             FileBasicInformation);
+                        FileDisposition.DeleteFile = TRUE;
+                        NtSetInformationFile(FileHandleDest,
+                                             &IoStatusBlock,
+                                             &FileDisposition,
+                                             sizeof(FileDisposition),
+                                             FileDispositionInformation);
                     }
+                    NtClose(FileHandleDest);
                 }
                 else
                 {

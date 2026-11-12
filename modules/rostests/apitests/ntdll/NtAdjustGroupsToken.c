@@ -236,7 +236,8 @@ AdjustWithPreviousState(VOID)
     HANDLE Token;
     PTOKEN_GROUPS Before, Previous = NULL;
     TOKEN_GROUPS Disable, Small;
-    ULONG Target, Length, Expected, Needed;
+    ULONG Target, Length, Expected, Needed, Offset, Odd[2];
+    const ULONG Filler = 0xCCCCCCCC;
     UCHAR Room[FIELD_OFFSET(TOKEN_GROUPS, Groups[2]) + SECURITY_MAX_SID_SIZE];
     PVOID ReadOnly = NULL;
     SIZE_T PageSize = PAGE_SIZE;
@@ -333,6 +334,34 @@ AdjustWithPreviousState(VOID)
     ok(Previous->Groups[0].Attributes == Before->Groups[Target].Attributes,
        "The previous attributes are 0x%lx, expected 0x%lx\n",
        Previous->Groups[0].Attributes, Before->Groups[Target].Attributes);
+
+    /* On Windows 11 a length that is not aligned is written at every offset, and nothing around it */
+    Status = NtAdjustGroupsToken(Token, FALSE, Previous, 0, NULL, NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    for (Offset = 1; Offset < sizeof(ULONG); Offset++)
+    {
+        RtlFillMemory(Odd, sizeof(Odd), 0xCC);
+        Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed - 1, Previous, (PULONG)((PUCHAR)Odd + Offset));
+        ok_hex(Status, STATUS_BUFFER_TOO_SMALL);
+        RtlCopyMemory(&Length, (PUCHAR)Odd + Offset, sizeof(Length));
+        ok(Length == Needed, "ReturnLength at offset %lu is %lu, expected %lu\n", Offset, Length, Needed);
+        RtlCopyMemory((PUCHAR)Odd + Offset, &Filler, sizeof(Filler));
+        ok(Odd[0] == Filler && Odd[1] == Filler, "The short call wrote around the length at offset %lu\n", Offset);
+        CheckGroupsUnchanged(Token, Before);
+
+        Status = NtAdjustGroupsToken(Token, FALSE, &Disable, Needed, Previous, (PULONG)((PUCHAR)Odd + Offset));
+        ok_hex(Status, STATUS_SUCCESS);
+        RtlCopyMemory(&Length, (PUCHAR)Odd + Offset, sizeof(Length));
+        ok(Length == Expected, "ReturnLength at offset %lu is %lu, expected %lu\n", Offset, Length, Expected);
+        RtlCopyMemory((PUCHAR)Odd + Offset, &Filler, sizeof(Filler));
+        ok(Odd[0] == Filler && Odd[1] == Filler, "The call wrote around the length at offset %lu\n", Offset);
+
+        Status = NtAdjustGroupsToken(Token, FALSE, Previous, 0, NULL, NULL);
+        ok_hex(Status, STATUS_SUCCESS);
+        CheckGroupsUnchanged(Token, Before);
+    }
+    Status = NtAdjustGroupsToken(Token, FALSE, &Disable, 0, NULL, NULL);
+    ok_hex(Status, STATUS_SUCCESS);
 
     /* The group is disabled now, so the same request changes nothing */
     Needed = PreviousStateLength(0, 0);

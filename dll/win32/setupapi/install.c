@@ -23,6 +23,7 @@
 
 #include <winsvc.h>
 #include <ndk/cmfuncs.h>
+#include <drvpkglock.h>
 
 /* Unicode constants */
 static const WCHAR BackSlash[] = {'\\',0};
@@ -2805,6 +2806,9 @@ BOOL WINAPI SetupCopyOEMInfW(
         LPWSTR pFullFileName = NULL;
         LPWSTR pFileName; /* Pointer into pFullFileName buffer */
         HANDLE hSourceFile = INVALID_HANDLE_VALUE;
+        HANDLE hNamespace, hLock;
+        BOOL Locked = FALSE;
+        DWORD Error;
         BOOL HasSourcePath = strchrW(SourceInfFileName, '\\') || strchrW(SourceInfFileName, '/');
 
         if (!HasSourcePath && GetFileAttributesW(SourceInfFileName) != INVALID_FILE_ATTRIBUTES)
@@ -2868,6 +2872,9 @@ BOOL WINAPI SetupCopyOEMInfW(
             SetLastError(ERROR_FILE_NOT_FOUND);
             goto cleanup;
         }
+
+        /* Held until the INF, its package and its database entry all exist; without it only a published INF is reported */
+        Locked = AcquirePackageLock(&hNamespace, &hLock);
 
         /* Prepare .inf file specification */
         len = MAX_PATH + 1 + strlenW(InfDirectory) + 13;
@@ -2947,11 +2954,11 @@ BOOL WINAPI SetupCopyOEMInfW(
                 if (DestinationInfFileNameComponent)
                     *DestinationInfFileNameComponent = &DestinationInfFileName[pFileName - pFullFileName];
             }
-            if (HasSourcePath)
+            if (HasSourcePath && Locked)
             {
                 DWORD LastError = GetLastError();
 
-                SETUPAPI_StageDriverPackage(SourceInfFileName);
+                SETUPAPI_StageLockedDriverPackage(SourceInfFileName);
                 SetLastError(LastError);
             }
             goto cleanup;
@@ -2973,15 +2980,24 @@ BOOL WINAPI SetupCopyOEMInfW(
                     *DestinationInfFileNameComponent = &DestinationInfFileName[pFileName - pFullFileName];
             }
 
-            if (HasSourcePath && !SETUPAPI_StageDriverPackage(SourceInfFileName))
-                goto cleanup;
+            if (Locked)
+            {
+                if (HasSourcePath && !SETUPAPI_StageLockedDriverPackage(SourceInfFileName))
+                    goto cleanup;
 
-            SETUPAPI_RecordPublishedDriverPackage(pFullFileName, SourceInfFileName);
+                SETUPAPI_RecordPublishedDriverPackage(pFullFileName, SourceInfFileName);
+            }
 
             if ((CopyStyle & SP_COPY_DELETESOURCE) && !DeleteFileW(SourceInfFileName))
                 goto cleanup;
 
             ret = TRUE;
+            goto cleanup;
+        }
+
+        if (!Locked)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
             goto cleanup;
         }
 
@@ -3024,7 +3040,7 @@ BOOL WINAPI SetupCopyOEMInfW(
             goto cleanup;
         }
 
-        if (HasSourcePath && !SETUPAPI_StageDriverPackage(SourceInfFileName))
+        if (HasSourcePath && !SETUPAPI_StageLockedDriverPackage(SourceInfFileName))
         {
             DWORD LastError = GetLastError();
 
@@ -3065,6 +3081,12 @@ BOOL WINAPI SetupCopyOEMInfW(
         ret = TRUE;
 
 cleanup:
+        if (Locked)
+        {
+            Error = GetLastError();
+            ReleasePackageLock(hNamespace, hLock);
+            SetLastError(Error);
+        }
         if (hSourceFile != INVALID_HANDLE_VALUE)
             CloseHandle(hSourceFile);
         if (hSearch != INVALID_HANDLE_VALUE)

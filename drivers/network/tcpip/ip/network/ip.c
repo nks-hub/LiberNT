@@ -325,7 +325,10 @@ BOOLEAN IPRegisterInterface(
         ChosenIndex = IF->NdisIfIndex;
         ForEachInterface(Interface) {
             if (Interface->Index == ChosenIndex)
-                ChosenIndex = 1;
+            {
+                TcpipReleaseSpinLock(&InterfaceListLock, OldIrql);
+                return FALSE;
+            }
         } EndFor(Interface);
     }
 

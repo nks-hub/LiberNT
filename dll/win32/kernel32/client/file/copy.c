@@ -44,6 +44,7 @@ CopyLoop (
     LPPROGRESS_ROUTINE	lpProgressRoutine,
     LPVOID			lpData,
     BOOL			*pbCancel,
+    DWORD                CopyFlags,
     BOOL                 *KeepDest
 )
 {
@@ -54,6 +55,7 @@ CopyLoop (
     LARGE_INTEGER BytesCopied;
     DWORD CallbackReason;
     DWORD ProgressResult;
+    DWORD RemoteFiles;
     BOOL EndOfFileFound;
 
     *KeepDest = FALSE;
@@ -93,8 +95,10 @@ CopyLoop (
                 case PROGRESS_STOP:
                     TRACE("Progress callback requested stop\n");
                     errCode = STATUS_REQUEST_ABORTED;
-                    /* Windows 11 deletes a stopped local copy (measured); a network copy keeps it as documented */
-                    *KeepDest = !BasepIsLocalFile(FileHandleSource) || !BasepIsLocalFile(FileHandleDest);
+                    /* Measured on Windows 11: kept before the first chunk, between two remote files, and when restartable with one */
+                    RemoteFiles = !BasepIsLocalFile(FileHandleSource) + !BasepIsLocalFile(FileHandleDest);
+                    *KeepDest = CallbackReason == CALLBACK_STREAM_SWITCH || RemoteFiles == 2 ||
+                                (RemoteFiles && (CopyFlags & COPY_FILE_RESTARTABLE));
                     break;
                 case PROGRESS_QUIET:
                     lpProgressRoutine = NULL;
@@ -342,6 +346,7 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                                        lpProgressRoutine,
                                        lpData,
                                        pbCancel,
+                                       dwCopyFlags,
                                        &KeepDestOnError);
                     if (!NT_SUCCESS(errCode))
                     {

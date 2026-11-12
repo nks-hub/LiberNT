@@ -18,10 +18,28 @@ typedef struct _CRASH_EVENT
 
 static SERVICE_STATUS_HANDLE crash_status_handle;
 static BOOL service_fails_cleanly;
+static BOOL service_hangs;
+
+#define CONTROL_HANG 128
+#define HANG_MARGIN  3000
+
+static DWORD pipe_timeout(void)
+{
+    DWORD timeout = 30000, size = sizeof(timeout);
+
+    RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control", L"ServicesPipeTimeout", RRF_RT_REG_DWORD, NULL,
+                 &timeout, &size);
+    return timeout;
+}
 
 static VOID WINAPI crash_handler(DWORD ctrl)
 {
-    UNREFERENCED_PARAMETER(ctrl);
+    SERVICE_STATUS status = { SERVICE_WIN32_OWN_PROCESS, SERVICE_STOPPED, 0, NO_ERROR, 0, 0, 0 };
+
+    if (ctrl == CONTROL_HANG)
+        Sleep(pipe_timeout() + HANG_MARGIN);
+    else if (ctrl == SERVICE_CONTROL_STOP && service_hangs)
+        SetServiceStatus(crash_status_handle, &status);
 }
 
 static void WINAPI crash_main(DWORD argc, LPWSTR *argv)
@@ -32,7 +50,11 @@ static void WINAPI crash_main(DWORD argc, LPWSTR *argv)
     crash_status_handle = RegisterServiceCtrlHandlerW(argv[0], crash_handler);
     if (!crash_status_handle)
         return;
+    if (service_hangs)
+        status.dwControlsAccepted = SERVICE_ACCEPT_STOP;
     SetServiceStatus(crash_status_handle, &status);
+    if (service_hangs)
+        return;
     if (service_fails_cleanly)
     {
         status.dwCurrentState = SERVICE_STOPPED;
@@ -312,6 +334,49 @@ static void test_non_crash_flag(SC_HANDLE scm)
     delete_test_service(service);
 }
 
+/* The service manager gives up on a control after the pipe timeout and serves the next one when the handler is back. */
+static void test_control_timeout(SC_HANDLE scm)
+{
+    DWORD timeout = pipe_timeout(), start, elapsed;
+    SERVICE_STATUS_PROCESS process;
+    SERVICE_STATUS status;
+    WCHAR name[64];
+    SC_HANDLE service;
+    BOOL res;
+
+    if (timeout > 60000)
+    {
+        skip("ServicesPipeTimeout is %lu ms\n", timeout);
+        return;
+    }
+    service = create_test_service(scm, L"LntHangTest", L"hang", name, sizeof(name));
+    if (!service)
+        return;
+    res = StartServiceW(service, 0, NULL);
+    ok(res, "StartServiceW failed: %lu\n", GetLastError());
+    for (elapsed = 0; res && elapsed < 50 && QueryServiceStatus(service, &status) && status.dwCurrentState != SERVICE_RUNNING; ++elapsed)
+        Sleep(100);
+    if (res)
+    {
+        start = GetTickCount();
+        SetLastError(0xdeadbeef);
+        res = ControlService(service, CONTROL_HANG, &status);
+        elapsed = GetTickCount() - start;
+        ok(!res && GetLastError() == ERROR_SERVICE_REQUEST_TIMEOUT, "hung control: %d error %lu\n", res, GetLastError());
+        ok(elapsed + 100 >= timeout && elapsed < timeout + HANG_MARGIN, "hung control returned after %lu ms\n", elapsed);
+
+        res = ControlService(service, CONTROL_HANG + 1, &status);
+        elapsed = GetTickCount() - start;
+        ok(res, "control behind the hung one failed: %lu\n", GetLastError());
+        ok(elapsed + 100 >= timeout + HANG_MARGIN, "control behind the hung one returned after %lu ms\n", elapsed);
+        ok(ControlService(service, CONTROL_HANG + 2, &status), "second control failed: %lu\n", GetLastError());
+
+        ok(ControlService(service, SERVICE_CONTROL_STOP, &status), "stop failed: %lu\n", GetLastError());
+        ok(wait_stopped(service, &process), "service still in state %lu\n", process.dwCurrentState);
+    }
+    delete_test_service(service);
+}
+
 START_TEST(ServiceCrash)
 {
     char **argv;
@@ -325,6 +390,7 @@ START_TEST(ServiceCrash)
 
         MultiByteToWideChar(CP_ACP, 0, argv[2], -1, name, ARRAYSIZE(name));
         service_fails_cleanly = argc >= 4 && !strcmp(argv[3], "fail");
+        service_hangs = argc >= 4 && !strcmp(argv[3], "hang");
         StartServiceCtrlDispatcherW(table);
         return;
     }
@@ -340,5 +406,6 @@ START_TEST(ServiceCrash)
     test_run_command(scm, SERVICE_WIN32_OWN_PROCESS);
     test_run_command(scm, SERVICE_WIN32_SHARE_PROCESS);
     test_non_crash_flag(scm);
+    test_control_timeout(scm);
     CloseServiceHandle(scm);
 }

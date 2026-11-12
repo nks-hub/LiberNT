@@ -33,7 +33,8 @@ static struct test_info TestResults[] =
     {L"TestWinsta", L"TestDesktop"},
     {NULL, NULL},
     {L"WinSta0",L"Default"},
-    {NULL, NULL}
+    {NULL, NULL},
+    {L"WinSta0",L"Default"}
 };
 
 static BOOL IsLocalSystem(void)
@@ -62,6 +63,9 @@ void do_InitialDesktop_child(int i)
     ProcessIdToSessionId(GetCurrentProcessId(), &session);
     if (i == 1 && IsLocalSystem() && session == 0)
         TestResults[i].ExpectedWinsta = L"Service-0x0-3e7$";
+
+    if (i == 17)
+        ok(session != 0, "The child runs in session 0\n");
 
     if (TestResults[i].ExpectedWinsta == NULL)
         ok(FALSE, "%d: Process should have failed to initialize\n", i);
@@ -205,6 +209,53 @@ void Test_InitialDesktop(char *argv0)
     ret = CloseWindowStation(hwinsta);
     ok(ret != FALSE, "CloseWindowStation failed\n");
 #endif
+}
+
+static void Test_SystemChildInInteractiveSession(char *argv0)
+{
+    HANDLE hToken, hNewToken;
+    STARTUPINFOA startup = { sizeof(startup) };
+    PROCESS_INFORMATION pi;
+    char path[MAX_PATH];
+    DWORD session = WTSGetActiveConsoleSessionId(), ExitCode = ~0U;
+    BOOL ret;
+
+    if (!IsLocalSystem())
+    {
+        skip("Only SYSTEM can start a SYSTEM child in another session\n");
+        return;
+    }
+    if (session == 0 || session == 0xFFFFFFFF)
+    {
+        skip("No interactive session outside session 0 (console session 0x%lx)\n", session);
+        return;
+    }
+
+    ret = OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE, &hToken);
+    ok(ret, "OpenProcessToken failed, error %lu\n", GetLastError());
+    if (!ret)
+        return;
+    ret = DuplicateTokenEx(hToken, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenPrimary, &hNewToken);
+    ok(ret, "DuplicateTokenEx failed, error %lu\n", GetLastError());
+    CloseHandle(hToken);
+    if (!ret)
+        return;
+
+    ret = SetTokenInformation(hNewToken, TokenSessionId, &session, sizeof(session));
+    ok(ret, "SetTokenInformation(TokenSessionId, %lu) failed, error %lu\n", session, GetLastError());
+
+    sprintf(path, "%s desktop 17", argv0);
+    ret = ret && CreateProcessAsUserA(hNewToken, NULL, path, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &pi);
+    ok(ret, "CreateProcessAsUser '%s' in session %lu failed, error %lu\n", path, session, GetLastError());
+    CloseHandle(hNewToken);
+    if (!ret)
+        return;
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &ExitCode);
+    ok(ExitCode == 0, "SYSTEM child in session %lu exited with 0x%lx\n", session, ExitCode);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
 }
 
 void Test_OpenInputDesktop()
@@ -431,6 +482,7 @@ START_TEST(desktop)
     }
 
     Test_InitialDesktop(test_argv[0]);
+    Test_SystemChildInInteractiveSession(test_argv[0]);
     Test_OpenInputDesktop();
     Test_References();
 }

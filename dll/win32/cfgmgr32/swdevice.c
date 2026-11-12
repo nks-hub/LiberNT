@@ -678,6 +678,21 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     return InstallSwDeviceDriver(Device);
 }
 
+/* Windows 11 finds the module in kernelbase, where a program that maps a library by hand redirects the lookup of its code */
+static BOOL
+ReferenceModule(_In_ PVOID Address, _Out_ HMODULE *Module)
+{
+    typedef BOOL (WINAPI *PFN_GETMODULEHANDLEEXW)(DWORD, PCWSTR, HMODULE *);
+    HMODULE KernelBase = GetModuleHandleW(L"kernelbase.dll");
+    PFN_GETMODULEHANDLEEXW pGetModuleHandleExW = NULL;
+
+    if (KernelBase)
+        pGetModuleHandleExW = (PFN_GETMODULEHANDLEEXW)GetProcAddress(KernelBase, "GetModuleHandleExW");
+    if (!pGetModuleHandleExW)
+        pGetModuleHandleExW = GetModuleHandleExW;
+    return pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (PCWSTR)Address, Module);
+}
+
 static DWORD
 WINAPI
 SwDeviceCreateThread(_In_ PVOID Parameter)
@@ -822,14 +837,14 @@ SwDeviceCreate(
     }
     Device->PropertyCount = cPropertyCount;
 
-    /* Windows 11 answers ERROR_MOD_NOT_FOUND for a callback outside of every module */
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (PCWSTR)(ULONG_PTR)pCallback, &Device->CallbackModule))
+    /* Windows 11 answers ERROR_MOD_NOT_FOUND for a callback that this lookup finds in no module */
+    if (!ReferenceModule((PVOID)(ULONG_PTR)pCallback, &Device->CallbackModule))
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
         FreeSwDevice(Device);
         return hr;
     }
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (PCWSTR)(ULONG_PTR)SwDeviceCreateThread, &Device->Module))
+    if (!ReferenceModule((PVOID)(ULONG_PTR)SwDeviceCreateThread, &Device->Module))
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
         FreeLibrary(Device->CallbackModule);

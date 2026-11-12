@@ -13,6 +13,7 @@
 #include <sddl.h>
 #include <swdevice.h>
 #include <stdio.h>
+#include <string.h>
 
 #define TEST_ENUMERATOR L"LntSwTest"
 #define TEST_HARDWARE_ID L"LntSwTestNoDriver\0"
@@ -329,6 +330,148 @@ test_CallbackOutsideModule(void)
     /* A creation that started calls into the page */
     if (FAILED(hr))
         VirtualFree(Page, 0, MEM_RELEASE);
+}
+
+static BYTE *HookedPage;
+static PVOID (NTAPI *OriginalPcToFileHeader)(PVOID, PVOID *);
+
+static PVOID NTAPI
+HookedPcToFileHeader(PVOID PcValue, PVOID *BaseOfImage)
+{
+    if ((BYTE *)PcValue >= HookedPage && (BYTE *)PcValue < HookedPage + 0x1000)
+        PcValue = (PVOID)(ULONG_PTR)Created;
+    return OriginalPcToFileHeader(PcValue, BaseOfImage);
+}
+
+static ULONG_PTR *
+FindKernelBaseImport(PCSTR Function)
+{
+    BYTE *Image = (BYTE *)GetModuleHandleW(L"kernelbase.dll");
+    IMAGE_IMPORT_DESCRIPTOR *Import;
+    IMAGE_THUNK_DATA *Name, *Slot;
+    IMAGE_NT_HEADERS *Headers;
+    ULONG Rva;
+
+    if (!Image)
+        return NULL;
+    Headers = (IMAGE_NT_HEADERS *)(Image + ((IMAGE_DOS_HEADER *)Image)->e_lfanew);
+    Rva = Headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!Rva)
+        return NULL;
+    for (Import = (IMAGE_IMPORT_DESCRIPTOR *)(Image + Rva); Import->Name; Import++)
+    {
+        if (_stricmp((PCSTR)(Image + Import->Name), "ntdll.dll") || !Import->OriginalFirstThunk)
+            continue;
+        Name = (IMAGE_THUNK_DATA *)(Image + Import->OriginalFirstThunk);
+        Slot = (IMAGE_THUNK_DATA *)(Image + Import->FirstThunk);
+        for (; Name->u1.AddressOfData; Name++, Slot++)
+        {
+            if (!IMAGE_SNAP_BY_ORDINAL(Name->u1.Ordinal) &&
+                !strcmp((PCSTR)((IMAGE_IMPORT_BY_NAME *)(Image + Name->u1.AddressOfData))->Name, Function))
+            {
+                return (ULONG_PTR *)&Slot->u1.Function;
+            }
+        }
+    }
+    return NULL;
+}
+
+static BOOL
+WriteImport(ULONG_PTR *Slot, ULONG_PTR Value)
+{
+    DWORD Protection;
+
+    if (!VirtualProtect(Slot, sizeof(*Slot), PAGE_READWRITE, &Protection))
+        return FALSE;
+    *Slot = Value;
+    return VirtualProtect(Slot, sizeof(*Slot), Protection, &Protection);
+}
+
+/* Windows 11 refuses a callback in code mapped by hand unless the RtlPcToFileHeader import of kernelbase finds it in a module */
+static void
+test_CallbackInMappedCode(CREATED *State)
+{
+    static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\MappedCode";
+#if defined(_M_AMD64)
+    BYTE Code[] = { 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0 };
+    const ULONG TargetOffset = 2;
+#elif defined(_M_IX86)
+    BYTE Code[] = { 0xB8, 0, 0, 0, 0, 0xFF, 0xE0 };
+    const ULONG TargetOffset = 1;
+#elif defined(_M_ARM64)
+    BYTE Code[] = { 0x50, 0x00, 0x00, 0x58, 0x00, 0x02, 0x1F, 0xD6, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const ULONG TargetOffset = 8;
+#else
+    BYTE Code[sizeof(ULONG_PTR)];
+    const ULONG TargetOffset = ~0u;
+#endif
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    ULONG_PTR Target = (ULONG_PTR)Created, *Slot;
+    HSWDEVICE Device = NULL;
+    DWORD Protection;
+    HRESULT hr;
+
+    if (TargetOffset == ~0u)
+    {
+        skip("No code to jump to the callback on this architecture\n");
+        return;
+    }
+    HookedPage = VirtualAlloc(NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!HookedPage)
+    {
+        skip("VirtualAlloc failed (%lu)\n", GetLastError());
+        return;
+    }
+    memcpy(Code + TargetOffset, &Target, sizeof(Target));
+    memcpy(HookedPage, Code, sizeof(Code));
+    if (!VirtualProtect(HookedPage, 0x1000, PAGE_EXECUTE_READ, &Protection))
+    {
+        skip("VirtualProtect failed (%lu)\n", GetLastError());
+        return;
+    }
+    FlushInstructionCache(GetCurrentProcess(), HookedPage, sizeof(Code));
+
+    Info.pszInstanceId = L"MappedCode";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+    State->Result = E_PENDING;
+    ResetEvent(State->Event);
+
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, (SW_DEVICE_CREATE_CALLBACK)(ULONG_PTR)HookedPage, State, &Device);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND), "SwDeviceCreate with a callback in mapped code returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        WaitForSingleObject(State->Event, 30000);
+        SwDeviceClose(Device);
+        WaitGone(InstanceId);
+        return;
+    }
+
+    Slot = FindKernelBaseImport("RtlPcToFileHeader");
+    if (!Slot)
+    {
+        skip("kernelbase does not import RtlPcToFileHeader\n");
+        return;
+    }
+    OriginalPcToFileHeader = (PVOID)*Slot;
+    if (!WriteImport(Slot, (ULONG_PTR)HookedPcToFileHeader))
+    {
+        skip("The import cannot be written (%lu)\n", GetLastError());
+        return;
+    }
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, (SW_DEVICE_CREATE_CALLBACK)(ULONG_PTR)HookedPage, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate with a callback in mapped code that kernelbase finds in a module returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ok(WaitForSingleObject(State->Event, 30000) == WAIT_OBJECT_0, "The callback in mapped code was not called\n");
+        ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+        ok(!_wcsicmp(State->InstanceId, InstanceId), "The callback in mapped code read %S\n", State->InstanceId);
+        SwDeviceClose(Device);
+        ok(WaitGone(InstanceId), "%S stayed after its handle closed\n", InstanceId);
+    }
+    WriteImport(Slot, (ULONG_PTR)OriginalPcToFileHeader);
 }
 
 static void
@@ -790,6 +933,7 @@ START_TEST(SwDevice)
     test_DriverRequiredNoIds(&State);
     test_Capabilities(&State);
     test_CallbackOutsideModule();
+    test_CallbackInMappedCode(&State);
     test_CloseInCallback(&State);
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);

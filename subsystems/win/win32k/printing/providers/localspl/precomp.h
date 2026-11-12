@@ -311,6 +311,7 @@ DWORD WINAPI LocalSetPrinterDataEx(HANDLE hPrinter, LPCWSTR pKeyName, LPCWSTR pV
 BOOL InitializePrinterDrivers(VOID);
 BOOL WINAPI LocalAddPrinterDriver(LPWSTR pName, DWORD level, LPBYTE pDriverInfo);
 BOOL WINAPI LocalAddPrinterDriverEx(LPWSTR pName, DWORD level, LPBYTE pDriverInfo, DWORD dwFileCopyFlags);
+BOOL WINAPI LocalDeletePrinterDriverEx(LPWSTR pName, LPWSTR pEnvironment, LPWSTR pDriverName, DWORD dwDeleteFlag, DWORD dwVersionFlag);
 BOOL WINAPI LocalGetPrinterDriver(HANDLE hPrinter, LPWSTR pEnvironment, DWORD Level, LPBYTE pDriverInfo, DWORD cbBuf, LPDWORD pcbNeeded);
 BOOL WINAPI LocalGetPrinterDriverDirectory(PWSTR pName, PWSTR pEnvironment, DWORD Level, PBYTE pDriverDirectory, DWORD cbBuf, PDWORD pcbNeeded);
 BOOL WINAPI LocalGetPrinterDriverEx(HANDLE hPrinter,LPWSTR pEnvironment,DWORD Level,LPBYTE pDriverInfo,DWORD cbBuf,LPDWORD pcbNeeded,DWORD dwClientMajorVersion,DWORD dwClientMinorVersion,PDWORD pdwServerMajorVersion,PDWORD pdwServerMinorVersion );

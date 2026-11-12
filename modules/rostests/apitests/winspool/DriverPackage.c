@@ -402,19 +402,10 @@ DeleteTestCatalogs(VOID)
 #define TEST_DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\" TEST_ENVIRONMENT L"\\Drivers\\Version-3"
 #define OTHER_DRIVER_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\" OTHER_ENVIRONMENT L"\\Drivers\\Version-3\\" CROSS_DRIVER_NAME
 
-/* Windows 11 has its drivers in the spooler too and is asked to delete them; the print provider here deletes none, the key is all */
 static VOID
 RemoveTestDriver(PCWSTR Name)
 {
-    if (DeletePrinterDriverExW(NULL, NULL, (PWSTR)Name, DPD_DELETE_UNUSED_FILES, 0) || DeletePrinterDriverW(NULL, NULL, (PWSTR)Name))
-        return;
-    if (IsReactOS())
-    {
-        WCHAR Key[MAX_PATH];
-
-        StringCchPrintfW(Key, ARRAYSIZE(Key), L"%s\\%s", TEST_DRIVERS_KEY, Name);
-        RegDeleteKeyW(HKEY_LOCAL_MACHINE, Key);
-    }
+    DeletePrinterDriverExW(NULL, NULL, (PWSTR)Name, DPD_DELETE_UNUSED_FILES, 0);
 }
 
 #define TEST_MODELS \
@@ -3802,6 +3793,368 @@ TestStoreInclude(VOID)
     RemoveDirectoryW(DirB);
 }
 
+#define DELETE_DRIVER_A L"LiberNT Package Delete A Printer"
+#define DELETE_DRIVER_B L"LiberNT Package Delete B Printer"
+#define DELETE_PRINTER L"LiberNT Package Delete Test Printer"
+
+#define DELETE_MODELS \
+    "\"LiberNT Package Delete A Printer\"=TESTDELA,LiberNT_Package_Delete_A\r\n" \
+    "\"LiberNT Package Delete B Printer\"=TESTDELB,LiberNT_Package_Delete_B\r\n"
+
+static const char DeleteInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
+    "\r\n"
+    "[Models.NTamd64]\r\n"
+    DELETE_MODELS
+    "[Models.NTx86]\r\n"
+    DELETE_MODELS
+    "[Models.NTarm64]\r\n"
+    DELETE_MODELS
+    "\r\n"
+    "[TESTDELA]\r\n"
+    "CopyFiles=TESTDELA_FILES\r\n"
+    "DriverFile=TESTDELA.DLL\r\n"
+    "ConfigFile=TESTDELU.DLL\r\n"
+    "DataFile=TESTDELA.GPD\r\n"
+    "HelpFile=TESTDEL.HLP\r\n"
+    "\r\n"
+    "[TESTDELB]\r\n"
+    "CopyFiles=TESTDELB_FILES\r\n"
+    "DriverFile=TESTDELB.DLL\r\n"
+    "ConfigFile=TESTDELU.DLL\r\n"
+    "DataFile=TESTDELB.GPD\r\n"
+    "HelpFile=TESTDEL.HLP\r\n"
+    "\r\n"
+    "[TESTDELA_FILES]\r\n"
+    "TESTDELA.DLL\r\n"
+    "TESTDELU.DLL\r\n"
+    "TESTDELA.GPD\r\n"
+    "TESTDEL.HLP\r\n"
+    "TESTDELA.DAT\r\n"
+    "TESTDEL.DAT\r\n"
+    "\r\n"
+    "[TESTDELB_FILES]\r\n"
+    "TESTDELB.DLL\r\n"
+    "TESTDELU.DLL\r\n"
+    "TESTDELB.GPD\r\n"
+    "TESTDEL.HLP\r\n"
+    "TESTDEL.DAT\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTDELA.DLL=1\r\n"
+    "TESTDELB.DLL=1\r\n"
+    "TESTDELU.DLL=1\r\n"
+    "TESTDELA.GPD=1\r\n"
+    "TESTDELB.GPD=1\r\n"
+    "TESTDEL.HLP=1\r\n"
+    "TESTDELA.DAT=1\r\n"
+    "TESTDEL.DAT=1\r\n";
+
+/* The files of driver A, the files A and B share, and the files of B */
+static const PCWSTR DeleteFiles[] = { L"TESTDELA.DLL", L"TESTDELA.GPD", L"TESTDELA.DAT", L"TESTDELU.DLL", L"TESTDEL.HLP",
+                                      L"TESTDEL.DAT", L"TESTDELB.DLL", L"TESTDELB.GPD" };
+#define DELETE_FILES_A 0x07
+#define DELETE_FILES_SHARED 0x38
+#define DELETE_FILES_B 0xC0
+
+static DWORD
+InstalledDeleteFiles(VOID)
+{
+    DWORD Mask = 0;
+    UINT i;
+
+    for (i = 0; i < ARRAYSIZE(DeleteFiles); i++)
+    {
+        if (DriverFileExists(DeleteFiles[i]))
+            Mask |= 1 << i;
+    }
+    return Mask;
+}
+
+static DWORD
+DeleteDriverError(PCWSTR Environment, PCWSTR Name, DWORD Flags, DWORD Version)
+{
+    SetLastError(0xdeadbeef);
+    if (DeletePrinterDriverExW(NULL, (PWSTR)Environment, (PWSTR)Name, Flags, Version))
+        return ERROR_SUCCESS;
+    return GetLastError();
+}
+
+static BOOL
+DriverRegistered(PCWSTR Name)
+{
+    HKEY hKey = OpenDriverKey(Name);
+
+    if (hKey)
+        RegCloseKey(hKey);
+    return hKey != NULL;
+}
+
+static BOOL
+InstallDeleteDriver(PCWSTR StoreInf, PCWSTR Name)
+{
+    HRESULT hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, Name, NULL, 0);
+
+    ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Name, hr);
+    return hr == S_OK;
+}
+
+typedef struct _IN_USE_DRIVER
+{
+    WCHAR Name[MAX_PATH];
+    HANDLE hPrinter;
+    BOOL Registered;
+} IN_USE_DRIVER, *PIN_USE_DRIVER;
+
+/* Windows 11 adds a printer with the driver of a printer it has and moves it to driver A; LiberNT adds no printer,
+   so the driver of its setup printer is registered with the files of driver A */
+static BOOL
+UseDeleteDriver(PIN_USE_DRIVER InUse)
+{
+    PRINTER_INFO_2W Info = { 0 }, *Printers;
+    DWORD Size = 0, Count = 0;
+    DRIVER_INFO_3W Driver = { 0 };
+    BOOL Found;
+
+    ZeroMemory(InUse, sizeof(*InUse));
+    EnumPrintersW(PRINTER_ENUM_LOCAL, NULL, 2, NULL, 0, &Size, &Count);
+    Printers = Size ? HeapAlloc(GetProcessHeap(), 0, Size) : NULL;
+    Found = Printers && EnumPrintersW(PRINTER_ENUM_LOCAL, NULL, 2, (PBYTE)Printers, Size, &Size, &Count) && Count &&
+            SUCCEEDED(StringCchCopyW(InUse->Name, ARRAYSIZE(InUse->Name), Printers[0].pDriverName));
+    HeapFree(GetProcessHeap(), 0, Printers);
+    if (!Found)
+    {
+        skip("No printer to take the driver of (%lu)\n", GetLastError());
+        return FALSE;
+    }
+
+    if (IsReactOS())
+    {
+        if (DriverRegistered(InUse->Name))
+            return TRUE;
+        Driver.cVersion = 3;
+        Driver.pName = InUse->Name;
+        Driver.pEnvironment = (PWSTR)TEST_ENVIRONMENT;
+        Driver.pDriverPath = (PWSTR)L"TESTDELA.DLL";
+        Driver.pDataFile = (PWSTR)L"TESTDELA.GPD";
+        Driver.pConfigFile = (PWSTR)L"TESTDELU.DLL";
+        InUse->Registered = AddPrinterDriverExW(NULL, 3, (PBYTE)&Driver, APD_COPY_NEW_FILES);
+        ok(InUse->Registered, "AddPrinterDriverExW(%S) failed with %lu\n", InUse->Name, GetLastError());
+        return InUse->Registered;
+    }
+
+    Info.pPrinterName = (PWSTR)DELETE_PRINTER;
+    Info.pPortName = (PWSTR)L"PORTPROMPT:";
+    Info.pDriverName = InUse->Name;
+    Info.pPrintProcessor = (PWSTR)L"winprint";
+    Info.pDatatype = (PWSTR)L"RAW";
+    InUse->hPrinter = AddPrinterW(NULL, 2, (PBYTE)&Info);
+    ok(InUse->hPrinter != NULL, "AddPrinterW(%S) failed with %lu\n", InUse->Name, GetLastError());
+    if (!InUse->hPrinter)
+        return FALSE;
+    Info.pDriverName = (PWSTR)DELETE_DRIVER_A;
+    ok(SetPrinterW(InUse->hPrinter, 2, (PBYTE)&Info, 0), "SetPrinterW failed with %lu\n", GetLastError());
+    StringCchCopyW(InUse->Name, ARRAYSIZE(InUse->Name), DELETE_DRIVER_A);
+    return TRUE;
+}
+
+static VOID
+ReleaseDeleteDriver(PIN_USE_DRIVER InUse)
+{
+    WCHAR Key[MAX_PATH * 2];
+
+    if (InUse->hPrinter)
+    {
+        ok(DeletePrinter(InUse->hPrinter), "DeletePrinter failed with %lu\n", GetLastError());
+        ClosePrinter(InUse->hPrinter);
+    }
+    if (InUse->Registered && SUCCEEDED(StringCchPrintfW(Key, ARRAYSIZE(Key), L"%s\\%s", TEST_DRIVERS_KEY, InUse->Name)))
+        ok(RegDeleteKeyW(HKEY_LOCAL_MACHINE, Key) == ERROR_SUCCESS, "Cannot delete the key of %S\n", InUse->Name);
+}
+
+static VOID
+TestDeletePrinterDriverEx(VOID)
+{
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], DriverDir[MAX_PATH];
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const PCWSTR Copies[] = { L"TESTDELA.DLL", L"TESTDELB.DLL", L"TESTDELU.DLL" };
+    static const PCWSTR Texts[] = { L"TESTDELA.GPD", L"TESTDELB.GPD", L"TESTDEL.HLP", L"TESTDELA.DAT", L"TESTDEL.DAT" };
+    ULONG Length = ARRAYSIZE(StoreInf);
+    IN_USE_DRIVER InUse;
+    DWORD Error, Size, Files;
+    HANDLE hFile;
+    BOOL Created;
+    HRESULT hr;
+    UINT i;
+
+    /* Windows 11 checks the flags and the name before the environment, and looks for the driver in every version */
+    Error = DeleteDriverError(NULL, L"No Such Printer", 0, 0);
+    ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting an unknown driver gave %lu\n", Error);
+    Error = DeleteDriverError(NULL, L"No Such Printer", DPD_DELETE_ALL_FILES, 0);
+    ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting an unknown driver with its files gave %lu\n", Error);
+    Error = DeleteDriverError(NULL, L"No Such Printer", DPD_DELETE_SPECIFIC_VERSION, 2);
+    ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting version 2 of an unknown driver gave %lu\n", Error);
+    Error = DeleteDriverError(OTHER_ENVIRONMENT, L"No Such Printer", 0, 0);
+    ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting an unknown driver of %S gave %lu\n", OTHER_ENVIRONMENT, Error);
+    Error = DeleteDriverError(L"Invalid Env", L"No Such Printer", 0, 0);
+    ok(Error == ERROR_INVALID_ENVIRONMENT, "Deleting in an invalid environment gave %lu\n", Error);
+    Error = DeleteDriverError(NULL, L"", 0, 0);
+    ok(Error == ERROR_INVALID_PARAMETER, "Deleting an empty name gave %lu\n", Error);
+    Error = DeleteDriverError(L"Invalid Env", L"", 0, 0);
+    ok(Error == ERROR_INVALID_PARAMETER, "Deleting an empty name in an invalid environment gave %lu\n", Error);
+    Error = DeleteDriverError(NULL, L"No Such Printer", 0x8, 0);
+    ok(Error == ERROR_INVALID_PARAMETER, "Deleting with flag 0x8 gave %lu\n", Error);
+    Error = DeleteDriverError(L"Invalid Env", L"No Such Printer", 0x80000000, 0);
+    ok(Error == ERROR_INVALID_PARAMETER, "Deleting with flag 0x80000000 in an invalid environment gave %lu\n", Error);
+    SetLastError(0xdeadbeef);
+    ok(!DeletePrinterDriverExW((PWSTR)L"", NULL, (PWSTR)L"No Such Printer", 0, 0) && GetLastError() == ERROR_UNKNOWN_PRINTER_DRIVER,
+       "Deleting on the server \"\" gave %lu\n", GetLastError());
+    SetLastError(0xdeadbeef);
+    ok(!DeletePrinterDriverW(NULL, NULL, (PWSTR)L"No Such Printer") && GetLastError() == ERROR_UNKNOWN_PRINTER_DRIVER,
+       "DeletePrinterDriverW of an unknown driver gave %lu\n", GetLastError());
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprndel");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprndel.inf", Dir);
+    Created = WriteTestFile(Dir, L"lntprndel.inf", DeleteInf, sizeof(DeleteInf) - 1);
+    for (i = 0; Created && i < ARRAYSIZE(Copies); i++)
+        Created = CopyTestDriverFile(Dir, Copies[i]);
+    for (i = 0; Created && i < ARRAYSIZE(Texts); i++)
+        Created = WriteTestFile(Dir, Texts[i], Text, sizeof(Text) - 1);
+
+    hr = Created ? UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length) : E_FAIL;
+    ok(hr == S_OK, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfPath, hr);
+    if (hr == S_OK && InstallDeleteDriver(StoreInf, DELETE_DRIVER_A) && InstallDeleteDriver(StoreInf, DELETE_DRIVER_B))
+    {
+        Files = InstalledDeleteFiles();
+        ok(Files == 0xFF, "Installed files are 0x%lx\n", Files);
+
+        /* A version that does not have the driver is deleted as nothing */
+        Error = DeleteDriverError(OTHER_ENVIRONMENT, DELETE_DRIVER_A, 0, 0);
+        ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting A of %S gave %lu\n", OTHER_ENVIRONMENT, Error);
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, DPD_DELETE_SPECIFIC_VERSION, 2);
+        ok(Error == ERROR_SUCCESS, "Deleting version 2 of A gave %lu\n", Error);
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, DPD_DELETE_SPECIFIC_VERSION | DPD_DELETE_ALL_FILES, 4);
+        ok(Error == ERROR_SUCCESS, "Deleting version 4 of A and its files gave %lu\n", Error);
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, 0x10, 0);
+        ok(Error == ERROR_INVALID_PARAMETER, "Deleting A with flag 0x10 gave %lu\n", Error);
+        Files = InstalledDeleteFiles();
+        ok(Files == 0xFF && DriverRegistered(DELETE_DRIVER_A), "Deleting nothing of A left 0x%lx\n", Files);
+
+        if (UseDeleteDriver(&InUse))
+        {
+            Error = DeleteDriverError(NULL, InUse.Name, 0, 0);
+            ok(Error == ERROR_PRINTER_DRIVER_IN_USE, "Deleting %S used by a printer gave %lu\n", InUse.Name, Error);
+            Error = DeleteDriverError(NULL, InUse.Name, DPD_DELETE_UNUSED_FILES, 0);
+            ok(Error == ERROR_PRINTER_DRIVER_IN_USE, "Deleting %S used by a printer and its unused files gave %lu\n", InUse.Name, Error);
+            Error = DeleteDriverError(NULL, InUse.Name, DPD_DELETE_ALL_FILES | DPD_DELETE_SPECIFIC_VERSION, 3);
+            ok(Error == ERROR_PRINTER_DRIVER_IN_USE, "Deleting version 3 of %S used by a printer gave %lu\n", InUse.Name, Error);
+            Error = DeleteDriverError(NULL, InUse.Name, DPD_DELETE_SPECIFIC_VERSION, 2);
+            ok(Error == ERROR_SUCCESS, "Deleting version 2 of %S used by a printer gave %lu\n", InUse.Name, Error);
+            Error = DeleteDriverError(OTHER_ENVIRONMENT, InUse.Name, 0, 0);
+            ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting %S of %S used by a printer gave %lu\n", InUse.Name, OTHER_ENVIRONMENT, Error);
+            Files = InstalledDeleteFiles();
+            ok(Files == 0xFF && DriverRegistered(InUse.Name), "Deleting %S used by a printer left 0x%lx\n", InUse.Name, Files);
+        }
+        ReleaseDeleteDriver(&InUse);
+
+        /* Windows 11 refuses to delete all files of A as B names some, also when the unused ones are asked for */
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, DPD_DELETE_ALL_FILES, 0);
+        ok(Error == ERROR_PRINTER_DRIVER_IN_USE, "Deleting A and all its files gave %lu\n", Error);
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, DPD_DELETE_ALL_FILES | DPD_DELETE_UNUSED_FILES, 0);
+        ok(Error == ERROR_PRINTER_DRIVER_IN_USE, "Deleting A, all its files and the unused ones gave %lu\n", Error);
+        Files = InstalledDeleteFiles();
+        ok(Files == 0xFF && DriverRegistered(DELETE_DRIVER_A), "Refusing to delete all files of A left 0x%lx\n", Files);
+
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, DPD_DELETE_UNUSED_FILES, 0);
+        ok(Error == ERROR_SUCCESS, "Deleting A and its unused files gave %lu\n", Error);
+        Files = InstalledDeleteFiles();
+        ok(Files == (DELETE_FILES_SHARED | DELETE_FILES_B), "Deleting A and its unused files left 0x%lx\n", Files);
+        ok(!DriverRegistered(DELETE_DRIVER_A), "A is still registered\n");
+        Error = DeleteDriverError(NULL, DELETE_DRIVER_A, 0, 0);
+        ok(Error == ERROR_UNKNOWN_PRINTER_DRIVER, "Deleting A again gave %lu\n", Error);
+
+        SetLastError(0xdeadbeef);
+        ok(DeletePrinterDriverW(NULL, NULL, (PWSTR)DELETE_DRIVER_B), "DeletePrinterDriverW(B) failed with %lu\n", GetLastError());
+        Files = InstalledDeleteFiles();
+        ok(Files == (DELETE_FILES_SHARED | DELETE_FILES_B), "DeletePrinterDriverW(B) left 0x%lx\n", Files);
+        ok(!DriverRegistered(DELETE_DRIVER_B), "B is still registered\n");
+
+        if (InstallDeleteDriver(StoreInf, DELETE_DRIVER_A) && InstallDeleteDriver(StoreInf, DELETE_DRIVER_B))
+        {
+            Error = DeleteDriverError(TEST_ENVIRONMENT, DELETE_DRIVER_B, DPD_DELETE_ALL_FILES | DPD_DELETE_SPECIFIC_VERSION, 3);
+            ok(Error == ERROR_PRINTER_DRIVER_IN_USE, "Deleting version 3 of B and all its files gave %lu\n", Error);
+            Error = DeleteDriverError(NULL, DELETE_DRIVER_B, DPD_DELETE_UNUSED_FILES | DPD_DELETE_SPECIFIC_VERSION, 3);
+            ok(Error == ERROR_SUCCESS, "Deleting version 3 of B and its unused files gave %lu\n", Error);
+            Files = InstalledDeleteFiles();
+            ok(Files == (DELETE_FILES_A | DELETE_FILES_SHARED), "Deleting B and its unused files left 0x%lx\n", Files);
+
+            /* The version goes with the flag that selects it, and all files of a driver alone go */
+            Error = DeleteDriverError(TEST_ENVIRONMENT, DELETE_DRIVER_A, DPD_DELETE_ALL_FILES, 2);
+            ok(Error == ERROR_SUCCESS, "Deleting A and all its files gave %lu\n", Error);
+            Files = InstalledDeleteFiles();
+            ok(Files == 0, "Deleting A and all its files left 0x%lx\n", Files);
+        }
+
+        /* An open file of the driver stays where it is */
+        if (InstallDeleteDriver(StoreInf, DELETE_DRIVER_A) && InstallDeleteDriver(StoreInf, DELETE_DRIVER_B))
+        {
+            Size = sizeof(DriverDir);
+            if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+                DriverDir[0] = UNICODE_NULL;
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\TESTDELA.DAT", DriverDir);
+            hFile = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+            ok(hFile != INVALID_HANDLE_VALUE, "Cannot open %S (%lu)\n", Path, GetLastError());
+            Error = DeleteDriverError(NULL, L"LIBERNT PACKAGE DELETE A PRINTER", DPD_DELETE_UNUSED_FILES, 0);
+            ok(Error == ERROR_SUCCESS, "Deleting A in upper case and its unused files gave %lu\n", Error);
+            if (hFile != INVALID_HANDLE_VALUE)
+                CloseHandle(hFile);
+            Files = InstalledDeleteFiles();
+            ok(Files == (0x04 | DELETE_FILES_SHARED | DELETE_FILES_B), "Deleting A with an open file left 0x%lx\n", Files);
+        }
+
+        RemoveTestDriver(DELETE_DRIVER_A);
+        RemoveTestDriver(DELETE_DRIVER_B);
+    }
+    if (hr == S_OK)
+    {
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", StoreInf, hr);
+    }
+
+    Size = sizeof(DriverDir);
+    if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+        DriverDir[0] = UNICODE_NULL;
+    for (i = 0; i < ARRAYSIZE(DeleteFiles); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, DeleteFiles[i]);
+        DeleteFileW(Path);
+        if (DriverDir[0])
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", DriverDir, DeleteFiles[i]);
+            DeleteFileW(Path);
+        }
+    }
+    DeleteFileW(InfPath);
+    RemoveDirectoryW(Dir);
+}
+
 static VOID
 TestDriverPackages(VOID)
 {
@@ -3867,6 +4220,7 @@ TestDriverPackages(VOID)
     TestBlockedDriverFile(L"lntprnv4", BlockedVersion4, HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "a file of the version 0.4");
     TestStagedFiles();
     TestStoreInclude();
+    TestDeletePrinterDriverEx();
 #if !defined(_M_IX86)
     TestUndecoratedModels();
 #endif

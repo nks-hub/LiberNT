@@ -55,14 +55,16 @@ BOOL WINAPI
 DeletePrinterDriverExW(PWSTR pName, PWSTR pEnvironment, PWSTR pDriverName, DWORD dwDeleteFlag, DWORD dwVersionFlag)
 {
     BOOL bReturnValue;
-    DWORD dwErrorCode = ERROR_INVALID_PRINTER_NAME;
+    DWORD dwErrorCode = ERROR_NOT_SUPPORTED;
     PLIST_ENTRY pEntry;
     PSPOOLSS_PRINT_PROVIDER pPrintProvider;
 
-    // Loop through all Print Providers.
+    // Loop through all Print Providers that can delete a driver; one that does not serve the server name fails with ERROR_INVALID_NAME.
     for (pEntry = PrintProviderList.Flink; pEntry != &PrintProviderList; pEntry = pEntry->Flink)
     {
         pPrintProvider = CONTAINING_RECORD(pEntry, SPOOLSS_PRINT_PROVIDER, Entry);
+        if (!pPrintProvider->PrintProvider.fpDeletePrinterDriverEx)
+            continue;
 
         bReturnValue = pPrintProvider->PrintProvider.fpDeletePrinterDriverEx(pName, pEnvironment, pDriverName, dwDeleteFlag, dwVersionFlag);
 
@@ -71,12 +73,10 @@ DeletePrinterDriverExW(PWSTR pName, PWSTR pEnvironment, PWSTR pDriverName, DWORD
             dwErrorCode = ERROR_SUCCESS;
             goto Cleanup;
         }
-        else if (bReturnValue == ROUTER_STOP_ROUTING)
-        {
-            ERR("A Print Provider returned ROUTER_STOP_ROUTING for Printer \"%S\"!\n", pName);
-            dwErrorCode = GetLastError();
+
+        dwErrorCode = GetLastError();
+        if (dwErrorCode != ERROR_INVALID_NAME)
             goto Cleanup;
-        }
     }
 
 Cleanup:

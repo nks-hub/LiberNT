@@ -611,9 +611,13 @@ static const char MissingInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "\"LiberNT\"=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Missing Printer\"=TESTMISS,LiberNT_Package_Missing\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Missing Printer\"=TESTMISS,LiberNT_Package_Missing\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Missing Printer\"=TESTMISS,LiberNT_Package_Missing\r\n"
     "\r\n"
     "[TESTMISS]\r\n"
@@ -643,9 +647,13 @@ static const char NeedsMissingInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "\"LiberNT\"=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Needs Missing Printer\"=TESTNM,LiberNT_Package_Needs_Missing\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Needs Missing Printer\"=TESTNM,LiberNT_Package_Needs_Missing\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Needs Missing Printer\"=TESTNM,LiberNT_Package_Needs_Missing\r\n"
     "\r\n"
     "[TESTNM]\r\n"
@@ -682,9 +690,13 @@ static const char UnlistedInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "\"LiberNT\"=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Unlisted Printer\"=TESTUNL,LiberNT_Package_Unlisted\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Unlisted Printer\"=TESTUNL,LiberNT_Package_Unlisted\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Unlisted Printer\"=TESTUNL,LiberNT_Package_Unlisted\r\n"
     "\r\n"
     "[TESTUNL]\r\n"
@@ -713,9 +725,13 @@ static const char EscapeInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "\"LiberNT\"=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Escape Printer\"=TESTESC,LiberNT_Package_Escape\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Escape Printer\"=TESTESC,LiberNT_Package_Escape\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Escape Printer\"=TESTESC,LiberNT_Package_Escape\r\n"
     "\r\n"
     "[TESTESC]\r\n"
@@ -745,9 +761,13 @@ static const char IncludeEscapeInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "\"LiberNT\"=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Include Escape Printer\"=TESTIES,LiberNT_Package_Include_Escape\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Include Escape Printer\"=TESTIES,LiberNT_Package_Include_Escape\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Include Escape Printer\"=TESTIES,LiberNT_Package_Include_Escape\r\n"
     "\r\n"
     "[TESTIES]\r\n"
@@ -773,9 +793,13 @@ static const char SlashEscapeInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "\"LiberNT\"=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Slash Escape Printer\"=TESTSLE,LiberNT_Package_Slash_Escape\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Slash Escape Printer\"=TESTSLE,LiberNT_Package_Slash_Escape\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Slash Escape Printer\"=TESTSLE,LiberNT_Package_Slash_Escape\r\n"
     "\r\n"
     "[TESTSLE]\r\n"
@@ -875,9 +899,13 @@ static const char PlainInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "LiberNT=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Plain Printer\"=TESTPLAIN,LiberNT_Package_Plain\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Plain Printer\"=TESTPLAIN,LiberNT_Package_Plain\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Plain Printer\"=TESTPLAIN,LiberNT_Package_Plain\r\n"
     "\r\n"
     "[TESTPLAIN]\r\n"
@@ -909,9 +937,13 @@ static const char TwoNeedsInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "LiberNT=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Two Needs Printer\"=TESTTWO,LiberNT_Package_Two_Needs\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Two Needs Printer\"=TESTTWO,LiberNT_Package_Two_Needs\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Two Needs Printer\"=TESTTWO,LiberNT_Package_Two_Needs\r\n"
     "\r\n"
     "[TESTTWO]\r\n"
@@ -960,9 +992,13 @@ BuildBigInf(VOID)
                    "CatalogFile=lntprn.cat\r\n"
                    "\r\n"
                    "[Manufacturer]\r\n"
-                   "LiberNT=Models\r\n"
+                   "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
                    "\r\n"
-                   "[Models]\r\n"
+                   "[Models.NTamd64]\r\n"
+                   "\"LiberNT Package Big Printer\"=TESTBIG,LiberNT_Package_Big\r\n"
+                   "[Models.NTx86]\r\n"
+                   "\"LiberNT Package Big Printer\"=TESTBIG,LiberNT_Package_Big\r\n"
+                   "[Models.NTarm64]\r\n"
                    "\"LiberNT Package Big Printer\"=TESTBIG,LiberNT_Package_Big\r\n"
                    "\r\n"
                    "[TESTBIG]\r\n"
@@ -1017,9 +1053,13 @@ BuildBigInf(VOID)
     "CatalogFile=lntprn.cat\r\n" \
     "\r\n" \
     "[Manufacturer]\r\n" \
-    "LiberNT=Models\r\n" \
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n" \
     "\r\n" \
-    "[Models]\r\n" \
+    "[Models.NTamd64]\r\n" \
+    "\"" Model "\"=TESTINC,LiberNT_Package_Include\r\n" \
+    "[Models.NTx86]\r\n" \
+    "\"" Model "\"=TESTINC,LiberNT_Package_Include\r\n" \
+    "[Models.NTarm64]\r\n" \
     "\"" Model "\"=TESTINC,LiberNT_Package_Include\r\n" \
     "\r\n" \
     "[TESTINC]\r\n" \
@@ -1378,9 +1418,13 @@ static const char JunctionInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "LiberNT=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Junction Printer\"=TESTJNC,LiberNT_Package_Junction\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Junction Printer\"=TESTJNC,LiberNT_Package_Junction\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Junction Printer\"=TESTJNC,LiberNT_Package_Junction\r\n"
     "\r\n"
     "[TESTJNC]\r\n"
@@ -1683,9 +1727,13 @@ static const char NoSectionInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "LiberNT=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package No Section Printer\"=TESTNOSEC,LiberNT_Package_No_Section\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package No Section Printer\"=TESTNOSEC,LiberNT_Package_No_Section\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package No Section Printer\"=TESTNOSEC,LiberNT_Package_No_Section\r\n"
     "\r\n"
     "[TESTNOSEC]\r\n"
@@ -1997,9 +2045,13 @@ static const char UpdateInf[] =
     "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
-    "LiberNT=Models\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
     "\r\n"
-    "[Models]\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Update Printer\"=TESTUPD,LiberNT_Package_Update\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Update Printer\"=TESTUPD,LiberNT_Package_Update\r\n"
+    "[Models.NTarm64]\r\n"
     "\"LiberNT Package Update Printer\"=TESTUPD,LiberNT_Package_Update\r\n"
     "\r\n"
     "[TESTUPD]\r\n"
@@ -3243,6 +3295,53 @@ TestBlockedDriverFile(VOID)
     DeleteSignedPackage(L"lntprnblk", Dir);
 }
 
+#if !defined(_M_IX86)
+/* On a 64-bit machine Windows 11 22621 does not look for a model in a section without the decoration of the architecture */
+static VOID
+TestUndecoratedModels(VOID)
+{
+    static char Inf[sizeof(SignedInf)];
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    char *Line;
+    HRESULT hr;
+    HKEY hKey;
+
+    CopyMemory(Inf, SignedInf, sizeof(SignedInf));
+    Line = strstr(Inf, "=Models,NTamd64,NTx86,NTarm64");
+    if (Line)
+        CopyMemory(Line, "=Models;;;;;;;;;;;;;;;;;;;;;;", 29);
+    Line = strstr(Inf, "[Models.NTamd64]");
+    if (Line)
+        CopyMemory(Line, "[Models]\r\n;;;;;;", 16);
+
+    if (!CreateSignedPackage(L"lntprnund", Inf, sizeof(Inf) - 1, Dir, InfPath))
+    {
+        skip("Failed to create the package lntprnund (%lu)\n", GetLastError());
+        DeleteSignedPackage(L"lntprnund", Dir);
+        return;
+    }
+
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for an INF with an undecorated models section\n", hr);
+    if (hr == S_OK)
+    {
+        hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, SIGNED_DRIVER_NAME, NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW returned 0x%lx for an undecorated model\n", hr);
+        hKey = OpenDriverKey(SIGNED_DRIVER_NAME);
+        ok(hKey == NULL, "Driver %S is registered from an undecorated models section\n", SIGNED_DRIVER_NAME);
+        if (hKey)
+        {
+            RegCloseKey(hKey);
+            RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\" SIGNED_DRIVER_NAME);
+        }
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+    }
+    DeleteSignedPackage(L"lntprnund", Dir);
+}
+#endif
+
 static const struct
 {
     PCWSTR Name;
@@ -3374,6 +3473,9 @@ TestDriverPackages(VOID)
     TestPackageSignature();
     TestStaleDriverFile();
     TestBlockedDriverFile();
+#if !defined(_M_IX86)
+    TestUndecoratedModels();
+#endif
 
     if (!CreateTestPackage(Dir, InfPath))
     {

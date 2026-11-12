@@ -193,10 +193,11 @@ GetFileDirective(HINF hInf, HINF hPackage, PWSTR *Sections, DWORD SectionCount, 
     return Found;
 }
 
+/* For a 64-bit environment Windows 11 looks for the model only in a section with the decoration of the architecture */
 static BOOL
-FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
+FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, WORD Architecture, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
 {
-    WCHAR Models[MAX_PATH];
+    WCHAR Models[MAX_PATH], Undecorated[MAX_PATH];
     INFCONTEXT MfgContext, ModelContext;
 
     if (!SetupFindFirstLineW(hInf, L"Manufacturer", NULL, &MfgContext))
@@ -208,6 +209,11 @@ FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, PCWSTR DriverName, PW
         if (SetupGetFieldCount(&MfgContext) < 2
                 ? !SetupGetStringFieldW(&MfgContext, 1, Models, ARRAYSIZE(Models), NULL)
                 : !SetupDiGetActualModelsSectionW(&MfgContext, Platform, Models, ARRAYSIZE(Models), NULL, NULL))
+        {
+            continue;
+        }
+        if (Architecture != PROCESSOR_ARCHITECTURE_INTEL &&
+            SetupGetStringFieldW(&MfgContext, 1, Undecorated, ARRAYSIZE(Undecorated), NULL) && !_wcsicmp(Models, Undecorated))
         {
             continue;
         }
@@ -600,7 +606,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         return hr;
     }
 
-    if (!FindModelSection(hInf, Platform, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
+    if (!FindModelSection(hInf, Platform, Architecture, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
         !SetupDiGetActualSectionToInstallExW(hInf, InstallSection, Platform, ActualSection, ARRAYSIZE(ActualSection),
                                              NULL, NULL, NULL))
     {

@@ -784,7 +784,7 @@ StageModelCopyFiles(
     IN HINF hInf,
     IN OUT PSTAGE_PACKAGE_CONTEXT Package)
 {
-    WCHAR Models[LINE_LEN + 1], Install[LINE_LEN], Actual[LINE_LEN + 16];
+    WCHAR Models[LINE_LEN + 1], Undecorated[LINE_LEN + 1], Install[LINE_LEN], Actual[LINE_LEN + 16];
     INFCONTEXT Manufacturer, Model;
     BOOL Found;
 
@@ -799,6 +799,12 @@ StageModelCopyFiles(
                     : SetupDiGetActualModelsSectionW(&Manufacturer, Package->Platform, Models, ARRAY_SIZE(Models), NULL, NULL);
         if (!Found || !SetupFindFirstLineW(hInf, Models, NULL, &Model))
             continue;
+        /* Windows 11 does not install a 64-bit model from a section without the decoration, so its files can be missing */
+        if (Package->Architecture != PROCESSOR_ARCHITECTURE_INTEL &&
+            SetupGetStringFieldW(&Manufacturer, 1, Undecorated, ARRAY_SIZE(Undecorated), NULL) && !_wcsicmp(Models, Undecorated))
+        {
+            continue;
+        }
 
         do
         {

@@ -1520,8 +1520,7 @@ TestBindWhileSettingPktInfo(VOID)
         Count = WaitReceives(1, 2000);
         ok_eq_long(Count, 1L);
         ok((LastControlLength != 0) == (PktInfo != 0),
-           "Round %ld: IP_PKTINFO was set to %lu, the datagram has %lu bytes of control data
-",
+           "Round %ld: IP_PKTINFO was set to %lu, the datagram has %lu bytes of control data\n",
            Round, PktInfo, LastControlLength);
 
         CloseSocket(Receiver);

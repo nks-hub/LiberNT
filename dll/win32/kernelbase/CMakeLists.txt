@@ -21,6 +21,7 @@ add_library(kernelbase MODULE
     DllMain.c
     AppModelToken.c
     MemoryApi.c
+    ModuleHandle.c
     PackageFamily.c
     PssSnapshot.c
     Security.c

@@ -59,7 +59,7 @@ Progress(LARGE_INTEGER TotalFileSize, LARGE_INTEGER TotalBytesTransferred, LARGE
         FirstReport = TotalBytesTransferred.QuadPart;
     if (Reason == CALLBACK_CHUNK_FINISHED && FirstChunk < 0)
         FirstChunk = TotalBytesTransferred.QuadPart;
-    if (StopAt && TotalBytesTransferred.QuadPart >= StopAt)
+    if (StopAt < 0 || (StopAt && TotalBytesTransferred.QuadPart >= StopAt))
     {
         StoppedAt = TotalBytesTransferred.QuadPart;
         return StopAction;
@@ -134,6 +134,71 @@ test_Stop(DWORD Flags, DWORD Action)
     ok(FirstChunk > 0 && FirstChunk <= STOP_AT / 2, "Flags 0x%lx, action %lu: first chunk after the stop ended at %I64d\n",
        Flags, Action, FirstChunk);
     ok(SameAsSource(), "Flags 0x%lx, action %lu: the destination differs from the source\n", Flags, Action);
+}
+
+/* Windows 11 keeps what PROGRESS_STOP leaves before the first chunk, between two remote files, and when restartable with one */
+static void
+test_StopPoints(LPCWSTR From, LPCWSTR To, DWORD RemoteFiles)
+{
+    static const LONGLONG Stops[] = { -1, STOP_AT, SOURCE_SIZE };
+    WCHAR LocalSource[MAX_PATH], LocalDest[MAX_PATH];
+    DWORD Flags, Action, i, Error;
+    BOOL Ret, Kept, Left;
+
+    StringCchCopyW(LocalSource, ARRAYSIZE(LocalSource), Source);
+    StringCchCopyW(LocalDest, ARRAYSIZE(LocalDest), Dest);
+    StringCchCopyW(Source, ARRAYSIZE(Source), From);
+    StringCchCopyW(Dest, ARRAYSIZE(Dest), To);
+
+    for (Flags = 0; Flags <= COPY_FILE_RESTARTABLE; Flags += COPY_FILE_RESTARTABLE)
+    {
+        for (Action = PROGRESS_CANCEL; Action <= PROGRESS_STOP; Action++)
+        {
+            for (i = 0; i < ARRAYSIZE(Stops); i++)
+            {
+                DeleteFileW(Dest);
+                Ret = Copy(Flags, Stops[i], Action);
+                Error = GetLastError();
+                Left = GetFileAttributesW(Dest) != INVALID_FILE_ATTRIBUTES;
+                Kept = Action == PROGRESS_STOP && (Stops[i] < 0 || RemoteFiles == 2 || (RemoteFiles && Flags));
+                ok(!Ret && Error == ERROR_REQUEST_ABORTED, "%S to %S, flags 0x%lx, action %lu, stop %I64d: returned %d (%lu)\n",
+                   From, To, Flags, Action, Stops[i], Ret, Error);
+                ok(StoppedAt >= 0 && StoppedAt >= Stops[i], "%S to %S, flags 0x%lx, action %lu, stop %I64d: stopped at %I64d\n",
+                   From, To, Flags, Action, Stops[i], StoppedAt);
+                ok(Left == Kept, "%S to %S, flags 0x%lx, action %lu, stop %I64d: destination left %d, expected %d\n",
+                   From, To, Flags, Action, Stops[i], Left, Kept);
+            }
+        }
+    }
+
+    Ret = Copy(0, 0, PROGRESS_CONTINUE);
+    ok(Ret, "%S to %S: copy after the stops failed (%lu)\n", From, To, GetLastError());
+    ok(SameAsSource(), "%S to %S: the destination differs from the source\n", From, To);
+    DeleteFileW(Dest);
+
+    StringCchCopyW(Source, ARRAYSIZE(Source), LocalSource);
+    StringCchCopyW(Dest, ARRAYSIZE(Dest), LocalDest);
+}
+
+/* The administrative share of the local disk is the remote end; it needs a server service and an administrator */
+static void
+test_Remote(void)
+{
+    WCHAR RemoteSource[MAX_PATH], RemoteDest[MAX_PATH], Share[MAX_PATH];
+
+    StringCchPrintfW(RemoteSource, ARRAYSIZE(RemoteSource), L"\\\\localhost\\%c$%s", Source[0], Source + 2);
+    StringCchPrintfW(RemoteDest, ARRAYSIZE(RemoteDest), L"\\\\localhost\\%c$%s", Dest[0], Dest + 2);
+    StringCchPrintfW(Share, ARRAYSIZE(Share), L"\\\\localhost\\%c$\\", Source[0]);
+
+    test_StopPoints(Source, Dest, 0);
+    if (GetFileAttributesW(RemoteSource) == INVALID_FILE_ATTRIBUTES || GetDriveTypeW(Share) != DRIVE_REMOTE)
+    {
+        skip("Cannot reach %S (%lu)\n", RemoteSource, GetLastError());
+        return;
+    }
+    test_StopPoints(Source, RemoteDest, 1);
+    test_StopPoints(RemoteSource, Dest, 1);
+    test_StopPoints(RemoteSource, RemoteDest, 2);
 }
 
 /* A copy killed halfway leaves a destination of the full size; on Windows 11 the next copy starts over even when restartable */
@@ -420,6 +485,7 @@ START_TEST(CopyFileExStop)
     test_FailedRead(0);
     test_FailedRead(COPY_FILE_RESTARTABLE);
     test_StopAfterRename();
+    test_Remote();
     test_MoveToOtherVolume(Root);
 
     DeleteFileW(Dest);

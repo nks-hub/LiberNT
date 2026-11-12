@@ -170,9 +170,6 @@ ExfRundownCompleted(IN PEX_RUNDOWN_REF RunRef)
 {
     PAGED_CODE();
 
-    /* Sanity check */
-    ASSERT((RunRef->Count & EX_RUNDOWN_ACTIVE) != 0);
-
     /* Mark the counter as active */
     ExpSetRundown(RunRef, EX_RUNDOWN_ACTIVE);
 }

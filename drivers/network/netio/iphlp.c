@@ -9,6 +9,7 @@
 #include <netiodef.h>
 #include <ws2def.h>
 #include <ws2ipdef.h>
+#include <ndis.h>
 #define IPHLPAPI_DLL_LINKAGE
 #include <netioapi.h>
 #include <tdiinfo.h>
@@ -16,9 +17,41 @@
 #include <tcpip_undoc.h>
 
 #define NETIO_IPHLP_TAG 'hIeN'
-#define NETIO_MAX_ENTITIES 256
-#define NETIO_MAX_ROUTES 128
-#define NETIO_MAX_ADDRESSES 64
+#define NETIO_INITIAL_ENTITIES 256
+#define NETIO_ROUTE_QUERY_ATTEMPTS 4
+
+static
+NET_LUID
+NetioInterfaceLuid(
+    _In_ ULONG Index,
+    _In_ ULONG Type)
+{
+    NET_LUID Luid;
+
+    if (NdisIfGetNetLuidFromInterfaceIndex(Index, &Luid) == NDIS_STATUS_SUCCESS && Luid.Value)
+        return Luid;
+    Luid.Value = 0;
+    Luid.Info.NetLuidIndex = Index;
+    Luid.Info.IfType = Type;
+    return Luid;
+}
+
+static
+ULONG
+NetioLuidIndex(
+    _In_ const NET_LUID *Luid)
+{
+    NET_IFINDEX Index;
+    NET_LUID AdapterLuid;
+
+    if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
+        return Index;
+
+    Index = (NET_IFINDEX)Luid->Info.NetLuidIndex;
+    if (NdisIfGetNetLuidFromInterfaceIndex(Index, &AdapterLuid) == NDIS_STATUS_SUCCESS && AdapterLuid.Value)
+        return 0;
+    return Index;
+}
 
 typedef struct _NETIO_TDI_ROUTE
 {
@@ -36,6 +69,13 @@ typedef struct _NETIO_TDI_ROUTE
     ULONG Metric5;
     ULONG Info;
 } NETIO_TDI_ROUTE, *PNETIO_TDI_ROUTE;
+
+#define NETIO_ROUTE_TYPE_DIRECT 3
+
+static
+NET_LUID
+NetioRouteLuid(
+    _In_ ULONG Index);
 
 C_ASSERT(sizeof(MIB_IPFORWARD_ROW2) == 0x68);
 C_ASSERT(FIELD_OFFSET(MIB_IPFORWARD_ROW2, SitePrefixLength) == 0x48);
@@ -115,16 +155,6 @@ GetIfTable2(
 
 NTSTATUS
 NTAPI
-GetIfEntry2(
-    _Inout_ PMIB_IF_ROW2 Row)
-{
-    if (Row == NULL)
-        return STATUS_INVALID_PARAMETER;
-    return STATUS_NOT_SUPPORTED;
-}
-
-NTSTATUS
-NTAPI
 GetIpInterfaceTable(
     _In_ ADDRESS_FAMILY Family,
     _Outptr_ PMIB_IPINTERFACE_TABLE *Table)
@@ -134,26 +164,6 @@ GetIpInterfaceTable(
     if (Table == NULL)
         return STATUS_INVALID_PARAMETER;
     *Table = NULL;
-    return STATUS_NOT_SUPPORTED;
-}
-
-NTSTATUS
-NTAPI
-GetIpInterfaceEntry(
-    _Inout_ PMIB_IPINTERFACE_ROW Row)
-{
-    if (Row == NULL)
-        return STATUS_INVALID_PARAMETER;
-    return STATUS_NOT_SUPPORTED;
-}
-
-NTSTATUS
-NTAPI
-SetIpInterfaceEntry(
-    _Inout_ PMIB_IPINTERFACE_ROW Row)
-{
-    if (Row == NULL)
-        return STATUS_INVALID_PARAMETER;
     return STATUS_NOT_SUPPORTED;
 }
 
@@ -230,6 +240,99 @@ NetioTcpQuery(
     return Status;
 }
 
+C_ASSERT(NETIO_INITIAL_ENTITIES <= MAX_TDI_ENTITIES);
+C_ASSERT(MAX_TDI_ENTITIES <= MAXULONG32 / 2 / sizeof(TDIEntityID));
+
+static
+NTSTATUS
+NetioQueryEntities(
+    _In_ HANDLE Tcp,
+    _Outptr_result_maybenull_ TDIEntityID **Entities,
+    _Out_ PULONG Count)
+{
+    TDIEntityID *List;
+    ULONG Capacity = NETIO_INITIAL_ENTITIES, Returned;
+    NTSTATUS Status;
+
+    *Entities = NULL;
+    *Count = 0;
+
+    for (;;)
+    {
+        ASSERT(Capacity <= MAX_TDI_ENTITIES);
+
+        List = ExAllocatePoolWithTag(PagedPool, Capacity * sizeof(TDIEntityID), NETIO_IPHLP_TAG);
+        if (List == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+
+        Status = NetioTcpQuery(Tcp, GENERIC_ENTITY, 0, INFO_CLASS_GENERIC, ENTITY_LIST_ID,
+                               List, Capacity * sizeof(TDIEntityID), &Returned);
+        if (NT_SUCCESS(Status))
+        {
+            ASSERT(Returned <= Capacity * sizeof(TDIEntityID));
+            *Entities = List;
+            *Count = Returned / sizeof(TDIEntityID);
+            return STATUS_SUCCESS;
+        }
+
+        ExFreePoolWithTag(List, NETIO_IPHLP_TAG);
+        if ((Status != STATUS_BUFFER_TOO_SMALL && Status != STATUS_BUFFER_OVERFLOW) || Capacity == MAX_TDI_ENTITIES)
+            return Status;
+        Capacity = min(Capacity * 2, MAX_TDI_ENTITIES);
+    }
+}
+
+static
+NTSTATUS
+NetioQueryIpTable(
+    _In_ HANDLE Tcp,
+    _In_ ULONG Instance,
+    _In_ ULONG Id,
+    _In_ ULONG EntrySize,
+    _Outptr_result_maybenull_ PVOID *Table,
+    _Out_ PULONG Returned)
+{
+    IPSNMPInfo Snmp;
+    PVOID Buffer;
+    ULONG Count, Size, Attempt;
+    NTSTATUS Status;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(Id == IP_MIB_ARPTABLE_ENTRY_ID || Id == IP_MIB_ADDRTABLE_ENTRY_ID);
+
+    *Table = NULL;
+    for (Attempt = 0; ; Attempt++)
+    {
+        RtlZeroMemory(&Snmp, sizeof(Snmp));
+        Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Instance, INFO_CLASS_PROTOCOL,
+                               IP_MIB_STATS_ID, &Snmp, sizeof(Snmp), Returned);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        Count = (Id == IP_MIB_ARPTABLE_ENTRY_ID) ? Snmp.ipsi_numroutes : Snmp.ipsi_numaddr;
+        if (Count > MAXULONG / EntrySize - 16)
+            return STATUS_INTEGER_OVERFLOW;
+        Size = (Count + 16) * EntrySize;
+        Buffer = ExAllocatePoolWithTag(PagedPool, Size, NETIO_IPHLP_TAG);
+        if (Buffer == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        Status = NetioTcpQuery(Tcp, CL_NL_ENTITY, Instance, INFO_CLASS_PROTOCOL, Id, Buffer, Size, Returned);
+        if (NT_SUCCESS(Status) && *Returned > Size)
+            Status = STATUS_BUFFER_OVERFLOW;
+        if (NT_SUCCESS(Status))
+        {
+            *Table = Buffer;
+            return STATUS_SUCCESS;
+        }
+
+        ExFreePoolWithTag(Buffer, NETIO_IPHLP_TAG);
+        if ((Status != STATUS_BUFFER_OVERFLOW && Status != STATUS_BUFFER_TOO_SMALL) ||
+            Attempt == NETIO_ROUTE_QUERY_ATTEMPTS - 1)
+        {
+            return Status;
+        }
+    }
+}
+
 static
 ULONG
 NetioPrefixLength(
@@ -278,7 +381,7 @@ NetioGetBestRoute6(
 
     InitializeIpForwardEntry(BestRoute);
     BestRoute->InterfaceIndex = Query.InterfaceIndex;
-    BestRoute->InterfaceLuid.Info.NetLuidIndex = Query.InterfaceIndex;
+    BestRoute->InterfaceLuid = NetioRouteLuid(Query.InterfaceIndex);
     BestRoute->DestinationPrefix.Prefix.si_family = AF_INET6;
     RtlCopyMemory(&BestRoute->DestinationPrefix.Prefix.Ipv6.sin6_addr, Query.Prefix, sizeof(Query.Prefix));
     BestRoute->DestinationPrefix.PrefixLength = (UINT8)Query.PrefixLength;
@@ -315,10 +418,11 @@ GetBestRoute2(
     OBJECT_ATTRIBUTES Attributes;
     IO_STATUS_BLOCK Io;
     HANDLE Tcp;
-    TDIEntityID *Entities;
+    TDIEntityID *Entities = NULL;
     PNETIO_TDI_ROUTE Routes;
     IPAddrEntry *Addresses;
     IPAddrEntry Address;
+    PVOID Table;
     IP_BEST_SOURCE Query;
     NETIO_TDI_ROUTE Best;
     ULONG Destination, Returned, EntityCount, RouteCount, AddressCount, i, j, k, Prefix, BestPrefix = 0;
@@ -336,8 +440,12 @@ GetBestRoute2(
     {
         return STATUS_NOT_SUPPORTED;
     }
-    if (InterfaceLuid != NULL && InterfaceIndex == 0)
-        InterfaceIndex = (NET_IFINDEX)InterfaceLuid->Info.NetLuidIndex;
+    if (InterfaceLuid != NULL && InterfaceLuid->Value != 0)
+    {
+        InterfaceIndex = NetioLuidIndex(InterfaceLuid);
+        if (InterfaceIndex == 0)
+            return STATUS_NOT_FOUND;
+    }
     if (DestinationAddress->si_family == AF_INET6)
         return NetioGetBestRoute6(InterfaceIndex, SourceAddress, DestinationAddress, BestRoute, BestSourceAddress);
 
@@ -361,33 +469,23 @@ GetBestRoute2(
         }
     }
 
-    Entities = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), NETIO_IPHLP_TAG);
-    Routes = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ROUTES * sizeof(NETIO_TDI_ROUTE), NETIO_IPHLP_TAG);
-    Addresses = ExAllocatePoolWithTag(PagedPool, NETIO_MAX_ADDRESSES * sizeof(IPAddrEntry), NETIO_IPHLP_TAG);
-    if (Entities == NULL || Routes == NULL || Addresses == NULL)
-    {
-        Status = STATUS_INSUFFICIENT_RESOURCES;
-        goto Done;
-    }
-
-    Status = NetioTcpQuery(Tcp, GENERIC_ENTITY, 0, INFO_CLASS_GENERIC, ENTITY_LIST_ID,
-                           Entities, NETIO_MAX_ENTITIES * sizeof(TDIEntityID), &Returned);
+    Status = NetioQueryEntities(Tcp, &Entities, &EntityCount);
     if (!NT_SUCCESS(Status))
         goto Done;
-    EntityCount = Returned / sizeof(TDIEntityID);
 
     for (i = 0; i < EntityCount; i++)
     {
         if (Entities[i].tei_entity != CL_NL_ENTITY)
             continue;
 
-        if (!NT_SUCCESS(NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
-                                      IP_MIB_ADDRTABLE_ENTRY_ID, Addresses,
-                                      NETIO_MAX_ADDRESSES * sizeof(IPAddrEntry), &Returned)) ||
-            Returned > NETIO_MAX_ADDRESSES * sizeof(IPAddrEntry))
-        {
+        Status = NetioQueryIpTable(Tcp, Entities[i].tei_instance, IP_MIB_ADDRTABLE_ENTRY_ID,
+                                   sizeof(IPAddrEntry), &Table, &Returned);
+        /* The stack answers so for an entity removed since the enumeration; only that one is left out */
+        if (Status == STATUS_INVALID_PARAMETER)
             continue;
-        }
+        if (!NT_SUCCESS(Status))
+            goto Done;
+        Addresses = Table;
         AddressCount = Returned / sizeof(IPAddrEntry);
 
         for (k = 0; k < AddressCount; k++)
@@ -403,18 +501,22 @@ GetBestRoute2(
             break;
         }
         if (k == AddressCount)
+        {
+            ExFreePoolWithTag(Addresses, NETIO_IPHLP_TAG);
             continue;
+        }
         Address = Addresses[k];
+        ExFreePoolWithTag(Addresses, NETIO_IPHLP_TAG);
         if (InterfaceIndex != 0 && Address.iae_index != InterfaceIndex)
             continue;
 
-        if (!NT_SUCCESS(NetioTcpQuery(Tcp, CL_NL_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
-                                      IP_MIB_ARPTABLE_ENTRY_ID, Routes,
-                                      NETIO_MAX_ROUTES * sizeof(NETIO_TDI_ROUTE), &Returned)) ||
-            Returned > NETIO_MAX_ROUTES * sizeof(NETIO_TDI_ROUTE))
-        {
+        Status = NetioQueryIpTable(Tcp, Entities[i].tei_instance, IP_MIB_ARPTABLE_ENTRY_ID,
+                                   sizeof(NETIO_TDI_ROUTE), &Table, &Returned);
+        if (Status == STATUS_INVALID_PARAMETER)
             continue;
-        }
+        if (!NT_SUCCESS(Status))
+            goto Done;
+        Routes = Table;
         RouteCount = Returned / sizeof(NETIO_TDI_ROUTE);
 
         for (j = 0; j < RouteCount; j++)
@@ -430,6 +532,7 @@ GetBestRoute2(
             BestIndex = Address.iae_index;
             Found = TRUE;
         }
+        ExFreePoolWithTag(Routes, NETIO_IPHLP_TAG);
     }
 
     if (!Found)
@@ -440,12 +543,12 @@ GetBestRoute2(
 
     InitializeIpForwardEntry(BestRoute);
     BestRoute->InterfaceIndex = BestIndex;
-    BestRoute->InterfaceLuid.Info.NetLuidIndex = BestIndex;
+    BestRoute->InterfaceLuid = NetioRouteLuid(BestIndex);
     BestRoute->DestinationPrefix.Prefix.si_family = AF_INET;
     BestRoute->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = Best.Dest & Best.Mask;
     BestRoute->DestinationPrefix.PrefixLength = (UINT8)BestPrefix;
     BestRoute->NextHop.si_family = AF_INET;
-    BestRoute->NextHop.Ipv4.sin_addr.s_addr = Best.NextHop == BestAddress ? 0 : Best.NextHop;
+    BestRoute->NextHop.Ipv4.sin_addr.s_addr = (Best.Type == NETIO_ROUTE_TYPE_DIRECT) ? 0 : Best.NextHop;
     BestRoute->Metric = Best.Metric1;
     BestRoute->Protocol = MIB_IPPROTO_NETMGMT;
     BestRoute->Loopback = (Best.Dest & 0xFF) == 127;
@@ -472,8 +575,1011 @@ GetBestRoute2(
     Status = STATUS_SUCCESS;
 
 Done:
-    if (Addresses)
-        ExFreePoolWithTag(Addresses, NETIO_IPHLP_TAG);
+    if (Entities)
+        ExFreePoolWithTag(Entities, NETIO_IPHLP_TAG);
+    ZwClose(Tcp);
+    return Status;
+}
+
+#define NETIO_MAX_DESCRIPTION 256
+#define NETIO_IF_ENTRY_SIZE FIELD_OFFSET(IFEntry, if_descr[NETIO_MAX_DESCRIPTION + 1])
+#define NETIO_UNCHANGED_ULONG ((ULONG)-1)
+#define NETIO_UNCHANGED_BOOLEAN ((BOOLEAN)0xFF)
+
+typedef enum _NETIO_PASSIVE_FUNCTION
+{
+    NetioPassiveGetIfEntry2,
+    NetioPassiveGetIpInterfaceEntry,
+    NetioPassiveSetIpInterfaceEntry,
+    NetioPassiveGetIpForwardTable2
+} NETIO_PASSIVE_FUNCTION;
+
+typedef struct _NETIO_PASSIVE_CALL
+{
+    WORK_QUEUE_ITEM Item;
+    KEVENT Done;
+    NETIO_PASSIVE_FUNCTION Function;
+    ADDRESS_FAMILY Family;
+    PVOID Argument;
+    NTSTATUS Status;
+} NETIO_PASSIVE_CALL, *PNETIO_PASSIVE_CALL;
+
+static
+VOID
+NTAPI
+NetioPassiveWorker(
+    _In_ PVOID Parameter)
+{
+    PNETIO_PASSIVE_CALL Call = Parameter;
+
+    switch (Call->Function)
+    {
+        case NetioPassiveGetIfEntry2:
+            Call->Status = GetIfEntry2(Call->Argument);
+            break;
+        case NetioPassiveGetIpInterfaceEntry:
+            Call->Status = GetIpInterfaceEntry(Call->Argument);
+            break;
+        case NetioPassiveSetIpInterfaceEntry:
+            Call->Status = SetIpInterfaceEntry(Call->Argument);
+            break;
+        case NetioPassiveGetIpForwardTable2:
+            Call->Status = GetIpForwardTable2(Call->Family, Call->Argument);
+            break;
+    }
+    KeSetEvent(&Call->Done, IO_NO_INCREMENT, FALSE);
+}
+
+/* Synchronous I/O completes in a special kernel APC, so a caller that blocks them runs the call on a worker thread */
+static
+BOOLEAN
+NetioCallAtPassive(
+    _In_ NETIO_PASSIVE_FUNCTION Function,
+    _In_ ADDRESS_FAMILY Family,
+    _In_ PVOID Argument,
+    _Out_ PNTSTATUS Status)
+{
+    NETIO_PASSIVE_CALL Call;
+
+    if (!KeAreAllApcsDisabled())
+        return FALSE;
+
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    Call.Function = Function;
+    Call.Family = Family;
+    Call.Argument = Argument;
+    Call.Status = STATUS_UNSUCCESSFUL;
+    KeInitializeEvent(&Call.Done, NotificationEvent, FALSE);
+    ExInitializeWorkItem(&Call.Item, NetioPassiveWorker, &Call);
+    ExQueueWorkItem(&Call.Item, DelayedWorkQueue);
+    KeWaitForSingleObject(&Call.Done, Executive, KernelMode, FALSE, NULL);
+    *Status = Call.Status;
+    return TRUE;
+}
+
+static
+NTSTATUS
+NetioOpenDevice(
+    _In_ PCWSTR DeviceName,
+    _Out_ PHANDLE Handle)
+{
+    UNICODE_STRING Name;
+    OBJECT_ATTRIBUTES Attributes;
+    IO_STATUS_BLOCK Io;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    RtlInitUnicodeString(&Name, DeviceName);
+    InitializeObjectAttributes(&Attributes, &Name, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+    return ZwCreateFile(Handle, GENERIC_READ | SYNCHRONIZE, &Attributes, &Io, NULL, FILE_ATTRIBUTE_NORMAL,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0);
+}
+
+static
+NTSTATUS
+NetioDeviceIoControl(
+    _In_ PCWSTR DeviceName,
+    _In_ ULONG Code,
+    _In_reads_bytes_opt_(InputLength) PVOID Input,
+    _In_ ULONG InputLength,
+    _Out_writes_bytes_opt_(OutputLength) PVOID Output,
+    _In_ ULONG OutputLength)
+{
+    IO_STATUS_BLOCK Io;
+    NTSTATUS Status;
+    HANDLE Device;
+
+    Status = NetioOpenDevice(DeviceName, &Device);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    Status = ZwDeviceIoControlFile(Device, NULL, NULL, NULL, &Io, Code, Input, InputLength, Output, OutputLength);
+    ZwClose(Device);
+    return Status;
+}
+
+static
+IF_OPER_STATUS
+NetioOperStatus(
+    _In_ ULONG TdiStatus)
+{
+    if (TdiStatus == MIB_IF_OPER_STATUS_OPERATIONAL || TdiStatus == MIB_IF_OPER_STATUS_CONNECTED)
+        return IfOperStatusUp;
+    if (TdiStatus == MIB_IF_OPER_STATUS_CONNECTING)
+        return IfOperStatusDormant;
+    if (TdiStatus == MIB_IF_OPER_STATUS_NON_OPERATIONAL || TdiStatus == MIB_IF_OPER_STATUS_DISCONNECTED)
+        return IfOperStatusDown;
+    return IfOperStatusUnknown;
+}
+
+static
+NTSTATUS
+NetioQueryInterfaces(
+    _Outptr_result_maybenull_ PUCHAR *Entries,
+    _Out_ PULONG Count)
+{
+    TDIEntityID *Entities;
+    IFEntry *Entry;
+    PUCHAR Buffer = NULL;
+    ULONG Returned, EntityCount, i, Found = 0;
+    NTSTATUS Status;
+    HANDLE Tcp;
+
+    *Entries = NULL;
+    *Count = 0;
+
+    Status = NetioOpenDevice(L"\\Device\\Tcp", &Tcp);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Status = NetioQueryEntities(Tcp, &Entities, &EntityCount);
+    if (!NT_SUCCESS(Status))
+        goto Done;
+
+    Buffer = ExAllocatePoolWithTag(PagedPool, max(EntityCount, 1) * NETIO_IF_ENTRY_SIZE, NETIO_IPHLP_TAG);
+    if (Buffer == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+
+    for (i = 0; i < EntityCount; i++)
+    {
+        if (Entities[i].tei_entity != IF_ENTITY)
+            continue;
+
+        Entry = (IFEntry *)(Buffer + Found * NETIO_IF_ENTRY_SIZE);
+        RtlZeroMemory(Entry, NETIO_IF_ENTRY_SIZE);
+        if (!NT_SUCCESS(NetioTcpQuery(Tcp, IF_ENTITY, Entities[i].tei_instance, INFO_CLASS_PROTOCOL,
+                                      IF_MIB_STATS_ID, Entry, NETIO_IF_ENTRY_SIZE, &Returned)) ||
+            Returned < FIELD_OFFSET(IFEntry, if_descr) || Entry->if_index == 0)
+        {
+            continue;
+        }
+        Entry->if_descrlen = min(Entry->if_descrlen, NETIO_MAX_DESCRIPTION);
+        Entry->if_descr[Entry->if_descrlen] = 0;
+        Found++;
+    }
+
+    *Entries = Buffer;
+    *Count = Found;
+    Buffer = NULL;
+    Status = STATUS_SUCCESS;
+
+Done:
+    if (Buffer)
+        ExFreePoolWithTag(Buffer, NETIO_IPHLP_TAG);
+    if (Entities)
+        ExFreePoolWithTag(Entities, NETIO_IPHLP_TAG);
+    ZwClose(Tcp);
+    return Status;
+}
+
+static
+IFEntry *
+NetioFindInterface(
+    _In_ PUCHAR Entries,
+    _In_ ULONG Count,
+    _In_ ULONG Index)
+{
+    ULONG i;
+
+    for (i = 0; i < Count; i++)
+    {
+        IFEntry *Entry = (IFEntry *)(Entries + i * NETIO_IF_ENTRY_SIZE);
+
+        if (Entry->if_index == Index)
+            return Entry;
+    }
+    return NULL;
+}
+
+static
+NET_LUID
+NetioRouteLuid(
+    _In_ ULONG Index)
+{
+    PUCHAR Entries;
+    IFEntry *Entry;
+    NET_LUID Luid;
+    ULONG Count;
+
+    if (!NT_SUCCESS(NetioQueryInterfaces(&Entries, &Count)))
+        return NetioInterfaceLuid(Index, IF_TYPE_OTHER);
+
+    Entry = NetioFindInterface(Entries, Count, Index);
+    Luid = NetioInterfaceLuid(Index, Entry ? Entry->if_type : IF_TYPE_OTHER);
+    ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
+    return Luid;
+}
+
+static
+NTSTATUS
+NetioQueryIp6Table(
+    _In_ ULONG TableId,
+    _Outptr_ PIP6_TABLE_HEADER *Table)
+{
+    PIP6_TABLE_HEADER Header;
+    ULONG Size = sizeof(IP6_TABLE_HEADER) + 32 * 128;
+    NTSTATUS Status;
+
+    *Table = NULL;
+    for (;;)
+    {
+        Header = ExAllocatePoolWithTag(PagedPool, Size, NETIO_IPHLP_TAG);
+        if (Header == NULL)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        *(PULONG)Header = TableId;
+        Status = NetioDeviceIoControl(L"\\Device\\Ip6", IOCTL_IP6_QUERY_TABLE, Header, sizeof(ULONG), Header, Size);
+        if (NT_SUCCESS(Status) && Header->Needed <= Size)
+        {
+            *Table = Header;
+            return STATUS_SUCCESS;
+        }
+        if ((NT_SUCCESS(Status) || Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_BUFFER_TOO_SMALL) &&
+            Header->Needed > Size)
+        {
+            Size = Header->Needed;
+            ExFreePoolWithTag(Header, NETIO_IPHLP_TAG);
+            continue;
+        }
+        ExFreePoolWithTag(Header, NETIO_IPHLP_TAG);
+        return Status;
+    }
+}
+
+static
+VOID
+NetioDefaultZoneIndices(
+    _Out_writes_(ScopeLevelCount) PULONG Zones,
+    _In_ ULONG Index,
+    _In_ BOOLEAN Loopback)
+{
+    ULONG Level;
+
+    for (Level = 0; Level < ScopeLevelCount; Level++)
+        Zones[Level] = (Level < ScopeLevelAdmin && !Loopback) ? Index : 1;
+    Zones[ScopeLevelGlobal] = 0;
+}
+
+static
+VOID
+NetioFillIpInterface4(
+    _In_ const IFEntry *Entry,
+    _In_ const IP4_INTERFACE_INFO *Info,
+    _Out_ PMIB_IPINTERFACE_ROW Row)
+{
+    BOOLEAN Loopback = Entry->if_type == IF_TYPE_SOFTWARE_LOOPBACK;
+    ULONG Level;
+
+    RtlZeroMemory(Row, sizeof(*Row));
+    Row->Family = AF_INET;
+    Row->InterfaceLuid = NetioInterfaceLuid(Entry->if_index, Entry->if_type);
+    Row->InterfaceIndex = Entry->if_index;
+    Row->MaxReassemblySize = 0xFFFF;
+    Row->ForwardingEnabled = Info->Forwarding;
+    Row->WeakHostSend = Info->WeakHostSend;
+    Row->WeakHostReceive = Info->WeakHostReceive;
+    Row->UseAutomaticMetric = Info->UseAutomaticMetric;
+    Row->UseNeighborUnreachabilityDetection = TRUE;
+    Row->ManagedAddressConfigurationSupported = TRUE;
+    Row->OtherStatefulConfigurationSupported = TRUE;
+    Row->AdvertiseDefaultRoute = Info->AdvertiseDefaultRoute;
+    Row->RouterDiscoveryBehavior = (NL_ROUTER_DISCOVERY_BEHAVIOR)Info->RouterDiscoveryBehavior;
+    Row->DadTransmits = Loopback ? 0 : Info->DadTransmits;
+    Row->BaseReachableTime = Info->BaseReachableTime;
+    Row->RetransmitTime = Info->RetransmitTime;
+    Row->PathMtuDiscoveryTimeout = Info->PathMtuDiscoveryTimeout;
+    Row->LinkLocalAddressBehavior = LinkLocalDelayed;
+    Row->LinkLocalAddressTimeout = Info->LinkLocalAddressTimeout;
+    NetioDefaultZoneIndices(Row->ZoneIndices, Entry->if_index, Loopback);
+    for (Level = 0; Level < ScopeLevelCount; Level++)
+    {
+        if (Info->ZoneIndices[Level])
+            Row->ZoneIndices[Level] = Info->ZoneIndices[Level];
+    }
+    Row->SitePrefixLength = Info->SitePrefixLength;
+    Row->Metric = Info->Metric;
+    Row->NlMtu = Loopback ? ~0UL : Info->Mtu;
+    Row->Connected = NetioOperStatus(Entry->if_operstatus) == IfOperStatusUp;
+    Row->SupportsNeighborDiscovery = !Loopback;
+    Row->SupportsRouterDiscovery = !Loopback;
+    Row->ReachableTime = Info->ReachableTime;
+    Row->DisableDefaultRoutes = Info->DisableDefaultRoutes;
+}
+
+static
+VOID
+NetioFillIpInterface6(
+    _In_ const IP6_INTERFACE_ROW *Interface,
+    _In_ ULONG Type,
+    _Out_ PMIB_IPINTERFACE_ROW Row)
+{
+    ULONG Level;
+
+    RtlZeroMemory(Row, sizeof(*Row));
+    Row->Family = AF_INET6;
+    Row->InterfaceLuid = NetioInterfaceLuid(Interface->Index, Type);
+    Row->InterfaceIndex = Interface->Index;
+    Row->MaxReassemblySize = 0xFFFF;
+    Row->AdvertisingEnabled = Interface->Advertising;
+    Row->ForwardingEnabled = Interface->Forwarding;
+    Row->WeakHostSend = Interface->WeakHostSend;
+    Row->WeakHostReceive = Interface->WeakHostReceive;
+    Row->UseAutomaticMetric = Interface->UseAutomaticMetric;
+    Row->UseNeighborUnreachabilityDetection = TRUE;
+    Row->ManagedAddressConfigurationSupported = Interface->ManagedAddressConfiguration;
+    Row->OtherStatefulConfigurationSupported = Interface->OtherStatefulConfiguration;
+    Row->AdvertiseDefaultRoute = Interface->AdvertiseDefaultRoute;
+    Row->RouterDiscoveryBehavior = (NL_ROUTER_DISCOVERY_BEHAVIOR)Interface->RouterDiscoveryBehavior;
+    Row->DadTransmits = Interface->DadTransmits;
+    Row->BaseReachableTime = Interface->BaseReachableTime;
+    Row->RetransmitTime = Interface->RetransmitTime;
+    Row->PathMtuDiscoveryTimeout = Interface->PathMtuDiscoveryTimeout;
+    Row->LinkLocalAddressBehavior = LinkLocalAlwaysOn;
+    Row->LinkLocalAddressTimeout = Interface->LinkLocalAddressTimeout;
+    NetioDefaultZoneIndices(Row->ZoneIndices, Interface->Index, Interface->Loopback);
+    for (Level = 0; Level < ScopeLevelCount; Level++)
+    {
+        if (Interface->ZoneIndices[Level])
+            Row->ZoneIndices[Level] = Interface->ZoneIndices[Level];
+    }
+    Row->SitePrefixLength = Interface->SitePrefixLength;
+    Row->Metric = Interface->Metric;
+    Row->NlMtu = Interface->Loopback ? ~0UL : Interface->Mtu;
+    Row->Connected = Interface->Connected;
+    Row->SupportsNeighborDiscovery = !Interface->Loopback;
+    Row->SupportsRouterDiscovery = !Interface->Loopback;
+    Row->ReachableTime = Interface->ReachableTime;
+    Row->DisableDefaultRoutes = Interface->DisableDefaultRoutes;
+}
+
+static
+NTSTATUS
+NetioQueryIpInterfaces(
+    _In_ ADDRESS_FAMILY Family,
+    _In_ BOOLEAN Complete,
+    _Outptr_result_maybenull_ PMIB_IPINTERFACE_ROW *Rows,
+    _Out_ PULONG Count)
+{
+    PIP6_TABLE_HEADER Table = NULL;
+    PMIB_IPINTERFACE_ROW Result = NULL;
+    PUCHAR Entries;
+    ULONG EntryCount, i, Found = 0;
+    NTSTATUS Status;
+
+    *Rows = NULL;
+    *Count = 0;
+
+    Status = NetioQueryInterfaces(&Entries, &EntryCount);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    if (Family == AF_INET6)
+    {
+        Status = NetioQueryIp6Table(Ip6TableInterfaces, &Table);
+        if (!NT_SUCCESS(Status))
+            goto Done;
+    }
+
+    i = (Family == AF_INET6) ? Table->Count : EntryCount;
+    Result = ExAllocatePoolWithTag(PagedPool, max(i, 1) * sizeof(MIB_IPINTERFACE_ROW), NETIO_IPHLP_TAG);
+    if (Result == NULL)
+    {
+        Status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Done;
+    }
+
+    if (Family == AF_INET6)
+    {
+        const IP6_INTERFACE_ROW *Interfaces = (const IP6_INTERFACE_ROW *)(Table + 1);
+
+        for (i = 0; i < Table->Count; i++)
+        {
+            IFEntry *Entry = NetioFindInterface(Entries, EntryCount, Interfaces[i].Index);
+            ULONG Type = Entry ? Entry->if_type :
+                         (Interfaces[i].Loopback ? IF_TYPE_SOFTWARE_LOOPBACK : IF_TYPE_OTHER);
+
+            NetioFillIpInterface6(&Interfaces[i], Type, &Result[Found++]);
+        }
+    }
+    else
+    {
+        for (i = 0; i < EntryCount; i++)
+        {
+            IFEntry *Entry = (IFEntry *)(Entries + i * NETIO_IF_ENTRY_SIZE);
+            IP4_INTERFACE_INFO Info;
+
+            RtlZeroMemory(&Info, sizeof(Info));
+            Info.Index = Entry->if_index;
+            Status = NetioDeviceIoControl(L"\\Device\\Ip", IOCTL_IP_QUERY_INTERFACE,
+                                          &Info, sizeof(Info), &Info, sizeof(Info));
+            if (!NT_SUCCESS(Status))
+            {
+                /* An interface removed since the enumeration is left out */
+                if (Complete)
+                    goto Done;
+                continue;
+            }
+            NetioFillIpInterface4(Entry, &Info, &Result[Found++]);
+        }
+    }
+
+    *Rows = Result;
+    *Count = Found;
+    Result = NULL;
+    Status = STATUS_SUCCESS;
+
+Done:
+    if (Result)
+        ExFreePoolWithTag(Result, NETIO_IPHLP_TAG);
+    if (Table)
+        ExFreePoolWithTag(Table, NETIO_IPHLP_TAG);
+    if (Entries)
+        ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
+    return Status;
+}
+
+#define NETIO_GUID_LENGTH 38
+#define NETIO_NET_CLASS L"{4D36E972-E325-11CE-BFC1-08002BE10318}"
+#define NETIO_CONNECTIONS_KEY L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\Network\\" NETIO_NET_CLASS L"\\"
+#define NETIO_ADAPTERS_KEY L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Control\\Class\\" NETIO_NET_CLASS
+#define NETIO_CONNECTION_SUBKEY L"\\Connection"
+#define NETIO_MAX_ADAPTER_KEY_NAME 64
+
+static
+BOOLEAN
+NetioInterfaceGuid(
+    _In_ const IFEntry *Entry,
+    _Out_writes_z_(NETIO_GUID_LENGTH + 1) PWCHAR Text)
+{
+    UNICODE_STRING String;
+    ULONG Start = 0, i;
+    GUID Guid;
+
+    while (Start < Entry->if_descrlen && Entry->if_descr[Start] != '{')
+        Start++;
+    if (Entry->if_descrlen - Start < NETIO_GUID_LENGTH)
+        return FALSE;
+
+    for (i = 0; i < NETIO_GUID_LENGTH; i++)
+        Text[i] = Entry->if_descr[Start + i];
+    Text[NETIO_GUID_LENGTH] = UNICODE_NULL;
+    RtlInitUnicodeString(&String, Text);
+    return NT_SUCCESS(RtlGUIDFromString(&String, &Guid));
+}
+
+static
+NTSTATUS
+NetioOpenKey(
+    _In_opt_ HANDLE Parent,
+    _In_ PUNICODE_STRING Name,
+    _Out_ PHANDLE Key)
+{
+    OBJECT_ATTRIBUTES Attributes;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    InitializeObjectAttributes(&Attributes, Name, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, Parent, NULL);
+    return ZwOpenKey(Key, KEY_READ, &Attributes);
+}
+
+static
+BOOLEAN
+NetioQueryString(
+    _In_ HANDLE Key,
+    _In_ PCWSTR ValueName,
+    _Out_writes_z_(Count) PWCHAR Text,
+    _In_ ULONG Count)
+{
+    union
+    {
+        KEY_VALUE_PARTIAL_INFORMATION Info;
+        UCHAR Buffer[FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data) + (IF_MAX_STRING_SIZE + 1) * sizeof(WCHAR)];
+    } Value;
+    UNICODE_STRING Name;
+    const WCHAR *Data;
+    ULONG Returned, Length, i = 0;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(Count != 0 && Count <= IF_MAX_STRING_SIZE + 1);
+
+    RtlInitUnicodeString(&Name, ValueName);
+    if (!NT_SUCCESS(ZwQueryValueKey(Key, &Name, KeyValuePartialInformation, &Value, sizeof(Value), &Returned)) ||
+        Value.Info.Type != REG_SZ)
+    {
+        return FALSE;
+    }
+
+    Data = (const WCHAR *)(Value.Buffer + FIELD_OFFSET(KEY_VALUE_PARTIAL_INFORMATION, Data));
+    Length = Value.Info.DataLength / sizeof(WCHAR);
+    while (i < Length && Data[i])
+        i++;
+    if (i == 0 || i >= Count)
+        return FALSE;
+
+    RtlCopyMemory(Text, Data, i * sizeof(WCHAR));
+    Text[i] = UNICODE_NULL;
+    return TRUE;
+}
+
+static
+BOOLEAN
+NetioInterfaceAlias(
+    _In_ PCWSTR Guid,
+    _Out_writes_z_(IF_MAX_STRING_SIZE + 1) PWCHAR Alias)
+{
+    WCHAR Buffer[sizeof(NETIO_CONNECTIONS_KEY) / sizeof(WCHAR) + NETIO_GUID_LENGTH + sizeof(NETIO_CONNECTION_SUBKEY) / sizeof(WCHAR)];
+    UNICODE_STRING Path;
+    BOOLEAN Found;
+    HANDLE Key;
+
+    RtlInitEmptyUnicodeString(&Path, Buffer, sizeof(Buffer));
+    if (!NT_SUCCESS(RtlAppendUnicodeToString(&Path, NETIO_CONNECTIONS_KEY)) ||
+        !NT_SUCCESS(RtlAppendUnicodeToString(&Path, Guid)) ||
+        !NT_SUCCESS(RtlAppendUnicodeToString(&Path, NETIO_CONNECTION_SUBKEY)) ||
+        !NT_SUCCESS(NetioOpenKey(NULL, &Path, &Key)))
+    {
+        return FALSE;
+    }
+
+    Found = NetioQueryString(Key, L"Name", Alias, IF_MAX_STRING_SIZE + 1);
+    ZwClose(Key);
+    return Found;
+}
+
+static
+BOOLEAN
+NetioInterfaceDescription(
+    _In_ PCWSTR Guid,
+    _Out_writes_z_(IF_MAX_STRING_SIZE + 1) PWCHAR Description)
+{
+    union
+    {
+        KEY_BASIC_INFORMATION Info;
+        UCHAR Buffer[FIELD_OFFSET(KEY_BASIC_INFORMATION, Name) + NETIO_MAX_ADAPTER_KEY_NAME * sizeof(WCHAR)];
+    } Adapter;
+    WCHAR Instance[NETIO_GUID_LENGTH + 1];
+    UNICODE_STRING Name, InstanceId, Wanted;
+    BOOLEAN Match, Found = FALSE;
+    ULONG Index, Returned;
+    HANDLE Class, Key;
+
+    RtlInitUnicodeString(&Name, NETIO_ADAPTERS_KEY);
+    if (!NT_SUCCESS(NetioOpenKey(NULL, &Name, &Class)))
+        return FALSE;
+
+    RtlInitUnicodeString(&Wanted, Guid);
+    for (Index = 0;
+         NT_SUCCESS(ZwEnumerateKey(Class, Index, KeyBasicInformation, &Adapter, sizeof(Adapter), &Returned));
+         Index++)
+    {
+        Name.Buffer = Adapter.Info.Name;
+        Name.Length = Name.MaximumLength = (USHORT)Adapter.Info.NameLength;
+        if (!NT_SUCCESS(NetioOpenKey(Class, &Name, &Key)))
+            continue;
+
+        Match = NetioQueryString(Key, L"NetCfgInstanceId", Instance, RTL_NUMBER_OF(Instance));
+        if (Match)
+        {
+            RtlInitUnicodeString(&InstanceId, Instance);
+            Match = RtlEqualUnicodeString(&InstanceId, &Wanted, TRUE);
+        }
+        if (Match)
+            Found = NetioQueryString(Key, L"DriverDesc", Description, IF_MAX_STRING_SIZE + 1);
+        ZwClose(Key);
+        if (Match)
+            break;
+    }
+
+    ZwClose(Class);
+    return Found;
+}
+
+NTSTATUS
+NTAPI
+GetIfEntry2(
+    _Inout_ PMIB_IF_ROW2 Row)
+{
+    PUCHAR Entries;
+    IFEntry *Entry;
+    IP4_INTERFACE_INFO Info;
+    WCHAR Guid[NETIO_GUID_LENGTH + 1];
+    ULONG Count, Index, Length, i;
+    BOOLEAN Loopback, HasAlias = FALSE, HasDescription = FALSE;
+    NTSTATUS Status;
+
+    if (Row == NULL)
+        return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveGetIfEntry2, AF_UNSPEC, Row, &Status))
+        return Status;
+    Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
+    if (Index == 0)
+        return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
+
+    Status = NetioQueryInterfaces(&Entries, &Count);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Entry = NetioFindInterface(Entries, Count, Index);
+    if (Entry == NULL || (Row->InterfaceLuid.Value && Row->InterfaceLuid.Info.IfType != Entry->if_type))
+    {
+        Status = STATUS_NOT_FOUND;
+        goto Done;
+    }
+
+    RtlZeroMemory(&Info, sizeof(Info));
+    Info.Index = Entry->if_index;
+    Status = NetioDeviceIoControl(L"\\Device\\Ip", IOCTL_IP_QUERY_INTERFACE, &Info, sizeof(Info), &Info, sizeof(Info));
+    if (!NT_SUCCESS(Status))
+        goto Done;
+
+    Loopback = Entry->if_type == IF_TYPE_SOFTWARE_LOOPBACK;
+    RtlZeroMemory(Row, sizeof(*Row));
+    Row->InterfaceLuid = NetioInterfaceLuid(Entry->if_index, Entry->if_type);
+    Row->InterfaceIndex = Entry->if_index;
+    if (!Loopback && NetioInterfaceGuid(Entry, Guid))
+    {
+        HasAlias = NetioInterfaceAlias(Guid, Row->Alias);
+        HasDescription = NetioInterfaceDescription(Guid, Row->Description);
+    }
+    Length = min(Entry->if_descrlen, IF_MAX_STRING_SIZE);
+    for (i = 0; i < Length && Entry->if_descr[i]; i++)
+    {
+        if (!HasAlias)
+            Row->Alias[i] = Entry->if_descr[i];
+        if (!HasDescription)
+            Row->Description[i] = Entry->if_descr[i];
+    }
+    Row->PhysicalAddressLength = min(Entry->if_physaddrlen, MAX_PHYSADDR_SIZE);
+    RtlCopyMemory(Row->PhysicalAddress, Entry->if_physaddr, Row->PhysicalAddressLength);
+    RtlCopyMemory(Row->PermanentPhysicalAddress, Entry->if_physaddr, Row->PhysicalAddressLength);
+    Row->Mtu = Entry->if_mtu;
+    Row->Type = Entry->if_type;
+    Row->TunnelType = TUNNEL_TYPE_NONE;
+    Row->MediaType = (NDIS_MEDIUM)Info.MediaType;
+    Row->PhysicalMediumType = (NDIS_PHYSICAL_MEDIUM)Info.PhysicalMedium;
+    Row->AccessType = Loopback ? NET_IF_ACCESS_LOOPBACK : (NET_IF_ACCESS_TYPE)Info.AccessType;
+    Row->DirectionType = NET_IF_DIRECTION_SENDRECEIVE;
+    Row->InterfaceAndOperStatusFlags.HardwareInterface = !Loopback && Info.ConnectorPresent;
+    Row->InterfaceAndOperStatusFlags.ConnectorPresent = Info.ConnectorPresent;
+    Row->OperStatus = NetioOperStatus(Entry->if_operstatus);
+    Row->InterfaceAndOperStatusFlags.NotMediaConnected = Row->OperStatus != IfOperStatusUp;
+    Row->AdminStatus = (Entry->if_adminstatus == 2) ? NET_IF_ADMIN_STATUS_DOWN : NET_IF_ADMIN_STATUS_UP;
+    Row->MediaConnectState = (Row->OperStatus == IfOperStatusUp) ? MediaConnectStateConnected :
+                                                                   MediaConnectStateDisconnected;
+    Row->ConnectionType = NET_IF_CONNECTION_DEDICATED;
+    Row->TransmitLinkSpeed = Row->ReceiveLinkSpeed = Info.LinkSpeed ? Info.LinkSpeed : Entry->if_speed;
+    Row->InOctets = Row->InUcastOctets = Entry->if_inoctets;
+    Row->InUcastPkts = Entry->if_inucastpkts;
+    Row->InNUcastPkts = Entry->if_innucastpkts;
+    Row->InDiscards = Entry->if_indiscards;
+    Row->InErrors = Entry->if_inerrors;
+    Row->InUnknownProtos = Entry->if_inunknownprotos;
+    Row->OutOctets = Row->OutUcastOctets = Entry->if_outoctets;
+    Row->OutUcastPkts = Entry->if_outucastpkts;
+    Row->OutNUcastPkts = Entry->if_outnucastpkts;
+    Row->OutDiscards = Entry->if_outdiscards;
+    Row->OutErrors = Entry->if_outerrors;
+    Row->OutQLen = Entry->if_outqlen;
+    Status = STATUS_SUCCESS;
+
+Done:
+    ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
+    return Status;
+}
+
+NTSTATUS
+NTAPI
+GetIpInterfaceEntry(
+    _Inout_ PMIB_IPINTERFACE_ROW Row)
+{
+    PMIB_IPINTERFACE_ROW Rows;
+    ULONG Count, Index, i;
+    NTSTATUS Status;
+
+    if (Row == NULL || (Row->Family != AF_INET && Row->Family != AF_INET6))
+        return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveGetIpInterfaceEntry, AF_UNSPEC, Row, &Status))
+        return Status;
+    Index = Row->InterfaceLuid.Value ? NetioLuidIndex(&Row->InterfaceLuid) : Row->InterfaceIndex;
+    if (Index == 0)
+        return Row->InterfaceLuid.Value ? STATUS_NOT_FOUND : STATUS_INVALID_PARAMETER;
+
+    Status = NetioQueryIpInterfaces(Row->Family, FALSE, &Rows, &Count);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Status = STATUS_NOT_FOUND;
+    for (i = 0; i < Count; i++)
+    {
+        if (Rows[i].InterfaceIndex != Index ||
+            (Row->InterfaceLuid.Value && Row->InterfaceLuid.Value != Rows[i].InterfaceLuid.Value))
+        {
+            continue;
+        }
+        *Row = Rows[i];
+        Status = STATUS_SUCCESS;
+        break;
+    }
+
+    ExFreePoolWithTag(Rows, NETIO_IPHLP_TAG);
+    return Status;
+}
+
+static
+BOOLEAN
+NetioValueChanged(
+    _In_ ULONG Requested,
+    _In_ ULONG Current,
+    _In_ BOOLEAN ZeroUnchanged)
+{
+    if (Requested == NETIO_UNCHANGED_ULONG || (ZeroUnchanged && Requested == 0))
+        return FALSE;
+    return Requested != Current;
+}
+
+static
+ULONG
+NetioValue(
+    _In_ ULONG Requested,
+    _In_ ULONG Current,
+    _In_ BOOLEAN ZeroUnchanged)
+{
+    return NetioValueChanged(Requested, Current, ZeroUnchanged) ? Requested : Current;
+}
+
+static
+BOOLEAN
+NetioFlag(
+    _In_ BOOLEAN Requested,
+    _In_ BOOLEAN Current)
+{
+    return (Requested == NETIO_UNCHANGED_BOOLEAN) ? Current : !!Requested;
+}
+
+static
+VOID
+NetioZones(
+    _In_ const MIB_IPINTERFACE_ROW *Row,
+    _In_ const MIB_IPINTERFACE_ROW *Current,
+    _Out_writes_(ScopeLevelCount) PULONG Zones)
+{
+    ULONG Level;
+
+    for (Level = 0; Level < ScopeLevelCount; Level++)
+        Zones[Level] = NetioValue(Row->ZoneIndices[Level], Current->ZoneIndices[Level], FALSE);
+}
+
+NTSTATUS
+NTAPI
+SetIpInterfaceEntry(
+    _Inout_ PMIB_IPINTERFACE_ROW Row)
+{
+    MIB_IPINTERFACE_ROW Current;
+    BOOLEAN Automatic, Advertising, Managed, Other;
+    ULONG Metric;
+    NTSTATUS Status;
+
+    if (Row == NULL || (Row->Family != AF_INET && Row->Family != AF_INET6))
+        return STATUS_INVALID_PARAMETER;
+    if (!Row->InterfaceLuid.Value && !Row->InterfaceIndex)
+        return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveSetIpInterfaceEntry, AF_UNSPEC, Row, &Status))
+        return Status;
+
+    InitializeIpInterfaceEntry(&Current);
+    Current.Family = Row->Family;
+    Current.InterfaceLuid = Row->InterfaceLuid;
+    Current.InterfaceIndex = Row->InterfaceIndex;
+    Status = GetIpInterfaceEntry(&Current);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    if (Row->Family == AF_INET && Row->SitePrefixLength && Row->SitePrefixLength != NETIO_UNCHANGED_ULONG)
+        return STATUS_INVALID_PARAMETER;
+    if (Row->RouterDiscoveryBehavior != RouterDiscoveryUnchanged &&
+        (ULONG)Row->RouterDiscoveryBehavior > RouterDiscoveryDhcp)
+        return STATUS_INVALID_PARAMETER;
+    if ((Row->UseNeighborUnreachabilityDetection != NETIO_UNCHANGED_BOOLEAN &&
+         !Row->UseNeighborUnreachabilityDetection != !Current.UseNeighborUnreachabilityDetection) ||
+        NetioValueChanged(Row->LinkLocalAddressBehavior, Current.LinkLocalAddressBehavior, FALSE))
+        return STATUS_INVALID_PARAMETER;
+    if (Row->NlMtu && Row->NlMtu != NETIO_UNCHANGED_ULONG &&
+        Row->NlMtu < (Row->Family == AF_INET6 ? 1280UL : 576UL))
+        return STATUS_INVALID_PARAMETER;
+
+    Advertising = NetioFlag(Row->AdvertisingEnabled, Current.AdvertisingEnabled);
+    Managed = NetioFlag(Row->ManagedAddressConfigurationSupported, Current.ManagedAddressConfigurationSupported);
+    Other = NetioFlag(Row->OtherStatefulConfigurationSupported, Current.OtherStatefulConfigurationSupported);
+    if (Row->Family == AF_INET && Advertising)
+        return STATUS_INVALID_PARAMETER;
+    /* FIXME: the DHCPv6 flags of an IPv4 row are not kept */
+    if (Row->Family == AF_INET6 && !Advertising && !Current.AdvertisingEnabled &&
+        (Managed != Current.ManagedAddressConfigurationSupported ||
+         Other != Current.OtherStatefulConfigurationSupported))
+        return STATUS_INVALID_PARAMETER;
+
+    Automatic = NetioFlag(Row->UseAutomaticMetric, Current.UseAutomaticMetric);
+    if (Automatic)
+        Metric = 0;
+    else if (Row->Metric == NETIO_UNCHANGED_ULONG ||
+             (Row->UseAutomaticMetric == NETIO_UNCHANGED_BOOLEAN && Current.UseAutomaticMetric))
+        Metric = Current.Metric;
+    else
+        Metric = Row->Metric;
+
+    if (Row->Family == AF_INET)
+    {
+        IP4_INTERFACE_INFO Set;
+
+        RtlZeroMemory(&Set, sizeof(Set));
+        Set.Index = Current.InterfaceIndex;
+        Set.UseAutomaticMetric = Automatic;
+        Set.Metric = Metric;
+        Set.Mtu = NetioValue(Row->NlMtu, Current.NlMtu, TRUE);
+        Set.RetransmitTime = NetioValue(Row->RetransmitTime, Current.RetransmitTime, TRUE);
+        Set.BaseReachableTime = NetioValue(Row->BaseReachableTime, Current.BaseReachableTime, TRUE);
+        Set.DadTransmits = NetioValue(Row->DadTransmits, Current.DadTransmits, FALSE);
+        Set.RouterDiscoveryBehavior = NetioValue(Row->RouterDiscoveryBehavior, Current.RouterDiscoveryBehavior, FALSE);
+        Set.PathMtuDiscoveryTimeout = NetioValue(Row->PathMtuDiscoveryTimeout, Current.PathMtuDiscoveryTimeout, TRUE);
+        Set.LinkLocalAddressTimeout = NetioValue(Row->LinkLocalAddressTimeout, Current.LinkLocalAddressTimeout, FALSE);
+        Set.SitePrefixLength = (Row->SitePrefixLength == NETIO_UNCHANGED_ULONG) ? Current.SitePrefixLength : 0;
+        NetioZones(Row, &Current, Set.ZoneIndices);
+        Set.Forwarding = NetioFlag(Row->ForwardingEnabled, Current.ForwardingEnabled);
+        Set.WeakHostSend = NetioFlag(Row->WeakHostSend, Current.WeakHostSend);
+        Set.WeakHostReceive = NetioFlag(Row->WeakHostReceive, Current.WeakHostReceive);
+        Set.DisableDefaultRoutes = NetioFlag(Row->DisableDefaultRoutes, Current.DisableDefaultRoutes);
+        Set.AdvertiseDefaultRoute = NetioFlag(Row->AdvertiseDefaultRoute, Current.AdvertiseDefaultRoute);
+        Status = NetioDeviceIoControl(L"\\Device\\Ip", IOCTL_IP_SET_INTERFACE, &Set, sizeof(Set), NULL, 0);
+    }
+    else
+    {
+        IP6_INTERFACE_SET Set;
+
+        RtlZeroMemory(&Set, sizeof(Set));
+        Set.Index = Current.InterfaceIndex;
+        Set.UseAutomaticMetric = Automatic;
+        Set.Metric = Metric;
+        Set.Mtu = (!Row->NlMtu || Row->NlMtu == NETIO_UNCHANGED_ULONG) ? 0 : Row->NlMtu;
+        Set.RouterDiscoveryBehavior = NetioValue(Row->RouterDiscoveryBehavior, Current.RouterDiscoveryBehavior, FALSE);
+        Set.RouterDiscovery = Set.RouterDiscoveryBehavior != RouterDiscoveryDisabled;
+        Set.DadTransmits = NetioValue(Row->DadTransmits, Current.DadTransmits, FALSE);
+        Set.BaseReachableTime = NetioValue(Row->BaseReachableTime, Current.BaseReachableTime, TRUE);
+        Set.RetransmitTime = NetioValue(Row->RetransmitTime, Current.RetransmitTime, TRUE);
+        Set.SitePrefixLength = NetioValue(Row->SitePrefixLength, Current.SitePrefixLength, FALSE);
+        Set.PathMtuDiscoveryTimeout = NetioValue(Row->PathMtuDiscoveryTimeout, Current.PathMtuDiscoveryTimeout, TRUE);
+        Set.LinkLocalAddressTimeout = NetioValue(Row->LinkLocalAddressTimeout, Current.LinkLocalAddressTimeout, FALSE);
+        NetioZones(Row, &Current, Set.ZoneIndices);
+        Set.Forwarding = NetioFlag(Row->ForwardingEnabled, Current.ForwardingEnabled);
+        Set.WeakHostSend = NetioFlag(Row->WeakHostSend, Current.WeakHostSend);
+        Set.WeakHostReceive = NetioFlag(Row->WeakHostReceive, Current.WeakHostReceive);
+        Set.Advertising = Advertising;
+        Set.AdvertiseDefaultRoute = NetioFlag(Row->AdvertiseDefaultRoute, Current.AdvertiseDefaultRoute);
+        Set.DisableDefaultRoutes = NetioFlag(Row->DisableDefaultRoutes, Current.DisableDefaultRoutes);
+        Set.ManagedAddressConfiguration = Managed;
+        Set.OtherStatefulConfiguration = Other;
+        if (Set.SitePrefixLength > 128)
+            return STATUS_INVALID_PARAMETER;
+        Status = NetioDeviceIoControl(L"\\Device\\Ip6", IOCTL_IP6_SET_INTERFACE, &Set, sizeof(Set), NULL, 0);
+    }
+
+    if (NT_SUCCESS(Status))
+        Row->InterfaceLuid = Current.InterfaceLuid;
+    return Status;
+}
+
+static
+NTSTATUS
+NetioQueryRoutes4(
+    _In_ PUCHAR Entries,
+    _In_ ULONG EntryCount,
+    _In_ BOOLEAN Complete,
+    _Inout_ PMIB_IPFORWARD_ROW2 *Rows,
+    _Inout_ PULONG Count,
+    _Inout_ PULONG Capacity)
+{
+    TDIEntityID *Entities;
+    PNETIO_TDI_ROUTE Routes = NULL;
+    PMIB_IPFORWARD_ROW2 Grown, Row;
+    PVOID Table;
+    IFEntry *Entry;
+    ULONG Returned, EntityCount, RouteCount, i, j;
+    NTSTATUS Status;
+    HANDLE Tcp;
+
+    Status = NetioOpenDevice(L"\\Device\\Tcp", &Tcp);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Status = NetioQueryEntities(Tcp, &Entities, &EntityCount);
+    if (!NT_SUCCESS(Status))
+        goto Done;
+
+    for (i = 0; i < EntityCount; i++)
+    {
+        if (Entities[i].tei_entity != CL_NL_ENTITY)
+            continue;
+
+        Status = NetioQueryIpTable(Tcp, Entities[i].tei_instance, IP_MIB_ARPTABLE_ENTRY_ID,
+                                   sizeof(NETIO_TDI_ROUTE), &Table, &Returned);
+        Routes = Table;
+        if (!NT_SUCCESS(Status))
+        {
+            /* The stack answers so for an entity removed since the enumeration; only that one is left out */
+            if (Status == STATUS_INVALID_PARAMETER && !Complete)
+                continue;
+            goto Done;
+        }
+        ASSERT(Routes != NULL);
+        RouteCount = Returned / sizeof(NETIO_TDI_ROUTE);
+
+        if (*Count + RouteCount > *Capacity)
+        {
+            Grown = ExAllocatePoolWithTag(PagedPool, (*Count + RouteCount) * sizeof(**Rows), NETIO_IPHLP_TAG);
+            if (Grown == NULL)
+            {
+                Status = STATUS_INSUFFICIENT_RESOURCES;
+                goto Done;
+            }
+            if (*Rows)
+            {
+                RtlCopyMemory(Grown, *Rows, *Count * sizeof(**Rows));
+                ExFreePoolWithTag(*Rows, NETIO_IPHLP_TAG);
+            }
+            *Rows = Grown;
+            *Capacity = *Count + RouteCount;
+        }
+
+        for (j = 0; j < RouteCount; j++)
+        {
+            Row = &(*Rows)[(*Count)++];
+            Entry = NetioFindInterface(Entries, EntryCount, Routes[j].Index);
+            InitializeIpForwardEntry(Row);
+            Row->InterfaceIndex = Routes[j].Index;
+            Row->InterfaceLuid = NetioInterfaceLuid(Routes[j].Index, Entry ? Entry->if_type : IF_TYPE_OTHER);
+            Row->DestinationPrefix.Prefix.si_family = AF_INET;
+            Row->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = Routes[j].Dest & Routes[j].Mask;
+            Row->DestinationPrefix.PrefixLength = (UINT8)NetioPrefixLength(Routes[j].Mask);
+            Row->NextHop.si_family = AF_INET;
+            Row->NextHop.Ipv4.sin_addr.s_addr = (Routes[j].Type == NETIO_ROUTE_TYPE_DIRECT) ? 0 : Routes[j].NextHop;
+            Row->SitePrefixLength = 0;
+            Row->Metric = Routes[j].Metric1;
+            Row->Protocol = (NL_ROUTE_PROTOCOL)Routes[j].Proto;
+            Row->Loopback = (Routes[j].Dest & 0xFF) == 127;
+            Row->AutoconfigureAddress = FALSE;
+            Row->Publish = FALSE;
+            Row->Immortal = TRUE;
+            Row->Age = Routes[j].Age;
+            Row->Origin = (Routes[j].Proto == MIB_IPPROTO_LOCAL) ? NlroWellKnown : NlroManual;
+        }
+
+        ExFreePoolWithTag(Routes, NETIO_IPHLP_TAG);
+        Routes = NULL;
+    }
+    Status = STATUS_SUCCESS;
+
+Done:
     if (Routes)
         ExFreePoolWithTag(Routes, NETIO_IPHLP_TAG);
     if (Entities)
@@ -482,18 +1588,678 @@ Done:
     return Status;
 }
 
+static
+NTSTATUS
+NetioQueryRoutes6(
+    _In_ PUCHAR Entries,
+    _In_ ULONG EntryCount,
+    _Inout_ PMIB_IPFORWARD_ROW2 *Rows,
+    _Inout_ PULONG Count,
+    _Inout_ PULONG Capacity)
+{
+    PIP6_TABLE_HEADER Table;
+    const IP6_ROUTE_ROW *Routes;
+    PMIB_IPFORWARD_ROW2 Grown, Row;
+    IFEntry *Entry;
+    NTSTATUS Status;
+    ULONG i;
+
+    Status = NetioQueryIp6Table(Ip6TableRoutes, &Table);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    Routes = (const IP6_ROUTE_ROW *)(Table + 1);
+
+    if (*Count + Table->Count > *Capacity)
+    {
+        Grown = ExAllocatePoolWithTag(PagedPool, max(*Count + Table->Count, 1) * sizeof(**Rows), NETIO_IPHLP_TAG);
+        if (Grown == NULL)
+        {
+            ExFreePoolWithTag(Table, NETIO_IPHLP_TAG);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        if (*Rows)
+        {
+            RtlCopyMemory(Grown, *Rows, *Count * sizeof(**Rows));
+            ExFreePoolWithTag(*Rows, NETIO_IPHLP_TAG);
+        }
+        *Rows = Grown;
+        *Capacity = *Count + Table->Count;
+    }
+
+    for (i = 0; i < Table->Count; i++)
+    {
+        Row = &(*Rows)[(*Count)++];
+        Entry = NetioFindInterface(Entries, EntryCount, Routes[i].Index);
+        InitializeIpForwardEntry(Row);
+        Row->InterfaceIndex = Routes[i].Index;
+        Row->InterfaceLuid = NetioInterfaceLuid(Routes[i].Index, Entry ? Entry->if_type :
+                                                (Routes[i].Loopback ? IF_TYPE_SOFTWARE_LOOPBACK : IF_TYPE_OTHER));
+        Row->DestinationPrefix.Prefix.si_family = AF_INET6;
+        RtlCopyMemory(&Row->DestinationPrefix.Prefix.Ipv6.sin6_addr, Routes[i].Prefix, sizeof(Routes[i].Prefix));
+        Row->DestinationPrefix.PrefixLength = (UINT8)Routes[i].PrefixLength;
+        Row->NextHop.si_family = AF_INET6;
+        RtlCopyMemory(&Row->NextHop.Ipv6.sin6_addr, Routes[i].NextHop, sizeof(Routes[i].NextHop));
+        Row->SitePrefixLength = 0;
+        Row->ValidLifetime = Routes[i].ValidLifetime;
+        Row->PreferredLifetime = Routes[i].PreferredLifetime;
+        Row->Metric = Routes[i].Metric;
+        Row->Protocol = (NL_ROUTE_PROTOCOL)Routes[i].Protocol;
+        Row->Loopback = Routes[i].Loopback;
+        Row->AutoconfigureAddress = Routes[i].Autoconfigure;
+        Row->Publish = Routes[i].Publish;
+        Row->Immortal = Routes[i].Immortal;
+        Row->Age = 0;
+        Row->Origin = (NL_ROUTE_ORIGIN)Routes[i].Origin;
+    }
+
+    ExFreePoolWithTag(Table, NETIO_IPHLP_TAG);
+    return STATUS_SUCCESS;
+}
+
+static
+NTSTATUS
+NetioQueryRoutes(
+    _In_ ADDRESS_FAMILY Family,
+    _In_ BOOLEAN Complete,
+    _Outptr_result_maybenull_ PMIB_IPFORWARD_ROW2 *Rows,
+    _Out_ PULONG Count)
+{
+    PMIB_IPFORWARD_ROW2 Result = NULL;
+    ULONG Found = 0, Capacity = 0, EntryCount;
+    PUCHAR Entries;
+    NTSTATUS Status;
+
+    *Rows = NULL;
+    *Count = 0;
+
+    Status = NetioQueryInterfaces(&Entries, &EntryCount);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    if (Family == AF_INET || Family == AF_UNSPEC)
+        Status = NetioQueryRoutes4(Entries, EntryCount, Complete, &Result, &Found, &Capacity);
+    if (NT_SUCCESS(Status) && (Family == AF_INET6 || Family == AF_UNSPEC))
+    {
+        Status = NetioQueryRoutes6(Entries, EntryCount, &Result, &Found, &Capacity);
+        if (Status == STATUS_OBJECT_NAME_NOT_FOUND && Family == AF_UNSPEC)
+            Status = STATUS_SUCCESS;
+    }
+
+    ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
+    if (!NT_SUCCESS(Status))
+    {
+        if (Result)
+            ExFreePoolWithTag(Result, NETIO_IPHLP_TAG);
+        return Status;
+    }
+
+    *Rows = Result;
+    *Count = Found;
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 NTAPI
 GetIpForwardTable2(
     _In_ ADDRESS_FAMILY Family,
     _Outptr_ PMIB_IPFORWARD_TABLE2 *Table)
 {
-    UNREFERENCED_PARAMETER(Family);
+    PMIB_IPFORWARD_TABLE2 Result;
+    PMIB_IPFORWARD_ROW2 Rows;
+    ULONG Count;
+    NTSTATUS Status;
 
     if (Table == NULL)
         return STATUS_INVALID_PARAMETER;
     *Table = NULL;
-    return STATUS_NOT_SUPPORTED;
+    if (Family != AF_INET && Family != AF_INET6 && Family != AF_UNSPEC)
+        return STATUS_INVALID_PARAMETER;
+    if (NetioCallAtPassive(NetioPassiveGetIpForwardTable2, Family, Table, &Status))
+        return Status;
+
+    Status = NetioQueryRoutes(Family, FALSE, &Rows, &Count);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Result = ExAllocatePoolWithTag(PagedPool, FIELD_OFFSET(MIB_IPFORWARD_TABLE2, Table[max(Count, 1)]),
+                                   NETIO_IPHLP_TAG);
+    if (Result == NULL)
+    {
+        if (Rows)
+            ExFreePoolWithTag(Rows, NETIO_IPHLP_TAG);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    Result->NumEntries = Count;
+    if (Count)
+        RtlCopyMemory(Result->Table, Rows, Count * sizeof(*Rows));
+    if (Rows)
+        ExFreePoolWithTag(Rows, NETIO_IPHLP_TAG);
+
+    *Table = Result;
+    return STATUS_SUCCESS;
+}
+
+#define NETIO_CHANGE_ROUTE      1
+#define NETIO_CHANGE_INTERFACE  2
+
+typedef struct _NETIO_CHANGE_NOTIFY
+{
+    LIST_ENTRY Link;
+    ULONG Kind;
+    ADDRESS_FAMILY Family;
+    PVOID Callback;
+    PVOID Context;
+    LONG References;
+    BOOLEAN Linked;
+    BOOLEAN InitialPending;
+    BOOLEAN FreeOnRelease;
+    BOOLEAN Running;
+    ULONG Pass;
+    KEVENT Released;
+} NETIO_CHANGE_NOTIFY, *PNETIO_CHANGE_NOTIFY;
+
+static LIST_ENTRY NetioChangeList = { &NetioChangeList, &NetioChangeList };
+static KSPIN_LOCK NetioChangeLock;
+#define NETIO_CHANGE_STOPPED 0
+#define NETIO_CHANGE_STARTING 1
+#define NETIO_CHANGE_RUNNING 2
+static volatile LONG NetioChangeState;
+static ULONG NetioChangePass;
+static KEVENT NetioChangeKick;
+static PETHREAD NetioChangeThread;
+
+static
+VOID
+NetioReleaseNotify(
+    _In_ PNETIO_CHANGE_NOTIFY Notify)
+{
+    ASSERT(Notify->References > 0);
+    if (InterlockedDecrement(&Notify->References) != 0)
+        return;
+    ASSERT(!Notify->Linked);
+    if (Notify->FreeOnRelease)
+        ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
+    else
+        KeSetEvent(&Notify->Released, IO_NO_INCREMENT, FALSE);
+}
+
+static
+VOID
+NetioNotify(
+    _In_ ULONG Kind,
+    _In_ ADDRESS_FAMILY Family,
+    _In_opt_ const VOID *Row,
+    _In_ MIB_NOTIFICATION_TYPE Type,
+    _In_ BOOLEAN InitialOnly)
+{
+    PNETIO_CHANGE_NOTIFY Target;
+    PLIST_ENTRY Entry;
+    ULONG Pass = 0;
+    MIB_IPFORWARD_ROW2 Route;
+    MIB_IPINTERFACE_ROW Interface;
+    KIRQL OldIrql;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(PsGetCurrentThread() == NetioChangeThread);
+    ASSERT(InitialOnly || Row != NULL);
+
+    /* A registration is called once per pass: it is marked when picked, so the list is searched again after each call */
+    for (;;)
+    {
+        Target = NULL;
+        KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+        if (!InitialOnly && Pass == 0)
+            Pass = ++NetioChangePass;
+        for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList; Entry = Entry->Flink)
+        {
+            PNETIO_CHANGE_NOTIFY Notify = CONTAINING_RECORD(Entry, NETIO_CHANGE_NOTIFY, Link);
+
+            ASSERT(Notify->Linked);
+            ASSERT(Notify->References > 0);
+
+            if (InitialOnly)
+            {
+                if (!Notify->InitialPending)
+                    continue;
+                Notify->InitialPending = FALSE;
+            }
+            else
+            {
+                if (Notify->Pass == Pass || Notify->Kind != Kind ||
+                    (Notify->Family != AF_UNSPEC && Notify->Family != Family))
+                {
+                    continue;
+                }
+                Notify->Pass = Pass;
+            }
+            InterlockedIncrement(&Notify->References);
+            ASSERT(!Notify->Running);
+            Notify->Running = TRUE;
+            Target = Notify;
+            break;
+        }
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+        if (Target == NULL)
+            return;
+
+        if (InitialOnly)
+        {
+            if (Target->Kind == NETIO_CHANGE_ROUTE)
+                ((PIPFORWARD_CHANGE_CALLBACK)Target->Callback)(Target->Context, NULL, MibInitialNotification);
+            else
+                ((PIPINTERFACE_CHANGE_CALLBACK)Target->Callback)(Target->Context, NULL, MibInitialNotification);
+        }
+        else if (Kind == NETIO_CHANGE_ROUTE)
+        {
+            Route = *(const MIB_IPFORWARD_ROW2 *)Row;
+            ((PIPFORWARD_CHANGE_CALLBACK)Target->Callback)(Target->Context, &Route, Type);
+        }
+        else
+        {
+            Interface = *(const MIB_IPINTERFACE_ROW *)Row;
+            ((PIPINTERFACE_CHANGE_CALLBACK)Target->Callback)(Target->Context, &Interface, Type);
+        }
+
+        ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+        KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+        Target->Running = FALSE;
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+        NetioReleaseNotify(Target);
+    }
+}
+
+static
+BOOLEAN
+NetioSameRoute(
+    _In_ const MIB_IPFORWARD_ROW2 *Left,
+    _In_ const MIB_IPFORWARD_ROW2 *Right)
+{
+    return Left->InterfaceIndex == Right->InterfaceIndex &&
+           Left->DestinationPrefix.PrefixLength == Right->DestinationPrefix.PrefixLength &&
+           RtlEqualMemory(&Left->DestinationPrefix.Prefix, &Right->DestinationPrefix.Prefix, sizeof(SOCKADDR_INET)) &&
+           RtlEqualMemory(&Left->NextHop, &Right->NextHop, sizeof(SOCKADDR_INET));
+}
+
+static
+BOOLEAN
+NetioRouteChanged(
+    _In_ const MIB_IPFORWARD_ROW2 *Left,
+    _In_ const MIB_IPFORWARD_ROW2 *Right)
+{
+    MIB_IPFORWARD_ROW2 A = *Left, B = *Right;
+
+    A.Age = B.Age = 0;
+    A.ValidLifetime = B.ValidLifetime = 0;
+    A.PreferredLifetime = B.PreferredLifetime = 0;
+    return !RtlEqualMemory(&A, &B, sizeof(A));
+}
+
+static
+BOOLEAN
+NetioInterfaceChanged(
+    _In_ const MIB_IPINTERFACE_ROW *Left,
+    _In_ const MIB_IPINTERFACE_ROW *Right)
+{
+    MIB_IPINTERFACE_ROW A = *Left, B = *Right;
+
+    A.ReachableTime = B.ReachableTime = 0;
+    return !RtlEqualMemory(&A, &B, sizeof(A));
+}
+
+static
+VOID
+NetioCompareRoutes(
+    _In_reads_(OldCount) const MIB_IPFORWARD_ROW2 *Old,
+    _In_ ULONG OldCount,
+    _In_reads_(NewCount) const MIB_IPFORWARD_ROW2 *New,
+    _In_ ULONG NewCount)
+{
+    ULONG i, j;
+
+    for (i = 0; i < NewCount; i++)
+    {
+        for (j = 0; j < OldCount && !NetioSameRoute(&New[i], &Old[j]); j++);
+        if (j == OldCount)
+            NetioNotify(NETIO_CHANGE_ROUTE, New[i].DestinationPrefix.Prefix.si_family, &New[i], MibAddInstance, FALSE);
+        else if (NetioRouteChanged(&New[i], &Old[j]))
+            NetioNotify(NETIO_CHANGE_ROUTE, New[i].DestinationPrefix.Prefix.si_family, &New[i], MibParameterNotification, FALSE);
+    }
+    for (j = 0; j < OldCount; j++)
+    {
+        for (i = 0; i < NewCount && !NetioSameRoute(&New[i], &Old[j]); i++);
+        if (i == NewCount)
+            NetioNotify(NETIO_CHANGE_ROUTE, Old[j].DestinationPrefix.Prefix.si_family, &Old[j], MibDeleteInstance, FALSE);
+    }
+}
+
+static
+VOID
+NetioCompareInterfaces(
+    _In_reads_(OldCount) const MIB_IPINTERFACE_ROW *Old,
+    _In_ ULONG OldCount,
+    _In_reads_(NewCount) const MIB_IPINTERFACE_ROW *New,
+    _In_ ULONG NewCount)
+{
+    ULONG i, j;
+
+    for (j = 0; j < OldCount; j++)
+    {
+        for (i = 0; i < NewCount && Old[j].InterfaceLuid.Value != New[i].InterfaceLuid.Value; i++);
+        if (i == NewCount)
+            NetioNotify(NETIO_CHANGE_INTERFACE, Old[j].Family, &Old[j], MibDeleteInstance, FALSE);
+    }
+    for (i = 0; i < NewCount; i++)
+    {
+        for (j = 0; j < OldCount && Old[j].InterfaceLuid.Value != New[i].InterfaceLuid.Value; j++);
+        if (j == OldCount)
+        {
+            NetioNotify(NETIO_CHANGE_INTERFACE, New[i].Family, &New[i], MibAddInstance, FALSE);
+            continue;
+        }
+        ASSERT(Old[j].Family == New[i].Family);
+        if (NetioInterfaceChanged(&New[i], &Old[j]))
+            NetioNotify(NETIO_CHANGE_INTERFACE, New[i].Family, &New[i], MibParameterNotification, FALSE);
+    }
+}
+
+typedef struct _NETIO_SNAPSHOT
+{
+    PMIB_IPFORWARD_ROW2 Routes;
+    ULONG RouteCount;
+    PMIB_IPINTERFACE_ROW Interfaces[2];
+    ULONG InterfaceCount[2];
+} NETIO_SNAPSHOT, *PNETIO_SNAPSHOT;
+
+static
+VOID
+NetioFreeSnapshot(
+    _Inout_ PNETIO_SNAPSHOT Snapshot)
+{
+    ULONG i;
+
+    if (Snapshot->Routes)
+        ExFreePoolWithTag(Snapshot->Routes, NETIO_IPHLP_TAG);
+    for (i = 0; i < 2; i++)
+    {
+        if (Snapshot->Interfaces[i])
+            ExFreePoolWithTag(Snapshot->Interfaces[i], NETIO_IPHLP_TAG);
+    }
+    RtlZeroMemory(Snapshot, sizeof(*Snapshot));
+}
+
+static
+NTSTATUS
+NetioTakeSnapshot(
+    _Out_ PNETIO_SNAPSHOT Snapshot)
+{
+    NTSTATUS Status;
+
+    RtlZeroMemory(Snapshot, sizeof(*Snapshot));
+    Status = NetioQueryRoutes(AF_UNSPEC, TRUE, &Snapshot->Routes, &Snapshot->RouteCount);
+    if (NT_SUCCESS(Status))
+        Status = NetioQueryIpInterfaces(AF_INET, TRUE, &Snapshot->Interfaces[0], &Snapshot->InterfaceCount[0]);
+    if (NT_SUCCESS(Status))
+    {
+        Status = NetioQueryIpInterfaces(AF_INET6, TRUE, &Snapshot->Interfaces[1], &Snapshot->InterfaceCount[1]);
+        if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
+            Status = STATUS_SUCCESS;
+    }
+    if (!NT_SUCCESS(Status))
+        NetioFreeSnapshot(Snapshot);
+    return Status;
+}
+
+static
+VOID
+NTAPI
+NetioChangeWorker(
+    _In_ PVOID StartContext)
+{
+    UNICODE_STRING Name = RTL_CONSTANT_STRING(L"\\Device\\Ip");
+    OBJECT_ATTRIBUTES Attributes;
+    NETIO_SNAPSHOT Old, New;
+    IO_STATUS_BLOCK Io;
+    LARGE_INTEGER Retry;
+    HANDLE Ip = NULL, EventHandle = NULL;
+    PKEVENT Completed = NULL;
+    PVOID Objects[2];
+    KWAIT_BLOCK WaitBlocks[2];
+    ULONG Generation = 0, i;
+    BOOLEAN Pending = FALSE, Changed, HaveOld, Stale = FALSE;
+    NTSTATUS Status;
+
+    UNREFERENCED_PARAMETER(StartContext);
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(NetioChangeThread == NULL);
+    NetioChangeThread = PsGetCurrentThread();
+    HaveOld = NT_SUCCESS(NetioTakeSnapshot(&Old));
+    Retry.QuadPart = -50000000LL;
+
+    for (;;)
+    {
+        Changed = FALSE;
+
+        if (Completed == NULL)
+        {
+            if (EventHandle == NULL)
+            {
+                InitializeObjectAttributes(&Attributes, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+                if (!NT_SUCCESS(ZwCreateEvent(&EventHandle, EVENT_ALL_ACCESS, &Attributes, NotificationEvent, FALSE)))
+                    EventHandle = NULL;
+            }
+            if (EventHandle != NULL &&
+                !NT_SUCCESS(ObReferenceObjectByHandle(EventHandle, EVENT_ALL_ACCESS, *ExEventObjectType,
+                                                      KernelMode, (PVOID *)&Completed, NULL)))
+            {
+                Completed = NULL;
+            }
+        }
+
+        if (!Pending && Completed != NULL)
+        {
+            if (Ip == NULL)
+            {
+                InitializeObjectAttributes(&Attributes, &Name, OBJ_KERNEL_HANDLE | OBJ_CASE_INSENSITIVE, NULL, NULL);
+                if (!NT_SUCCESS(ZwCreateFile(&Ip, GENERIC_READ, &Attributes, &Io, NULL, FILE_ATTRIBUTE_NORMAL,
+                                             FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_OPEN, 0, NULL, 0)))
+                    Ip = NULL;
+            }
+            if (Ip != NULL)
+            {
+                Status = ZwDeviceIoControlFile(Ip, EventHandle, NULL, NULL, &Io, IOCTL_IP_WAIT_CHANGE,
+                                               &Generation, sizeof(Generation), &Generation, sizeof(Generation));
+                if (Status == STATUS_PENDING)
+                    Pending = TRUE;
+                else if (NT_SUCCESS(Status))
+                    Changed = TRUE;
+            }
+        }
+
+        if (!Changed)
+        {
+            ASSERT(!Pending || Completed != NULL);
+            Objects[0] = &NetioChangeKick;
+            Objects[1] = Completed;
+            Status = KeWaitForMultipleObjects(Pending ? 2 : 1, Objects, WaitAny, Executive, KernelMode,
+                                              FALSE, (Pending && HaveOld && !Stale) ? NULL : &Retry, WaitBlocks);
+            if (Status == STATUS_WAIT_1)
+            {
+                Pending = FALSE;
+                Changed = NT_SUCCESS(Io.Status);
+            }
+            else if (Status == STATUS_TIMEOUT && (Stale || !HaveOld || !Pending))
+            {
+                Changed = TRUE;
+            }
+        }
+
+        NetioNotify(0, AF_UNSPEC, NULL, MibInitialNotification, TRUE);
+
+        if (!Changed)
+            continue;
+
+        if (!NT_SUCCESS(NetioTakeSnapshot(&New)))
+        {
+            Stale = TRUE;
+            continue;
+        }
+        Stale = FALSE;
+        if (HaveOld)
+        {
+            NetioCompareRoutes(Old.Routes, Old.RouteCount, New.Routes, New.RouteCount);
+            for (i = 0; i < 2; i++)
+                NetioCompareInterfaces(Old.Interfaces[i], Old.InterfaceCount[i], New.Interfaces[i], New.InterfaceCount[i]);
+            NetioFreeSnapshot(&Old);
+        }
+        Old = New;
+        HaveOld = TRUE;
+    }
+}
+
+static
+NTSTATUS
+NetioRegisterChange(
+    _In_ ULONG Kind,
+    _In_ ADDRESS_FAMILY Family,
+    _In_ PVOID Callback,
+    _In_opt_ PVOID CallerContext,
+    _In_ BOOLEAN InitialNotification,
+    _Inout_ HANDLE *NotificationHandle)
+{
+    PNETIO_CHANGE_NOTIFY Notify;
+    LARGE_INTEGER StartWait;
+    HANDLE Thread;
+    KIRQL OldIrql;
+    NTSTATUS Status;
+    LONG State;
+
+    StartWait.QuadPart = -10000LL;
+
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+    ASSERT(Kind == NETIO_CHANGE_ROUTE || Kind == NETIO_CHANGE_INTERFACE);
+
+    if (Callback == NULL || NotificationHandle == NULL ||
+        (Family != AF_UNSPEC && Family != AF_INET && Family != AF_INET6))
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    Notify = ExAllocatePoolWithTag(NonPagedPool, sizeof(*Notify), NETIO_IPHLP_TAG);
+    if (Notify == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    RtlZeroMemory(Notify, sizeof(*Notify));
+    Notify->Kind = Kind;
+    Notify->Family = Family;
+    Notify->Callback = Callback;
+    Notify->Context = CallerContext;
+    Notify->References = 1;
+    Notify->Linked = TRUE;
+    Notify->InitialPending = InitialNotification;
+    KeInitializeEvent(&Notify->Released, NotificationEvent, FALSE);
+
+    for (;;)
+    {
+        State = InterlockedCompareExchange(&NetioChangeState, NETIO_CHANGE_STARTING, NETIO_CHANGE_STOPPED);
+        if (State == NETIO_CHANGE_RUNNING)
+            break;
+        if (State == NETIO_CHANGE_STOPPED)
+        {
+            KeInitializeEvent(&NetioChangeKick, SynchronizationEvent, FALSE);
+            Status = PsCreateSystemThread(&Thread, THREAD_ALL_ACCESS, NULL, NULL, NULL, NetioChangeWorker, NULL);
+            if (!NT_SUCCESS(Status))
+            {
+                InterlockedExchange(&NetioChangeState, NETIO_CHANGE_STOPPED);
+                ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
+                return Status;
+            }
+            ZwClose(Thread);
+            InterlockedExchange(&NetioChangeState, NETIO_CHANGE_RUNNING);
+            break;
+        }
+        KeDelayExecutionThread(KernelMode, FALSE, &StartWait);
+    }
+
+    ASSERT(NetioChangeState == NETIO_CHANGE_RUNNING);
+    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+    Notify->Pass = NetioChangePass;
+    InsertTailList(&NetioChangeList, &Notify->Link);
+    KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+
+    if (InitialNotification)
+        KeSetEvent(&NetioChangeKick, IO_NO_INCREMENT, FALSE);
+
+    *NotificationHandle = Notify;
+    return STATUS_SUCCESS;
+}
+
+NTSTATUS
+NTAPI
+NotifyIpInterfaceChange(
+    _In_ ADDRESS_FAMILY Family,
+    _In_ PIPINTERFACE_CHANGE_CALLBACK Callback,
+    _In_opt_ PVOID CallerContext,
+    _In_ BOOLEAN InitialNotification,
+    _Inout_ HANDLE *NotificationHandle)
+{
+    return NetioRegisterChange(NETIO_CHANGE_INTERFACE, Family, (PVOID)Callback, CallerContext,
+                               InitialNotification, NotificationHandle);
+}
+
+NTSTATUS
+NTAPI
+NotifyRouteChange2(
+    _In_ ADDRESS_FAMILY AddressFamily,
+    _In_ PIPFORWARD_CHANGE_CALLBACK Callback,
+    _In_ PVOID CallerContext,
+    _In_ BOOLEAN InitialNotification,
+    _Inout_ HANDLE *NotificationHandle)
+{
+    return NetioRegisterChange(NETIO_CHANGE_ROUTE, AddressFamily, (PVOID)Callback, CallerContext,
+                               InitialNotification, NotificationHandle);
+}
+
+NTSTATUS
+NTAPI
+CancelMibChangeNotify2(
+    _In_ HANDLE NotificationHandle)
+{
+    PNETIO_CHANGE_NOTIFY Notify = NULL;
+    PLIST_ENTRY Entry;
+    BOOLEAN Wait = FALSE;
+    KIRQL OldIrql;
+
+    if (NotificationHandle == NULL)
+        return STATUS_INVALID_PARAMETER;
+
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+    for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList; Entry = Entry->Flink)
+    {
+        if (CONTAINING_RECORD(Entry, NETIO_CHANGE_NOTIFY, Link) != NotificationHandle)
+            continue;
+        Notify = NotificationHandle;
+        RemoveEntryList(&Notify->Link);
+        Notify->Linked = FALSE;
+        ASSERT(Notify->References > 0);
+        /* Only a callback running on another thread is waited for; the worker skips an unlinked registration */
+        Wait = Notify->Running && PsGetCurrentThread() != NetioChangeThread;
+        Notify->FreeOnRelease = !Wait;
+        break;
+    }
+    KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+    if (Notify == NULL)
+        return STATUS_INVALID_HANDLE;
+
+    if (InterlockedDecrement(&Notify->References) != 0)
+    {
+        if (!Wait)
+            return STATUS_SUCCESS;
+        KeWaitForSingleObject(&Notify->Released, Executive, KernelMode, FALSE, NULL);
+    }
+    ExFreePoolWithTag(Notify, NETIO_IPHLP_TAG);
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS
@@ -530,25 +2296,6 @@ ConvertInterfaceLuidToGuid(
 
 NTSTATUS
 NTAPI
-NotifyIpInterfaceChange(
-    _In_ ADDRESS_FAMILY Family,
-    _In_ PIPINTERFACE_CHANGE_CALLBACK Callback,
-    _In_opt_ PVOID CallerContext,
-    _In_ BOOLEAN InitialNotification,
-    _Inout_ HANDLE *NotificationHandle)
-{
-    UNREFERENCED_PARAMETER(Family);
-    UNREFERENCED_PARAMETER(CallerContext);
-    UNREFERENCED_PARAMETER(InitialNotification);
-
-    if ((Callback == NULL) || (NotificationHandle == NULL))
-        return STATUS_INVALID_PARAMETER;
-    *NotificationHandle = NULL;
-    return STATUS_NOT_SUPPORTED;
-}
-
-NTSTATUS
-NTAPI
 NotifyUnicastIpAddressChange(
     _In_ ADDRESS_FAMILY Family,
     _In_ PUNICAST_IPADDRESS_CHANGE_CALLBACK Callback,
@@ -564,16 +2311,6 @@ NotifyUnicastIpAddressChange(
         return STATUS_INVALID_PARAMETER;
     *NotificationHandle = NULL;
     return STATUS_NOT_SUPPORTED;
-}
-
-NTSTATUS
-NTAPI
-CancelMibChangeNotify2(
-    _In_ HANDLE NotificationHandle)
-{
-    if (NotificationHandle == NULL)
-        return STATUS_INVALID_PARAMETER;
-    return STATUS_INVALID_HANDLE;
 }
 
 NTSTATUS

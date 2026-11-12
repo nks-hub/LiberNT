@@ -924,6 +924,18 @@ BCryptGenRandom(
     return KsecGenRandom(Buffer, BufferSize);
 }
 
+INT
+NTAPI
+SystemPrng(
+    PVOID Buffer,
+    SIZE_T Length)
+{
+    if (Buffer == NULL && Length != 0)
+        return FALSE;
+
+    return NT_SUCCESS(KsecGenRandom(Buffer, Length));
+}
+
 static VOID
 KsecDestroyKeyObject(
     _In_ KSEC_BCRYPT_KEY *Key)

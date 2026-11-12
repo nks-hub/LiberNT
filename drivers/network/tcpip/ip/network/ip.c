@@ -247,6 +247,7 @@ PIP_INTERFACE IPCreateInterface(
     IF->SitePrefixLength = 64;
     IF->Address       = BindInfo->Address;
     IF->AddressLength = BindInfo->AddressLength;
+    IF->LinkType      = BindInfo->LinkType;
     IF->Transmit      = BindInfo->Transmit;
 
 	IF->Unicast.Type = IP_ADDRESS_V4;
@@ -318,6 +319,19 @@ BOOLEAN IPRegisterInterface(
     TI_DbgPrint(MID_TRACE, ("Called. IF (0x%X).\n", IF));
 
     TcpipAcquireSpinLock(&InterfaceListLock, &OldIrql);
+    ASSERT(!IF->Registered);
+
+    if (IF->NdisIfIndex != 0)
+    {
+        ChosenIndex = IF->NdisIfIndex;
+        ForEachInterface(Interface) {
+            if (Interface->Index == ChosenIndex)
+            {
+                TcpipReleaseSpinLock(&InterfaceListLock, OldIrql);
+                return FALSE;
+            }
+        } EndFor(Interface);
+    }
 
     /* Choose an index */
     do {
@@ -330,6 +344,7 @@ BOOLEAN IPRegisterInterface(
         } EndFor(Interface);
     } while( !IndexHasBeenChosen );
 
+    ASSERT(ChosenIndex != 0);
     IF->Index = ChosenIndex;
 
     /* Add interface to the global interface list */

@@ -153,6 +153,7 @@ typedef struct _NDIS6_ADAPTER_EXT
      * NetAdapterCx for the complete lifetime of this adapter instance. */
     NET_IFINDEX                     IfIndex;
     NET_LUID                        NetLuid;
+    BOOLEAN                         NetLuidIndexReserved;
 
     /* Pins the LOGICAL_ADAPTER while registration-time snapshots run outside
      * AdapterListLock. Final removal unlinks the adapter first, then drains
@@ -1271,6 +1272,9 @@ Ndis6MFreeSharedMemory(
 NET_IFINDEX
 Ndis6AllocateInterfaceIndex(VOID);
 
+NET_IFINDEX
+Ndis6AllocateUnusedInterfaceIndex(VOID);
+
 BOOLEAN
 Ndis6LookupProviderInterface(
     _In_ NET_IFINDEX IfIndex,
@@ -1286,8 +1290,8 @@ Ndis6LookupAdapterNetLuid(
     _In_ NET_LUID NetLuid,
     _Out_opt_ PNET_IFINDEX IfIndex);
 
-BOOLEAN
-Ndis6IsNetLuidIndexAllocated(
+NTSTATUS
+Ndis6ReserveNetLuidIndex(
     _In_ NET_IFTYPE IfType,
     _In_ UINT32 NetLuidIndex);
 

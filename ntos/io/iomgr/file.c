@@ -4671,6 +4671,8 @@ IopCancelMatchingIrpsInCurrentThread(
     PIRP Irp;
     KIRQL OldIrql;
     BOOLEAN Found = FALSE;
+    BOOLEAN SynchronousLeft = FALSE;
+    BOOLEAN WasCancelled;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4687,10 +4689,15 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            IoCancelIrp(Irp);
+            if (!IopCancelIrp(Irp, &WasCancelled) && !WasCancelled &&
+                IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
+                SynchronousLeft = TRUE;
             Found = TRUE;
         }
     }
+
+    if (SynchronousLeft)
+        KeAlertThread(&Thread->Tcb, KernelMode);
 
     KeLowerIrql(OldIrql);
     return Found;
@@ -4745,6 +4752,10 @@ IopCancelIoFileExKernelApc(
     UNREFERENCED_PARAMETER(NormalRoutine);
     UNREFERENCED_PARAMETER(NormalContext);
     UNREFERENCED_PARAMETER(SystemArgument2);
+
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+    ASSERT(Apc == &Context->Apc);
+    ASSERT(Context->Status == STATUS_PENDING);
 
     Context->Found = IopCancelMatchingIrpsInCurrentThread(Context->FileObject, Context->IoRequestToCancel, Context->SynchronousOnly, Context->PortOnly);
     Context->Status = STATUS_SUCCESS;

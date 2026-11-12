@@ -419,7 +419,7 @@ LibIP6NetifIsLoopback(struct netif *netif)
 {
     PIP_INTERFACE IF = netif->state;
 
-    return IF->AddressLength == 0;
+    return IF->LinkType == IP_LINK_LOOPBACK;
 }
 
 static

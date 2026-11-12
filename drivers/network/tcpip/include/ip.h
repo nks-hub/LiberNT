@@ -125,6 +125,12 @@ typedef VOID (*LL_TRANSMIT_ROUTINE)(
     PVOID LinkAddress,
     USHORT Type);
 
+typedef enum _IP_LINK_TYPE {
+    IP_LINK_LOOPBACK,
+    IP_LINK_ETHERNET,
+    IP_LINK_RAW_IP
+} IP_LINK_TYPE;
+
 /* Link layer to IP binding information */
 typedef struct _LLIP_BIND_INFO {
     PVOID Context;                /* Pointer to link layer context information */
@@ -133,6 +139,7 @@ typedef struct _LLIP_BIND_INFO {
     UINT  MTU;                    /* Maximum IP datagram size on the link */
     PUCHAR Address;               /* Pointer to interface address */
     UINT  AddressLength;          /* Length of address in bytes */
+    IP_LINK_TYPE LinkType;
     LL_TRANSMIT_ROUTINE Transmit; /* Transmit function for this interface */
 } LLIP_BIND_INFO, *PLLIP_BIND_INFO;
 
@@ -172,14 +179,21 @@ typedef struct _IP_INTERFACE {
     UNICODE_STRING Description;   /* Adapter description (Human readable) */
     PUCHAR Address;               /* Pointer to interface address */
     UINT  AddressLength;          /* Length of address in bytes */
+    IP_LINK_TYPE LinkType;
     UINT  Index;                  /* Index of adapter (used to add ip addr) */
+    UINT  NdisIfIndex;
+    ULONG IfType;
     LL_TRANSMIT_ROUTINE Transmit; /* Pointer to transmit function */
     PVOID TCPContext;             /* TCP Content for this interface */
     SEND_RECV_STATS Stats;        /* Send/Receive statistics */
     BOOLEAN Wireless;
     BOOLEAN HalfDuplex;
     ULONG PhysicalMedium;
+    ULONG MediaType;
+    ULONG AccessType;
+    BOOLEAN ConnectorPresent;
     ULONG64 TransmitLinkSpeed;
+    ULONG64 NetLuid;
     BOOLEAN ManualMetric;
     UINT  InterfaceMetric;
     BOOLEAN Forwarding;

@@ -1341,12 +1341,11 @@ IoBuildSynchronousFsdRequest(IN ULONG MajorFunction,
     return Irp;
 }
 
-/*
- * @implemented
- */
 BOOLEAN
 NTAPI
-IoCancelIrp(IN PIRP Irp)
+IopCancelIrp(
+    _Inout_ PIRP Irp,
+    _Out_ PBOOLEAN WasCancelled)
 {
     KIRQL OldIrql;
     PDRIVER_CANCEL CancelRoutine;
@@ -1358,6 +1357,7 @@ IoCancelIrp(IN PIRP Irp)
 
     /* Acquire the cancel lock and cancel the IRP */
     IoAcquireCancelSpinLock(&OldIrql);
+    *WasCancelled = Irp->Cancel;
     Irp->Cancel = TRUE;
 
     /* Clear the cancel routine and get the old one */
@@ -1386,6 +1386,18 @@ IoCancelIrp(IN PIRP Irp)
     /* Otherwise, release the cancel lock and fail */
     IoReleaseCancelSpinLock(OldIrql);
     return FALSE;
+}
+
+/*
+ * @implemented
+ */
+BOOLEAN
+NTAPI
+IoCancelIrp(IN PIRP Irp)
+{
+    BOOLEAN WasCancelled;
+
+    return IopCancelIrp(Irp, &WasCancelled);
 }
 
 /*

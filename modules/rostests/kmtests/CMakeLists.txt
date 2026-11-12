@@ -7,8 +7,10 @@ include_directories(include)
 add_subdirectory(example)
 add_subdirectory(fltmgr)
 add_subdirectory(hidparse)
+add_subdirectory(netio_iphlp)
 add_subdirectory(kernel32)
 add_subdirectory(ndis)
+add_subdirectory(netio)
 add_subdirectory(ntos_cc)
 add_subdirectory(ntos_io)
 add_subdirectory(ntos_mm)
@@ -522,6 +524,7 @@ list(APPEND KMTEST_SOURCE
     hidparse/HidP_user.c
     kernel32/FileAttributes_user.c
     kernel32/FindFile_user.c
+    netio_iphlp/NetioIpHlp_user.c
     ntos_cc/CcCopyRead_user.c
     ntos_cc/CcCopyWrite_user.c
     ntos_cc/CcMapData_user.c
@@ -529,6 +532,7 @@ list(APPEND KMTEST_SOURCE
     ntos_cc/CcPinRead_user.c
     ntos_cc/CcSetFileSizes_user.c
     ntos_io/IoAddDeviceUnload_user.c
+    ntos_io/IoCancelSync_user.c
     ntos_io/IoCreateFile_user.c
     ntos_io/IoDeviceObject_user.c
     ntos_io/IoReadWrite_user.c
@@ -538,6 +542,7 @@ list(APPEND KMTEST_SOURCE
     ntos_mm/NtUserPhysicalPages.c
     ntos_mm/NtProcessClone.c
     ndis/NdisSgDma_user.c
+    netio/wsk_events/wsk_events_user.c
     ntos_po/BatteryClassNotify_user.c
     ntos_po/PoIrp_user.c
     ntos_po/PoFxState_user.c
@@ -555,7 +560,7 @@ set_module_type(kmtest win32cui)
 target_link_libraries(kmtest ${PSEH_LIB})
 # kmtest/filter.c resolves fltlib.dll at runtime so kmtest still starts on
 # NT 5.x systems without Filter Manager.
-add_importlibs(kmtest advapi32 ws2_32 setupapi newdev fwpuclnt user32 msvcrt kernel32 ntdll)
+add_importlibs(kmtest advapi32 iphlpapi ws2_32 setupapi newdev fwpuclnt user32 msvcrt kernel32 ntdll)
 target_compile_definitions(kmtest PRIVATE KMT_USER_MODE NTDDI_VERSION=${REACTOS_TARGET_NTDDI})
 #add_pch(kmtest include/kmt_test.h)
 add_rostests_file(TARGET kmtest)
@@ -572,6 +577,7 @@ add_dependencies(kmtest_drivers
     kmtest_drv
     example_drv
     ndissg_drv
+    netioiphlp_drv
     FltMgrLoad_drv
     fltmgrio_drv
     fltmgr_create

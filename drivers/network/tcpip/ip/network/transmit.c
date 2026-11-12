@@ -210,6 +210,8 @@ NTSTATUS SendFragments(
 
     while (PrepareNextFragment(IFC))
     {
+        /* An interface without a link header gets the packet as it is; the last fragment must not carry the rest of the buffer */
+        ResizePacket(IFC->NdisPacket, WN2H(((PIPv4_HEADER)IFC->Header)->TotalLength));
         NdisStatus = IPSendFragment(IFC->NdisPacket, NCE, IFC);
         if (NT_SUCCESS(NdisStatus))
         {

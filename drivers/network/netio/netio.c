@@ -173,6 +173,7 @@ typedef struct _WSK_SOCKET_INTERNAL
     LONG ReceiveCallbacks;
     PIRP DisableIrp;
     BOOLEAN PktInfo;
+    KMUTEX OptionLock;             /* held while an option goes to the address file or the address file changes */
     BOOLEAN ReceiveStarted;
     volatile BOOLEAN ReceiveClosing;
     EX_RUNDOWN_REF ReceiveStartRundown;
@@ -941,7 +942,7 @@ WskControlSocket(
     FUNCTION_TRACE;
 
     if (Socket != NULL && RequestType == WskSetOption && Level == IPPROTO_IP && ControlCode == IP_PKTINFO &&
-        Socket->type == SOCK_DGRAM && Socket->LocalAddressFile != NULL && Irp != NULL &&
+        Socket->type == SOCK_DGRAM && Irp != NULL &&
         InputBuffer != NULL && InputSize >= sizeof(ULONG) && KeGetCurrentIrql() > PASSIVE_LEVEL)
     {
         return NetioQueuePassive(Socket, NetioPassivePktInfo, Irp, NULL, *(PULONG)InputBuffer);
@@ -1044,12 +1045,13 @@ WskControlSocket(
                         DPRINT1("WskControlSocket: IPPROTO_IP option %d Not implemented\n", ControlCode);
                         break;
                     }
-                    if (InputBuffer == NULL || InputSize < sizeof(ULONG) ||
-                        (Socket->LocalAddressFile && KeGetCurrentIrql() > PASSIVE_LEVEL))
+                    if (InputBuffer == NULL || InputSize < sizeof(ULONG) || KeGetCurrentIrql() > PASSIVE_LEVEL)
                     {
                         status = STATUS_INVALID_PARAMETER;
                         break;
                     }
+                    /* A bind publishes the address file under this lock, so it cannot miss or override the value */
+                    KeWaitForSingleObject(&Socket->OptionLock, Executive, KernelMode, FALSE, NULL);
                     status = Socket->LocalAddressFile ?
                              NetioSetAddressOption(Socket->LocalAddressFile, AO_OPTION_IP_PKTINFO, *(PULONG)InputBuffer != 0) :
                              STATUS_SUCCESS;
@@ -1059,6 +1061,7 @@ WskControlSocket(
                         Socket->PktInfo = *(PULONG)InputBuffer != 0;
                         KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
                     }
+                    KeReleaseMutex(&Socket->OptionLock, FALSE);
                     break;
                 default:
                     DPRINT1("WskControlSocket: Level %d Not implemented\n", Level);
@@ -1203,16 +1206,24 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
     if (!NT_SUCCESS(status))
         goto err_out;
 
-    Socket->LocalAddressFile = AddressFile;
-    Socket->LocalAddressHandle = AddressHandle;
-
-    if (Socket->type == SOCK_DGRAM)
+    if (Socket->type != SOCK_DGRAM)
     {
+        Socket->LocalAddressFile = AddressFile;
+        Socket->LocalAddressHandle = AddressHandle;
+    }
+    else
+    {
+        /* An IP_PKTINFO request waits for this lock, so the address file ends up with the value the socket stores */
+        KeWaitForSingleObject(&Socket->OptionLock, Executive, KernelMode, FALSE, NULL);
         KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        Socket->LocalAddressFile = AddressFile;
         PktInfo = Socket->PktInfo;
         KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+        Socket->LocalAddressHandle = AddressHandle;
         if (PktInfo)
             status = NetioSetAddressOption(AddressFile, AO_OPTION_IP_PKTINFO, TRUE);
+        KeReleaseMutex(&Socket->OptionLock, FALSE);
+
         if (NT_SUCCESS(status) && Socket->ReceiveEvents)
             status = NetioStartReceives(Socket);
 
@@ -1222,11 +1233,14 @@ WskBind(_In_ PWSK_SOCKET SocketParam, _In_ PSOCKADDR LocalAddress, _Reserved_ UL
             NetioStopReceives(Socket);
             ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
             ExWaitForRundownProtectionRelease(&Socket->ReceiveStartRundown);
+            /* An IP_PKTINFO request that found the address file holds the lock until it is done with it */
+            KeWaitForSingleObject(&Socket->OptionLock, Executive, KernelMode, FALSE, NULL);
             KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
             ASSERT(!Socket->ReceiveStarted);
             Socket->LocalAddressFile = NULL;
             Socket->ReceiveClosing = FALSE;
             KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+            KeReleaseMutex(&Socket->OptionLock, FALSE);
             ExReInitializeRundownProtection(&Socket->ReceiveStartRundown);
 
             Socket->LocalAddressHandle = NULL;
@@ -2761,6 +2775,7 @@ WskSocket(
             RtlInitUnicodeString(&Socket->TdiName, L"\\Device\\Udp");
             Socket->DatagramDispatch = Dispatch;
             KeInitializeSpinLock(&Socket->ReceiveLock);
+            KeInitializeMutex(&Socket->OptionLock, 0);
             ExInitializeRundownProtection(&Socket->ReceiveStartRundown);
             InitializeListHead(&Socket->ReceiveQueue);
             InitializeListHead(&Socket->ReceivesParked);

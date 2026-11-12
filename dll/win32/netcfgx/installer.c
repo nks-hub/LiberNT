@@ -1039,7 +1039,7 @@ static NAMESPACE_LOCK InstanceIdLock = { L"NetCfgxInstanceId", L"NetCfgxInstance
 /* NciSetConnectionName renames a connection under the same lock */
 static NAMESPACE_LOCK ConnectionNamesLock = { L"NetworkConnectionNames", L"NetworkConnectionNames\\Lock", NULL, NULL, INIT_ONCE_STATIC_INIT };
 
-/* Any process can create a global name first and hold it; only administrators can open this namespace */
+/* Any process can create a global name first and hold it; only administrators can open this namespace. S-1-5-33 admits the write-restricted token of a restricted service */
 static
 BOOL
 CALLBACK
@@ -1059,7 +1059,7 @@ CreateNamespaceLock(
     UNREFERENCED_PARAMETER(Context);
 
     if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &dwSize) ||
-        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;S-1-5-33)", SDDL_REVISION_1,
                                                               &Security.lpSecurityDescriptor, NULL))
     {
         return FALSE;

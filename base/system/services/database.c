@@ -2120,6 +2120,24 @@ ScmGetBootAndSystemDriverState(VOID)
 }
 
 
+/* The pipe may still write the OVERLAPPED and the buffers of a cancelled request until the request completes. */
+static BOOL
+ScmCancelPipeIo(
+    _In_ HANDLE hPipe,
+    _Inout_ LPOVERLAPPED pOverlapped,
+    _Out_ PDWORD pdwTransferred)
+{
+    if (!CancelIoEx(hPipe, pOverlapped) && GetLastError() != ERROR_NOT_FOUND)
+        DPRINT1("CancelIoEx() failed (Error %lu)\n", GetLastError());
+
+    if (GetOverlappedResult(hPipe, pOverlapped, pdwTransferred, TRUE))
+        return TRUE;
+
+    *pdwTransferred = 0;
+    return FALSE;
+}
+
+
 /*
  * ScmSendControlPacket must never be called with the database lock being held.
  * The service passed must always be referenced instead.
@@ -2170,11 +2188,7 @@ ScmSendControlPacketWithTimeout(
         if (dwError == WAIT_TIMEOUT)
         {
             DPRINT1("WaitForSingleObject(%S, %d) timed out\n", pServiceName, dwControl);
-            bResult = CancelIo(hControlPipe);
-            if (!bResult)
-                DPRINT1("CancelIo(%S, %d) failed (Error %lu)\n", pServiceName, dwControl, GetLastError());
-
-            dwError = ERROR_SERVICE_REQUEST_TIMEOUT;
+            dwError = ScmCancelPipeIo(hControlPipe, &Overlapped, &dwReadCount) ? ERROR_SUCCESS : ERROR_SERVICE_REQUEST_TIMEOUT;
         }
         else if (dwError == WAIT_OBJECT_0)
         {
@@ -2417,11 +2431,7 @@ ScmWaitForServiceConnect(PSERVICE Service)
 
             if (dwError == WAIT_TIMEOUT || dwError == WAIT_OBJECT_0 + 1)
             {
-                bResult = CancelIo(Service->lpImage->hControlPipe);
-                if (bResult == FALSE)
-                {
-                    DPRINT1("CancelIo() failed (Error: %lu)\n", GetLastError());
-                }
+                ScmCancelPipeIo(Service->lpImage->hControlPipe, &Overlapped, &dwRead);
 
 #if 0
                 _ultow(PipeTimeout, szBuffer1, 10);
@@ -2499,11 +2509,7 @@ ScmWaitForServiceConnect(PSERVICE Service)
                                              PipeTimeout);
             if (dwError == WAIT_TIMEOUT || dwError == WAIT_OBJECT_0 + 1)
             {
-                bResult = CancelIo(Service->lpImage->hControlPipe);
-                if (bResult == FALSE)
-                {
-                    DPRINT1("CancelIo() failed (Error: %lu)\n", GetLastError());
-                }
+                ScmCancelPipeIo(Service->lpImage->hControlPipe, &Overlapped, &dwRead);
 
 #if 0
                 _ultow(PipeTimeout, szBuffer1, 10);

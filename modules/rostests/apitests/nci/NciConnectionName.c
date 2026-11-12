@@ -233,6 +233,61 @@ test_RestrictedServiceLock(void)
         ClosePrivateNamespace(HeldAdminNamespace, 0);
 }
 
+typedef struct _RENAME
+{
+    const GUID *Guid;
+    PCWSTR Name;
+    DWORD Error;
+} RENAME;
+
+static DWORD WINAPI
+RenameThread(PVOID Parameter)
+{
+    RENAME *Rename = Parameter;
+
+    Rename->Error = pNciSetConnectionName(Rename->Guid, Rename->Name);
+    return 0;
+}
+
+/* netcfgx holds the namespace of the connection names under the alias NetworkConnectionNames and takes the lock while it names a connection */
+static void
+test_LockSharedWithNetcfgx(const GUID *Guid, PCWSTR Name)
+{
+    RENAME Rename = { Guid, Name, ERROR_GEN_FAILURE };
+    HMODULE Netcfgx = LoadLibraryW(L"netcfgx.dll");
+    HANDLE Namespace, Lock, Thread;
+    BOOL Owned = FALSE;
+    DWORD Error, Wait;
+
+    ok(Netcfgx != NULL, "LoadLibrary(netcfgx.dll) failed with %lu\n", GetLastError());
+    Lock = OpenNamespaceLock(LIBRARY_NAMESPACE, LIBRARY_DACL, TRUE, &Namespace, &Error);
+    ok(Namespace != NULL && Lock != NULL, "Namespace %p and lock %p of the connection names, error %lu\n", Namespace, Lock, Error);
+    if (Lock)
+        Owned = (WaitForSingleObject(Lock, 10000) == WAIT_OBJECT_0);
+    Thread = CreateThread(NULL, 0, RenameThread, &Rename, 0, NULL);
+    ok(Thread != NULL, "CreateThread failed with %lu\n", GetLastError());
+    if (Thread)
+    {
+        Wait = WaitForSingleObject(Thread, 500);
+        trace("The rename %s for the lock of the connection names\n", Wait == WAIT_TIMEOUT ? "waited" : "did not wait");
+    }
+    if (Owned)
+        ReleaseMutex(Lock);
+    if (Thread)
+    {
+        ok(WaitForSingleObject(Thread, 60000) == WAIT_OBJECT_0, "The rename did not finish\n");
+        CloseHandle(Thread);
+    }
+    ok(Rename.Error == NO_ERROR, "Renaming while the alias NetworkConnectionNames is in use returned %lu\n", Rename.Error);
+
+    if (Lock)
+        CloseHandle(Lock);
+    if (Namespace)
+        ClosePrivateNamespace(Namespace, 0);
+    if (Netcfgx)
+        FreeLibrary(Netcfgx);
+}
+
 START_TEST(NciConnectionName)
 {
     HMODULE hNci = LoadLibraryW(L"nci.dll");
@@ -304,6 +359,8 @@ START_TEST(NciConnectionName)
     ok(Error == NO_ERROR, "NciGetConnectionName returned %lu\n", Error);
     ok(Error != NO_ERROR || !lstrcmpW(Name, Names[0]), "Name %S, expected %S\n", Name, Names[0]);
 
+    /* First: the library creates its lock with its first rename */
+    test_LockSharedWithNetcfgx(&Guids[0], Names[0]);
     Error = pNciSetConnectionName(&Guids[0], Names[0]);
     ok(Error == NO_ERROR, "Setting the current name returned %lu\n", Error);
     test_RestrictedServiceLock();

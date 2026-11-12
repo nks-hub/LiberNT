@@ -25,6 +25,7 @@ BasepAddPrivateNamespace(
     _In_ PCWSTR Alias)
 {
     PBASE_PRIVATE_NAMESPACE Entry;
+    PLIST_ENTRY Link;
     SIZE_T Length = wcslen(Alias) * sizeof(WCHAR);
 
     if (!Length || Length > MAXUSHORT - sizeof(WCHAR))
@@ -45,6 +46,16 @@ BasepAddPrivateNamespace(
     RtlCopyMemory(Entry->Alias.Buffer, Alias, Length + sizeof(WCHAR));
 
     RtlAcquirePebLock();
+    for (Link = BasePrivateNamespaceList.Flink; Link != &BasePrivateNamespaceList; Link = Link->Flink)
+    {
+        if (RtlEqualUnicodeString(&CONTAINING_RECORD(Link, BASE_PRIVATE_NAMESPACE, Link)->Alias, &Entry->Alias, TRUE))
+        {
+            RtlReleasePebLock();
+            RtlFreeHeap(RtlGetProcessHeap(), 0, Entry);
+            SetLastError(ERROR_DUP_NAME);
+            return FALSE;
+        }
+    }
     InsertTailList(&BasePrivateNamespaceList, &Entry->Link);
     RtlReleasePebLock();
     return TRUE;

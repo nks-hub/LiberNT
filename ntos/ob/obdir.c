@@ -28,10 +28,13 @@ ObpCloseDirectoryObject(IN PEPROCESS Process OPTIONAL,
                         IN ULONG_PTR ProcessHandleCount,
                         IN ULONG_PTR SystemHandleCount)
 {
+    POBJECT_DIRECTORY Directory = Object;
+
     UNREFERENCED_PARAMETER(Process);
-    UNREFERENCED_PARAMETER(Object);
     UNREFERENCED_PARAMETER(ProcessHandleCount);
-    UNREFERENCED_PARAMETER(SystemHandleCount);
+
+    if (SystemHandleCount == 1 && Directory->NamespaceEntry)
+        ObpRemovePrivateNamespace(Directory, TRUE);
 }
 
 VOID
@@ -42,7 +45,7 @@ ObpDeleteDirectoryObject(IN PVOID Object)
     ULONG Index;
 
     if (Directory->NamespaceEntry)
-        ObpRemovePrivateNamespace(Directory);
+        ObpRemovePrivateNamespace(Directory, FALSE);
 
     ASSERT(Directory->DeviceMap == NULL);
     for (Index = 0; Index < NUMBER_HASH_BUCKETS; Index++)

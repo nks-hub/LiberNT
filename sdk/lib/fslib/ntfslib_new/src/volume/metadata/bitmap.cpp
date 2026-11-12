@@ -712,6 +712,17 @@ Volume::AllocateClusters(_In_ ULONGLONG PreferredLCN,
         }
         if (NT_SUCCESS(Status) && ClustersNeeded != 0)
             Status = STATUS_DISK_FULL;
+        if (Status == STATUS_BUFFER_TOO_SMALL)
+        {
+            LARGE_INTEGER FreeClusters;
+
+            /* Running out of mapping pairs on a volume without room for the request is still a full disk */
+            if (NT_SUCCESS(GetFreeClusters(&FreeClusters)) &&
+                (ULONGLONG)FreeClusters.QuadPart < ClusterCount)
+            {
+                Status = STATUS_DISK_FULL;
+            }
+        }
         if (!NT_SUCCESS(Status))
             goto Done;
     }

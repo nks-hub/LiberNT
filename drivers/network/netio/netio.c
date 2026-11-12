@@ -1500,15 +1500,17 @@ NetioPostReceive(
         return;
     }
     ASSERT(!Receive->InFlight);
-    Receive->InFlight = TRUE;
-    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
 
+    /* The close cancels the requests in flight once it has set ReceiveClosing, so none may be rebuilt after that */
     IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
     TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
     ConnInfo->Options = Receive->Control;
     ConnInfo->OptionsLength = sizeof(Receive->Control);
     TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
                             Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
+    Receive->InFlight = TRUE;
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
     IoCallDriver(DeviceObject, Receive->Irp);
 }
 

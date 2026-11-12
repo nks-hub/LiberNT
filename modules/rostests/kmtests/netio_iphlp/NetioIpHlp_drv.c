@@ -46,6 +46,60 @@ TestGetIfEntry2(
 }
 
 static
+VOID
+TestRouteTables(
+    _In_ const MIB_IPFORWARD_ROW2 *Route)
+{
+    PMIB_IPFORWARD_TABLE2 Table;
+    MIB_IF_ROW2 Interface;
+    NTSTATUS Status;
+    ULONG i, Foreign = 0;
+
+    RtlZeroMemory(&Interface, sizeof(Interface));
+    Interface.InterfaceLuid = Route->InterfaceLuid;
+    Status = GetIfEntry2(&Interface);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+        ok_eq_ulong(Interface.InterfaceIndex, Route->InterfaceIndex);
+
+    Status = GetIpForwardTable2(AF_INET, &Table);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        for (i = 0; i < Table->NumEntries; i++)
+        {
+            if (Table->Table[i].InterfaceIndex == Route->InterfaceIndex &&
+                Table->Table[i].DestinationPrefix.PrefixLength == Route->DestinationPrefix.PrefixLength &&
+                Table->Table[i].DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr ==
+                Route->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr)
+            {
+                break;
+            }
+        }
+        ok(i < Table->NumEntries, "The best route is not in the route table\n");
+        if (i < Table->NumEntries)
+        {
+            ok_eq_hex(Table->Table[i].NextHop.Ipv4.sin_addr.s_addr, Route->NextHop.Ipv4.sin_addr.s_addr);
+            ok_eq_ulonglong(Table->Table[i].InterfaceLuid.Value, Route->InterfaceLuid.Value);
+        }
+        FreeMibTable(Table);
+    }
+
+    Status = GetIpForwardTable2(AF_INET6, &Table);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        for (i = 0; i < Table->NumEntries; i++)
+        {
+            if (Table->Table[i].DestinationPrefix.Prefix.si_family != AF_INET6)
+                Foreign++;
+        }
+        ok_eq_ulong(Foreign, 0UL);
+        FreeMibTable(Table);
+    }
+}
+
+static
 NTSTATUS
 TestGetBestRoute2(
     _In_ PDEVICE_OBJECT DeviceObject,
@@ -105,6 +159,8 @@ TestGetBestRoute2(
         ok_eq_ulong(LuidRoute.InterfaceIndex, Request->Route.InterfaceIndex);
         ok_eq_ulonglong(LuidRoute.InterfaceLuid.Value, Request->Route.InterfaceLuid.Value);
     }
+    if (NT_SUCCESS(Status))
+        TestRouteTables(&Request->Route);
     *OutLength = NT_SUCCESS(Status) ? sizeof(*Request) : 0;
     return Status;
 }

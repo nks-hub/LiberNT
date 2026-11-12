@@ -70,6 +70,13 @@ typedef struct _NETIO_TDI_ROUTE
     ULONG Info;
 } NETIO_TDI_ROUTE, *PNETIO_TDI_ROUTE;
 
+#define NETIO_ROUTE_TYPE_DIRECT 3
+
+static
+NET_LUID
+NetioRouteLuid(
+    _In_ ULONG Index);
+
 C_ASSERT(sizeof(MIB_IPFORWARD_ROW2) == 0x68);
 C_ASSERT(FIELD_OFFSET(MIB_IPFORWARD_ROW2, SitePrefixLength) == 0x48);
 C_ASSERT(FIELD_OFFSET(MIB_IPFORWARD_ROW2, ValidLifetime) == 0x4C);
@@ -374,7 +381,7 @@ NetioGetBestRoute6(
 
     InitializeIpForwardEntry(BestRoute);
     BestRoute->InterfaceIndex = Query.InterfaceIndex;
-    BestRoute->InterfaceLuid = NetioInterfaceLuid(Query.InterfaceIndex, 0);
+    BestRoute->InterfaceLuid = NetioRouteLuid(Query.InterfaceIndex);
     BestRoute->DestinationPrefix.Prefix.si_family = AF_INET6;
     RtlCopyMemory(&BestRoute->DestinationPrefix.Prefix.Ipv6.sin6_addr, Query.Prefix, sizeof(Query.Prefix));
     BestRoute->DestinationPrefix.PrefixLength = (UINT8)Query.PrefixLength;
@@ -536,12 +543,12 @@ GetBestRoute2(
 
     InitializeIpForwardEntry(BestRoute);
     BestRoute->InterfaceIndex = BestIndex;
-    BestRoute->InterfaceLuid = NetioInterfaceLuid(BestIndex, 0);
+    BestRoute->InterfaceLuid = NetioRouteLuid(BestIndex);
     BestRoute->DestinationPrefix.Prefix.si_family = AF_INET;
     BestRoute->DestinationPrefix.Prefix.Ipv4.sin_addr.s_addr = Best.Dest & Best.Mask;
     BestRoute->DestinationPrefix.PrefixLength = (UINT8)BestPrefix;
     BestRoute->NextHop.si_family = AF_INET;
-    BestRoute->NextHop.Ipv4.sin_addr.s_addr = Best.NextHop == BestAddress ? 0 : Best.NextHop;
+    BestRoute->NextHop.Ipv4.sin_addr.s_addr = (Best.Type == NETIO_ROUTE_TYPE_DIRECT) ? 0 : Best.NextHop;
     BestRoute->Metric = Best.Metric1;
     BestRoute->Protocol = MIB_IPPROTO_NETMGMT;
     BestRoute->Loopback = (Best.Dest & 0xFF) == 127;
@@ -578,7 +585,6 @@ Done:
 #define NETIO_IF_ENTRY_SIZE FIELD_OFFSET(IFEntry, if_descr[NETIO_MAX_DESCRIPTION + 1])
 #define NETIO_UNCHANGED_ULONG ((ULONG)-1)
 #define NETIO_UNCHANGED_BOOLEAN ((BOOLEAN)0xFF)
-#define NETIO_ROUTE_TYPE_DIRECT 3
 
 typedef enum _NETIO_PASSIVE_FUNCTION
 {
@@ -786,6 +792,25 @@ NetioFindInterface(
             return Entry;
     }
     return NULL;
+}
+
+static
+NET_LUID
+NetioRouteLuid(
+    _In_ ULONG Index)
+{
+    PUCHAR Entries;
+    IFEntry *Entry;
+    NET_LUID Luid;
+    ULONG Count;
+
+    if (!NT_SUCCESS(NetioQueryInterfaces(&Entries, &Count)))
+        return NetioInterfaceLuid(Index, IF_TYPE_OTHER);
+
+    Entry = NetioFindInterface(Entries, Count, Index);
+    Luid = NetioInterfaceLuid(Index, Entry ? Entry->if_type : IF_TYPE_OTHER);
+    ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
+    return Luid;
 }
 
 static
@@ -1244,7 +1269,7 @@ GetIfEntry2(
     Row->MediaConnectState = (Row->OperStatus == IfOperStatusUp) ? MediaConnectStateConnected :
                                                                    MediaConnectStateDisconnected;
     Row->ConnectionType = NET_IF_CONNECTION_DEDICATED;
-    Row->TransmitLinkSpeed = Row->ReceiveLinkSpeed = Entry->if_speed;
+    Row->TransmitLinkSpeed = Row->ReceiveLinkSpeed = (ULONG64)Entry->if_speed * 100;
     Row->InOctets = Row->InUcastOctets = Entry->if_inoctets;
     Row->InUcastPkts = Entry->if_inucastpkts;
     Row->InNUcastPkts = Entry->if_innucastpkts;

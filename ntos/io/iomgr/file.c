@@ -4669,10 +4669,10 @@ IopCancelMatchingIrpsInCurrentThread(
     PETHREAD Thread;
     PLIST_ENTRY ListHead, NextEntry;
     PIRP Irp;
-    KIRQL OldIrql, CancelIrql;
+    KIRQL OldIrql;
     BOOLEAN Found = FALSE;
     BOOLEAN SynchronousLeft = FALSE;
-    BOOLEAN Uncancellable;
+    BOOLEAN WasCancelled;
 
     KeRaiseIrql(APC_LEVEL, &OldIrql);
 
@@ -4689,12 +4689,8 @@ IopCancelMatchingIrpsInCurrentThread(
             (!PortOnly || (!Irp->UserEvent && Irp->Overlay.AsynchronousParameters.UserApcContext)) &&
             (!IoRequestToCancel || (Irp->UserIosb == IoRequestToCancel)))
         {
-            IoAcquireCancelSpinLock(&CancelIrql);
-            Uncancellable = !Irp->Cancel && Irp->CancelRoutine == NULL;
-            IoReleaseCancelSpinLock(CancelIrql);
-
-            IoCancelIrp(Irp);
-            if (Uncancellable && IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
+            if (!IopCancelIrp(Irp, &WasCancelled) && !WasCancelled &&
+                IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject))
                 SynchronousLeft = TRUE;
             Found = TRUE;
         }

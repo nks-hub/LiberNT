@@ -2257,6 +2257,7 @@ PNP_SetDeviceRegProp(
     CONFIGRET ret = CR_SUCCESS;
     LPWSTR lpValueName = NULL;
     HKEY hKey = 0;
+    LONG lError;
 
     UNREFERENCED_PARAMETER(hBinding);
     UNREFERENCED_PARAMETER(ulFlags);
@@ -2361,8 +2362,12 @@ PNP_SetDeviceRegProp(
 
     if (ulLength == 0)
     {
-        if (RegDeleteValueW(hKey,
-                            lpValueName))
+        /* Windows 11 keeps the configuration flags of a device */
+        if (ulProperty == CM_DRP_CONFIGFLAGS)
+            ret = CR_INVALID_DATA;
+        else if ((lError = RegDeleteValueW(hKey, lpValueName)) == ERROR_FILE_NOT_FOUND)
+            ret = CR_NO_SUCH_VALUE;
+        else if (lError != ERROR_SUCCESS)
             ret = CR_REGISTRY_ERROR;
     }
     else
@@ -3429,6 +3434,10 @@ StopSoftwareDeviceWatch(
 
 #define SOFTWARE_DEVICE_GENERATION L"SoftwareDeviceGeneration"
 
+static CONFIGRET
+RemoveSoftwareDeviceInstance(
+    _In_ LPWSTR pszDeviceInstance);
+
 static DWORD SoftwareDeviceGeneration;
 
 static BOOL
@@ -3449,18 +3458,20 @@ OpenSoftwareDeviceControlKey(
 }
 
 /* Each creation numbers its device, so that the handle of an earlier device of the instance ID cannot remove it; called under SoftwareDeviceRemoveLock */
-static VOID
+static BOOL
 NumberSoftwareDevice(
     _In_ PCWSTR pszDeviceInstance)
 {
+    LONG lError;
     HKEY hKey;
 
-    if (++SoftwareDeviceGeneration == 0)
+    if (++SoftwareDeviceGeneration == 0 || SoftwareDeviceGeneration == PNP_SOFTWARE_DEVICE_ANY_GENERATION)
         SoftwareDeviceGeneration = 1;
     if (!OpenSoftwareDeviceControlKey(pszDeviceInstance, TRUE, &hKey))
-        return;
-    RegSetValueExW(hKey, SOFTWARE_DEVICE_GENERATION, 0, REG_DWORD, (LPBYTE)&SoftwareDeviceGeneration, sizeof(SoftwareDeviceGeneration));
+        return FALSE;
+    lError = RegSetValueExW(hKey, SOFTWARE_DEVICE_GENERATION, 0, REG_DWORD, (LPBYTE)&SoftwareDeviceGeneration, sizeof(SoftwareDeviceGeneration));
     RegCloseKey(hKey);
+    return lError == ERROR_SUCCESS;
 }
 
 static DWORD
@@ -3588,12 +3599,16 @@ PNP_CreateDevInst(
 done:
     if (bSoftware)
     {
+        /* A device without its number could be removed through the handle of an earlier device of the instance ID */
+        if (ret == CR_SUCCESS && !NumberSoftwareDevice(pszDeviceID))
+        {
+            DPRINT1("Numbering %S failed\n", pszDeviceID);
+            RemoveSoftwareDeviceInstance(pszDeviceID);
+            ret = CR_REGISTRY_ERROR;
+        }
         /* A watch that is still listed was set for an earlier device of this instance ID */
         if (ret == CR_SUCCESS)
-        {
             StaleWatch = TakeSoftwareDeviceWatch(pszDeviceID, NULL);
-            NumberSoftwareDevice(pszDeviceID);
-        }
         ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
         EndSoftwareDeviceWatch(StaleWatch);
     }
@@ -4007,9 +4022,14 @@ PNP_DeviceInstanceAction(
                 ret = CR_ACCESS_DENIED;
                 break;
             }
-            /* The minor action is the number of the device to remove, or zero for whichever device has the instance ID */
+            /* The minor action is the number of the device to remove, or PNP_SOFTWARE_DEVICE_ANY_GENERATION for whichever device has the instance ID */
+            if (ulMinorAction == 0)
+            {
+                ret = CR_INVALID_DATA;
+                break;
+            }
             AcquireSRWLockExclusive(&SoftwareDeviceRemoveLock);
-            if (ulMinorAction != 0 && IsValidDeviceInstanceID(pszDeviceInstance1) &&
+            if (ulMinorAction != PNP_SOFTWARE_DEVICE_ANY_GENERATION && IsValidDeviceInstanceID(pszDeviceInstance1) &&
                 GetSoftwareDeviceGeneration(pszDeviceInstance1) != ulMinorAction)
             {
                 ret = CR_NO_SUCH_DEVINST;

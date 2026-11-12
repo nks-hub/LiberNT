@@ -836,12 +836,76 @@ test_InterfaceState(CREATED *State)
     ok(WaitInterface(FALSE, &Class, Copy), "%S is present after its device was closed\n", Copy);
 }
 
+/* Windows 11 sets a property of the device registry only in its own type, and deletes it unless it is ConfigFlags */
+static void
+test_SystemPropertyTypes(DEVINST DevInst)
+{
+    static const WCHAR Name[] = L"LiberNT test name", Names[] = L"LntSwTestFilter\0";
+    static const WCHAR Guid[] = L"{4C6E7453-7754-4465-7669-636554657374}";
+    ULONG Flags = 0, After = 0, Value = 0x5a, Size, AfterSize;
+    DEVPROPTYPE Type = DEVPROP_TYPE_EMPTY, AfterType = DEVPROP_TYPE_EMPTY;
+    WCHAR Read[64];
+    CONFIGRET Cr, AfterCr;
+
+    Size = sizeof(Flags);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, &Type, (PBYTE)&Flags, &Size, 0);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(AfterCr == CR_INVALID_DATA, "Setting ConfigFlags from a string returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_UINT32 | DEVPROP_TYPEMOD_ARRAY, (const BYTE *)&Value,
+                                       sizeof(Value), 0);
+    ok(AfterCr == CR_INVALID_DATA, "Setting ConfigFlags from an array returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(AfterCr == CR_INVALID_DATA, "Deleting ConfigFlags returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_NULL, NULL, 0, 0);
+    ok(AfterCr == CR_INVALID_DATA, "Removing the value of ConfigFlags returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_Registry_PropertyW(DevInst, CM_DRP_CONFIGFLAGS, NULL, 0, 0);
+    ok(AfterCr == CR_INVALID_DATA, "Deleting CM_DRP_CONFIGFLAGS returned CR %lu\n", AfterCr);
+    AfterSize = sizeof(After);
+    AfterCr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, &AfterType, (PBYTE)&After, &AfterSize, 0);
+    ok(AfterCr == Cr && AfterType == Type && AfterSize == Size && After == Flags,
+       "ConfigFlags changed from CR %lu, type 0x%lx, size %lu, 0x%lx to CR %lu, type 0x%lx, size %lu, 0x%lx\n",
+       Cr, Type, Size, Flags, AfterCr, AfterType, AfterSize, After);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ClassGuid, DEVPROP_TYPE_STRING, (const BYTE *)Guid, sizeof(Guid), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting ClassGuid from a string returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_UpperFilters, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting UpperFilters from a string returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_PDOName, DEVPROP_TYPE_UINT32, (const BYTE *)&Value, sizeof(Value), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting PDOName from a UINT32 returned CR %lu\n", Cr);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_SUCCESS, "Setting FriendlyName returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_UINT32, (const BYTE *)&Value, sizeof(Value), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting FriendlyName from a UINT32 returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING_LIST, (const BYTE *)Names, sizeof(Names), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting FriendlyName from a list returned CR %lu\n", Cr);
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, &Type, (PBYTE)Read, &Size, 0);
+    ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_STRING && Size == sizeof(Name) && !wcscmp(Read, Name),
+       "FriendlyName is CR %lu, type 0x%lx, size %lu after the rejected types\n", Cr, Type, Size);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING_INDIRECT, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_SUCCESS, "Setting FriendlyName from an indirect string returned CR %lu\n", Cr);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(Cr == CR_SUCCESS, "Deleting FriendlyName returned CR %lu\n", Cr);
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, &Type, (PBYTE)Read, &Size, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "The deleted FriendlyName is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "Deleting FriendlyName again returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_NULL, NULL, 0, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "Removing the value of the deleted FriendlyName returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_Registry_PropertyW(DevInst, CM_DRP_FRIENDLYNAME, NULL, 0, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "Deleting the deleted CM_DRP_FRIENDLYNAME returned CR %lu\n", Cr);
+}
+
 static void
 test_DevNodeProperty(CREATED *State)
 {
     static const DEVPROPKEY Key = { { 0x4c6e7453, 0x7754, 0x4465, { 0x76, 0x69, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } }, 4 };
     static const WCHAR Text[] = L"Text";
-    static const BYTE Bytes[16] = { 0 };
+    static const BYTE Bytes[16] = { 0 }, One[2] = { 0xff, 1 };
+    DEVPROP_BOOLEAN True = DEVPROP_TRUE;
     ULONG Value = 0x1234, Read, Size;
     DEVPROPTYPE Type;
     HSWDEVICE Device;
@@ -939,7 +1003,15 @@ test_DevNodeProperty(CREATED *State)
     ok(Cr != CR_SUCCESS, "A rejected value left a property of type 0x%lx, size %lu\n", Type, Size);
     Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, Bytes, 1, 0);
     ok(Cr == CR_SUCCESS, "Setting a BOOLEAN from 1 byte returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, (const BYTE *)&True, 1, 0);
+    ok(Cr == CR_SUCCESS, "Setting DEVPROP_TRUE returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, One + 1, 1, 0);
+    ok(Cr == CR_INVALID_DATA, "Setting a BOOLEAN of 1 returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN | DEVPROP_TYPEMOD_ARRAY, One, sizeof(One), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting an array of BOOLEAN with a 1 returned CR %lu\n", Cr);
     CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+
+    test_SystemPropertyTypes(DevInst);
 
 Done:
     SwDeviceClose(Device);
@@ -1566,6 +1638,364 @@ test_RestrictedServiceLock(CREATED *State)
     }
 }
 
+static BOOL
+EnablePrivilege(PCWSTR Name)
+{
+    TOKEN_PRIVILEGES Privileges;
+    HANDLE Token;
+    BOOL Enabled;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &Token))
+        return FALSE;
+    Privileges.PrivilegeCount = 1;
+    Privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    Enabled = LookupPrivilegeValueW(NULL, Name, &Privileges.Privileges[0].Luid) &&
+              AdjustTokenPrivileges(Token, FALSE, &Privileges, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS;
+    CloseHandle(Token);
+    return Enabled;
+}
+
+/* SYSTEM may change the DACL of a key below Enum; an administrator needs SeRestorePrivilege */
+static LONG
+SetControlKeyDacl(PCWSTR InstanceId, PCWSTR Dacl, BOOL Empty)
+{
+    WCHAR Path[MAX_PATH];
+    PSECURITY_DESCRIPTOR Security;
+    HKEY Key;
+    LONG Error;
+
+    _snwprintf(Path, ARRAYSIZE(Path), L"SYSTEM\\CurrentControlSet\\Enum\\%s\\Control", InstanceId);
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(Dacl, SDDL_REVISION_1, &Security, NULL))
+        return GetLastError();
+    /* Nothing the device that was there left in the key may stand in for what the next creation writes */
+    if (Empty)
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, Path);
+    Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, Path, 0, NULL, 0, WRITE_DAC, NULL, &Key, NULL);
+    if (Error == ERROR_ACCESS_DENIED)
+        Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, Path, 0, NULL, REG_OPTION_BACKUP_RESTORE, 0, NULL, &Key, NULL);
+    if (!Error)
+    {
+        Error = RegSetKeySecurity(Key, DACL_SECURITY_INFORMATION, Security);
+        RegCloseKey(Key);
+    }
+    LocalFree(Security);
+    return Error;
+}
+
+#define CONTROL_DACL_NO_SYSTEM_WRITE L"D:(D;;0x2;;;SY)(A;;KA;;;SY)(A;;KA;;;BA)"
+#define CONTROL_DACL_RESTORED L"D:(A;;KA;;;SY)(A;;KA;;;BA)"
+
+/* A creation that cannot record which device it made must not leave a handle that removes a later device of the instance ID */
+static void
+test_UnnumberedDevice(CREATED *State)
+{
+    static const WCHAR ParentId[] = L"SWD\\" TEST_ENUMERATOR L"\\UnnumberedParent";
+    static const WCHAR ChildId[] = L"SWD\\" TEST_ENUMERATOR L"\\Unnumbered";
+    HSWDEVICE Parent, Child, Device;
+    DEVINST Root, DevInst;
+    CONFIGRET Cr;
+    LONG Error;
+    HRESULT hr;
+
+    /* The instance key exists as a creation leaves it, before its Control key gets the DACL */
+    hr = Create(L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr))
+        return;
+    SwDeviceClose(Device);
+    ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+
+    EnablePrivilege(L"SeRestorePrivilege");
+    if ((Error = SetControlKeyDacl(ChildId, CONTROL_DACL_NO_SYSTEM_WRITE, TRUE)) != ERROR_SUCCESS)
+    {
+        skip("The Control key of %S cannot get a DACL (%ld)\n", ChildId, Error);
+        return;
+    }
+    hr = Create(L"UnnumberedParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Parent);
+    ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr))
+    {
+        SetControlKeyDacl(ChildId, CONTROL_DACL_RESTORED, FALSE);
+        return;
+    }
+    hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Child);
+    Error = SetControlKeyDacl(ChildId, CONTROL_DACL_RESTORED, FALSE);
+    ok(Error == ERROR_SUCCESS, "Restoring the DACL of the Control key of %S failed (%ld)\n", ChildId, Error);
+    ok(hr == S_OK, "SwDeviceCreate below %S returned 0x%08lx\n", ParentId, hr);
+    if (FAILED(hr))
+    {
+        SwDeviceClose(Parent);
+        WaitGone(ParentId);
+        return;
+    }
+
+    trace("The creation with a Control key that SYSTEM cannot write reported 0x%08lx\n", State->Result);
+    if (FAILED(State->Result))
+    {
+        ok(!IsPresent(ChildId), "%S is present after its creation failed\n", ChildId);
+        SwDeviceClose(Child);
+        hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Child);
+        ok(hr == S_OK && State->Result == S_OK, "Creating %S once more returned 0x%08lx and reported 0x%08lx\n", ChildId, hr, State->Result);
+        if (SUCCEEDED(hr))
+        {
+            SwDeviceClose(Child);
+            ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+        }
+        SwDeviceClose(Parent);
+        ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+        return;
+    }
+
+    SwDeviceClose(Parent);
+    ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+    ok(WaitGone(ChildId), "%S stayed after its parent was removed\n", ChildId);
+    Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
+    if (Cr == CR_SUCCESS)
+        Cr = CM_Create_DevNodeW(&DevInst, (DEVINSTID_W)ChildId, Root, CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    if (Cr != CR_SUCCESS)
+    {
+        skip("CM_Create_DevNodeW cannot create %S (CR %lu)\n", ChildId, Cr);
+        SwDeviceClose(Child);
+        return;
+    }
+    SwDeviceClose(Child);
+    Sleep(3000);
+    ok(IsPresent(ChildId), "%S left with the handle of the device that was created first\n", ChildId);
+
+    hr = Create(L"Unnumbered", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "Taking over %S returned 0x%08lx and reported 0x%08lx\n", ChildId, hr, State->Result);
+    if (SUCCEEDED(hr))
+        SwDeviceClose(Device);
+    ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+}
+
+#define CONTEND_START_EVENT L"LntSwTestContendStart"
+#define CONTEND_RELEASE_EVENT L"LntSwTestContendRelease"
+#define CONTEND_ID L"SWD\\" TEST_ENUMERATOR L"\\Contended"
+#define CONTENDERS 4
+#define CONTEND_CREATED 0x10
+#define CONTEND_REFUSED 0x11
+#define CONTEND_REPORTED 0x12
+
+/* Creates the contended device when the test signals and holds it until the test releases it */
+static void
+RunContender(void)
+{
+    HANDLE Start = OpenEventW(SYNCHRONIZE, FALSE, CONTEND_START_EVENT), Release = OpenEventW(SYNCHRONIZE, FALSE, CONTEND_RELEASE_EVENT);
+    CREATED State;
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!Start || !Release || WaitForSingleObject(Start, 60000) != WAIT_OBJECT_0)
+        ExitProcess(1);
+    hr = Create(L"Contended", SWDeviceCapabilitiesSilentInstall, NULL, &State, &Device);
+    if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS))
+        ExitProcess(CONTEND_REFUSED);
+    if (FAILED(hr))
+        ExitProcess(1);
+    if (State.Result != S_OK)
+    {
+        SwDeviceClose(Device);
+        ExitProcess(State.Result == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) ? CONTEND_REPORTED : 1);
+    }
+    WaitForSingleObject(Release, 60000);
+    SwDeviceClose(Device);
+    ExitProcess(CONTEND_CREATED);
+}
+
+/* Windows 11 gives the instance ID to one of the processes that create it at the same time and refuses it to the others at once */
+static void
+test_Contention(void)
+{
+    HANDLE Start = CreateEventW(NULL, TRUE, FALSE, CONTEND_START_EVENT), Release = CreateEventW(NULL, TRUE, FALSE, CONTEND_RELEASE_EVENT);
+    ULONG Count = 0, Ended, Created = 0, Refused = 0, Reported = 0, i;
+    PROCESS_INFORMATION Process;
+    HANDLE Processes[CONTENDERS];
+    DWORD Begin, ExitCode;
+
+    while (Count < CONTENDERS && StartChild(L"contend", &Process))
+    {
+        CloseHandle(Process.hThread);
+        Processes[Count++] = Process.hProcess;
+    }
+    SetEvent(Start);
+    if (Count < 2)
+        skip("Only %lu processes started\n", Count);
+
+    /* The processes that lose end at once; the one that wins holds the device */
+    Begin = GetTickCount();
+    do
+    {
+        Sleep(200);
+        for (i = Ended = 0; i < Count; i++)
+            Ended += WaitForSingleObject(Processes[i], 0) == WAIT_OBJECT_0;
+    } while (Ended + 1 < Count && GetTickCount() - Begin < 60000);
+    ok(IsPresent(CONTEND_ID), "%S is not present while the process that created it holds it\n", CONTEND_ID);
+
+    SetEvent(Release);
+    for (i = 0; i < Count; i++)
+    {
+        ExitCode = 1;
+        WaitForSingleObject(Processes[i], 60000);
+        GetExitCodeProcess(Processes[i], &ExitCode);
+        CloseHandle(Processes[i]);
+        Created += ExitCode == CONTEND_CREATED;
+        Refused += ExitCode == CONTEND_REFUSED;
+        Reported += ExitCode == CONTEND_REPORTED;
+    }
+    trace("Of %lu processes %lu created %S, %lu were refused at once and %lu through the callback\n", Count, Created, CONTEND_ID, Refused, Reported);
+    ok(Created == 1, "%lu processes created %S at the same time\n", Created, CONTEND_ID);
+    ok(Refused + 1 == Count, "Of %lu processes %lu were refused at once and %lu through the callback\n", Count, Refused, Reported);
+    ok(WaitGone(CONTEND_ID), "%S stayed after its handle closed\n", CONTEND_ID);
+    CloseHandle(Start);
+    CloseHandle(Release);
+}
+
+/* A thread that impersonates a user who is neither an administrator nor SYSTEM */
+static HANDLE
+CreateUserToken(void)
+{
+    BYTE Admins[SECURITY_MAX_SID_SIZE], System[SECURITY_MAX_SID_SIZE];
+    DWORD AdminsSize = sizeof(Admins), SystemSize = sizeof(System);
+    SID_AND_ATTRIBUTES Disabled[2];
+    HANDLE Token, Restricted, Impersonation = NULL;
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &AdminsSize) ||
+        !CreateWellKnownSid(WinLocalSystemSid, NULL, System, &SystemSize) ||
+        !OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &Token))
+    {
+        return NULL;
+    }
+    Disabled[0].Sid = Admins;
+    Disabled[0].Attributes = 0;
+    Disabled[1].Sid = System;
+    Disabled[1].Attributes = 0;
+    if (CreateRestrictedToken(Token, DISABLE_MAX_PRIVILEGE, ARRAYSIZE(Disabled), Disabled, 0, NULL, 0, NULL, &Restricted))
+    {
+        DuplicateTokenEx(Restricted, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &Impersonation);
+        CloseHandle(Restricted);
+    }
+    CloseHandle(Token);
+    return Impersonation;
+}
+
+/* Windows 11 removes the device of a handle that a thread closes while it impersonates a user who could not create it */
+static void
+test_ImpersonatedClose(CREATED *State)
+{
+    static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\ImpersonatedClose";
+    HANDLE Token = CreateUserToken();
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    if (!Token)
+    {
+        skip("No token of a user (error %lu)\n", GetLastError());
+        return;
+    }
+    hr = Create(L"ImpersonatedClose", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (SUCCEEDED(hr))
+    {
+        ok(SetThreadToken(NULL, Token), "SetThreadToken failed (%lu)\n", GetLastError());
+        SwDeviceClose(Device);
+        RevertToSelf();
+        ok(WaitGone(InstanceId), "%S stayed after an impersonating thread closed its handle\n", InstanceId);
+
+        hr = Create(L"ImpersonatedClose", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+        ok(hr == S_OK && State->Result == S_OK, "Creating %S again returned 0x%08lx and reported 0x%08lx\n", InstanceId, hr, State->Result);
+        if (SUCCEEDED(hr))
+            SwDeviceClose(Device);
+        ok(WaitGone(InstanceId), "%S stayed after its handle closed\n", InstanceId);
+    }
+    CloseHandle(Token);
+}
+
+#define UNLOAD_DONE 0x10
+#define UNLOAD_NO_COPY 0x11
+
+/* Loads a copy of the library, creates and removes a device through it and frees it, twice, and reports the step that failed */
+static void
+RunUnloadChild(void)
+{
+    typedef HRESULT (WINAPI *PFN_SWDEVICECREATE)(PCWSTR, PCWSTR, const SW_DEVICE_CREATE_INFO *, ULONG, const DEVPROPERTY *,
+                                                 SW_DEVICE_CREATE_CALLBACK, PVOID, PHSWDEVICE);
+    typedef void (WINAPI *PFN_SWDEVICECLOSE)(HSWDEVICE);
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    WCHAR Library[MAX_PATH], Copy[MAX_PATH];
+    PFN_SWDEVICECREATE pSwDeviceCreate;
+    PFN_SWDEVICECLOSE pSwDeviceClose;
+    HSWDEVICE Device;
+    HMODULE Module;
+    CREATED State;
+    DWORD Start;
+    ULONG Round;
+    HRESULT hr;
+
+    GetSystemDirectoryW(Library, ARRAYSIZE(Library));
+    lstrcatW(Library, L"\\cfgmgr32.dll");
+    GetTempPathW(ARRAYSIZE(Copy), Copy);
+    lstrcatW(Copy, L"LntSwTestCfgmgr32.dll");
+    if (!CopyFileW(Library, Copy, FALSE))
+        ExitProcess(UNLOAD_NO_COPY);
+
+    Info.pszInstanceId = L"Unload";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    for (Round = 0; Round < 2; Round++)
+    {
+        Module = LoadLibraryW(Copy);
+        if (!Module)
+            ExitProcess(1 + 4 * Round);
+        pSwDeviceCreate = (PFN_SWDEVICECREATE)GetProcAddress(Module, "SwDeviceCreate");
+        pSwDeviceClose = (PFN_SWDEVICECLOSE)GetProcAddress(Module, "SwDeviceClose");
+        if (!pSwDeviceCreate || !pSwDeviceClose)
+            ExitProcess(1 + 4 * Round);
+        State.Result = E_PENDING;
+        ResetEvent(State.Event);
+        hr = pSwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, &State, &Device);
+        if (FAILED(hr) || WaitForSingleObject(State.Event, 30000) != WAIT_OBJECT_0 || State.Result != S_OK ||
+            !IsPresent(L"SWD\\" TEST_ENUMERATOR L"\\Unload"))
+        {
+            printf("Round %lu: SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", Round, hr, State.Result);
+            ExitProcess(2 + 4 * Round);
+        }
+        pSwDeviceClose(Device);
+        if (!WaitGone(L"SWD\\" TEST_ENUMERATOR L"\\Unload"))
+            ExitProcess(3 + 4 * Round);
+        FreeLibrary(Module);
+        Start = GetTickCount();
+        while (GetModuleHandleW(Copy) && GetTickCount() - Start < 10000)
+            Sleep(100);
+        if (GetModuleHandleW(Copy))
+            ExitProcess(4 + 4 * Round);
+    }
+    DeleteFileW(Copy);
+    ExitProcess(UNLOAD_DONE);
+}
+
+/* The library frees what it holds for the device owners when a process frees it, and works again when the process loads it again */
+static void
+test_Unload(void)
+{
+    PROCESS_INFORMATION Process;
+    DWORD ExitCode = 1;
+
+    if (!StartChild(L"unload", &Process))
+        return;
+    WaitForSingleObject(Process.hProcess, 120000);
+    GetExitCodeProcess(Process.hProcess, &ExitCode);
+    CloseHandle(Process.hThread);
+    CloseHandle(Process.hProcess);
+    if (ExitCode == UNLOAD_NO_COPY)
+        skip("The library cannot be copied\n");
+    else
+        ok(ExitCode == UNLOAD_DONE, "Loading and freeing a copy of the library failed at step %lu\n", ExitCode);
+}
+
 START_TEST(SwDevice)
 {
     CREATED State;
@@ -1577,6 +2007,10 @@ START_TEST(SwDevice)
         RunOwnerChild();
     if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "restricted"))
         RunRestrictedChild();
+    if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "contend"))
+        RunContender();
+    if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "unload"))
+        RunUnloadChild();
 
     State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
     test_Lifetime(&State);
@@ -1600,5 +2034,9 @@ START_TEST(SwDevice)
     test_StaleHandle(&State);
     test_ParentRemovalRace(&State);
     test_RestrictedServiceLock(&State);
+    test_UnnumberedDevice(&State);
+    test_Contention();
+    test_ImpersonatedClose(&State);
+    test_Unload();
     CloseHandle(State.Event);
 }

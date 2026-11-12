@@ -2954,13 +2954,18 @@ static BOOL is_valid_property_data( DEVPROPTYPE prop_type, const BYTE *buffer, U
 {
     DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
     const WCHAR *str = (const WCHAR *)buffer;
-    ULONG len = size / sizeof(WCHAR), width;
+    ULONG len = size / sizeof(WCHAR), width, i;
 
     switch (prop_type & DEVPROP_MASK_TYPE)
     {
+        case DEVPROP_TYPE_BOOLEAN:
+            /* Windows 11 takes only DEVPROP_TRUE and DEVPROP_FALSE */
+            for (i = 0; i < size; i++)
+                if (buffer[i] != (BYTE)DEVPROP_TRUE && buffer[i] != (BYTE)DEVPROP_FALSE) return FALSE;
+            width = 1;
+            break;
         case DEVPROP_TYPE_SBYTE:
         case DEVPROP_TYPE_BYTE:
-        case DEVPROP_TYPE_BOOLEAN:
             width = 1;
             break;
         case DEVPROP_TYPE_INT16:
@@ -3030,6 +3035,20 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
 
     if (!memcmp( &key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid, sizeof(key->fmtid) ) && key->pid >= 2)
     {
+        for (UINT i = 0; i < ARRAY_SIZE(device_properties); i++)
+        {
+            DEVPROPTYPE canonical = device_properties[i].type;
+
+            if (memcmp( device_properties[i].key, key, sizeof(*key) )) continue;
+            /* Windows 11 checks the type before access, takes an indirect string for a string and keeps SecuritySDS */
+            if (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)
+            {
+                if (key->pid - 1 == CM_DRP_SECURITY_SDS) return CR_INVALID_DATA;
+            }
+            else if (type != canonical && (type != DEVPROP_TYPE_STRING_INDIRECT || canonical != DEVPROP_TYPE_STRING))
+                return CR_INVALID_DATA;
+            break;
+        }
         if (type == DEVPROP_TYPE_GUID)
         {
             guid_string( (const GUID *)buffer, guid, ARRAY_SIZE(guid) );

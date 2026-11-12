@@ -2457,6 +2457,14 @@ CfgmgrRemoveSoftwareDevice(
 
 
 CONFIGRET
+CfgmgrRemoveAnySoftwareDevice(
+    _In_ PCWSTR pszInstanceId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, PNP_SOFTWARE_DEVICE_ANY_GENERATION, pszInstanceId);
+}
+
+
+CONFIGRET
 CfgmgrWatchSoftwareDevice(
     _In_ PCWSTR pszInstanceId,
     _In_ DWORD dwProcessId)
@@ -7077,11 +7085,12 @@ CM_Set_DevNode_Registry_Property_ExW(
 
     RpcTryExcept
     {
+        /* The buffer is a reference pointer, also for a deletion without data */
         ret = PNP_SetDeviceRegProp(BindingHandle,
                                    lpDevInst,
                                    ulProperty,
                                    ulType,
-                                   (BYTE *)Buffer,
+                                   Buffer ? (BYTE *)Buffer : (BYTE *)&ulType,
                                    ulLength,
                                    ulFlags);
     }

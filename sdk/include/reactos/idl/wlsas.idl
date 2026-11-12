@@ -1,0 +1,24 @@
+/*
+ * PROJECT:     LiberNT Winlogon
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Interface through which sas.dll asks Winlogon for a secure attention sequence
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ */
+
+#include <ms-dtyp.idl>
+
+[
+    uuid(d0ed8264-e428-437a-86c3-987e7f211b4c),
+    version(1.0),
+    pointer_default(unique)
+#ifndef __midl
+    ,explicit_handle
+#endif
+]
+interface WinlogonSas
+{
+    DWORD
+    __stdcall
+    WlSoftwareSasAsUser(
+        [in] handle_t hBinding);
+}

@@ -12,4 +12,8 @@
 /* LocalSystem: full access, the SERVICE logon group: EVENT_MODIFY_STATE */
 #define WINLOGON_SOFTWARE_SAS_EVENT_SDDL L"D:(A;;GA;;;SY)(A;;0x2;;;SU)"
 
-#define WINLOGON_SOFTWARE_SAS_SERVICES 0x1
+/* ncalrpc endpoint of the WinlogonSas interface, which checks the caller that an event cannot identify */
+#define WINLOGON_SOFTWARE_SAS_ENDPOINT L"WinlogonSoftwareSas%lu"
+
+#define WINLOGON_SOFTWARE_SAS_SERVICES       0x1
+#define WINLOGON_SOFTWARE_SAS_EASE_OF_ACCESS 0x2

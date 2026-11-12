@@ -12,6 +12,8 @@
 
 #include <rpc.h>
 #include <winreg_s.h>
+#include <winlogon_sas.h>
+#include <wlsas_s.h>
 
 /* FUNCTIONS *****************************************************************/
 
@@ -19,6 +21,7 @@ BOOL
 StartRpcServer(VOID)
 {
     RPC_STATUS Status;
+    WCHAR Endpoint[64];
 
     TRACE("StartRpcServer() called\n");
 
@@ -40,6 +43,14 @@ StartRpcServer(VOID)
         ERR("RpcServerRegisterIf() failed (Status %lx)\n", Status);
         return FALSE;
     }
+
+    /* Software SAS for Ease of Access applications; Winlogon works without it */
+    StringCchPrintfW(Endpoint, ARRAYSIZE(Endpoint), WINLOGON_SOFTWARE_SAS_ENDPOINT, NtCurrentPeb()->SessionId);
+    Status = RpcServerUseProtseqEpW(L"ncalrpc", RPC_C_PROTSEQ_MAX_REQS_DEFAULT, Endpoint, NULL);
+    if (Status == RPC_S_OK)
+        Status = RpcServerRegisterIf(WinlogonSas_v1_0_s_ifspec, NULL, NULL);
+    if (Status != RPC_S_OK)
+        ERR("Registering the software SAS interface failed (Status %lx)\n", Status);
 
     Status = RpcServerListen(1, 20, TRUE);
     if (Status != RPC_S_OK)

@@ -231,6 +231,9 @@ START_TEST(NetioIpHlp)
 
     TestGetBestRoute2(Table);
 
+    Error = KmtSendToDriver(IOCTL_NETIOIPHLP_NOTIFY);
+    ok_eq_ulong(Error, (DWORD)ERROR_SUCCESS);
+
     KmtCloseDriver();
     KmtUnloadDriver();
     FreeMibTable(Table);

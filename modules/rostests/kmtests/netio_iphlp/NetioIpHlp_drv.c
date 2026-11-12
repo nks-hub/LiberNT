@@ -17,6 +17,7 @@
 
 static KMT_MESSAGE_HANDLER TestGetIfEntry2;
 static KMT_MESSAGE_HANDLER TestGetBestRoute2;
+static KMT_MESSAGE_HANDLER TestNotify;
 
 static
 NTSTATUS
@@ -165,6 +166,212 @@ TestGetBestRoute2(
     return Status;
 }
 
+typedef struct _NOTIFY_STATE
+{
+    LONG Initial;
+    LONG InitialRows;
+    LONG Changes;
+    PHANDLE CancelInside;
+    NTSTATUS CancelStatus;
+} NOTIFY_STATE, *PNOTIFY_STATE;
+
+static NOTIFY_STATE NotifyFirst, NotifySecond, NotifyCancelling, NotifyRouteInitial, NotifyRouteQuiet;
+static HANDLE NotifyCancellingHandle;
+static ULONG NotifyIndex;
+
+static
+VOID
+NTAPI
+TestInterfaceCallback(
+    _In_ PVOID Context,
+    _In_opt_ PMIB_IPINTERFACE_ROW Row,
+    _In_ MIB_NOTIFICATION_TYPE Type)
+{
+    PNOTIFY_STATE State = Context;
+
+    if (Type == MibInitialNotification)
+    {
+        InterlockedIncrement(&State->Initial);
+        if (Row != NULL)
+            InterlockedIncrement(&State->InitialRows);
+        return;
+    }
+    if (Row == NULL || Type != MibParameterNotification || Row->Family != AF_INET || Row->InterfaceIndex != NotifyIndex)
+        return;
+    if (State->CancelInside != NULL)
+        State->CancelStatus = CancelMibChangeNotify2(*State->CancelInside);
+    InterlockedIncrement(&State->Changes);
+}
+
+static
+VOID
+NTAPI
+TestRouteCallback(
+    _In_ PVOID Context,
+    _In_opt_ PMIB_IPFORWARD_ROW2 Row,
+    _In_ MIB_NOTIFICATION_TYPE Type)
+{
+    PNOTIFY_STATE State = Context;
+
+    if (Type != MibInitialNotification)
+        return;
+    InterlockedIncrement(&State->Initial);
+    if (Row != NULL)
+        InterlockedIncrement(&State->InitialRows);
+}
+
+static
+VOID
+TestDelay(
+    _In_ ULONG Milliseconds)
+{
+    LARGE_INTEGER Interval;
+
+    Interval.QuadPart = -10000LL * Milliseconds;
+    KeDelayExecutionThread(KernelMode, FALSE, &Interval);
+}
+
+/* The worker of netio polls every five seconds when the stack does not report a change by itself */
+static
+VOID
+TestWaitFor(
+    _In_ const LONG *First,
+    _In_opt_ const LONG *Second,
+    _In_ LONG Value)
+{
+    ULONG i;
+
+    for (i = 0; i < 300 && (*First < Value || (Second != NULL && *Second < Value)); i++)
+        TestDelay(50);
+    TestDelay(500);
+}
+
+static
+NTSTATUS
+TestSetMetric(
+    _In_ const MIB_IPINTERFACE_ROW *Original,
+    _In_ BOOLEAN Restore)
+{
+    MIB_IPINTERFACE_ROW Row = *Original;
+
+    Row.SitePrefixLength = 0;
+    if (!Restore)
+    {
+        Row.UseAutomaticMetric = FALSE;
+        Row.Metric = Original->Metric + 1;
+    }
+    return SetIpInterfaceEntry(&Row);
+}
+
+static
+NTSTATUS
+TestNotify(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG ControlCode,
+    _In_opt_ PVOID Buffer,
+    _In_ SIZE_T InLength,
+    _Inout_ PSIZE_T OutLength)
+{
+    HANDLE First = NULL, Second = NULL, RouteInitial = NULL, RouteQuiet = NULL;
+    SOCKADDR_INET Destination, Source;
+    MIB_IPFORWARD_ROW2 Route;
+    MIB_IPINTERFACE_ROW Original;
+    NTSTATUS Status;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+    UNREFERENCED_PARAMETER(ControlCode);
+    UNREFERENCED_PARAMETER(Buffer);
+    UNREFERENCED_PARAMETER(InLength);
+
+    *OutLength = 0;
+    ok_irql(PASSIVE_LEVEL);
+
+    RtlZeroMemory(&Destination, sizeof(Destination));
+    Destination.Ipv4.sin_family = AF_INET;
+    Destination.Ipv4.sin_addr.s_addr = NETIOIPHLP_LOOPBACK_ADDRESS;
+    Status = GetBestRoute2(NULL, 0, NULL, &Destination, 0, &Route, &Source);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return STATUS_SUCCESS;
+    NotifyIndex = Route.InterfaceIndex;
+
+    Status = NotifyIpInterfaceChange(AF_INET, TestInterfaceCallback, &NotifyFirst, TRUE, &First);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return STATUS_SUCCESS;
+    TestWaitFor(&NotifyFirst.Initial, NULL, 1);
+    ok_eq_long(NotifyFirst.Initial, 1L);
+    ok_eq_long(NotifyFirst.InitialRows, 0L);
+
+    Status = NotifyIpInterfaceChange(AF_INET, TestInterfaceCallback, &NotifySecond, FALSE, &Second);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    NotifyCancelling.CancelInside = &NotifyCancellingHandle;
+    NotifyCancelling.CancelStatus = STATUS_UNSUCCESSFUL;
+    Status = NotifyIpInterfaceChange(AF_INET, TestInterfaceCallback, &NotifyCancelling, FALSE, &NotifyCancellingHandle);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = NotifyRouteChange2(AF_INET, TestRouteCallback, &NotifyRouteInitial, TRUE, &RouteInitial);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = NotifyRouteChange2(AF_INET, TestRouteCallback, &NotifyRouteQuiet, FALSE, &RouteQuiet);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    TestWaitFor(&NotifyRouteInitial.Initial, NULL, 1);
+    ok_eq_long(NotifyRouteInitial.Initial, 1L);
+    ok_eq_long(NotifyRouteInitial.InitialRows, 0L);
+    ok_eq_long(NotifyRouteQuiet.Initial, 0L);
+    ok_eq_long(NotifyFirst.Initial, 1L);
+    ok_eq_long(NotifySecond.Initial, 0L);
+    ok_eq_long(NotifyCancelling.Initial, 0L);
+
+    InitializeIpInterfaceEntry(&Original);
+    Original.Family = AF_INET;
+    Original.InterfaceIndex = NotifyIndex;
+    Status = GetIpInterfaceEntry(&Original);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+        Status = TestSetMetric(&Original, FALSE);
+    if (!skip(NT_SUCCESS(Status), "The metric of interface %lu cannot be changed, status 0x%08lx\n", NotifyIndex, Status))
+    {
+        TestWaitFor(&NotifyFirst.Changes, &NotifySecond.Changes, 1);
+        ok_eq_long(NotifyFirst.Changes, 1L);
+        ok_eq_long(NotifySecond.Changes, 1L);
+        ok_eq_long(NotifyCancelling.Changes, 1L);
+        ok_eq_hex(NotifyCancelling.CancelStatus, STATUS_SUCCESS);
+
+        Status = TestSetMetric(&Original, TRUE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        TestWaitFor(&NotifyFirst.Changes, &NotifySecond.Changes, 2);
+        ok_eq_long(NotifyFirst.Changes, 2L);
+        ok_eq_long(NotifySecond.Changes, 2L);
+        ok_eq_long(NotifyCancelling.Changes, 1L);
+    }
+    else
+    {
+        Status = CancelMibChangeNotify2(NotifyCancellingHandle);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+    }
+
+    Status = CancelMibChangeNotify2(First);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = CancelMibChangeNotify2(Second);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = CancelMibChangeNotify2(RouteInitial);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = CancelMibChangeNotify2(RouteQuiet);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    if (NT_SUCCESS(TestSetMetric(&Original, FALSE)))
+    {
+        Status = TestSetMetric(&Original, TRUE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        TestDelay(1000);
+    }
+    ok(NotifyFirst.Changes <= 2, "The cancelled registration was called %ld times\n", NotifyFirst.Changes);
+    ok(NotifySecond.Changes <= 2, "The cancelled registration was called %ld times\n", NotifySecond.Changes);
+    ok_eq_long(NotifyFirst.Initial, 1L);
+    ok_eq_long(NotifyRouteInitial.Initial, 1L);
+    ok_irql(PASSIVE_LEVEL);
+    return STATUS_SUCCESS;
+}
+
 NTSTATUS
 TestEntry(
     _In_ PDRIVER_OBJECT DriverObject,
@@ -185,7 +392,10 @@ TestEntry(
     Status = KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_GET_IF_ENTRY2, NULL, TestGetIfEntry2);
     if (!NT_SUCCESS(Status))
         return Status;
-    return KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_GET_BEST_ROUTE2, NULL, TestGetBestRoute2);
+    Status = KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_GET_BEST_ROUTE2, NULL, TestGetBestRoute2);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    return KmtRegisterMessageHandler(IOCTL_NETIOIPHLP_NOTIFY, NULL, TestNotify);
 }
 
 VOID

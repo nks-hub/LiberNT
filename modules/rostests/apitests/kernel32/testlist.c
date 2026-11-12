@@ -90,6 +90,7 @@ extern void func_OpenFileByIdRename(void);
 extern void func_LoaderLock(void);
 extern void func_PagingFileOpen(void);
 extern void func_PrivMoveFileIdentityW(void);
+extern void func_PrivateNamespaceLifetime(void);
 extern void func_RenameDirectoryOldPath(void);
 extern void func_QueueUserAPC(void);
 extern void func_QueryProcessCycleTime(void);
@@ -210,6 +211,7 @@ const struct test winetest_testlist[] =
     { "LoaderLock",                  func_LoaderLock },
     { "PagingFileOpen",              func_PagingFileOpen },
     { "PrivMoveFileIdentityW",       func_PrivMoveFileIdentityW },
+    { "PrivateNamespaceLifetime",    func_PrivateNamespaceLifetime },
     { "RenameDirectoryOldPath",      func_RenameDirectoryOldPath },
     { "QueueUserAPC",                func_QueueUserAPC },
     { "QueryProcessCycleTime",       func_QueryProcessCycleTime },

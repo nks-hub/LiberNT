@@ -91,6 +91,7 @@ list(APPEND SOURCE
     PseudoConsoleVtInput.c
     PssSnapshot.c
     PrivMoveFileIdentityW.c
+    PrivateNamespaceLifetime.c
     QueueUserAPC.c
     QueryProcessCycleTime.c
     ReadFile.c

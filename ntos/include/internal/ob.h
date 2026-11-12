@@ -793,7 +793,8 @@ ObpInitializePrivateNamespaces(VOID);
 VOID
 NTAPI
 ObpRemovePrivateNamespace(
-    _In_ POBJECT_DIRECTORY Directory);
+    _In_ POBJECT_DIRECTORY Directory,
+    _In_ BOOLEAN LastHandleClosed);
 
 //
 // Inlined Functions

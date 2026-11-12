@@ -158,12 +158,12 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
 
     /* as on Windows 11, a length that cannot be written fails the call before the token is touched */
     if (!retlen) return STATUS_ACCESS_VIOLATION;
-    *(volatile ULONG *)retlen = *(volatile ULONG *)retlen;
+    for (i = 0; i < sizeof(*retlen); i++) ((volatile char *)retlen)[i] = ((volatile char *)retlen)[i];
 
     /* as on Windows 11, the length counts for the 64-bit layout and a short buffer is told that size */
     if (!(prev64 = Wow64AllocateTemp( len ))) return STATUS_NO_MEMORY;
     status = NtAdjustGroupsToken( handle, reset, groups64, len, prev64, &ret_size );
-    if (status == STATUS_BUFFER_TOO_SMALL) *retlen = ret_size;
+    if (status == STATUS_BUFFER_TOO_SMALL) memcpy( (char *)retlen, &ret_size, sizeof(ret_size) );
     if (status < 0) return status;
 
     count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );
@@ -175,7 +175,8 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
         prev->Groups[i].Attributes = prev64->Groups[i].Attributes;
     }
     memcpy( (char *)prev + sid_off, (char *)prev64 + count_off, ret_size - count_off );
-    *retlen = ret_size - count_off + sid_off;
+    ret_size = ret_size - count_off + sid_off;
+    memcpy( (char *)retlen, &ret_size, sizeof(ret_size) );
     return status;
 #else
     FIXME( "%p %d %p %lu %p %p\n", handle, reset, groups, len, prev, retlen );

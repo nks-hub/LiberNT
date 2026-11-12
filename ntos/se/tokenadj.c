@@ -823,7 +823,7 @@ NtAdjustGroupsToken(
         /* Return the required length to the caller */
         _SEH2_TRY
         {
-            *ReturnLength = RequiredLength;
+            RtlCopyMemory((PUCHAR)ReturnLength, &RequiredLength, sizeof(RequiredLength));
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {

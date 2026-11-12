@@ -51,6 +51,7 @@ typedef struct _NOTIFY_HANDLE
     LIST_ENTRY ListEntry;
     PVOID Owner;
     BOOL bSubscription;
+    BOOL bDeleteSeen;
 } NOTIFY_HANDLE, *PNOTIFY_HANDLE;
 
 
@@ -60,7 +61,6 @@ typedef struct _SERVICE_HANDLE
     PSERVICE ServiceEntry;
     LIST_ENTRY HandleListEntry;
     BOOL bStatusNotified;
-    BOOL bDeleteNotified;
     LIST_ENTRY NotifyList;
 } SERVICE_HANDLE, *PSERVICE_HANDLE;
 
@@ -308,6 +308,8 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
         if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
             pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
         pParams->dwSequence = lpService->dwNotifySequence;
+        if (pNotify->bDeleteSeen || dwTriggered == SERVICE_NOTIFY_DELETE_PENDING)
+            pParams->dwSequence |= SCM_SEQUENCE_DELETE_SEEN;
     }
     else
     {
@@ -340,8 +342,7 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
 static BOOL
 ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
                          PSERVICE lpService,
-                         DWORD dwTrigger,
-                         PBOOL pbSubscription)
+                         DWORD dwTrigger)
 {
     PLIST_ENTRY Entry, Next;
     PNOTIFY_HANDLE pNotify;
@@ -358,8 +359,6 @@ ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
         InitializeListHead(Entry);
         if (!pNotify->bSubscription)
             bCompleted = TRUE;
-        else if (pbSubscription != NULL)
-            *pbSubscription = TRUE;
         ScmFillNotify(pNotify, lpService, dwTrigger, NULL);
         ScmReleaseNotify(pNotify);
     }
@@ -378,7 +377,8 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
     EnterCriticalSection(&ScmNotifyLock);
 
-    if (++lpService->dwNotifySequence == 0)
+    lpService->dwNotifySequence = (lpService->dwNotifySequence + 1) & ~SCM_SEQUENCE_DELETE_SEEN;
+    if (lpService->dwNotifySequence == 0)
         lpService->dwNotifySequence = 1;
 
     for (Entry = lpService->HandleListHead.Flink;
@@ -387,7 +387,7 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
 
-        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask, NULL);
+        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -407,7 +407,7 @@ ScmNotifyServiceDeletePending(PSERVICE lpService)
          Entry = Entry->Flink)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
-        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING, &hSvc->bDeleteNotified);
+        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -7195,11 +7195,16 @@ RNotifyServiceStatusChange(
         lpService->dwNotifySequence = 1;
     /* The first request of a subscription carries no sequence and gets the current state */
     if (pNotify->bSubscription)
-        bReport = dwSequence != lpService->dwNotifySequence;
+    {
+        pNotify->bDeleteSeen = (dwSequence & SCM_SEQUENCE_DELETE_SEEN) != 0;
+        bReport = (dwSequence & ~SCM_SEQUENCE_DELETE_SEEN) != lpService->dwNotifySequence;
+    }
     else
+    {
         bReport = !hSvc->bStatusNotified;
+    }
 
-    bDeletePending = pNotify->bSubscription && lpService->bDeleted && !hSvc->bDeleteNotified &&
+    bDeletePending = pNotify->bSubscription && lpService->bDeleted && !pNotify->bDeleteSeen &&
                      (pNotify->dwNotifyMask & SERVICE_NOTIFY_DELETE_PENDING);
 
     /* A subscription to a deleted service lasts until it has seen the delete and the service stopped */
@@ -7212,19 +7217,16 @@ RNotifyServiceStatusChange(
         return ERROR_SERVICE_MARKED_FOR_DELETE;
     }
 
-    if (bDeletePending)
-    {
-        /* The delete came while no request was waiting; the sequence stays, so a state change missed as well is reported next */
-        ScmFillNotify(pNotify, lpService, SERVICE_NOTIFY_DELETE_PENDING, NULL);
-        if (pNotify->pParamsList != NULL)
-            pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->dwSequence = dwSequence;
-        hSvc->bDeleteNotified = TRUE;
-    }
-    else if (bReport && (pNotify->dwNotifyMask & dwMask))
+    /* As on Windows, a missed state change comes before a missed delete; the next request then reports the delete */
+    if (bReport && (pNotify->dwNotifyMask & dwMask))
     {
         ScmFillNotify(pNotify, lpService, dwMask, NULL);
         if (!pNotify->bSubscription)
             hSvc->bStatusNotified = TRUE;
+    }
+    else if (bDeletePending)
+    {
+        ScmFillNotify(pNotify, lpService, SERVICE_NOTIFY_DELETE_PENDING, NULL);
     }
     else
     {

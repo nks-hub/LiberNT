@@ -244,7 +244,7 @@ Ndis6ReserveNextNetLuidIndex(
 
     for (Tries = 0; Tries < 0x10000; Tries++)
     {
-        *Next = (LONG)Ndis6AllocateInterfaceIndex();
+        *Next = (LONG)Ndis6AllocateUnusedInterfaceIndex();
         Status = Ndis6ReserveNetLuidIndex(IfType, (UINT32)*Next);
         if (Status != STATUS_OBJECT_NAME_COLLISION)
             return Status;
@@ -279,7 +279,7 @@ Ndis6AllocateInterfaceIdentity(
     }
     else
     {
-        Next = (LONG)Ndis6AllocateInterfaceIndex();
+        Next = (LONG)Ndis6AllocateUnusedInterfaceIndex();
     }
 
     Ext->NetLuidIndexReserved = TRUE;

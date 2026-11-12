@@ -57,6 +57,63 @@ Ndis6FindIfEntryLocked(
     return NULL;
 }
 
+static
+BOOLEAN
+Ndis6InterfaceIndexInUseLocked(
+    _In_ NET_IFINDEX IfIndex)
+{
+    PLIST_ENTRY Link;
+    BOOLEAN Found = FALSE;
+
+    for (Link = Ndis6IfEntries.Flink; Link != &Ndis6IfEntries; Link = Link->Flink)
+    {
+        if (CONTAINING_RECORD(Link, NDIS6_IF_ENTRY, Link)->IfIndex == IfIndex)
+            return TRUE;
+    }
+
+    KeAcquireSpinLockAtDpcLevel(&AdapterListLock);
+    for (Link = AdapterListHead.Flink; Link != &AdapterListHead; Link = Link->Flink)
+    {
+        PLOGICAL_ADAPTER Adapter = CONTAINING_RECORD(Link, LOGICAL_ADAPTER, ListEntry);
+
+        if (Adapter->IsNdis6 && NDIS6_EXT(Adapter) != NULL && NDIS6_EXT(Adapter)->IfIndex == IfIndex)
+        {
+            Found = TRUE;
+            break;
+        }
+    }
+    KeReleaseSpinLockFromDpcLevel(&AdapterListLock);
+
+    return Found;
+}
+
+static
+NET_IFINDEX
+Ndis6AllocateUnusedInterfaceIndexLocked(VOID)
+{
+    NET_IFINDEX IfIndex;
+
+    do
+    {
+        IfIndex = Ndis6AllocateInterfaceIndex();
+    } while (Ndis6InterfaceIndexInUseLocked(IfIndex));
+
+    return IfIndex;
+}
+
+NET_IFINDEX
+Ndis6AllocateUnusedInterfaceIndex(VOID)
+{
+    NET_IFINDEX IfIndex;
+    KIRQL OldIrql;
+
+    KeAcquireSpinLock(&Ndis6IfLock, &OldIrql);
+    IfIndex = Ndis6AllocateUnusedInterfaceIndexLocked();
+    KeReleaseSpinLock(&Ndis6IfLock, OldIrql);
+
+    return IfIndex;
+}
+
 BOOLEAN
 Ndis6LookupProviderInterface(
     _In_ NET_IFINDEX IfIndex,
@@ -471,7 +528,7 @@ NdisIfRegisterInterface(
         {
             Entry = NewEntry;
             NewEntry = NULL;
-            Entry->IfIndex = Ndis6AllocateInterfaceIndex();
+            Entry->IfIndex = Ndis6AllocateUnusedInterfaceIndexLocked();
             Entry->NetLuid = NetLuid;
             InsertTailList(&Ndis6IfEntries, &Entry->Link);
         }

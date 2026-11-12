@@ -23,6 +23,7 @@
 
 #include <winver.h>
 #include <lzexpand.h>
+#include <drvpkglock.h>
 
 /* Unicode constants */
 static const WCHAR BackSlash[] = {'\\',0};
@@ -1272,8 +1273,10 @@ BOOL WINAPI SetupUninstallOEMInfW( PCWSTR inf_file, DWORD flags, PVOID reserved 
 {
     static const WCHAR infW[] = {'\\','i','n','f','\\',0};
     WCHAR target[MAX_PATH];
+    HANDLE hNamespace, hLock;
     PCWSTR digits;
-    DWORD attributes;
+    DWORD attributes, error;
+    BOOL ret;
     UINT length;
 
     TRACE("%s, 0x%08x, %p\n", debugstr_w(inf_file), flags, reserved);
@@ -1322,12 +1325,22 @@ BOOL WINAPI SetupUninstallOEMInfW( PCWSTR inf_file, DWORD flags, PVOID reserved 
         return FALSE;
     }
 
-    SETUPAPI_DeleteDriverDatabasePackage(inf_file);
-    SETUPAPI_DeleteDriverStorePackage(target);
-    if (!DeleteFileW(target))
+    if (!AcquirePackageLock(&hNamespace, &hLock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
         return FALSE;
-    SetLastError(ERROR_SUCCESS);
-    return TRUE;
+    }
+
+    ret = SETUPAPI_DeleteLockedDriverStorePackage(target);
+    if (ret)
+    {
+        SETUPAPI_DeleteDriverDatabasePackage(inf_file);
+        ret = DeleteFileW(target);
+    }
+    error = ret ? ERROR_SUCCESS : GetLastError();
+    ReleasePackageLock(hNamespace, hLock);
+    SetLastError(error);
+    return ret;
 }
 
 /***********************************************************************

@@ -4,6 +4,7 @@ spec2def(spoolss.dll spoolss.spec ADD_IMPORTLIB)
 list(APPEND SOURCE
     ../marshalling.c
     context.c
+    driverpackage.c
     forms.c
     jobs.c
     main.c
@@ -29,6 +30,7 @@ add_library(spoolss MODULE
 
 set_module_type(spoolss win32dll UNICODE)
 target_link_libraries(spoolss wine)
+add_delay_importlibs(spoolss setupapi)
 add_importlibs(spoolss iphlpapi advapi32 msvcrt kernel32 ntdll)
 add_pch(spoolss precomp.h "${PCH_SKIP_SOURCE}")
 add_cd_file(TARGET spoolss DESTINATION reactos/system32 FOR all)

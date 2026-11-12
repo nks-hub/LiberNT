@@ -67,7 +67,7 @@ _RpcAddPrinterDriver(WINSPOOL_HANDLE pName, WINSPOOL_DRIVER_CONTAINER* pDriverCo
                 pdi4w = (PDRIVER_INFO_4W)pDriverInfo;
             }
 
-            pdi4w->pszzPreviousNames = pdi->pszzPreviousNames;
+            pdi4w->pszzPreviousNames = pdi->cchPreviousNames ? pdi->pszzPreviousNames : NULL;
         }
         case 3:
         {
@@ -85,10 +85,10 @@ _RpcAddPrinterDriver(WINSPOOL_HANDLE pName, WINSPOOL_DRIVER_CONTAINER* pDriverCo
             }
 
             pdi3w->pHelpFile        = pdi->pHelpFile;
-            pdi3w->pDependentFiles  = pdi->pDependentFiles;
+            pdi3w->pDependentFiles  = pdi->cchDependentFiles ? pdi->pDependentFiles : NULL;
             pdi3w->pMonitorName     = pdi->pMonitorName;
             pdi3w->pDefaultDataType = pdi->pDefaultDataType;
-            pdi3w->pDependentFiles  = pdi->pDependentFiles;
+            pdi3w->pDependentFiles  = pdi->cchDependentFiles ? pdi->pDependentFiles : NULL;
         }
         case 2:
         {
@@ -194,7 +194,7 @@ _RpcAddPrinterDriverEx(WINSPOOL_HANDLE pName, WINSPOOL_DRIVER_CONTAINER* pDriver
                 pdi4w = (PDRIVER_INFO_4W)pDriverInfo;
             }
 
-            pdi4w->pszzPreviousNames = pdi->pszzPreviousNames;
+            pdi4w->pszzPreviousNames = pdi->cchPreviousNames ? pdi->pszzPreviousNames : NULL;
         }
         case 3:
         {
@@ -212,10 +212,10 @@ _RpcAddPrinterDriverEx(WINSPOOL_HANDLE pName, WINSPOOL_DRIVER_CONTAINER* pDriver
             }
 
             pdi3w->pHelpFile        = pdi->pHelpFile;
-            pdi3w->pDependentFiles  = pdi->pDependentFiles;
+            pdi3w->pDependentFiles  = pdi->cchDependentFiles ? pdi->pDependentFiles : NULL;
             pdi3w->pMonitorName     = pdi->pMonitorName;
             pdi3w->pDefaultDataType = pdi->pDefaultDataType;
-            pdi3w->pDependentFiles  = pdi->pDependentFiles;
+            pdi3w->pDependentFiles  = pdi->cchDependentFiles ? pdi->pDependentFiles : NULL;
         }
         case 2:
         {
@@ -260,6 +260,25 @@ _RpcAddPrinterDriverEx(WINSPOOL_HANDLE pName, WINSPOOL_DRIVER_CONTAINER* pDriver
 
     RpcRevertToSelf();
     return dwErrorCode;
+}
+
+DWORD
+_RpcInstallPrinterDriverFromPackage(WINSPOOL_HANDLE pszServer, const WCHAR* pszInfPath, const WCHAR* pszDriverName, const WCHAR* pszEnvironment, DWORD dwFlags)
+{
+    DWORD dwErrorCode;
+    HRESULT hr;
+
+    dwErrorCode = RpcImpersonateClient(NULL);
+    if (dwErrorCode != ERROR_SUCCESS)
+    {
+        ERR("RpcImpersonateClient failed with error %lu!\n", dwErrorCode);
+        return (DWORD)HRESULT_FROM_WIN32(dwErrorCode);
+    }
+
+    hr = InstallPrinterDriverFromPackageW(pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
+
+    RpcRevertToSelf();
+    return (DWORD)hr;
 }
 
 DWORD

@@ -21,6 +21,9 @@
 #include <ndk/setypes.h>
 #include <ndk/sefuncs.h>
 #include <reactos/desktopready.h>
+#include <sddl.h>
+#include <winlogon_sas.h>
+#include <wlsas_s.h>
 
 /* GLOBALS ******************************************************************/
 
@@ -1421,10 +1424,155 @@ ShutdownComputerWindowProc(
 }
 
 static
+DWORD
+GenerateSoftwareSas(
+    IN PWLSESSION Session,
+    IN DWORD Callers)
+{
+    DWORD Policy = 0, Size = sizeof(Policy);
+
+    /* The caller reaches Winlogon without going through the policy check of sas.dll */
+    if (RegGetValueW(HKEY_LOCAL_MACHINE,
+                     L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+                     L"SoftwareSASGeneration",
+                     RRF_RT_REG_DWORD,
+                     NULL,
+                     &Policy,
+                     &Size) != ERROR_SUCCESS ||
+        !(Policy & Callers))
+    {
+        WARN("WL: Software SAS is disabled by policy for callers 0x%lx\n", Callers);
+        return ERROR_ACCESS_DISABLED_BY_POLICY;
+    }
+
+    /* Same path as the keyboard; during setup the hotkey is not registered either */
+    if (!GetSetupType())
+    {
+        PostMessageW(Session->SASWindow,
+                     WM_HOTKEY,
+                     IDHK_CTRL_ALT_DEL,
+                     MAKELPARAM(MOD_CONTROL | MOD_ALT, VK_DELETE));
+    }
+
+    return ERROR_SUCCESS;
+}
+
+static
+VOID
+CALLBACK
+SoftwareSasCallback(
+    IN PVOID Context,
+    IN BOOLEAN TimedOut)
+{
+    UNREFERENCED_PARAMETER(TimedOut);
+
+    GenerateSoftwareSas((PWLSESSION)Context, WINLOGON_SOFTWARE_SAS_SERVICES);
+}
+
+DWORD
+__stdcall
+WlSoftwareSasAsUser(
+    handle_t hBinding)
+{
+    HANDLE hToken;
+    DWORD UiAccess = 0, SessionId = 0xFFFFFFFF, Size;
+    RPC_STATUS Status;
+
+    Status = RpcImpersonateClient(hBinding);
+    if (Status != RPC_S_OK)
+        return Status;
+
+    /* Only the impersonation token counts: without one the caller is unknown and gets no access */
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &hToken))
+    {
+        if (!GetTokenInformation(hToken, TokenUIAccess, &UiAccess, sizeof(UiAccess), &Size))
+            UiAccess = 0;
+        if (!GetTokenInformation(hToken, TokenSessionId, &SessionId, sizeof(SessionId), &Size))
+            SessionId = 0xFFFFFFFF;
+        CloseHandle(hToken);
+    }
+    RpcRevertToSelf();
+
+    if (!UiAccess)
+        return ERROR_PRIVILEGE_NOT_HELD;
+    /* The endpoint of another session is open to every local caller, the SAS of this session is not */
+    if (SessionId != NtCurrentPeb()->SessionId)
+        return ERROR_ACCESS_DENIED;
+    if (!WLSession->SASWindow)
+        return ERROR_NOT_READY;
+
+    return GenerateSoftwareSas(WLSession, WINLOGON_SOFTWARE_SAS_EASE_OF_ACCESS);
+}
+
+static
+VOID
+InitializeSoftwareSas(
+    IN OUT PWLSESSION Session)
+{
+    SECURITY_ATTRIBUTES EventSecurity;
+    PSECURITY_DESCRIPTOR SecurityDescriptor;
+    WCHAR EventName[64];
+    DWORD dwError;
+
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(WINLOGON_SOFTWARE_SAS_EVENT_SDDL,
+                                                              SDDL_REVISION_1,
+                                                              &SecurityDescriptor,
+                                                              NULL))
+    {
+        ERR("WL: Failed to build the software SAS security descriptor (%lu)\n", GetLastError());
+        return;
+    }
+
+    StringCchPrintfW(EventName, ARRAYSIZE(EventName), WINLOGON_SOFTWARE_SAS_EVENT,
+                     NtCurrentPeb()->SessionId);
+    EventSecurity.nLength = sizeof(EventSecurity);
+    EventSecurity.lpSecurityDescriptor = SecurityDescriptor;
+    EventSecurity.bInheritHandle = FALSE;
+    Session->SoftwareSasEvent = CreateEventW(&EventSecurity, FALSE, FALSE, EventName);
+    dwError = GetLastError();
+    LocalFree(SecurityDescriptor);
+    if (!Session->SoftwareSasEvent)
+    {
+        ERR("WL: Failed to create the software SAS event (%lu)\n", dwError);
+        return;
+    }
+
+    if (dwError == ERROR_ALREADY_EXISTS)
+    {
+        ERR("WL: The software SAS event already exists, software SAS is disabled\n");
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
+        return;
+    }
+
+    if (!RegisterWaitForSingleObject(&Session->SoftwareSasWait,
+                                     Session->SoftwareSasEvent,
+                                     SoftwareSasCallback,
+                                     Session,
+                                     INFINITE,
+                                     WT_EXECUTEDEFAULT))
+    {
+        ERR("WL: Failed to wait for the software SAS event (%lu)\n", GetLastError());
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
+    }
+}
+
+static
 VOID
 UninitializeSAS(
     IN OUT PWLSESSION Session)
 {
+    if (Session->SoftwareSasWait)
+    {
+        UnregisterWaitEx(Session->SoftwareSasWait, INVALID_HANDLE_VALUE);
+        Session->SoftwareSasWait = NULL;
+    }
+    if (Session->SoftwareSasEvent)
+    {
+        CloseHandle(Session->SoftwareSasEvent);
+        Session->SoftwareSasEvent = NULL;
+    }
     if (Session->SASWindow)
     {
         DestroyWindow(Session->SASWindow);
@@ -2170,6 +2318,8 @@ InitializeSAS(
         ERR("WL: Failed to register SAS window\n");
         goto cleanup;
     }
+
+    InitializeSoftwareSas(Session);
 
     if (!SetDefaultLanguage(NULL))
         return FALSE;

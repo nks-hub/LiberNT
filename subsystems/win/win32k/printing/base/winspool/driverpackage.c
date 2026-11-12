@@ -162,21 +162,10 @@ HRESULT WINAPI
 InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszDriverName,
                                  LPCWSTR pszEnvironment, DWORD dwFlags)
 {
-    WCHAR InfPath[MAX_PATH];
-    DWORD Length;
     HRESULT hr;
 
     TRACE("InstallPrinterDriverFromPackageW(%S, %S, %S, %S, 0x%lx)\n",
           pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
-
-    /* The spooler does not have the current directory of the caller */
-    if (pszInfPath)
-    {
-        Length = GetFullPathNameW(pszInfPath, ARRAYSIZE(InfPath), InfPath, NULL);
-        if (Length == 0 || Length >= ARRAYSIZE(InfPath))
-            return E_INVALIDARG;
-        pszInfPath = InfPath;
-    }
 
     RpcTryExcept
     {

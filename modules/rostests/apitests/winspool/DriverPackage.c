@@ -2789,10 +2789,77 @@ START_TEST(DriverPackage)
         StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s", (int)(Last - StoreInf), StoreInf);
         hr = InstallPrinterDriverFromPackageW(NULL, Other, NEEDS_DRIVER_NAME, NULL, 0);
         ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+
+        /* Of the other ways to write the path, Windows 11 refuses "..", a relative path, a trailing dot and a short name */
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\..%s", (int)(Last - StoreInf), StoreInf, wcsstr(StoreInf, L"\\lntprnpkg.inf_"));
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, NEEDS_DRIVER_NAME, NULL, 0);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%s.", StoreInf);
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, NEEDS_DRIVER_NAME, NULL, 0);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        if (GetShortPathNameW(StoreInf, Other, ARRAYSIZE(Other)) && _wcsicmp(Other, StoreInf) != 0)
+        {
+            hr = InstallPrinterDriverFromPackageW(NULL, Other, NEEDS_DRIVER_NAME, NULL, 0);
+            ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        }
+        GetCurrentDirectoryW(ARRAYSIZE(Other), Other);
+        *Last = UNICODE_NULL;
+        SetCurrentDirectoryW(StoreInf);
+        *Last = L'\\';
+        hr = InstallPrinterDriverFromPackageW(NULL, Last + 1, NEEDS_DRIVER_NAME, NULL, 0);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx in the store directory\n", Last + 1, hr);
+        SetCurrentDirectoryW(Other);
+
         hNeeds = OpenDriverKey(NEEDS_DRIVER_NAME);
         ok(hNeeds == NULL, "Driver %S is registered from an INF that is not in the store\n", NEEDS_DRIVER_NAME);
         if (hNeeds)
             RegCloseKey(hNeeds);
+
+        /* The unknown driver tells that the path was taken: without a drive, in upper case, with "\\\\" and with "." */
+        hr = InstallPrinterDriverFromPackageW(NULL, StoreInf + 2, L"No Such Printer", NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", StoreInf + 2, hr);
+        StringCchCopyW(Other, ARRAYSIZE(Other), StoreInf);
+        _wcsupr(Other);
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\%s", (int)(Last - StoreInf), StoreInf, Last);
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\.%s", (int)(Last - StoreInf), StoreInf, Last);
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+    }
+
+    /* Windows 11 takes the published INF for its package under its full path with backslashes, and under no other */
+    {
+        WCHAR Published[MAX_PATH], Other[MAX_PATH], Value[MAX_PATH];
+        DWORD Size = sizeof(Value);
+        HKEY hNeeds;
+        PWSTR Next;
+
+        ok(FindPublishedInf(InfPath, Published), "%S is not published\n", InfPath);
+        hr = InstallPrinterDriverFromPackageW(NULL, Published, L"No Such Printer", NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Published, hr);
+        StringCchCopyW(Other, ARRAYSIZE(Other), Published);
+        for (Next = Other; *Next; Next++)
+        {
+            if (*Next == L'\\')
+                *Next = L'/';
+        }
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, NEEDS_DRIVER_NAME, NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        Next = wcsrchr(Published, L'\\') + 1;
+        hr = InstallPrinterDriverFromPackageW(NULL, Next, NEEDS_DRIVER_NAME, NULL, 0);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Next, hr);
+
+        hr = InstallPrinterDriverFromPackageW(NULL, Published, NEEDS_DRIVER_NAME, NULL, 0);
+        ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Published, hr);
+        hNeeds = OpenDriverKey(NEEDS_DRIVER_NAME);
+        ok(hNeeds != NULL && RegQueryValueExW(hNeeds, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
+           !_wcsicmp(Value, StoreInf), "The driver installed from %S is not one of the package %S\n", Published, StoreInf);
+        if (hNeeds)
+            RegCloseKey(hNeeds);
+        DeleteTestDriver();
     }
 
     TestSharedInf(InfPath, StoreInf);

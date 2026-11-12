@@ -375,6 +375,49 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_
     return SUCCEEDED(StringCchCopyW(Path, PathSize, Copy));
 }
 
+/* Windows 11 takes a rooted path with either slash, doubled or around ".", and refuses ".." and a relative path */
+static BOOL
+NormalizeInfPath(PCWSTR Given, PWSTR Path)
+{
+    WCHAR Windows[MAX_PATH];
+    PWSTR Out = Path;
+    SIZE_T Length;
+
+    if (Given[0] && Given[1] == L':')
+    {
+        *Out++ = Given[0];
+        Given += 2;
+    }
+    else
+    {
+        if (!GetSystemWindowsDirectoryW(Windows, ARRAYSIZE(Windows)))
+            return FALSE;
+        *Out++ = Windows[0];
+    }
+    *Out++ = L':';
+    if (*Given != L'\\' && *Given != L'/')
+        return FALSE;
+
+    while (*Given)
+    {
+        Given += wcsspn(Given, L"\\/");
+        Length = wcscspn(Given, L"\\/");
+        if (Length == 2 && Given[0] == L'.' && Given[1] == L'.')
+            return FALSE;
+        if (Length > 1 || (Length == 1 && Given[0] != L'.'))
+        {
+            if ((SIZE_T)(Out - Path) + Length + 2 > MAX_PATH)
+                return FALSE;
+            *Out++ = L'\\';
+            CopyMemory(Out, Given, Length * sizeof(WCHAR));
+            Out += Length;
+        }
+        Given += Length;
+    }
+    *Out = UNICODE_NULL;
+    return TRUE;
+}
+
 static HRESULT
 InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, WORD Architecture, DWORD dwFlags,
                    HANDLE Namespace, HANDLE Lock, PBOOL Locked)
@@ -417,13 +460,34 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         Platform = &OtherPlatform;
     }
 
+    if (!NormalizeInfPath(pszInfPath, FilePath))
+        return E_INVALIDARG;
+
     /* Windows 11 takes the INF of a package in the store alone, and not the INF that the package was uploaded from */
-    Size = GetFullPathNameW(pszInfPath, ARRAYSIZE(FilePath), FilePath, NULL);
     i = ARRAYSIZE(InfPath);
-    if (Size == 0 || Size >= ARRAYSIZE(FilePath) ||
-        FAILED(DriverStoreFindDriverPackageW(FilePath, NULL, NULL, Architecture, NULL, InfPath, &i)) ||
-        _wcsicmp(FilePath, InfPath) != 0 ||
-        FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), InfPath)) ||
+    if (FAILED(DriverStoreFindDriverPackageW(FilePath, NULL, NULL, Architecture, NULL, InfPath, &i)) ||
+        _wcsicmp(FilePath, InfPath) != 0)
+    {
+        /* An INF in the INF directory stands for the package it was published from, but only as <Windows>\INF\<name> */
+        Size = GetSystemWindowsDirectoryW(PackageDir, ARRAYSIZE(PackageDir));
+        if (Size == 0 || FAILED(StringCchCatW(PackageDir, ARRAYSIZE(PackageDir), L"\\INF\\")) ||
+            _wcsnicmp(FilePath, PackageDir, Size + 5) != 0 || wcschr(FilePath + Size + 5, L'\\'))
+        {
+            return E_INVALIDARG;
+        }
+        if (_wcsicmp(pszInfPath, FilePath) != 0)
+            return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+
+        i = ARRAYSIZE(InfPath);
+        if (!SetupGetInfDriverStoreLocationW(FilePath, NULL, NULL, DriverDir, ARRAYSIZE(DriverDir), NULL) ||
+            FAILED(DriverStoreFindDriverPackageW(DriverDir, NULL, NULL, Architecture, NULL, InfPath, &i)) ||
+            _wcsicmp(DriverDir, InfPath) != 0)
+        {
+            return HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
+        }
+    }
+
+    if (FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), InfPath)) ||
         !(Slash = wcsrchr(PackageDir, L'\\')))
     {
         return E_INVALIDARG;

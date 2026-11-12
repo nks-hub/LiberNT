@@ -136,6 +136,47 @@ test_Stop(DWORD Flags, DWORD Action)
     ok(SameAsSource(), "Flags 0x%lx, action %lu: the destination differs from the source\n", Flags, Action);
 }
 
+/* A copy killed halfway leaves a destination of the full size; on Windows 11 the next copy starts over even when restartable */
+static void
+test_PartialDest(DWORD Flags)
+{
+    static UCHAR Buffer[65536];
+    WIN32_FIND_STREAM_DATA Stream;
+    HANDLE In, Out, Find;
+    DWORD Done, Count, Streams = 0;
+    LONGLONG Copied;
+    BOOL Ret = TRUE;
+
+    In = CreateFileW(Source, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    Out = CreateFileW(Dest, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    ok(In != INVALID_HANDLE_VALUE && Out != INVALID_HANDLE_VALUE, "Flags 0x%lx: cannot open the files (%lu)\n", Flags, GetLastError());
+    for (Copied = 0; Ret && Copied < STOP_AT; Copied += sizeof(Buffer))
+        Ret = ReadFile(In, Buffer, sizeof(Buffer), &Count, NULL) && WriteFile(Out, Buffer, Count, &Done, NULL);
+    Ret = Ret && SetFilePointer(Out, SOURCE_SIZE, NULL, FILE_BEGIN) == SOURCE_SIZE && SetEndOfFile(Out);
+    ok(Ret, "Flags 0x%lx: cannot write the partial destination (%lu)\n", Flags, GetLastError());
+    CloseHandle(In);
+    CloseHandle(Out);
+
+    Ret = Copy(Flags, 0, PROGRESS_CONTINUE);
+    ok(Ret, "Flags 0x%lx: copy over a partial destination failed (%lu)\n", Flags, GetLastError());
+    ok(FirstReport == 0, "Flags 0x%lx: first report over a partial destination at %I64d\n", Flags, FirstReport);
+    ok(FirstChunk > 0 && FirstChunk <= STOP_AT / 2, "Flags 0x%lx: first chunk over a partial destination ended at %I64d\n",
+       Flags, FirstChunk);
+    ok(SameAsSource(), "Flags 0x%lx: the destination differs from the source\n", Flags);
+
+    Find = FindFirstStreamW(Dest, FindStreamInfoStandard, &Stream, 0);
+    if (Find == INVALID_HANDLE_VALUE)
+    {
+        skip("Flags 0x%lx: cannot list the streams of the destination (%lu)\n", Flags, GetLastError());
+        return;
+    }
+    do
+        Streams++;
+    while (FindNextStreamW(Find, &Stream));
+    FindClose(Find);
+    ok(Streams == 1, "Flags 0x%lx: the destination has %lu streams\n", Flags, Streams);
+}
+
 static void
 test_FailedRead(DWORD Flags)
 {
@@ -335,7 +376,7 @@ START_TEST(CopyFileExStop)
 
     GetTempPathW(ARRAYSIZE(Dir), Dir);
 
-    /* Windows resumes a restartable copy only when one of the files is on the network */
+    /* The results below were measured on Windows 11 with both files on local disks */
     if (!GetVolumePathNameW(Dir, Root, ARRAYSIZE(Root)) || GetDriveTypeW(Root) != DRIVE_FIXED)
     {
         skip("%S is not on a local disk\n", Dir);
@@ -374,6 +415,8 @@ START_TEST(CopyFileExStop)
     test_Stop(COPY_FILE_RESTARTABLE, PROGRESS_STOP);
     test_Stop(0, PROGRESS_CANCEL);
     test_Stop(COPY_FILE_RESTARTABLE, PROGRESS_CANCEL);
+    test_PartialDest(0);
+    test_PartialDest(COPY_FILE_RESTARTABLE);
     test_FailedRead(0);
     test_FailedRead(COPY_FILE_RESTARTABLE);
     test_StopAfterRename();

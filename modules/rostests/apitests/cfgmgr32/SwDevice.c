@@ -45,7 +45,8 @@ CreatedAndClosed(HSWDEVICE hSwDevice, HRESULT CreateResult, PVOID Context, PCWST
 }
 
 static HRESULT
-CreateIn(PCWSTR Enumerator, PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State, HSWDEVICE *Device)
+CreateBelow(PCWSTR Parent, PCWSTR Enumerator, PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State,
+            HSWDEVICE *Device)
 {
     SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
     HRESULT hr;
@@ -58,10 +59,16 @@ CreateIn(PCWSTR Enumerator, PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCR
     ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
     State->Result = E_PENDING;
     ResetEvent(State->Event);
-    hr = SwDeviceCreate(Enumerator, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, State, Device);
+    hr = SwDeviceCreate(Enumerator, Parent, &Info, 0, NULL, Created, State, Device);
     if (SUCCEEDED(hr) && WaitForSingleObject(State->Event, 30000) != WAIT_OBJECT_0)
         hr = HRESULT_FROM_WIN32(WAIT_TIMEOUT);
     return hr;
+}
+
+static HRESULT
+CreateIn(PCWSTR Enumerator, PCWSTR Instance, ULONG Capabilities, PSECURITY_DESCRIPTOR Security, CREATED *State, HSWDEVICE *Device)
+{
+    return CreateBelow(L"HTREE\\ROOT\\0", Enumerator, Instance, Capabilities, Security, State, Device);
 }
 
 static HRESULT
@@ -86,6 +93,30 @@ WaitGone(PCWSTR InstanceId)
     while (IsPresent(InstanceId) && GetTickCount() - Start < 10000)
         Sleep(200);
     return !IsPresent(InstanceId);
+}
+
+static BOOL
+GetParentId(PCWSTR InstanceId, PWSTR Parent)
+{
+    DEVINST DevInst, ParentInst;
+
+    Parent[0] = UNICODE_NULL;
+    return CM_Locate_DevNodeW(&DevInst, (DEVINSTID_W)InstanceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+           CM_Get_Parent(&ParentInst, DevInst, 0) == CR_SUCCESS &&
+           CM_Get_Device_IDW(ParentInst, Parent, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS;
+}
+
+static BOOL
+GetContainer(PCWSTR InstanceId, GUID *Container)
+{
+    DEVPROPTYPE Type = DEVPROP_TYPE_EMPTY;
+    ULONG Size = sizeof(*Container);
+    DEVINST DevInst;
+
+    ZeroMemory(Container, sizeof(*Container));
+    return CM_Locate_DevNodeW(&DevInst, (DEVINSTID_W)InstanceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+           CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ContainerId, &Type, (PBYTE)Container, &Size, 0) == CR_SUCCESS &&
+           Type == DEVPROP_TYPE_GUID;
 }
 
 static void
@@ -238,14 +269,24 @@ test_Capabilities(CREATED *State)
         { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable, TRUE },
         { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI, TRUE },
         { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI, TRUE },
+        { SWDeviceCapabilitiesDriverRequired, FALSE },
+        { SWDeviceCapabilitiesDriverRequired | SWDeviceCapabilitiesRemovable, FALSE },
+        { SWDeviceCapabilitiesDriverRequired | SWDeviceCapabilitiesSilentInstall, TRUE },
+        { SWDeviceCapabilitiesDriverRequired | SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable, TRUE },
     };
+    static const GUID SystemContainer = { 0, 0, 0, { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff } };
     SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
-    ULONG i, Flags, Status, Problem, Capabilities, Policy, Default, Size, Expected;
+    ULONG i, Flags, Status, Problem, Capabilities, Policy, Default, Size, Expected, Try;
+    GUID Root, Container;
     WCHAR Instance[32];
     HSWDEVICE Device;
     DEVINST DevInst;
     CONFIGRET Cr;
+    BOOL Found;
     HRESULT hr;
+
+    Found = GetContainer(L"HTREE\\ROOT\\0", &Root);
+    ok(Found && IsEqualGUID(&Root, &SystemContainer), "The container of the root device is %d, {%08lx-...}\n", Found, Root.Data1);
 
     Info.pszInstanceId = Instance;
     Info.pszDeviceDescription = L"LiberNT software device test";
@@ -275,15 +316,36 @@ test_Capabilities(CREATED *State)
                        ((Flags & SWDeviceCapabilitiesNoDisplayInUI) ? DN_NO_SHOW_IN_DM : 0);
             ok(Cr == CR_SUCCESS && (Status & (DN_REMOVABLE | DN_NO_SHOW_IN_DM)) == Expected,
                "With the capabilities 0x%lx the status is CR %lu, 0x%08lx\n", Flags, Cr, Status);
+            if (Flags & SWDeviceCapabilitiesDriverRequired)
+            {
+                ok((Status & (DN_STARTED | DN_HAS_PROBLEM)) == DN_HAS_PROBLEM && Problem == CM_PROB_FAILED_INSTALL,
+                   "With the capabilities 0x%lx and no driver the status is 0x%08lx, problem %lu\n", Flags, Status, Problem);
+            }
+            else
+            {
+                /* Windows 11 starts the device some time after the callback */
+                for (Try = 0; Try < 100 && !(Status & DN_STARTED); Try++)
+                {
+                    Sleep(100);
+                    CM_Get_DevNode_Status(&Status, &Problem, DevInst, 0);
+                }
+                ok((Status & (DN_STARTED | DN_HAS_PROBLEM)) == DN_STARTED,
+                   "With the capabilities 0x%lx and no driver the status is 0x%08lx, problem %lu\n", Flags, Status, Problem);
+            }
 
             Capabilities = 0;
             Size = sizeof(Capabilities);
             Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_CAPABILITIES, NULL, &Capabilities, &Size, 0);
-            Expected = ((Flags & SWDeviceCapabilitiesRemovable) ? CM_DEVCAP_REMOVABLE : 0) |
+            Expected = CM_DEVCAP_UNIQUEID | CM_DEVCAP_SURPRISEREMOVALOK |
+                       ((Flags & SWDeviceCapabilitiesDriverRequired) ? 0 : CM_DEVCAP_RAWDEVICEOK) |
+                       ((Flags & SWDeviceCapabilitiesRemovable) ? CM_DEVCAP_REMOVABLE : 0) |
                        ((Flags & SWDeviceCapabilitiesSilentInstall) ? CM_DEVCAP_SILENTINSTALL : 0);
-            trace("With the capabilities 0x%lx the device reports CR %lu, 0x%lx\n", Flags, Cr, Capabilities);
-            ok(Cr == CR_SUCCESS && (Capabilities & (CM_DEVCAP_REMOVABLE | CM_DEVCAP_SILENTINSTALL)) == Expected,
-               "With the capabilities 0x%lx the device reports CR %lu, 0x%lx\n", Flags, Cr, Capabilities);
+            ok(Cr == CR_SUCCESS && Capabilities == Expected,
+               "With the capabilities 0x%lx the device reports CR %lu, 0x%lx instead of 0x%lx\n", Flags, Cr, Capabilities, Expected);
+
+            Found = GetContainer(State->InstanceId, &Container);
+            ok(Found && (!IsEqualGUID(&Container, &Root)) == ((Flags & SWDeviceCapabilitiesRemovable) != 0),
+               "With the capabilities 0x%lx the container is %d, {%08lx-...}\n", Flags, Found, Container.Data1);
 
             Policy = Default = 0;
             Size = sizeof(Policy);
@@ -878,6 +940,183 @@ Done:
     WaitGone(State->InstanceId);
 }
 
+/* Windows 11 creates a software device below any device that is present and started, and removes it with that device */
+static void
+test_Parent(CREATED *State)
+{
+    static const WCHAR ParentId[] = L"SWD\\" TEST_ENUMERATOR L"\\Parent";
+    static const WCHAR ChildId[] = L"SWD\\" TEST_ENUMERATOR L"\\Child";
+    static const WCHAR RemovableId[] = L"SWD\\" TEST_ENUMERATOR L"\\RemovableChild";
+    static const WCHAR KeptId[] = L"SWD\\" TEST_ENUMERATOR L"\\KeptChild";
+    SW_DEVICE_LIFETIME Lifetime = SWDeviceLifetimeMax;
+    HSWDEVICE Parent, Child = NULL, Device;
+    WCHAR Found[MAX_DEVICE_ID_LEN];
+    GUID ParentContainer, Container;
+    HRESULT hr;
+
+    hr = CreateBelow(L"", TEST_ENUMERATOR, L"NoParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == E_INVALIDARG, "SwDeviceCreate below an empty parent returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+        SwDeviceClose(Device);
+
+    hr = Create(L"Parent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Parent);
+    ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr))
+        return;
+
+    hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"Child", SWDeviceCapabilitiesSilentInstall, NULL, State, &Child);
+    ok(hr == S_OK && State->Result == S_OK, "Creating a device below %S returned 0x%08lx and reported 0x%08lx\n", ParentId, hr, State->Result);
+    if (FAILED(hr))
+        Child = NULL;
+    if (SUCCEEDED(hr) && State->Result == S_OK)
+    {
+        ok(!_wcsicmp(State->InstanceId, ChildId), "The device below %S is %S\n", ParentId, State->InstanceId);
+        ok(GetParentId(ChildId, Found) && !_wcsicmp(Found, ParentId), "The parent of %S is %S\n", ChildId, Found);
+        ok(GetContainer(ParentId, &ParentContainer) && GetContainer(ChildId, &Container) && IsEqualGUID(&Container, &ParentContainer),
+           "%S is in the container {%08lx-...} and its parent in {%08lx-...}\n", ChildId, Container.Data1, ParentContainer.Data1);
+
+        hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"RemovableChild", SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable,
+                         NULL, State, &Device);
+        ok(hr == S_OK && State->Result == S_OK, "Creating a removable device below %S returned 0x%08lx and reported 0x%08lx\n",
+           ParentId, hr, State->Result);
+        if (SUCCEEDED(hr))
+        {
+            ok(GetContainer(RemovableId, &Container) && !IsEqualGUID(&Container, &ParentContainer),
+               "The removable %S is in the container {%08lx-...} of its parent\n", RemovableId, Container.Data1);
+            SwDeviceClose(Device);
+            ok(WaitGone(RemovableId), "%S stayed after its handle closed\n", RemovableId);
+            ok(IsPresent(ParentId) && IsPresent(ChildId), "%S or %S left with the handle of %S\n", ParentId, ChildId, RemovableId);
+        }
+
+        hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"KeptChild", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+        ok(hr == S_OK && State->Result == S_OK, "Creating a second device below %S returned 0x%08lx and reported 0x%08lx\n",
+           ParentId, hr, State->Result);
+        if (SUCCEEDED(hr))
+        {
+            hr = SwDeviceSetLifetime(Device, SWDeviceLifetimeParentPresent);
+            ok(hr == S_OK, "SwDeviceSetLifetime returned 0x%08lx\n", hr);
+            SwDeviceClose(Device);
+            ok(IsPresent(KeptId), "%S with the lifetime of its parent left with its handle\n", KeptId);
+        }
+    }
+
+    SwDeviceClose(Parent);
+    ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+    ok(WaitGone(ChildId), "%S stayed after its parent was removed\n", ChildId);
+    ok(WaitGone(KeptId), "%S with the lifetime of its parent stayed after its parent was removed\n", KeptId);
+    if (Child)
+    {
+        hr = SwDeviceGetLifetime(Child, &Lifetime);
+        ok(hr == S_OK && Lifetime == SWDeviceLifetimeHandle, "The handle of the removed %S answers 0x%08lx, lifetime %d\n", ChildId, hr, Lifetime);
+        SwDeviceClose(Child);
+    }
+}
+
+static BOOL
+FindStartedRootDevice(PWSTR InstanceId)
+{
+    ULONG Status, Problem;
+    DEVINST Root, Child;
+
+    if (CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS || CM_Get_Child(&Child, Root, 0) != CR_SUCCESS)
+        return FALSE;
+    do
+    {
+        if (CM_Get_Device_IDW(Child, InstanceId, MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS && !_wcsnicmp(InstanceId, L"ROOT\\", 5) &&
+            CM_Get_DevNode_Status(&Status, &Problem, Child, 0) == CR_SUCCESS && (Status & DN_STARTED))
+        {
+            return TRUE;
+        }
+    } while (CM_Get_Sibling(&Child, Child, 0) == CR_SUCCESS);
+    return FALSE;
+}
+
+static void
+test_RootDeviceParent(CREATED *State)
+{
+    static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\BelowRootDevice";
+    WCHAR Parent[MAX_DEVICE_ID_LEN], Found[MAX_DEVICE_ID_LEN];
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    if (!FindStartedRootDevice(Parent))
+    {
+        skip("No started device of the root enumerator\n");
+        return;
+    }
+    hr = CreateBelow(Parent, TEST_ENUMERATOR, L"BelowRootDevice", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "Creating a device below %S returned 0x%08lx and reported 0x%08lx\n", Parent, hr, State->Result);
+    if (FAILED(hr))
+        return;
+    if (State->Result == S_OK)
+        ok(GetParentId(InstanceId, Found) && !_wcsicmp(Found, Parent), "The parent of %S is %S instead of %S\n", InstanceId, Found, Parent);
+    SwDeviceClose(Device);
+    ok(WaitGone(InstanceId), "%S stayed after its handle closed\n", InstanceId);
+    ok(IsPresent(Parent), "%S left with the device below it\n", Parent);
+}
+
+/* Windows 11 accepts a parent that is not present, creates the device when the parent arrives and ends the wait when the handle closes */
+static void
+test_AbsentParent(CREATED *State)
+{
+    static const WCHAR ParentId[] = L"SWD\\" TEST_ENUMERATOR L"\\LateParent";
+    static const WCHAR ChildId[] = L"SWD\\" TEST_ENUMERATOR L"\\Waiting";
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    WCHAR Found[MAX_DEVICE_ID_LEN];
+    HSWDEVICE Parent, Child;
+    CREATED Waiting;
+    HRESULT hr;
+
+    Info.pszInstanceId = L"Waiting";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    ZeroMemory(&Waiting, sizeof(Waiting));
+    Waiting.Result = E_PENDING;
+    Waiting.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+
+    hr = SwDeviceCreate(TEST_ENUMERATOR, ParentId, &Info, 0, NULL, Created, &Waiting, &Child);
+    ok(hr == S_OK, "SwDeviceCreate below a parent that is not present returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ok(WaitForSingleObject(Waiting.Event, 2000) == WAIT_TIMEOUT, "The creation below a parent that is not present reported 0x%08lx\n",
+           Waiting.Result);
+        ok(!IsPresent(ChildId), "%S is present without its parent\n", ChildId);
+
+        hr = Create(L"LateParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Parent);
+        ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+        if (SUCCEEDED(hr))
+        {
+            ok(WaitForSingleObject(Waiting.Event, 30000) == WAIT_OBJECT_0, "%S was not created after its parent arrived\n", ChildId);
+            ok(Waiting.Result == S_OK && !_wcsicmp(Waiting.InstanceId, ChildId), "The creation after the parent arrived reported 0x%08lx, %S\n",
+               Waiting.Result, Waiting.InstanceId);
+            ok(GetParentId(ChildId, Found) && !_wcsicmp(Found, ParentId), "The parent of %S is %S\n", ChildId, Found);
+        }
+        SwDeviceClose(Child);
+        ok(WaitGone(ChildId), "%S stayed after its handle closed\n", ChildId);
+        if (SUCCEEDED(hr))
+        {
+            SwDeviceClose(Parent);
+            ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+        }
+    }
+
+    Waiting.Result = E_PENDING;
+    ResetEvent(Waiting.Event);
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"SWD\\" TEST_ENUMERATOR L"\\NoSuchParent", &Info, 0, NULL, Created, &Waiting, &Child);
+    ok(hr == S_OK, "SwDeviceCreate below a parent that never arrives returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ok(WaitForSingleObject(Waiting.Event, 2000) == WAIT_TIMEOUT, "The creation below a parent that never arrives reported 0x%08lx\n",
+           Waiting.Result);
+        SwDeviceClose(Child);
+        ok(WaitForSingleObject(Waiting.Event, 10000) == WAIT_OBJECT_0 && Waiting.Result == HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED),
+           "Closing the handle of a creation that waits for its parent reported 0x%08lx\n", Waiting.Result);
+        ok(!IsPresent(ChildId), "%S is present without its parent\n", ChildId);
+    }
+    CloseHandle(Waiting.Event);
+}
+
 static void
 RunChild(void)
 {
@@ -932,6 +1171,9 @@ START_TEST(SwDevice)
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
     test_Capabilities(&State);
+    test_Parent(&State);
+    test_RootDeviceParent(&State);
+    test_AbsentParent(&State);
     test_CallbackOutsideModule();
     test_CallbackInMappedCode(&State);
     test_CloseInCallback(&State);

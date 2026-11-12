@@ -1396,7 +1396,9 @@ PnpRootSetDeviceCapabilities(
     _In_ PDEVICE_OBJECT DeviceObject,
     _In_ BOOLEAN Removable,
     _In_ BOOLEAN SilentInstall,
-    _In_ BOOLEAN NoDisplayInUI);
+    _In_ BOOLEAN NoDisplayInUI,
+    _In_ BOOLEAN RawDeviceOK,
+    _In_ BOOLEAN SurpriseRemovalOK);
 
 VOID
 PnpRootRetireDevice(

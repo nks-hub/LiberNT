@@ -258,7 +258,9 @@ typedef enum _PLUGPLAY_CONTROL_CLASS
     /* Not a class of Windows, which changes the state of an interface through its device API driver */
     PlugPlayControlSetDeviceInterfaceState = 0x100,
     /* Not a class of Windows, whose software device bus reports the capabilities given to SwDeviceCreate */
-    PlugPlayControlSetDeviceCapabilities = 0x101
+    PlugPlayControlSetDeviceCapabilities = 0x101,
+    /* Not a class of Windows, whose software device API creates a device below the parent given to SwDeviceCreate */
+    PlugPlayControlInitializeChildDevice = 0x102
 #endif
 } PLUGPLAY_CONTROL_CLASS;
 
@@ -614,7 +616,15 @@ typedef struct _PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA
     BOOLEAN Removable;
     BOOLEAN SilentInstall;
     BOOLEAN NoDisplayInUI;
+    BOOLEAN RawDeviceOK;
+    BOOLEAN SurpriseRemovalOK;
 } PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA, *PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA;
+
+typedef struct _PLUGPLAY_CONTROL_CHILD_DEVICE_DATA
+{
+    UNICODE_STRING DeviceInstance;
+    UNICODE_STRING ParentInstance;
+} PLUGPLAY_CONTROL_CHILD_DEVICE_DATA, *PPLUGPLAY_CONTROL_CHILD_DEVICE_DATA;
 #endif
 
 //

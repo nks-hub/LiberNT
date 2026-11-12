@@ -2432,6 +2432,8 @@ IopSendRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     }
     if (DeviceNode->Flags & DNF_DEVICE_GONE)
         PipQueueLeakCheck(DeviceObject, &DeviceNode->InstancePath);
+    if (DeviceNode->Parent == NULL)
+        PnpRootRetireDevice(DeviceObject);
     ObDereferenceObject(DeviceObject);
 }
 
@@ -3143,7 +3145,8 @@ PiEnumerateDevice(
     // mark children nodes as non-present (those not returned in DR request will be removed)
     for (PDEVICE_NODE child = DeviceNode->Child; child != NULL; child = child->Sibling)
     {
-        PiClearDevNodeFlag(child, DNF_ENUMERATED);
+        if (DeviceNode == IopRootDeviceNode || child->PhysicalDeviceObject->DriverObject != IopRootDriverObject)
+            PiClearDevNodeFlag(child, DNF_ENUMERATED);
     }
 
     DPRINT("PiEnumerateDevice: enumerating %u children\n", DeviceRelations->Count);
@@ -3741,7 +3744,7 @@ PipRunDeviceActionRequest(
 
         case PiActionRemoveDevice:
             status = PipQueryAndRemoveDevice(Request->DeviceObject, NULL);
-            if (deviceNode->State == DeviceNodeRemoved && deviceNode->Parent == IopRootDeviceNode)
+            if (deviceNode->State == DeviceNodeRemoved)
                 PnpRootRetireDevice(Request->DeviceObject);
             break;
 

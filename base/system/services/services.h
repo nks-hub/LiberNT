@@ -317,6 +317,8 @@ VOID ScmNotifyServiceDatabase(DWORD dwTrigger, LPCWSTR lpServiceName);
                             SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_DELETE_PENDING)
 
 #define SCM_SUBSCRIPTION_WAIT 5000
+/* Set in the sequence a status subscription echoes once it has seen SERVICE_NOTIFY_DELETE_PENDING */
+#define SCM_SEQUENCE_DELETE_SEEN 0x80000000
 DWORD ScmReadFailureActions(HKEY hServiceKey,
                             PSERVICE_FAILURE_ACTIONS_VALUE *lpValue,
                             LPDWORD lpActionCount);

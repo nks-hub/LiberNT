@@ -244,6 +244,7 @@ static NTSTATUS UDPSendToAddress(
     IP_PACKET LoopPacket;
     IP_ADDRESS LocalAddress;
     ULONG UnicastSelector;
+    ULONG Selector;
     USHORT LocalPort;
     NTSTATUS Status;
     PNEIGHBOR_CACHE_ENTRY NCE;
@@ -261,22 +262,32 @@ static NTSTATUS UDPSendToAddress(
 
     LocalAddress = AddrFile->Address;
     UnicastSelector = SourceSelector ? SourceSelector : AddrFile->UnicastInterface;
+    Selector = IsMulticast ? (SourceSelector ? SourceSelector : AddrFile->MulticastInterface) : UnicastSelector;
     if (Source)
-    {
-        PIP_INTERFACE Interface;
-
         AddrInitIPv4(&LocalAddress, Source);
-        Interface = AddrLocateInterface(&LocalAddress);
-        if (!Interface)
+    if (Source || SourceSelector)
+    {
+        PIP_INTERFACE SourceInterface = Source ? AddrLocateInterface(&LocalAddress) : NULL;
+        PIP_INTERFACE Selected = Selector ? GetMulticastInterface(Selector) : NULL;
+
+        /* Windows refuses a source that is not on the chosen interface even when it sends as a weak host */
+        Status = STATUS_SUCCESS;
+        if (SourceSelector && !Selected)
+            Status = STATUS_INVALID_PARAMETER;
+        else if (Source && (!SourceInterface || (Selected && Selected != SourceInterface)))
+            Status = STATUS_INVALID_ADDRESS;
+        if (SourceInterface)
+            IPDereferenceInterface(SourceInterface);
+        if (Selected)
+            IPDereferenceInterface(Selected);
+        if (!NT_SUCCESS(Status))
         {
             UnlockObject(AddrFile);
-            return STATUS_INVALID_ADDRESS;
+            return Status;
         }
-        IPDereferenceInterface(Interface);
     }
-    if ((DN2H(RemoteAddress.Address.IPv4Address) & 0xf0000000) == 0xe0000000)
+    if (IsMulticast)
     {
-        ULONG Selector = SourceSelector ? SourceSelector : AddrFile->MulticastInterface;
         if (!Selector) Selector = LocalAddress.Address.IPv4Address;
         NCE = RouteGetMulticastRoute(&RemoteAddress, Selector);
         if (!NCE)

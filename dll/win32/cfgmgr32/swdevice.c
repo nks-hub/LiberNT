@@ -33,6 +33,8 @@ typedef struct _SW_DEVICE
     PVOID Context;
     HANDLE Thread;
     DWORD ThreadId;
+    HMODULE Module;
+    HMODULE CallbackModule;
     BOOL Reopened;
     LIST_ENTRY OpenEntry;
     LONG ActiveCalls;
@@ -612,6 +614,10 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     if (FAILED(hr))
         return hr;
 
+    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities & ~SWDeviceCapabilitiesDriverRequired);
+    if (Cr != CR_SUCCESS)
+        return CrToHresult(Cr);
+
     if (Device->HardwareIds && *Device->HardwareIds)
     {
         Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_HARDWAREID, Device->HardwareIds,
@@ -672,6 +678,21 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     return InstallSwDeviceDriver(Device);
 }
 
+/* Windows 11 finds the module in kernelbase, where a program that maps a library by hand redirects the lookup of its code */
+static BOOL
+ReferenceModule(_In_ PVOID Address, _Out_ HMODULE *Module)
+{
+    typedef BOOL (WINAPI *PFN_GETMODULEHANDLEEXW)(DWORD, PCWSTR, HMODULE *);
+    HMODULE KernelBase = GetModuleHandleW(L"kernelbase.dll");
+    PFN_GETMODULEHANDLEEXW pGetModuleHandleExW = NULL;
+
+    if (KernelBase)
+        pGetModuleHandleExW = (PFN_GETMODULEHANDLEEXW)GetProcAddress(KernelBase, "GetModuleHandleExW");
+    if (!pGetModuleHandleExW)
+        pGetModuleHandleExW = GetModuleHandleExW;
+    return pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (PCWSTR)Address, Module);
+}
+
 static DWORD
 WINAPI
 SwDeviceCreateThread(_In_ PVOID Parameter)
@@ -679,6 +700,7 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     PSW_DEVICE Device = Parameter;
     SW_DEVICE_CREATE_CALLBACK Callback = Device->Callback;
     PVOID Context = Device->Context;
+    HMODULE Module = Device->Module, CallbackModule = Device->CallbackModule;
     WCHAR InstanceId[MAX_DEVICE_ID_LEN];
     HRESULT hr;
 
@@ -697,7 +719,10 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     /* The callback may close the handle; nothing touches Device afterwards */
     wcscpy(InstanceId, Device->InstanceId);
     Callback((HSWDEVICE)Device, hr, Context, SUCCEEDED(hr) ? InstanceId : NULL);
-    return 0;
+
+    /* The callback may have freed this library, whose code runs until the thread exits */
+    FreeLibrary(CallbackModule);
+    FreeLibraryAndExitThread(Module, 0);
 }
 
 HRESULT
@@ -733,13 +758,6 @@ SwDeviceCreate(
                                           SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
     {
         return E_INVALIDARG;
-    }
-
-    /* TODO: Removable and NoDisplayInUI need the root bus to report the capabilities of the device */
-    if (pCreateInfo->CapabilityFlags & (SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI))
-    {
-        FIXME("Capabilities 0x%lx are not supported\n", pCreateInfo->CapabilityFlags);
-        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
 
     if (CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS ||
@@ -819,10 +837,27 @@ SwDeviceCreate(
     }
     Device->PropertyCount = cPropertyCount;
 
+    /* Windows 11 answers ERROR_MOD_NOT_FOUND for a callback that this lookup finds in no module */
+    if (!ReferenceModule((PVOID)(ULONG_PTR)pCallback, &Device->CallbackModule))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeSwDevice(Device);
+        return hr;
+    }
+    if (!ReferenceModule((PVOID)(ULONG_PTR)SwDeviceCreateThread, &Device->Module))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeLibrary(Device->CallbackModule);
+        FreeSwDevice(Device);
+        return hr;
+    }
+
     Device->Thread = CreateThread(NULL, 0, SwDeviceCreateThread, Device, CREATE_SUSPENDED, &Device->ThreadId);
     if (!Device->Thread)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeLibrary(Device->Module);
+        FreeLibrary(Device->CallbackModule);
         FreeSwDevice(Device);
         return hr;
     }
@@ -837,6 +872,8 @@ SwDeviceCreate(
         hr = HRESULT_FROM_WIN32(GetLastError());
         TerminateThread(Device->Thread, 0);
         CloseHandle(Device->Thread);
+        FreeLibrary(Device->Module);
+        FreeLibrary(Device->CallbackModule);
         AcquireSRWLockExclusive(&SwDeviceListLock);
         RemoveEntryList(&Device->OpenEntry);
         ReleaseSRWLockExclusive(&SwDeviceListLock);

@@ -3851,6 +3851,32 @@ SetSoftwareDeviceInterfaceState(
 }
 
 
+static CONFIGRET
+SetSoftwareDeviceCapabilities(
+    _In_opt_ LPWSTR pszDeviceInstance,
+    _In_ DWORD dwCapabilities)
+{
+    PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA ControlData;
+    NTSTATUS Status;
+
+    if (dwCapabilities & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI))
+        return CR_INVALID_FLAG;
+    if (pszDeviceInstance == NULL ||
+        !IsValidDeviceInstanceID(pszDeviceInstance) ||
+        _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0)
+    {
+        return CR_INVALID_DEVINST;
+    }
+
+    RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceInstance);
+    ControlData.Removable = (dwCapabilities & SWDeviceCapabilitiesRemovable) != 0;
+    ControlData.SilentInstall = (dwCapabilities & SWDeviceCapabilitiesSilentInstall) != 0;
+    ControlData.NoDisplayInUI = (dwCapabilities & SWDeviceCapabilitiesNoDisplayInUI) != 0;
+    Status = NtPlugPlayControl(PlugPlayControlSetDeviceCapabilities, &ControlData, sizeof(ControlData));
+    return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
+}
+
+
 /* Function 29 */
 DWORD
 WINAPI
@@ -3917,6 +3943,15 @@ PNP_DeviceInstanceAction(
                 break;
             }
             ret = SetSoftwareDeviceInterfaceState(pszDeviceInstance1, ulMinorAction);
+            break;
+
+        case PNP_DEVINST_SOFTWARE_CAPABILITIES:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
+            ret = SetSoftwareDeviceCapabilities(pszDeviceInstance1, ulMinorAction);
             break;
 
         default:

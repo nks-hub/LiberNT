@@ -28,6 +28,7 @@
 #include <umpnpmgr/sysguid.h>
 #include <wdmguid.h>
 #include <cfgmgr32.h>
+#include <swdevicedef.h>
 #include <regstr.h>
 #include <userenv.h>
 #include <shlwapi.h>

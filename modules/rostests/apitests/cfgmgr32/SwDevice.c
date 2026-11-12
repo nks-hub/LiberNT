@@ -13,6 +13,7 @@
 #include <sddl.h>
 #include <swdevice.h>
 #include <stdio.h>
+#include <string.h>
 
 #define TEST_ENUMERATOR L"LntSwTest"
 #define TEST_HARDWARE_ID L"LntSwTestNoDriver\0"
@@ -218,6 +219,259 @@ test_DriverRequiredNoIds(CREATED *State)
     ok(IsPresent(State->InstanceId), "%S is not present\n", State->InstanceId);
     SwDeviceClose(Device);
     WaitGone(State->InstanceId);
+}
+
+static void
+test_Capabilities(CREATED *State)
+{
+    static const struct
+    {
+        ULONG Flags;
+        BOOL Ids;
+    } Tests[] =
+    {
+        { SWDeviceCapabilitiesNone, FALSE },
+        { SWDeviceCapabilitiesRemovable, FALSE },
+        { SWDeviceCapabilitiesNoDisplayInUI, FALSE },
+        { SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI, FALSE },
+        { SWDeviceCapabilitiesSilentInstall, TRUE },
+        { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable, TRUE },
+        { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI, TRUE },
+        { SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesNoDisplayInUI, TRUE },
+    };
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    ULONG i, Flags, Status, Problem, Capabilities, Policy, Default, Size, Expected;
+    WCHAR Instance[32];
+    HSWDEVICE Device;
+    DEVINST DevInst;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    Info.pszInstanceId = Instance;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    for (i = 0; i < ARRAYSIZE(Tests); i++)
+    {
+        Flags = Tests[i].Flags;
+        _snwprintf(Instance, ARRAYSIZE(Instance), L"Capabilities%lu", Flags);
+        Info.pszzHardwareIds = Tests[i].Ids ? TEST_HARDWARE_ID : L"";
+        Info.CapabilityFlags = Flags;
+        ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+        State->Result = E_PENDING;
+        ResetEvent(State->Event);
+        hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, Created, State, &Device);
+        ok(hr == S_OK, "SwDeviceCreate with the capabilities 0x%lx returned 0x%08lx\n", Flags, hr);
+        if (FAILED(hr))
+            continue;
+        ok(WaitForSingleObject(State->Event, 30000) == WAIT_OBJECT_0, "The creation with the capabilities 0x%lx did not complete\n", Flags);
+        ok(State->Result == S_OK, "The creation with the capabilities 0x%lx reported 0x%08lx\n", Flags, State->Result);
+
+        Cr = CM_Locate_DevNodeW(&DevInst, State->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
+        ok(Cr == CR_SUCCESS, "CM_Locate_DevNodeW of %S returned CR %lu\n", State->InstanceId, Cr);
+        if (Cr == CR_SUCCESS)
+        {
+            Status = Problem = 0;
+            Cr = CM_Get_DevNode_Status(&Status, &Problem, DevInst, 0);
+            Expected = ((Flags & SWDeviceCapabilitiesRemovable) ? DN_REMOVABLE : 0) |
+                       ((Flags & SWDeviceCapabilitiesNoDisplayInUI) ? DN_NO_SHOW_IN_DM : 0);
+            ok(Cr == CR_SUCCESS && (Status & (DN_REMOVABLE | DN_NO_SHOW_IN_DM)) == Expected,
+               "With the capabilities 0x%lx the status is CR %lu, 0x%08lx\n", Flags, Cr, Status);
+
+            Capabilities = 0;
+            Size = sizeof(Capabilities);
+            Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_CAPABILITIES, NULL, &Capabilities, &Size, 0);
+            Expected = ((Flags & SWDeviceCapabilitiesRemovable) ? CM_DEVCAP_REMOVABLE : 0) |
+                       ((Flags & SWDeviceCapabilitiesSilentInstall) ? CM_DEVCAP_SILENTINSTALL : 0);
+            trace("With the capabilities 0x%lx the device reports CR %lu, 0x%lx\n", Flags, Cr, Capabilities);
+            ok(Cr == CR_SUCCESS && (Capabilities & (CM_DEVCAP_REMOVABLE | CM_DEVCAP_SILENTINSTALL)) == Expected,
+               "With the capabilities 0x%lx the device reports CR %lu, 0x%lx\n", Flags, Cr, Capabilities);
+
+            Policy = Default = 0;
+            Size = sizeof(Policy);
+            Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_REMOVAL_POLICY, NULL, &Policy, &Size, 0);
+            Expected = (Flags & SWDeviceCapabilitiesRemovable) ? CM_REMOVAL_POLICY_EXPECT_ORDERLY_REMOVAL
+                                                               : CM_REMOVAL_POLICY_EXPECT_NO_REMOVAL;
+            ok(Cr == CR_SUCCESS && Policy == Expected, "With the capabilities 0x%lx the removal policy is CR %lu, %lu\n", Flags, Cr, Policy);
+            Size = sizeof(Default);
+            Cr = CM_Get_DevNode_Registry_PropertyW(DevInst, CM_DRP_REMOVAL_POLICY_HW_DEFAULT, NULL, &Default, &Size, 0);
+            ok(Cr == CR_SUCCESS && Default == Expected,
+               "With the capabilities 0x%lx the default removal policy is CR %lu, %lu\n", Flags, Cr, Default);
+        }
+
+        SwDeviceClose(Device);
+        ok(WaitGone(State->InstanceId), "%S stayed after its handle closed\n", State->InstanceId);
+    }
+}
+
+/* Windows 11 looks up the module of the callback and refuses a callback that has none */
+static void
+test_CallbackOutsideModule(void)
+{
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    HSWDEVICE Device = (HSWDEVICE)(ULONG_PTR)1;
+    PVOID Page;
+    HRESULT hr;
+
+    Page = VirtualAlloc(NULL, 1, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!Page)
+    {
+        skip("VirtualAlloc failed (%lu)\n", GetLastError());
+        return;
+    }
+
+    Info.pszInstanceId = L"NoModule";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, (SW_DEVICE_CREATE_CALLBACK)(ULONG_PTR)Page, NULL, &Device);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND), "SwDeviceCreate with a callback outside of every module returned 0x%08lx\n", hr);
+    ok(Device == NULL, "SwDeviceCreate with a callback outside of every module returned the device %p\n", Device);
+    ok(!IsPresent(L"SWD\\" TEST_ENUMERATOR L"\\NoModule"), "A device was created for a callback outside of every module\n");
+
+    /* A creation that started calls into the page */
+    if (FAILED(hr))
+        VirtualFree(Page, 0, MEM_RELEASE);
+}
+
+static BYTE *HookedPage;
+static PVOID (NTAPI *OriginalPcToFileHeader)(PVOID, PVOID *);
+
+static PVOID NTAPI
+HookedPcToFileHeader(PVOID PcValue, PVOID *BaseOfImage)
+{
+    if ((BYTE *)PcValue >= HookedPage && (BYTE *)PcValue < HookedPage + 0x1000)
+        PcValue = (PVOID)(ULONG_PTR)Created;
+    return OriginalPcToFileHeader(PcValue, BaseOfImage);
+}
+
+static ULONG_PTR *
+FindKernelBaseImport(PCSTR Function)
+{
+    BYTE *Image = (BYTE *)GetModuleHandleW(L"kernelbase.dll");
+    IMAGE_IMPORT_DESCRIPTOR *Import;
+    IMAGE_THUNK_DATA *Name, *Slot;
+    IMAGE_NT_HEADERS *Headers;
+    ULONG Rva;
+
+    if (!Image)
+        return NULL;
+    Headers = (IMAGE_NT_HEADERS *)(Image + ((IMAGE_DOS_HEADER *)Image)->e_lfanew);
+    Rva = Headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+    if (!Rva)
+        return NULL;
+    for (Import = (IMAGE_IMPORT_DESCRIPTOR *)(Image + Rva); Import->Name; Import++)
+    {
+        if (_stricmp((PCSTR)(Image + Import->Name), "ntdll.dll") || !Import->OriginalFirstThunk)
+            continue;
+        Name = (IMAGE_THUNK_DATA *)(Image + Import->OriginalFirstThunk);
+        Slot = (IMAGE_THUNK_DATA *)(Image + Import->FirstThunk);
+        for (; Name->u1.AddressOfData; Name++, Slot++)
+        {
+            if (!IMAGE_SNAP_BY_ORDINAL(Name->u1.Ordinal) &&
+                !strcmp((PCSTR)((IMAGE_IMPORT_BY_NAME *)(Image + Name->u1.AddressOfData))->Name, Function))
+            {
+                return (ULONG_PTR *)&Slot->u1.Function;
+            }
+        }
+    }
+    return NULL;
+}
+
+static BOOL
+WriteImport(ULONG_PTR *Slot, ULONG_PTR Value)
+{
+    DWORD Protection;
+
+    if (!VirtualProtect(Slot, sizeof(*Slot), PAGE_READWRITE, &Protection))
+        return FALSE;
+    *Slot = Value;
+    return VirtualProtect(Slot, sizeof(*Slot), Protection, &Protection);
+}
+
+/* Windows 11 refuses a callback in code mapped by hand unless the RtlPcToFileHeader import of kernelbase finds it in a module */
+static void
+test_CallbackInMappedCode(CREATED *State)
+{
+    static const WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\MappedCode";
+#if defined(_M_AMD64)
+    BYTE Code[] = { 0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xE0 };
+    const ULONG TargetOffset = 2;
+#elif defined(_M_IX86)
+    BYTE Code[] = { 0xB8, 0, 0, 0, 0, 0xFF, 0xE0 };
+    const ULONG TargetOffset = 1;
+#elif defined(_M_ARM64)
+    BYTE Code[] = { 0x50, 0x00, 0x00, 0x58, 0x00, 0x02, 0x1F, 0xD6, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const ULONG TargetOffset = 8;
+#else
+    BYTE Code[sizeof(ULONG_PTR)];
+    const ULONG TargetOffset = ~0u;
+#endif
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    ULONG_PTR Target = (ULONG_PTR)Created, *Slot;
+    HSWDEVICE Device = NULL;
+    DWORD Protection;
+    HRESULT hr;
+
+    if (TargetOffset == ~0u)
+    {
+        skip("No code to jump to the callback on this architecture\n");
+        return;
+    }
+    HookedPage = VirtualAlloc(NULL, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!HookedPage)
+    {
+        skip("VirtualAlloc failed (%lu)\n", GetLastError());
+        return;
+    }
+    memcpy(Code + TargetOffset, &Target, sizeof(Target));
+    memcpy(HookedPage, Code, sizeof(Code));
+    if (!VirtualProtect(HookedPage, 0x1000, PAGE_EXECUTE_READ, &Protection))
+    {
+        skip("VirtualProtect failed (%lu)\n", GetLastError());
+        return;
+    }
+    FlushInstructionCache(GetCurrentProcess(), HookedPage, sizeof(Code));
+
+    Info.pszInstanceId = L"MappedCode";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    ZeroMemory(State->InstanceId, sizeof(State->InstanceId));
+    State->Result = E_PENDING;
+    ResetEvent(State->Event);
+
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, (SW_DEVICE_CREATE_CALLBACK)(ULONG_PTR)HookedPage, State, &Device);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND), "SwDeviceCreate with a callback in mapped code returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        WaitForSingleObject(State->Event, 30000);
+        SwDeviceClose(Device);
+        WaitGone(InstanceId);
+        return;
+    }
+
+    Slot = FindKernelBaseImport("RtlPcToFileHeader");
+    if (!Slot)
+    {
+        skip("kernelbase does not import RtlPcToFileHeader\n");
+        return;
+    }
+    OriginalPcToFileHeader = (PVOID)*Slot;
+    if (!WriteImport(Slot, (ULONG_PTR)HookedPcToFileHeader))
+    {
+        skip("The import cannot be written (%lu)\n", GetLastError());
+        return;
+    }
+    hr = SwDeviceCreate(TEST_ENUMERATOR, L"HTREE\\ROOT\\0", &Info, 0, NULL, (SW_DEVICE_CREATE_CALLBACK)(ULONG_PTR)HookedPage, State, &Device);
+    ok(hr == S_OK, "SwDeviceCreate with a callback in mapped code that kernelbase finds in a module returned 0x%08lx\n", hr);
+    if (SUCCEEDED(hr))
+    {
+        ok(WaitForSingleObject(State->Event, 30000) == WAIT_OBJECT_0, "The callback in mapped code was not called\n");
+        ok(State->Result == S_OK, "The creation reported 0x%08lx\n", State->Result);
+        ok(!_wcsicmp(State->InstanceId, InstanceId), "The callback in mapped code read %S\n", State->InstanceId);
+        SwDeviceClose(Device);
+        ok(WaitGone(InstanceId), "%S stayed after its handle closed\n", InstanceId);
+    }
+    WriteImport(Slot, (ULONG_PTR)OriginalPcToFileHeader);
 }
 
 static void
@@ -677,6 +931,9 @@ START_TEST(SwDevice)
     test_SimilarIds(&State);
     test_DriverRequired(&State);
     test_DriverRequiredNoIds(&State);
+    test_Capabilities(&State);
+    test_CallbackOutsideModule();
+    test_CallbackInMappedCode(&State);
     test_CloseInCallback(&State);
     test_SecurityDescriptor(&State);
     test_PropertyCountOverflow(&State);

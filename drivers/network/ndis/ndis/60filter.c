@@ -2036,6 +2036,34 @@ Ndis6QueryCachedMediumOid(
     return TRUE;
 }
 
+/* NDIS owns the binding's packet filter; a miniport reporting no supported filters (NetAdapterCx without receive filter) gets none. */
+static
+BOOLEAN
+Ndis6SetPacketFilterWithoutMiniport(
+    _In_ PNDIS6_ADAPTER_EXT Ext,
+    _Inout_ PNDIS_OID_REQUEST OidRequest,
+    _Out_ PNDIS_STATUS Status)
+{
+    if (OidRequest->RequestType != NdisRequestSetInformation ||
+        OidRequest->DATA.SET_INFORMATION.Oid != OID_GEN_CURRENT_PACKET_FILTER ||
+        !Ext->GeneralAttrsValid ||
+        Ext->GeneralAttrs.SupportedPacketFilters != 0)
+    {
+        return FALSE;
+    }
+
+    if (OidRequest->DATA.SET_INFORMATION.InformationBufferLength < sizeof(ULONG))
+    {
+        OidRequest->DATA.SET_INFORMATION.BytesNeeded = sizeof(ULONG);
+        *Status = NDIS_STATUS_INVALID_LENGTH;
+        return TRUE;
+    }
+
+    OidRequest->DATA.SET_INFORMATION.BytesRead = sizeof(ULONG);
+    *Status = NDIS_STATUS_SUCCESS;
+    return TRUE;
+}
+
 NDIS_STATUS
 Ndis6FilterTerminalOidRequest(
     _In_ PLOGICAL_ADAPTER  Adapter,
@@ -2057,8 +2085,11 @@ Ndis6FilterTerminalOidRequest(
     if (!Ext->Initialized || Ext->MiniportAdapterContext == NULL)
         return NDIS_STATUS_ADAPTER_NOT_READY;
 
-    if (Ndis6QueryCachedMediumOid(Ext, OidRequest, &Status))
+    if (Ndis6QueryCachedMediumOid(Ext, OidRequest, &Status) ||
+        Ndis6SetPacketFilterWithoutMiniport(Ext, OidRequest, &Status))
+    {
         return Status;
+    }
 
     return Ext->DriverBlock->Characteristics.OidRequestHandler(Ext->MiniportAdapterContext, OidRequest);
 }

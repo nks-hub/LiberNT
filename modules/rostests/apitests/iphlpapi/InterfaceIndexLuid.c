@@ -12,6 +12,7 @@
 #include <ws2ipdef.h>
 #include <iphlpapi.h>
 #include <netioapi.h>
+#include <cfgmgr32.h>
 
 static VOID
 CheckIdentity(NET_IFINDEX Index, NET_LUID Luid)
@@ -48,11 +49,12 @@ CheckDriverKeys(PMIB_IF_TABLE2 Table)
 {
     static const CHAR ClassPath[] = "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}";
     HKEY ClassKey, DriverKey;
-    CHAR Name[64], InstanceId[64], RowId[64];
+    CHAR Name[64], InstanceId[64], RowId[64], DeviceId[MAX_DEVICE_ID_LEN];
     DWORD KeyIndex, Size, Type, LuidIndex, IfType;
-    BOOL HasIdentity, HasType;
+    BOOL HasIdentity, HasType, Started;
+    ULONG i, Matches, Status, Problem;
+    DEVINST DevInst;
     LONG Error;
-    ULONG i;
 
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, ClassPath, 0, KEY_READ, &ClassKey) != ERROR_SUCCESS)
     {
@@ -79,10 +81,18 @@ CheckDriverKeys(PMIB_IF_TABLE2 Table)
                       Type == REG_DWORD;
         Size = sizeof(IfType);
         HasType = RegQueryValueExA(DriverKey, "*IfType", NULL, &Type, (BYTE *)&IfType, &Size) == ERROR_SUCCESS && Type == REG_DWORD;
+        ZeroMemory(DeviceId, sizeof(DeviceId));
+        Size = sizeof(DeviceId) - 1;
+        Started = RegQueryValueExA(DriverKey, "DeviceInstanceID", NULL, &Type, (BYTE *)DeviceId, &Size) == ERROR_SUCCESS &&
+                  Type == REG_SZ &&
+                  CM_Locate_DevNodeA(&DevInst, DeviceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+                  CM_Get_DevNode_Status(&Status, &Problem, DevInst, 0) == CR_SUCCESS &&
+                  (Status & DN_STARTED);
         RegCloseKey(DriverKey);
         if (!HasIdentity)
             continue;
 
+        Matches = 0;
         for (i = 0; i < Table->NumEntries; i++)
         {
             const GUID *Guid = &Table->Table[i].InterfaceGuid;
@@ -94,11 +104,14 @@ CheckDriverKeys(PMIB_IF_TABLE2 Table)
             if (lstrcmpiA(RowId, InstanceId) != 0)
                 continue;
 
+            Matches++;
             ok(Luid.Info.NetLuidIndex == LuidIndex, "Adapter %s: NetLuidIndex %lu, driver key has %lu\n",
                InstanceId, (ULONG)Luid.Info.NetLuidIndex, LuidIndex);
             ok(!HasType || Luid.Info.IfType == IfType, "Adapter %s: IfType %lu, driver key has %lu\n",
                InstanceId, (ULONG)Luid.Info.IfType, IfType);
         }
+        ok(Matches == 1 || (Matches == 0 && !Started), "Adapter %s (%s): %lu interface rows, started %d\n",
+           InstanceId, DeviceId, Matches, Started);
     }
     RegCloseKey(ClassKey);
 }

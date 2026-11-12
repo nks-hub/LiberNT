@@ -20,11 +20,13 @@
 static const UCHAR AdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x50 };
 static const UCHAR LightweightAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x52 };
 static const UCHAR WifiAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x57 };
+static const UCHAR NoFilterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x4E };
 static const WCHAR LightweightInterface[] = L"{4C4F4F50-4C57-4D00-8000-4C4F4F504C57}";
 
 static int Failures;
 static WCHAR DeviceInstanceId[MAX_DEVICE_ID_LEN];
 static WCHAR WifiDeviceInstanceId[MAX_DEVICE_ID_LEN];
+static WCHAR NoFilterDeviceInstanceId[MAX_DEVICE_ID_LEN];
 
 static
 void
@@ -330,11 +332,33 @@ TestWifi(const WCHAR *WifiInfPath)
     }
 }
 
+static
+void
+TestNoReceiveFilter(const WCHAR *NoFilterInfPath)
+{
+    MIB_IF_ROW2 Row;
+
+    Check(InstallDevice(NoFilterInfPath, L"ROOT\\NETCXLOOPNF\0", NoFilterDeviceInstanceId), "no receive filter install");
+    if (WaitForInterface(NoFilterAddress, TRUE, &Row))
+    {
+        Check(TRUE, "no receive filter interface up");
+        ReportInterface("no receive filter", &Row);
+        Check(AddAddress(Row.InterfaceLuid, "10.234.0.1"), "no receive filter address preferred");
+        Check(PingPeer("10.234.0.2", 2) >= 1, "no receive filter peer answers echo");
+    }
+    else
+    {
+        Check(FALSE, "no receive filter interface up");
+        ReportInterfaceTable();
+    }
+}
+
 int
 wmain(int argc, WCHAR **argv)
 {
     WCHAR InfPath[MAX_PATH];
     WCHAR WifiInfPath[MAX_PATH];
+    WCHAR NoFilterInfPath[MAX_PATH];
     MIB_IF_ROW2 Row;
     WCHAR *Slash;
     int i;
@@ -358,9 +382,22 @@ wmain(int argc, WCHAR **argv)
         Slash[1] = 0;
     lstrcatW(WifiInfPath, L"wifiloop.inf");
 
+    lstrcpynW(NoFilterInfPath, WifiInfPath, ARRAYSIZE(NoFilterInfPath));
+    Slash = wcsrchr(NoFilterInfPath, L'\\');
+    if (Slash)
+        Slash[1] = 0;
+    lstrcatW(NoFilterInfPath, L"netcxloopnf.inf");
+
     if (argc > 2 && !_wcsicmp(argv[2], L"wifi"))
     {
         TestWifi(WifiInfPath);
+        Report("NETCXTEST: DONE %d failures", Failures);
+        return Failures ? 1 : 0;
+    }
+
+    if (argc > 2 && !_wcsicmp(argv[2], L"nofilter"))
+    {
+        TestNoReceiveFilter(NoFilterInfPath);
         Report("NETCXTEST: DONE %d failures", Failures);
         return Failures ? 1 : 0;
     }

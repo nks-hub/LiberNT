@@ -691,6 +691,51 @@ done:
 }
 
 
+static
+BOOL
+IsCallerAdmin(
+    _In_ handle_t hBinding)
+{
+    SID_IDENTIFIER_AUTHORITY NtAuthority = {SECURITY_NT_AUTHORITY};
+    HANDLE hToken;
+    PSID pAdminsSid = NULL;
+    BOOL bAdmin = FALSE;
+    RPC_STATUS RpcStatus;
+
+    if (!AllocateAndInitializeSid(&NtAuthority,
+                                  2,
+                                  SECURITY_BUILTIN_DOMAIN_RID,
+                                  DOMAIN_ALIAS_RID_ADMINS,
+                                  0, 0, 0, 0, 0, 0,
+                                  &pAdminsSid))
+    {
+        DPRINT1("AllocateAndInitializeSid failed\n");
+        return FALSE;
+    }
+
+    RpcStatus = RpcImpersonateClient(hBinding);
+    if (RpcStatus != RPC_S_OK)
+    {
+        DPRINT1("RpcImpersonateClient failed (Status 0x%08lx)\n", RpcStatus);
+        goto done;
+    }
+
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, FALSE, &hToken))
+    {
+        if (!CheckTokenMembership(hToken, pAdminsSid, &bAdmin))
+            bAdmin = FALSE;
+        CloseHandle(hToken);
+    }
+
+    RpcRevertToSelf();
+
+done:
+    FreeSid(pAdminsSid);
+
+    return bAdmin;
+}
+
+
 VOID
 __RPC_USER
 PNP_NOTIFY_HANDLE_rundown(
@@ -3325,6 +3370,115 @@ GenerateDeviceID(
 }
 
 
+typedef struct _SOFTWARE_DEVICE_WATCH
+{
+    LIST_ENTRY ListEntry;
+    HANDLE Process;
+    HANDLE Wait;
+    WCHAR szDeviceInstance[MAX_DEVICE_ID_LEN];
+} SOFTWARE_DEVICE_WATCH, *PSOFTWARE_DEVICE_WATCH;
+
+static LIST_ENTRY SoftwareDeviceWatches = { &SoftwareDeviceWatches, &SoftwareDeviceWatches };
+static SRWLOCK SoftwareDeviceWatchLock = SRWLOCK_INIT;
+/* Held while the watch of an ended owner removes its device and while a device is created: a watch only removes the device it was set for */
+static SRWLOCK SoftwareDeviceRemoveLock = SRWLOCK_INIT;
+
+static PSOFTWARE_DEVICE_WATCH
+TakeSoftwareDeviceWatch(
+    _In_opt_ PCWSTR pszDeviceInstance,
+    _In_opt_ PSOFTWARE_DEVICE_WATCH Watch)
+{
+    PLIST_ENTRY Entry;
+    PSOFTWARE_DEVICE_WATCH Found = NULL;
+
+    AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
+    for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches; Entry = Entry->Flink)
+    {
+        PSOFTWARE_DEVICE_WATCH Current = CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry);
+
+        if (Current == Watch ||
+            (pszDeviceInstance && _wcsicmp(Current->szDeviceInstance, pszDeviceInstance) == 0))
+        {
+            RemoveEntryList(&Current->ListEntry);
+            Found = Current;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+    return Found;
+}
+
+static VOID
+EndSoftwareDeviceWatch(
+    _In_opt_ PSOFTWARE_DEVICE_WATCH Watch)
+{
+    if (!Watch)
+        return;
+
+    UnregisterWaitEx(Watch->Wait, INVALID_HANDLE_VALUE);
+    CloseHandle(Watch->Process);
+    HeapFree(GetProcessHeap(), 0, Watch);
+}
+
+static VOID
+StopSoftwareDeviceWatch(
+    _In_ PCWSTR pszDeviceInstance)
+{
+    EndSoftwareDeviceWatch(TakeSoftwareDeviceWatch(pszDeviceInstance, NULL));
+}
+
+#define SOFTWARE_DEVICE_GENERATION L"SoftwareDeviceGeneration"
+
+static DWORD SoftwareDeviceGeneration;
+
+static BOOL
+OpenSoftwareDeviceControlKey(
+    _In_ PCWSTR pszDeviceInstance,
+    _In_ BOOL bCreate,
+    _Out_ PHKEY phKey)
+{
+    WCHAR szPath[MAX_DEVICE_ID_LEN + ARRAYSIZE(L"\\Control")];
+
+    if (wcslen(pszDeviceInstance) >= MAX_DEVICE_ID_LEN)
+        return FALSE;
+    wcscpy(szPath, pszDeviceInstance);
+    wcscat(szPath, L"\\Control");
+    if (bCreate)
+        return RegCreateKeyExW(hEnumKey, szPath, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, NULL, phKey, NULL) == ERROR_SUCCESS;
+    return RegOpenKeyExW(hEnumKey, szPath, 0, KEY_QUERY_VALUE, phKey) == ERROR_SUCCESS;
+}
+
+/* Each creation numbers its device, so that the handle of an earlier device of the instance ID cannot remove it; called under SoftwareDeviceRemoveLock */
+static VOID
+NumberSoftwareDevice(
+    _In_ PCWSTR pszDeviceInstance)
+{
+    HKEY hKey;
+
+    if (++SoftwareDeviceGeneration == 0)
+        SoftwareDeviceGeneration = 1;
+    if (!OpenSoftwareDeviceControlKey(pszDeviceInstance, TRUE, &hKey))
+        return;
+    RegSetValueExW(hKey, SOFTWARE_DEVICE_GENERATION, 0, REG_DWORD, (LPBYTE)&SoftwareDeviceGeneration, sizeof(SoftwareDeviceGeneration));
+    RegCloseKey(hKey);
+}
+
+static DWORD
+GetSoftwareDeviceGeneration(
+    _In_ PCWSTR pszDeviceInstance)
+{
+    DWORD dwGeneration = 0, dwType, dwSize = sizeof(dwGeneration);
+    HKEY hKey;
+
+    if (!OpenSoftwareDeviceControlKey(pszDeviceInstance, FALSE, &hKey))
+        return 0;
+    if (RegQueryValueExW(hKey, SOFTWARE_DEVICE_GENERATION, NULL, &dwType, (LPBYTE)&dwGeneration, &dwSize) != ERROR_SUCCESS || dwType != REG_DWORD)
+        dwGeneration = 0;
+    RegCloseKey(hKey);
+    return dwGeneration;
+}
+
+
 /* Function 28 */
 DWORD
 WINAPI
@@ -3335,11 +3489,13 @@ PNP_CreateDevInst(
     PNP_RPC_STRING_LEN ulLength,
     DWORD ulFlags)
 {
-    PLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData;
+    PLUGPLAY_CONTROL_CHILD_DEVICE_DATA ControlData;
+    PSOFTWARE_DEVICE_WATCH StaleWatch = NULL;
     HKEY hKey = NULL;
     DWORD dwSize, dwPhantom;
     NTSTATUS Status;
     CONFIGRET ret = CR_SUCCESS;
+    BOOL bRootParent, bSoftware = FALSE;
 
     DPRINT("PNP_CreateDevInst(%p %S %S %lu 0x%08lx)\n",
            hBinding, pszParentDeviceID, pszDeviceID, ulLength, ulFlags);
@@ -3350,8 +3506,9 @@ PNP_CreateDevInst(
     if (pszDeviceID == NULL || pszParentDeviceID == NULL)
         return CR_INVALID_POINTER;
 
-    /* Fail, if the parent device is not the root device */
-    if (!IsRootDeviceInstanceID(pszParentDeviceID))
+    /* Only a software device has a parent other than the root device */
+    bRootParent = IsRootDeviceInstanceID(pszParentDeviceID);
+    if (!bRootParent && _wcsnicmp(pszDeviceID, L"SWD\\", 4) != 0)
         return CR_INVALID_DEVINST;
 
     if (ulFlags & CM_CREATE_DEVNODE_GENERATE_ID)
@@ -3381,6 +3538,10 @@ PNP_CreateDevInst(
     }
     else
     {
+        bSoftware = _wcsnicmp(pszDeviceID, L"SWD\\", 4) == 0;
+        if (bSoftware)
+            AcquireSRWLockExclusive(&SoftwareDeviceRemoveLock);
+
         /* Fail, if the device exists and is present */
         if ((hKey != NULL) && (IsPresentDeviceInstanceID(pszDeviceID)))
         {
@@ -3402,7 +3563,8 @@ PNP_CreateDevInst(
 
         /* Create a device node for the device */
         RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceID);
-        Status = NtPlugPlayControl(PlugPlayControlInitializeDevice,
+        RtlInitUnicodeString(&ControlData.ParentInstance, pszParentDeviceID);
+        Status = NtPlugPlayControl(bRootParent ? PlugPlayControlInitializeDevice : PlugPlayControlInitializeChildDevice,
                                    &ControlData,
                                    sizeof(ControlData));
         if (!NT_SUCCESS(Status))
@@ -3424,6 +3586,18 @@ PNP_CreateDevInst(
     }
 
 done:
+    if (bSoftware)
+    {
+        /* A watch that is still listed was set for an earlier device of this instance ID */
+        if (ret == CR_SUCCESS)
+        {
+            StaleWatch = TakeSoftwareDeviceWatch(pszDeviceID, NULL);
+            NumberSoftwareDevice(pszDeviceID);
+        }
+        ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
+        EndSoftwareDeviceWatch(StaleWatch);
+    }
+
     if (hKey)
         RegCloseKey(hKey);
 
@@ -3611,6 +3785,188 @@ ReenumerateDeviceInstance(
 }
 
 
+static CONFIGRET
+RemoveSoftwareDeviceInstance(
+    _In_ LPWSTR pszDeviceInstance)
+{
+    PLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData;
+    PLUGPLAY_CONTROL_ENUMERATE_DEVICE_DATA EnumerateData;
+    NTSTATUS Status;
+
+    if (!IsValidDeviceInstanceID(pszDeviceInstance) ||
+        _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0)
+    {
+        return CR_INVALID_DEVINST;
+    }
+
+    RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceInstance);
+    Status = NtPlugPlayControl(PlugPlayControlDeregisterDevice, &ControlData, sizeof(ControlData));
+    if (Status == STATUS_NO_SUCH_DEVICE)
+        return CR_SUCCESS;
+    if (!NT_SUCCESS(Status))
+        return NtStatusToCrError(Status);
+
+    RtlInitUnicodeString(&EnumerateData.DeviceInstance, szRootDeviceInstanceID);
+    EnumerateData.Flags = 0;
+    Status = NtPlugPlayControl(PlugPlayControlEnumerateDevice, &EnumerateData, sizeof(EnumerateData));
+    return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
+}
+
+
+#define SOFTWARE_DEVICE_REMOVE_TRIES 10
+#define SOFTWARE_DEVICE_REMOVE_DELAY 500
+
+static VOID
+CALLBACK
+SoftwareDeviceOwnerEnded(
+    _In_ PVOID Context,
+    _In_ BOOLEAN TimedOut)
+{
+    PSOFTWARE_DEVICE_WATCH Watch = Context;
+    PLIST_ENTRY Entry;
+    BOOL Listed;
+    CONFIGRET ret;
+    ULONG Try;
+
+    UNREFERENCED_PARAMETER(TimedOut);
+
+    for (Try = 1; ; Try++)
+    {
+        Listed = FALSE;
+        AcquireSRWLockExclusive(&SoftwareDeviceRemoveLock);
+        AcquireSRWLockShared(&SoftwareDeviceWatchLock);
+        for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches && !Listed; Entry = Entry->Flink)
+            Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
+        ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
+
+        if (!Listed)
+        {
+            ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
+            return;
+        }
+
+        ret = RemoveSoftwareDeviceInstance(Watch->szDeviceInstance);
+        ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
+        DPRINT("Owner of %S ended, removing it returned %lu\n", Watch->szDeviceInstance, ret);
+        if (ret == CR_SUCCESS || Try == SOFTWARE_DEVICE_REMOVE_TRIES)
+            break;
+        Sleep(SOFTWARE_DEVICE_REMOVE_DELAY);
+    }
+
+    if (ret != CR_SUCCESS)
+        DPRINT1("%S stays until it is created again: removing it failed %lu times (CR %lu)\n", Watch->szDeviceInstance, Try, ret);
+    if (!TakeSoftwareDeviceWatch(NULL, Watch))
+        return;
+    UnregisterWait(Watch->Wait);
+    CloseHandle(Watch->Process);
+    HeapFree(GetProcessHeap(), 0, Watch);
+}
+
+static CONFIGRET
+WatchSoftwareDeviceInstance(
+    _In_ LPWSTR pszDeviceInstance,
+    _In_ DWORD dwProcessId)
+{
+    PSOFTWARE_DEVICE_WATCH Watch;
+
+    if (!IsValidDeviceInstanceID(pszDeviceInstance) ||
+        _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0 ||
+        wcslen(pszDeviceInstance) >= MAX_DEVICE_ID_LEN)
+    {
+        return CR_INVALID_DEVINST;
+    }
+
+    StopSoftwareDeviceWatch(pszDeviceInstance);
+    if (dwProcessId == 0)
+        return CR_SUCCESS;
+
+    Watch = HeapAlloc(GetProcessHeap(), 0, sizeof(*Watch));
+    if (!Watch)
+        return CR_OUT_OF_MEMORY;
+    wcscpy(Watch->szDeviceInstance, pszDeviceInstance);
+    Watch->Process = OpenProcess(SYNCHRONIZE, FALSE, dwProcessId);
+    if (!Watch->Process)
+    {
+        DPRINT1("Cannot open the owner %lu of %S (error %lu)\n", dwProcessId, pszDeviceInstance, GetLastError());
+        HeapFree(GetProcessHeap(), 0, Watch);
+        return CR_FAILURE;
+    }
+
+    AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
+    if (!RegisterWaitForSingleObject(&Watch->Wait, Watch->Process, SoftwareDeviceOwnerEnded, Watch,
+                                     INFINITE, WT_EXECUTEONLYONCE | WT_EXECUTELONGFUNCTION))
+    {
+        ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+        DPRINT1("Cannot watch the owner of %S (error %lu)\n", pszDeviceInstance, GetLastError());
+        CloseHandle(Watch->Process);
+        HeapFree(GetProcessHeap(), 0, Watch);
+        return CR_FAILURE;
+    }
+    InsertTailList(&SoftwareDeviceWatches, &Watch->ListEntry);
+    ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+    return CR_SUCCESS;
+}
+
+static CONFIGRET
+SetSoftwareDeviceInterfaceState(
+    _In_opt_ LPWSTR pszDeviceInterface,
+    _In_ DWORD dwEnable)
+{
+    PLUGPLAY_CONTROL_INTERFACE_STATE_DATA ControlData;
+    NTSTATUS Status;
+
+    if (dwEnable > TRUE)
+        return CR_INVALID_FLAG;
+    if (pszDeviceInterface == NULL ||
+        _wcsnicmp(pszDeviceInterface, L"\\\\?\\SWD#", 8) != 0 ||
+        wcslen(pszDeviceInterface) > MAXUSHORT / sizeof(WCHAR) - 1)
+    {
+        return CR_INVALID_DATA;
+    }
+
+    RtlInitUnicodeString(&ControlData.SymbolicLinkName, pszDeviceInterface);
+    ControlData.Enable = (BOOLEAN)dwEnable;
+    Status = NtPlugPlayControl(PlugPlayControlSetDeviceInterfaceState, &ControlData, sizeof(ControlData));
+
+    /* An interface that is not enabled has nothing to disable */
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND && !dwEnable)
+        return CR_SUCCESS;
+    return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
+}
+
+
+static CONFIGRET
+SetSoftwareDeviceCapabilities(
+    _In_opt_ LPWSTR pszDeviceInstance,
+    _In_ DWORD dwCapabilities)
+{
+    PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA ControlData;
+    NTSTATUS Status;
+
+    if (dwCapabilities & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI |
+                           SWDeviceCapabilitiesDriverRequired))
+    {
+        return CR_INVALID_FLAG;
+    }
+    if (pszDeviceInstance == NULL ||
+        !IsValidDeviceInstanceID(pszDeviceInstance) ||
+        _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0)
+    {
+        return CR_INVALID_DEVINST;
+    }
+
+    RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceInstance);
+    ControlData.Removable = (dwCapabilities & SWDeviceCapabilitiesRemovable) != 0;
+    ControlData.SilentInstall = (dwCapabilities & SWDeviceCapabilitiesSilentInstall) != 0;
+    ControlData.NoDisplayInUI = (dwCapabilities & SWDeviceCapabilitiesNoDisplayInUI) != 0;
+    /* Windows 11 reports RawDeviceOK for a software device unless it requires a driver, and SurpriseRemovalOK for each of them */
+    ControlData.RawDeviceOK = (dwCapabilities & SWDeviceCapabilitiesDriverRequired) == 0;
+    ControlData.SurpriseRemovalOK = TRUE;
+    Status = NtPlugPlayControl(PlugPlayControlSetDeviceCapabilities, &ControlData, sizeof(ControlData));
+    return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
+}
+
+
 /* Function 29 */
 DWORD
 WINAPI
@@ -3643,6 +3999,55 @@ PNP_DeviceInstanceAction(
         case PNP_DEVINST_REENUMERATE:
             ret = ReenumerateDeviceInstance(pszDeviceInstance1,
                                             ulMinorAction);
+            break;
+
+        case PNP_DEVINST_REMOVE_SOFTWARE:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
+            /* The minor action is the number of the device to remove, or zero for whichever device has the instance ID */
+            AcquireSRWLockExclusive(&SoftwareDeviceRemoveLock);
+            if (ulMinorAction != 0 && IsValidDeviceInstanceID(pszDeviceInstance1) &&
+                GetSoftwareDeviceGeneration(pszDeviceInstance1) != ulMinorAction)
+            {
+                ret = CR_NO_SUCH_DEVINST;
+            }
+            else
+            {
+                ret = RemoveSoftwareDeviceInstance(pszDeviceInstance1);
+            }
+            ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
+            if (ret == CR_SUCCESS)
+                StopSoftwareDeviceWatch(pszDeviceInstance1);
+            break;
+
+        case PNP_DEVINST_WATCH_SOFTWARE:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
+            ret = WatchSoftwareDeviceInstance(pszDeviceInstance1, ulMinorAction);
+            break;
+
+        case PNP_DEVINST_SOFTWARE_INTERFACE:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
+            ret = SetSoftwareDeviceInterfaceState(pszDeviceInstance1, ulMinorAction);
+            break;
+
+        case PNP_DEVINST_SOFTWARE_CAPABILITIES:
+            if (!IsCallerAdmin(hBinding))
+            {
+                ret = CR_ACCESS_DENIED;
+                break;
+            }
+            ret = SetSoftwareDeviceCapabilities(pszDeviceInstance1, ulMinorAction);
             break;
 
         default:

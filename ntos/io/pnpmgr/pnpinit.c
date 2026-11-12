@@ -430,7 +430,14 @@ IopInitializePlugPlayServices(VOID)
                                         REG_OPTION_NON_VOLATILE,
                                         NULL);
         NtClose(EnumHandle);
-        if (NT_SUCCESS(Status)) NtClose(TreeHandle);
+        if (NT_SUCCESS(Status))
+        {
+            static WCHAR RootContainerId[] = L"{00000000-0000-0000-FFFF-FFFFFFFFFFFF}";
+
+            RtlInitUnicodeString(&KeyName, REGSTR_VAL_CONTAINERID);
+            ZwSetValueKey(TreeHandle, &KeyName, 0, REG_SZ, RootContainerId, sizeof(RootContainerId));
+            NtClose(TreeHandle);
+        }
     }
 
     /* Create the root driver */

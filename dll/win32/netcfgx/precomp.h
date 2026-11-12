@@ -112,6 +112,9 @@ HRESULT WINAPI IEnumNetCfgBindingPath_Constructor(IUnknown *pUnkOuter, REFIID ri
 /* netcfgclass_iface.c */
 HRESULT WINAPI INetCfgClass_Constructor(IUnknown *pUnkOuter, REFIID riid, LPVOID *ppv, const GUID *pguidClass, INetCfg *pNetCfg);
 
+/* installer.c */
+VOID FreeInstanceIdLock(VOID);
+
 /* netinstall.c */
 BOOL InstallNetworkComponent(_In_ PCWSTR pszComponentId);
 

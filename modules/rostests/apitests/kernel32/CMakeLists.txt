@@ -59,6 +59,7 @@ list(APPEND SOURCE
     JapaneseCalendar.c
     JobObject.c
     JobObjectUI.c
+    KernelBaseModuleHandle.c
     KnownDlls.c
     LCMapString.c
     LoadLibraryExW.c

@@ -12,6 +12,7 @@
 #include <ipifcons.h>
 #include <ntddndis.h>
 #include <devpropdef.h>
+#include <sddl.h>
 
 typedef struct _NET_INF_KEYWORDS
 {
@@ -531,6 +532,8 @@ cleanup:
     return rc;
 }
 
+static HANDLE LockConnectionNames(VOID);
+
 static
 DWORD
 InstallNetDevice(
@@ -552,6 +555,7 @@ InstallNetDevice(
     HKEY hNetworkKey = NULL;
     HKEY hLinkageKey = NULL;
     HKEY hConnectionKey = NULL;
+    HANDLE hNamesLock = NULL;
     DWORD dwShowIcon, dwLength, dwValue;
     PWSTR pszNameBuffer = NULL;
     DWORD dwRegType;
@@ -797,6 +801,16 @@ InstallNetDevice(
         goto cleanup;
     }
 
+    hNamesLock = LockConnectionNames();
+    if (!hNamesLock)
+    {
+        rc = GetLastError();
+        if (rc == ERROR_SUCCESS)
+            rc = ERROR_LOCK_FAILED;
+        ERR("Cannot lock the connection names (error 0x%lx)\n", rc);
+        goto cleanup;
+    }
+
     rc = GetUniqueConnectionName(hNetworkKey, NameId, &pszNameBuffer);
     if (rc != ERROR_SUCCESS)
     {
@@ -821,6 +835,8 @@ InstallNetDevice(
     }
 
     rc = RegSetValueExW(hConnectionKey, L"Name", 0, REG_SZ, (const BYTE*)pszNameBuffer, (wcslen(pszNameBuffer) + 1) * sizeof(WCHAR));
+    ReleaseMutex(hNamesLock);
+    hNamesLock = NULL;
     if (rc != ERROR_SUCCESS)
     {
         ERR("RegSetValueExW() failed with error 0x%lx\n", rc);
@@ -886,6 +902,8 @@ InstallNetDevice(
     rc = ERROR_SUCCESS;
 
 cleanup:
+    if (hNamesLock != NULL)
+        ReleaseMutex(hNamesLock);
     HeapFree(GetProcessHeap(), 0, pszNameBuffer);
     HeapFree(GetProcessHeap(), 0, InstanceId);
     HeapFree(GetProcessHeap(), 0, ComponentId);
@@ -945,6 +963,174 @@ ReinstallNetDevice(
 }
 
 static
+BOOL
+GetSuggestedInstanceId(
+    _In_ HDEVINFO DeviceInfoSet,
+    _In_ PSP_DEVINFO_DATA DeviceInfoData,
+    _In_ BOOL CheckUse,
+    _Out_ UUID *Uuid)
+{
+    WCHAR Suggested[40], SubKey[MAX_PATH], Existing[40];
+    DWORD Index, cchSubKey, dwType, dwSize = sizeof(*Uuid);
+    HKEY hKey, hClassKey, hAdapterKey;
+    BOOL Used = FALSE;
+    LONG rc;
+
+    hKey = SetupDiOpenDevRegKey(DeviceInfoSet, DeviceInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_QUERY_VALUE);
+    if (hKey == INVALID_HANDLE_VALUE)
+        return FALSE;
+    rc = RegQueryValueExW(hKey, L"SuggestedInstanceId", NULL, &dwType, (LPBYTE)Uuid, &dwSize);
+    RegCloseKey(hKey);
+    if (rc != ERROR_SUCCESS || dwType != REG_BINARY || dwSize != sizeof(*Uuid) ||
+        !StringFromGUID2(Uuid, Suggested, ARRAYSIZE(Suggested)))
+    {
+        return FALSE;
+    }
+    if (!CheckUse)
+        return TRUE;
+
+    hClassKey = SetupDiOpenClassRegKey(&GUID_DEVCLASS_NET, KEY_ENUMERATE_SUB_KEYS);
+    if (hClassKey == INVALID_HANDLE_VALUE)
+        return FALSE;
+    for (Index = 0; !Used; Index++)
+    {
+        cchSubKey = ARRAYSIZE(SubKey);
+        rc = RegEnumKeyExW(hClassKey, Index, SubKey, &cchSubKey, NULL, NULL, NULL, NULL);
+        if (rc == ERROR_NO_MORE_ITEMS)
+            break;
+        /* An adapter that cannot be read might own the GUID */
+        if (rc == ERROR_SUCCESS)
+            rc = RegOpenKeyExW(hClassKey, SubKey, 0, KEY_QUERY_VALUE, &hAdapterKey);
+        if (rc != ERROR_SUCCESS)
+        {
+            WARN("Cannot check adapter %lu (error %ld)\n", Index, rc);
+            Used = TRUE;
+            break;
+        }
+        dwSize = sizeof(Existing) - sizeof(WCHAR);
+        ZeroMemory(Existing, sizeof(Existing));
+        rc = RegQueryValueExW(hAdapterKey, L"NetCfgInstanceId", NULL, &dwType, (LPBYTE)Existing, &dwSize);
+        RegCloseKey(hAdapterKey);
+        if (rc == ERROR_FILE_NOT_FOUND)
+            continue;
+        if (rc != ERROR_SUCCESS || dwType != REG_SZ || _wcsicmp(Existing, Suggested) == 0)
+        {
+            WARN("Adapter %S has the instance ID %S or cannot be read (error %ld)\n", SubKey, Existing, rc);
+            Used = TRUE;
+        }
+    }
+    RegCloseKey(hClassKey);
+
+    if (Used)
+        WARN("Suggested instance ID %S is in use or cannot be checked\n", Suggested);
+    return !Used;
+}
+
+typedef struct _NAMESPACE_LOCK
+{
+    PCWSTR NamespaceName;
+    PCWSTR LockName;
+    HANDLE Namespace;
+    HANDLE Lock;
+    INIT_ONCE Once;
+} NAMESPACE_LOCK, *PNAMESPACE_LOCK;
+
+static NAMESPACE_LOCK InstanceIdLock = { L"NetCfgxInstanceId", L"NetCfgxInstanceId\\Lock", NULL, NULL, INIT_ONCE_STATIC_INIT };
+/* NciSetConnectionName renames a connection under the same lock */
+static NAMESPACE_LOCK ConnectionNamesLock = { L"NetworkConnectionNames", L"NetworkConnectionNames\\Lock", NULL, NULL, INIT_ONCE_STATIC_INIT };
+
+/* Any process can create a global name first and hold it; only administrators can open this namespace. S-1-5-33 admits the write-restricted token of a restricted service */
+static
+BOOL
+CALLBACK
+CreateNamespaceLock(
+    _Inout_ PINIT_ONCE Once,
+    _Inout_opt_ PVOID Parameter,
+    _Out_opt_ PVOID *Context)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    PNAMESPACE_LOCK Lock = Parameter;
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD dwSize = sizeof(Admins);
+    HANDLE hBoundary;
+    DWORD Try;
+
+    UNREFERENCED_PARAMETER(Once);
+    UNREFERENCED_PARAMETER(Context);
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &dwSize) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;S-1-5-33)", SDDL_REVISION_1,
+                                                              &Security.lpSecurityDescriptor, NULL))
+    {
+        return FALSE;
+    }
+    hBoundary = CreateBoundaryDescriptorW(Lock->NamespaceName, 0);
+    if (hBoundary && AddSIDToBoundaryDescriptor(&hBoundary, Admins))
+    {
+        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        for (Try = 0; !Lock->Namespace && Try < 3; Try++)
+        {
+            Lock->Namespace = CreatePrivateNamespaceW(&Security, hBoundary, Lock->NamespaceName);
+            if (!Lock->Namespace)
+                Lock->Namespace = OpenPrivateNamespaceW(hBoundary, Lock->NamespaceName);
+        }
+    }
+    if (hBoundary)
+        DeleteBoundaryDescriptor(hBoundary);
+    if (Lock->Namespace)
+    {
+        Lock->Lock = CreateMutexW(&Security, FALSE, Lock->LockName);
+        if (!Lock->Lock)
+        {
+            ClosePrivateNamespace(Lock->Namespace, 0);
+            Lock->Namespace = NULL;
+        }
+    }
+    LocalFree(Security.lpSecurityDescriptor);
+    return Lock->Lock != NULL;
+}
+
+static
+HANDLE
+AcquireNamespaceLock(
+    _Inout_ PNAMESPACE_LOCK Lock)
+{
+    DWORD dwWait;
+
+    if (!InitOnceExecuteOnce(&Lock->Once, CreateNamespaceLock, Lock, NULL))
+        return NULL;
+    dwWait = WaitForSingleObject(Lock->Lock, INFINITE);
+    return (dwWait == WAIT_OBJECT_0 || dwWait == WAIT_ABANDONED) ? Lock->Lock : NULL;
+}
+
+static
+HANDLE
+LockConnectionNames(VOID)
+{
+    return AcquireNamespaceLock(&ConnectionNamesLock);
+}
+
+static
+VOID
+FreeNamespaceLock(
+    _In_ PNAMESPACE_LOCK Lock)
+{
+    if (Lock->Lock)
+    {
+        CloseHandle(Lock->Lock);
+        ClosePrivateNamespace(Lock->Namespace, 0);
+    }
+}
+
+/* SetupAPI unloads the class installer after each call */
+VOID
+FreeInstanceIdLock(VOID)
+{
+    FreeNamespaceLock(&InstanceIdLock);
+    FreeNamespaceLock(&ConnectionNamesLock);
+}
+
+static
 DWORD
 InstallNetClient(VOID)
 {
@@ -991,6 +1177,7 @@ NetClassInstaller(
     LPWSTR UuidRpcString = NULL;
     LPWSTR UuidString = NULL;
     HKEY hDriverKey;
+    HANDLE hInstanceIdLock = NULL;
     LONG rc;
     DWORD dwLength;
 
@@ -1112,13 +1299,35 @@ NetClassInstaller(
         }
     }
 
-    /* Create a new UUID */
-    RpcStatus = UuidCreate(&Uuid);
-    if (RpcStatus != RPC_S_OK && RpcStatus != RPC_S_UUID_LOCAL_ONLY)
+    /* Two installs must not pick the same suggested GUID before InstallNetDevice publishes it */
+    if (IsEqualIID(&DeviceInfoData->ClassGuid, &GUID_DEVCLASS_NET))
     {
-        ERR("UuidCreate() failed with RPC status 0x%lx\n", RpcStatus);
-        rc = ERROR_GEN_FAILURE;
-        goto cleanup;
+        hInstanceIdLock = AcquireNamespaceLock(&InstanceIdLock);
+        if (!hInstanceIdLock)
+        {
+            rc = GetLastError();
+            WARN("Cannot lock the instance IDs (error %ld)\n", rc);
+            if (GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, FALSE, &Uuid))
+            {
+                ERR("The suggested instance ID cannot be checked without the lock\n");
+                if (rc == ERROR_SUCCESS)
+                    rc = ERROR_LOCK_FAILED;
+                goto cleanup;
+            }
+        }
+    }
+
+    /* Use the suggested UUID of the adapter or create a new one */
+    if (!hInstanceIdLock ||
+        !GetSuggestedInstanceId(DeviceInfoSet, DeviceInfoData, TRUE, &Uuid))
+    {
+        RpcStatus = UuidCreate(&Uuid);
+        if (RpcStatus != RPC_S_OK && RpcStatus != RPC_S_UUID_LOCAL_ONLY)
+        {
+            ERR("UuidCreate() failed with RPC status 0x%lx\n", RpcStatus);
+            rc = ERROR_GEN_FAILURE;
+            goto cleanup;
+        }
     }
 
     RpcStatus = UuidToStringW(&Uuid, &UuidRpcString);
@@ -1158,6 +1367,8 @@ NetClassInstaller(
     }
 
 cleanup:
+    if (hInstanceIdLock)
+        ReleaseMutex(hInstanceIdLock);
     if (hInf != INVALID_HANDLE_VALUE)
         SetupCloseInfFile(hInf);
     if (UuidRpcString != NULL)

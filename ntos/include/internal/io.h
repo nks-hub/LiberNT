@@ -666,6 +666,7 @@ typedef enum _DEVICE_ACTION
     PiActionQueryRemoveDevice,
     PiActionCloseRemovedDevice,
     PiActionEjectDevice,
+    PiActionInsertChildDevice,
 } DEVICE_ACTION;
 
 //
@@ -1391,6 +1392,15 @@ NTSTATUS
 PnpRootRegisterDevice(
     IN PDEVICE_OBJECT DeviceObject);
 
+NTSTATUS
+PnpRootSetDeviceCapabilities(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ BOOLEAN Removable,
+    _In_ BOOLEAN SilentInstall,
+    _In_ BOOLEAN NoDisplayInUI,
+    _In_ BOOLEAN RawDeviceOK,
+    _In_ BOOLEAN SurpriseRemovalOK);
+
 VOID
 PnpRootRetireDevice(
     _In_ PDEVICE_OBJECT DeviceObject);
@@ -1821,6 +1831,11 @@ NTSTATUS
 PiQueryRemoveDevice(
     _In_ PDEVICE_OBJECT DeviceObject,
     _Out_ PPI_QUERY_REMOVE_DATA RemoveData);
+
+NTSTATUS
+PiInsertChildDevNode(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ PDEVICE_NODE ParentNode);
 
 //
 // PnP notifications

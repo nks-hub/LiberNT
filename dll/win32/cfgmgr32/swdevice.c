@@ -1,0 +1,1336 @@
+/*
+ * PROJECT:     LiberNT Configuration Manager
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Software devices (SwDeviceCreate and related functions)
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ */
+
+#include "cfgmgr32_private.h"
+#include <devpkey.h>
+#include <newdev.h>
+#include <rpc.h>
+#include <sddl.h>
+#include <swdevice.h>
+
+WINE_DEFAULT_DEBUG_CHANNEL(cfgmgr32);
+
+typedef struct _SW_DEVICE
+{
+    WCHAR InstanceId[MAX_DEVICE_ID_LEN];
+    DEVINST DevInst;
+    PWSTR Parent;
+    DEVINST ParentInst;
+    volatile BOOL Closing;
+    SW_DEVICE_LIFETIME Lifetime;
+    ULONG Capabilities;
+    PWSTR HardwareIds;
+    PWSTR CompatibleIds;
+    PWSTR Description;
+    PWSTR Location;
+    GUID ContainerId;
+    BOOL HasContainerId;
+    PSECURITY_DESCRIPTOR SecurityDescriptor;
+    ULONG SecurityDescriptorSize;
+    ULONG PropertyCount;
+    DEVPROPERTY *Properties;
+    SW_DEVICE_CREATE_CALLBACK Callback;
+    PVOID Context;
+    HANDLE Thread;
+    DWORD ThreadId;
+    HMODULE Module;
+    HMODULE CallbackModule;
+    BOOL Reopened;
+    ULONG Generation;
+    LIST_ENTRY OpenEntry;
+    LONG ActiveCalls;
+    HANDLE Idle;
+    CRITICAL_SECTION LifetimeLock;
+} SW_DEVICE, *PSW_DEVICE;
+
+typedef HDEVINFO (WINAPI *PFN_SETUPDICREATEDEVICEINFOLIST)(const GUID *, HWND);
+typedef BOOL (WINAPI *PFN_SETUPDIOPENDEVICEINFOW)(HDEVINFO, PCWSTR, HWND, DWORD, PSP_DEVINFO_DATA);
+typedef BOOL (WINAPI *PFN_SETUPDIDESTROYDEVICEINFOLIST)(HDEVINFO);
+typedef BOOL (WINAPI *PFN_DIINSTALLDEVICE)(HWND, HDEVINFO, PSP_DEVINFO_DATA, PSP_DRVINFO_DATA_W, DWORD, PBOOL);
+
+static SIZE_T
+MultiSzSize(_In_opt_ PCZZWSTR pszz)
+{
+    PCWSTR p = pszz;
+
+    if (!p)
+        return 0;
+    while (*p)
+        p += wcslen(p) + 1;
+    return (p - pszz + 1) * sizeof(WCHAR);
+}
+
+static PVOID
+DupBuffer(_In_opt_ const VOID *Buffer, _In_ SIZE_T Size)
+{
+    PVOID Copy;
+
+    if (!Buffer || !Size)
+        return NULL;
+    Copy = HeapAlloc(GetProcessHeap(), 0, Size);
+    if (Copy)
+        memcpy(Copy, Buffer, Size);
+    return Copy;
+}
+
+static BOOL
+IsSelfRelativeSecurityDescriptor(_In_ PSECURITY_DESCRIPTOR SecurityDescriptor)
+{
+    SECURITY_DESCRIPTOR_CONTROL Control;
+    PSID Owner = NULL, Group = NULL;
+    BOOL Defaulted;
+    DWORD Revision;
+
+    return IsValidSecurityDescriptor(SecurityDescriptor) &&
+           GetSecurityDescriptorControl(SecurityDescriptor, &Control, &Revision) &&
+           (Control & SE_SELF_RELATIVE) &&
+           GetSecurityDescriptorOwner(SecurityDescriptor, &Owner, &Defaulted) && Owner &&
+           GetSecurityDescriptorGroup(SecurityDescriptor, &Group, &Defaulted) && Group;
+}
+
+static VOID
+FreeProperties(_In_ ULONG Count, _In_opt_ DEVPROPERTY *Properties)
+{
+    ULONG i;
+
+    if (!Properties)
+        return;
+    for (i = 0; i < Count; i++)
+        HeapFree(GetProcessHeap(), 0, Properties[i].Buffer);
+    HeapFree(GetProcessHeap(), 0, Properties);
+}
+
+static HRESULT
+CopyProperties(_In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Source, _Out_ DEVPROPERTY **Copy)
+{
+    DEVPROPERTY *Properties;
+    ULONG i, Size;
+
+    *Copy = NULL;
+    if (!Count)
+        return S_OK;
+    if (!Source || Count > MAXDWORD / sizeof(*Properties))
+        return E_INVALIDARG;
+    Size = Count * sizeof(*Properties);
+
+    Properties = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Size);
+    if (!Properties)
+        return E_OUTOFMEMORY;
+
+    for (i = 0; i < Count; i++)
+    {
+        Properties[i] = Source[i];
+        Properties[i].Buffer = NULL;
+        if (Source[i].BufferSize)
+        {
+            if (!Source[i].Buffer)
+            {
+                FreeProperties(Count, Properties);
+                return E_INVALIDARG;
+            }
+            Properties[i].Buffer = DupBuffer(Source[i].Buffer, Source[i].BufferSize);
+            if (!Properties[i].Buffer)
+            {
+                FreeProperties(Count, Properties);
+                return E_OUTOFMEMORY;
+            }
+        }
+    }
+
+    *Copy = Properties;
+    return S_OK;
+}
+
+static SRWLOCK SwDeviceListLock = SRWLOCK_INIT;
+static LIST_ENTRY SwDeviceList = { &SwDeviceList, &SwDeviceList };
+
+static BOOL
+EnterSwDevice(_In_ PSW_DEVICE Device)
+{
+    PLIST_ENTRY Entry;
+    BOOL Entered = FALSE;
+
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    for (Entry = SwDeviceList.Flink; Entry != &SwDeviceList; Entry = Entry->Flink)
+    {
+        if (CONTAINING_RECORD(Entry, SW_DEVICE, OpenEntry) == Device)
+        {
+            Device->ActiveCalls++;
+            Entered = TRUE;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
+    return Entered;
+}
+
+static VOID
+LeaveSwDevice(_In_ PSW_DEVICE Device)
+{
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    if (!--Device->ActiveCalls)
+        SetEvent(Device->Idle);
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
+}
+
+static VOID
+FreeSwDevice(_In_ PSW_DEVICE Device)
+{
+    if (Device->Idle)
+    {
+        CloseHandle(Device->Idle);
+        DeleteCriticalSection(&Device->LifetimeLock);
+    }
+    HeapFree(GetProcessHeap(), 0, Device->Parent);
+    HeapFree(GetProcessHeap(), 0, Device->HardwareIds);
+    HeapFree(GetProcessHeap(), 0, Device->CompatibleIds);
+    HeapFree(GetProcessHeap(), 0, Device->Description);
+    HeapFree(GetProcessHeap(), 0, Device->Location);
+    HeapFree(GetProcessHeap(), 0, Device->SecurityDescriptor);
+    FreeProperties(Device->PropertyCount, Device->Properties);
+    HeapFree(GetProcessHeap(), 0, Device);
+}
+
+static HRESULT
+CrToHresult(_In_ CONFIGRET Cr)
+{
+    return Cr == CR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(CM_MapCrToWin32Err(Cr, ERROR_GEN_FAILURE));
+}
+
+static HRESULT
+ApplyProperties(_In_ DEVINST DevInst, _In_ ULONG Count, _In_reads_opt_(Count) const DEVPROPERTY *Properties)
+{
+    CONFIGRET Cr;
+    ULONG i;
+
+    for (i = 0; i < Count; i++)
+    {
+        if (Properties[i].CompKey.Store != DEVPROP_STORE_SYSTEM)
+            return E_INVALIDARG;
+
+        Cr = CM_Set_DevNode_PropertyW(DevInst, &Properties[i].CompKey.Key, Properties[i].Type,
+                                      Properties[i].Buffer, Properties[i].BufferSize, 0);
+        if (Cr != CR_SUCCESS)
+        {
+            ERR("Setting property %s %lu failed (CR %lu)\n", debugstr_guid(&Properties[i].CompKey.Key.fmtid),
+                Properties[i].CompKey.Key.pid, Cr);
+            return CrToHresult(Cr);
+        }
+    }
+    return S_OK;
+}
+
+static HRESULT
+InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
+{
+    PFN_SETUPDICREATEDEVICEINFOLIST pSetupDiCreateDeviceInfoList;
+    PFN_SETUPDIOPENDEVICEINFOW pSetupDiOpenDeviceInfoW;
+    PFN_SETUPDIDESTROYDEVICEINFOLIST pSetupDiDestroyDeviceInfoList;
+    PFN_DIINSTALLDEVICE pDiInstallDevice;
+    BOOL HasIds = (Device->HardwareIds && *Device->HardwareIds) ||
+                  (Device->CompatibleIds && *Device->CompatibleIds);
+    BOOL DriverRequired = (Device->Capabilities & SWDeviceCapabilitiesDriverRequired) != 0;
+    SP_DEVINFO_DATA DevInfoData = { sizeof(DevInfoData) };
+    HMODULE hSetupApi, hNewDev;
+    HDEVINFO DevInfo;
+    HRESULT hr = S_OK;
+
+    if (!HasIds)
+    {
+        if (DriverRequired)
+            CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
+        return S_FALSE;
+    }
+
+    hSetupApi = LoadLibraryW(L"setupapi.dll");
+    hNewDev = LoadLibraryW(L"newdev.dll");
+    if (!hSetupApi || !hNewDev)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto done;
+    }
+
+    pSetupDiCreateDeviceInfoList = (PFN_SETUPDICREATEDEVICEINFOLIST)GetProcAddress(hSetupApi, "SetupDiCreateDeviceInfoList");
+    pSetupDiOpenDeviceInfoW = (PFN_SETUPDIOPENDEVICEINFOW)GetProcAddress(hSetupApi, "SetupDiOpenDeviceInfoW");
+    pSetupDiDestroyDeviceInfoList = (PFN_SETUPDIDESTROYDEVICEINFOLIST)GetProcAddress(hSetupApi, "SetupDiDestroyDeviceInfoList");
+    pDiInstallDevice = (PFN_DIINSTALLDEVICE)GetProcAddress(hNewDev, "DiInstallDevice");
+    if (!pSetupDiCreateDeviceInfoList || !pSetupDiOpenDeviceInfoW || !pSetupDiDestroyDeviceInfoList || !pDiInstallDevice)
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+        goto done;
+    }
+
+    DevInfo = pSetupDiCreateDeviceInfoList(NULL, NULL);
+    if (DevInfo == INVALID_HANDLE_VALUE)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto done;
+    }
+
+    if (!pSetupDiOpenDeviceInfoW(DevInfo, Device->InstanceId, NULL, 0, &DevInfoData))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+    }
+    else if (!pDiInstallDevice(NULL, DevInfo, &DevInfoData, NULL, 0, NULL))
+    {
+        DWORD Error = GetLastError();
+
+        WARN("No driver installed for %s (error %lu)\n", debugstr_w(Device->InstanceId), Error);
+        if (DriverRequired)
+            CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
+        hr = S_FALSE;
+    }
+
+    pSetupDiDestroyDeviceInfoList(DevInfo);
+
+done:
+    if (hNewDev)
+        FreeLibrary(hNewDev);
+    if (hSetupApi)
+        FreeLibrary(hSetupApi);
+    return hr;
+}
+
+#define SW_DEVICE_OWNERS L"SYSTEM\\CurrentControlSet\\Control\\SoftwareDevices"
+
+static VOID
+OwnerKeyName(_In_ PCWSTR InstanceId, _Out_writes_(2 * MAX_DEVICE_ID_LEN) PWSTR Name)
+{
+    ULONG i, Length = 0;
+
+    for (i = 0; i < MAX_DEVICE_ID_LEN - 1 && InstanceId[i]; i++)
+    {
+        if (InstanceId[i] == L'\\' || InstanceId[i] == L'#')
+        {
+            Name[Length++] = L'#';
+            Name[Length++] = (InstanceId[i] == L'#') ? L'#' : L'0';
+        }
+        else
+        {
+            Name[Length++] = InstanceId[i];
+        }
+    }
+    Name[Length] = UNICODE_NULL;
+}
+
+static BOOL
+GetProcessStart(_In_ HANDLE Process, _Out_ PULONGLONG Start)
+{
+    FILETIME Creation, Exit, Kernel, User;
+
+    if (!GetProcessTimes(Process, &Creation, &Exit, &Kernel, &User))
+        return FALSE;
+    *Start = ((ULONGLONG)Creation.dwHighDateTime << 32) | Creation.dwLowDateTime;
+    return TRUE;
+}
+
+static HRESULT
+RecordOwner(_In_ PCWSTR InstanceId, _In_ DWORD ProcessId, _In_ SW_DEVICE_LIFETIME Lifetime)
+{
+    WCHAR Name[2 * MAX_DEVICE_ID_LEN];
+    ULONGLONG Start = 0;
+    DWORD Value = Lifetime;
+    HKEY Owners, Key;
+    LONG Error;
+
+    if (ProcessId && !GetProcessStart(GetCurrentProcess(), &Start))
+        return HRESULT_FROM_WIN32(GetLastError());
+    Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, NULL, REG_OPTION_VOLATILE,
+                            KEY_CREATE_SUB_KEY, NULL, &Owners, NULL);
+    if (Error)
+        return HRESULT_FROM_WIN32(Error);
+    OwnerKeyName(InstanceId, Name);
+    Error = RegCreateKeyExW(Owners, Name, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL, &Key, NULL);
+    if (!Error)
+    {
+        Error = RegSetValueExW(Key, L"ProcessId", 0, REG_DWORD, (const BYTE *)&ProcessId, sizeof(ProcessId));
+        if (!Error)
+            Error = RegSetValueExW(Key, L"ProcessStart", 0, REG_QWORD, (const BYTE *)&Start, sizeof(Start));
+        if (!Error)
+            Error = RegSetValueExW(Key, L"Lifetime", 0, REG_DWORD, (const BYTE *)&Value, sizeof(Value));
+        RegCloseKey(Key);
+    }
+    RegCloseKey(Owners);
+    return HRESULT_FROM_WIN32(Error);
+}
+
+static VOID
+ForgetOwner(_In_ PCWSTR InstanceId)
+{
+    WCHAR Name[2 * MAX_DEVICE_ID_LEN];
+    HKEY Owners;
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, SW_DEVICE_OWNERS, 0, DELETE | KEY_ENUMERATE_SUB_KEYS, &Owners))
+        return;
+    OwnerKeyName(InstanceId, Name);
+    RegDeleteKeyW(Owners, Name);
+    RegCloseKey(Owners);
+}
+
+typedef enum _SW_DEVICE_OWNER
+{
+    SwOwnerUnknown,
+    SwOwnerInUse,
+    SwOwnerEnded,
+    SwOwnerReleased,
+} SW_DEVICE_OWNER;
+
+static SW_DEVICE_OWNER
+GetOwner(_In_ PCWSTR InstanceId)
+{
+    WCHAR Path[ARRAYSIZE(SW_DEVICE_OWNERS) + 1 + 2 * MAX_DEVICE_ID_LEN];
+    DWORD ProcessId, Lifetime, Size;
+    ULONGLONG Recorded, Start;
+    HANDLE Process;
+    BOOL Ended;
+    HKEY Key;
+    LONG Error;
+
+    wcscpy(Path, SW_DEVICE_OWNERS L"\\");
+    OwnerKeyName(InstanceId, Path + wcslen(Path));
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &Key))
+        return SwOwnerUnknown;
+    Size = sizeof(ProcessId);
+    Error = RegQueryValueExW(Key, L"ProcessId", NULL, NULL, (BYTE *)&ProcessId, &Size);
+    if (!Error)
+    {
+        Size = sizeof(Recorded);
+        Error = RegQueryValueExW(Key, L"ProcessStart", NULL, NULL, (BYTE *)&Recorded, &Size);
+    }
+    if (!Error)
+    {
+        Size = sizeof(Lifetime);
+        Error = RegQueryValueExW(Key, L"Lifetime", NULL, NULL, (BYTE *)&Lifetime, &Size);
+    }
+    RegCloseKey(Key);
+    if (Error)
+        return SwOwnerUnknown;
+    if (!ProcessId)
+        return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
+
+    /* A reused process ID has another start time */
+    Process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, ProcessId);
+    if (Process == NULL)
+    {
+        Ended = GetLastError() == ERROR_INVALID_PARAMETER;
+    }
+    else
+    {
+        Ended = !GetProcessStart(Process, &Start) || Start != Recorded ||
+                WaitForSingleObject(Process, 0) == WAIT_OBJECT_0;
+        CloseHandle(Process);
+    }
+    if (!Ended)
+        return SwOwnerInUse;
+    return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
+}
+
+/* The number the PnP manager gave the device that has this instance ID now; a later device of the instance ID has another */
+static ULONG
+GetGeneration(_In_ PCWSTR InstanceId)
+{
+    WCHAR Path[ARRAYSIZE(L"SYSTEM\\CurrentControlSet\\Enum\\") + MAX_DEVICE_ID_LEN + ARRAYSIZE(L"\\Control")];
+    DWORD Generation = 0, Type, Size = sizeof(Generation);
+    HKEY Key;
+
+    wcscpy(Path, L"SYSTEM\\CurrentControlSet\\Enum\\");
+    wcscat(Path, InstanceId);
+    wcscat(Path, L"\\Control");
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &Key))
+        return 0;
+    if (RegQueryValueExW(Key, L"SoftwareDeviceGeneration", NULL, &Type, (BYTE *)&Generation, &Size) || Type != REG_DWORD)
+        Generation = 0;
+    RegCloseKey(Key);
+    return Generation;
+}
+
+static HANDLE SwDeviceOwnersLock, SwDeviceOwnersNamespace;
+
+/* Any process can create a global name first and hold it; only administrators can open this namespace. S-1-5-33 admits the write-restricted token of a restricted service */
+static BOOL
+CALLBACK
+CreateSwDeviceOwnersLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ PVOID *Context)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD Size = sizeof(Admins);
+    HANDLE Boundary, Namespace = NULL;
+    ULONG Try;
+
+    UNREFERENCED_PARAMETER(Once);
+    UNREFERENCED_PARAMETER(Parameter);
+    UNREFERENCED_PARAMETER(Context);
+
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;S-1-5-33)", SDDL_REVISION_1,
+                                                              &Security.lpSecurityDescriptor, NULL))
+    {
+        return FALSE;
+    }
+    Boundary = CreateBoundaryDescriptorW(L"SoftwareDeviceOwners", 0);
+    if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
+    {
+        /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        for (Try = 0; !Namespace && Try < 3; Try++)
+        {
+            Namespace = CreatePrivateNamespaceW(&Security, Boundary, L"SoftwareDeviceOwners");
+            if (!Namespace)
+                Namespace = OpenPrivateNamespaceW(Boundary, L"SoftwareDeviceOwners");
+        }
+    }
+    if (Boundary)
+        DeleteBoundaryDescriptor(Boundary);
+    if (Namespace)
+    {
+        /* The namespace stays open as long as the lock */
+        SwDeviceOwnersLock = CreateMutexW(&Security, FALSE, L"SoftwareDeviceOwners\\Lock");
+        if (SwDeviceOwnersLock)
+            SwDeviceOwnersNamespace = Namespace;
+        else
+            ClosePrivateNamespace(Namespace, 0);
+    }
+    LocalFree(Security.lpSecurityDescriptor);
+    return SwDeviceOwnersLock != NULL;
+}
+
+BOOL
+WINAPI
+DllMain(_In_ HINSTANCE Instance, _In_ DWORD Reason, _In_opt_ PVOID Reserved)
+{
+    UNREFERENCED_PARAMETER(Instance);
+
+    /* Only FreeLibrary; a process that ends frees its handles itself */
+    if (Reason == DLL_PROCESS_DETACH && Reserved == NULL && SwDeviceOwnersLock)
+    {
+        CloseHandle(SwDeviceOwnersLock);
+        ClosePrivateNamespace(SwDeviceOwnersNamespace, 0);
+    }
+    return TRUE;
+}
+
+static HANDLE
+LockSwDeviceOwners(VOID)
+{
+    static INIT_ONCE Once = INIT_ONCE_STATIC_INIT;
+    DWORD Wait;
+
+    if (!InitOnceExecuteOnce(&Once, CreateSwDeviceOwnersLock, NULL, NULL))
+    {
+        if (GetLastError() == ERROR_SUCCESS)
+            SetLastError(ERROR_GEN_FAILURE);
+        return NULL;
+    }
+    Wait = WaitForSingleObject(SwDeviceOwnersLock, INFINITE);
+    if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
+    {
+        SetLastError(ERROR_GEN_FAILURE);
+        return NULL;
+    }
+    return SwDeviceOwnersLock;
+}
+
+static VOID
+UnlockSwDeviceOwners(_In_ HANDLE Lock)
+{
+    ReleaseMutex(Lock);
+}
+
+static VOID
+ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
+{
+    HANDLE Lock = LockSwDeviceOwners();
+    CONFIGRET Cr;
+
+    if (Remove)
+    {
+        /* Windows 11 leaves a device that was created with the instance ID after the device of this handle had left */
+        Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId, Device->Generation);
+        if (Cr == CR_SUCCESS)
+        {
+            ForgetOwner(Device->InstanceId);
+        }
+        else
+        {
+            /* No owner and the lifetime of a handle: the next creation removes the node that is left */
+            if (Cr != CR_NO_SUCH_DEVINST)
+                WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
+            RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeHandle);
+        }
+    }
+    else if (GetGeneration(Device->InstanceId) == Device->Generation)
+    {
+        CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
+        RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
+    }
+    else
+    {
+        RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeHandle);
+    }
+    if (Lock)
+        UnlockSwDeviceOwners(Lock);
+}
+
+static HRESULT
+ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
+{
+    DEVINST DevInst = 0;
+    SW_DEVICE_LIFETIME Lifetime;
+    CONFIGRET Cr;
+    HANDLE Lock;
+    HRESULT hr = S_OK;
+
+    Lock = LockSwDeviceOwners();
+    if (!Lock)
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    /* The instance ID belongs to an open handle also while its device is away with its parent */
+    if (GetOwner(Device->InstanceId) == SwOwnerInUse)
+    {
+        UnlockSwDeviceOwners(Lock);
+        return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    }
+
+    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
+                            CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    if (Cr == CR_ALREADY_SUCH_DEVINST)
+    {
+        switch (GetOwner(Device->InstanceId))
+        {
+            case SwOwnerReleased:
+                Cr = CM_Locate_DevNodeW(&DevInst, Device->InstanceId, CM_LOCATE_DEVNODE_NORMAL);
+                Device->Reopened = (Cr == CR_SUCCESS);
+                break;
+
+            case SwOwnerEnded:
+                if (CfgmgrRemoveSoftwareDevice(Device->InstanceId, 0) == CR_SUCCESS)
+                {
+                    TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
+                    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
+                                            CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+                }
+                break;
+
+            default:
+                break;
+        }
+    }
+    if (Cr == CR_SUCCESS)
+    {
+        EnterCriticalSection(&Device->LifetimeLock);
+        Device->DevInst = DevInst;
+        Device->Generation = GetGeneration(Device->InstanceId);
+        Lifetime = Device->Lifetime;
+        hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
+        if (SUCCEEDED(hr))
+        {
+            hr = CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                                       Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0));
+        }
+        LeaveCriticalSection(&Device->LifetimeLock);
+    }
+
+    UnlockSwDeviceOwners(Lock);
+
+    if (Cr != CR_SUCCESS)
+        return Cr == CR_ALREADY_SUCH_DEVINST ? HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) : CrToHresult(Cr);
+    return hr;
+}
+
+/* Windows 11: the given container, else a container of its own for a removable device and the container of the parent for any other */
+static HRESULT
+SetContainerId(_In_ PSW_DEVICE Device)
+{
+    WCHAR Path[ARRAYSIZE(L"SYSTEM\\CurrentControlSet\\Enum\\") + MAX_DEVICE_ID_LEN], Text[39];
+    GUID Container, Inherited, Own;
+    ULONG Size = sizeof(Inherited);
+    DEVPROPTYPE Type;
+    BOOL HasInherited;
+    RPC_STATUS Status;
+    LONG Error;
+    HKEY Key;
+
+    HasInherited = CM_Get_DevNode_PropertyW(Device->ParentInst, &DEVPKEY_Device_ContainerId, &Type,
+                                            (PBYTE)&Inherited, &Size, 0) == CR_SUCCESS;
+    if (Device->HasContainerId)
+    {
+        Container = Device->ContainerId;
+    }
+    else if (!(Device->Capabilities & SWDeviceCapabilitiesRemovable))
+    {
+        if (!HasInherited)
+            return S_OK;
+        Container = Inherited;
+    }
+    else
+    {
+        /* A device that is created again keeps the container it had as a removable device */
+        Size = sizeof(Own);
+        if (CM_Get_DevNode_PropertyW(Device->DevInst, &DEVPKEY_Device_ContainerId, &Type, (PBYTE)&Own, &Size, 0) == CR_SUCCESS &&
+            (!HasInherited || !IsEqualGUID(&Own, &Inherited)))
+        {
+            return S_OK;
+        }
+        Status = UuidCreate(&Container);
+        if (Status != RPC_S_OK && Status != RPC_S_UUID_LOCAL_ONLY)
+            return HRESULT_FROM_WIN32(Status);
+    }
+
+    _snwprintf(Text, ARRAYSIZE(Text), L"{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+               Container.Data1, Container.Data2, Container.Data3, Container.Data4[0], Container.Data4[1], Container.Data4[2],
+               Container.Data4[3], Container.Data4[4], Container.Data4[5], Container.Data4[6], Container.Data4[7]);
+    wcscpy(Path, L"SYSTEM\\CurrentControlSet\\Enum\\");
+    wcscat(Path, Device->InstanceId);
+    Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_SET_VALUE, &Key);
+    if (!Error)
+    {
+        Error = RegSetValueExW(Key, L"ContainerID", 0, REG_SZ, (const BYTE *)Text, sizeof(Text));
+        RegCloseKey(Key);
+    }
+    return HRESULT_FROM_WIN32(Error);
+}
+
+static HRESULT
+CreateSwDeviceNode(_In_ PSW_DEVICE Device)
+{
+    ULONG Status, Problem;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = ClaimSwDeviceNode(Device);
+    if (FAILED(hr))
+        return hr;
+
+    /* A device that may start without a driver would start before the driver it gets below is installed */
+    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities | SWDeviceCapabilitiesDriverRequired);
+    if (Cr != CR_SUCCESS)
+        return CrToHresult(Cr);
+
+    if (Device->HardwareIds && *Device->HardwareIds)
+    {
+        Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_HARDWAREID, Device->HardwareIds,
+                                               (ULONG)MultiSzSize(Device->HardwareIds), 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
+    if (Device->CompatibleIds && *Device->CompatibleIds)
+    {
+        Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_COMPATIBLEIDS, Device->CompatibleIds,
+                                               (ULONG)MultiSzSize(Device->CompatibleIds), 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
+    if (Device->Description)
+    {
+        Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_DEVICEDESC, Device->Description,
+                                               (ULONG)((wcslen(Device->Description) + 1) * sizeof(WCHAR)), 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
+    if (Device->Location)
+    {
+        Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_LOCATION_INFORMATION, Device->Location,
+                                               (ULONG)((wcslen(Device->Location) + 1) * sizeof(WCHAR)), 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
+    if (Device->SecurityDescriptor)
+    {
+        Cr = CM_Set_DevNode_Registry_PropertyW(Device->DevInst, CM_DRP_SECURITY, Device->SecurityDescriptor,
+                                               Device->SecurityDescriptorSize, 0);
+        if (Cr != CR_SUCCESS)
+            return CrToHresult(Cr);
+    }
+    hr = SetContainerId(Device);
+    if (FAILED(hr))
+        return hr;
+
+    hr = ApplyProperties(Device->DevInst, Device->PropertyCount, Device->Properties);
+    if (FAILED(hr))
+        return hr;
+
+    if (!Device->Reopened || CM_Get_DevNode_Status(&Status, &Problem, Device->DevInst, 0) != CR_SUCCESS ||
+        !(Status & DN_DRIVER_LOADED))
+    {
+        hr = InstallSwDeviceDriver(Device);
+        if (FAILED(hr))
+            return hr;
+    }
+    if (Device->Capabilities & SWDeviceCapabilitiesDriverRequired)
+        return S_OK;
+
+    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities);
+    if (Cr != CR_SUCCESS)
+        return CrToHresult(Cr);
+
+    /* Windows 11 starts a device that does not require a driver and found none */
+    if (hr == S_FALSE)
+    {
+        Cr = CM_Setup_DevNode(Device->DevInst, CM_SETUP_DEVNODE_READY);
+        if (Cr != CR_SUCCESS)
+            WARN("Starting %s without a driver failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
+    }
+    return S_OK;
+}
+
+static BOOL
+IsParentStarted(_In_ PSW_DEVICE Device)
+{
+    ULONG Status, Problem;
+
+    return CM_Locate_DevNodeW(&Device->ParentInst, Device->Parent, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+           CM_Get_DevNode_Status(&Status, &Problem, Device->ParentInst, 0) == CR_SUCCESS && (Status & DN_STARTED);
+}
+
+/* Windows 11 creates the device once its parent is present and started, and ends a creation that still waits when the handle closes */
+static HRESULT
+WaitForParent(_In_ PSW_DEVICE Device)
+{
+    for (;;)
+    {
+        if (IsParentStarted(Device))
+            return S_OK;
+        if (Device->Closing)
+            return HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED);
+        Sleep(250);
+    }
+}
+
+/* Windows 11 finds the module in kernelbase, where a program that maps a library by hand redirects the lookup of its code */
+static BOOL
+ReferenceModule(_In_ PVOID Address, _Out_ HMODULE *Module)
+{
+    typedef BOOL (WINAPI *PFN_GETMODULEHANDLEEXW)(DWORD, PCWSTR, HMODULE *);
+    HMODULE KernelBase = GetModuleHandleW(L"kernelbase.dll");
+    PFN_GETMODULEHANDLEEXW pGetModuleHandleExW = NULL;
+
+    if (KernelBase)
+        pGetModuleHandleExW = (PFN_GETMODULEHANDLEEXW)GetProcAddress(KernelBase, "GetModuleHandleExW");
+    if (!pGetModuleHandleExW)
+        pGetModuleHandleExW = GetModuleHandleExW;
+    return pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (PCWSTR)Address, Module);
+}
+
+static DWORD
+WINAPI
+SwDeviceCreateThread(_In_ PVOID Parameter)
+{
+    PSW_DEVICE Device = Parameter;
+    SW_DEVICE_CREATE_CALLBACK Callback = Device->Callback;
+    PVOID Context = Device->Context;
+    HMODULE Module = Device->Module, CallbackModule = Device->CallbackModule;
+    WCHAR InstanceId[MAX_DEVICE_ID_LEN];
+    HRESULT hr;
+
+    for (;;)
+    {
+        hr = WaitForParent(Device);
+        if (SUCCEEDED(hr))
+            hr = CreateSwDeviceNode(Device);
+        if (SUCCEEDED(hr))
+            break;
+
+        ERR("Creating software device %s failed (0x%08lx)\n", debugstr_w(Device->InstanceId), hr);
+
+        if (Device->DevInst)
+            ReleaseSwDeviceNode(Device, !Device->Reopened);
+        EnterCriticalSection(&Device->LifetimeLock);
+        Device->DevInst = 0;
+        LeaveCriticalSection(&Device->LifetimeLock);
+        Device->Reopened = FALSE;
+
+        /* A parent that left during the creation took the device with it; the creation waits for the parent like one that began later */
+        if (hr == HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED) || IsParentStarted(Device))
+            break;
+    }
+
+    /* The callback may close the handle; nothing touches Device afterwards */
+    wcscpy(InstanceId, Device->InstanceId);
+    Callback((HSWDEVICE)Device, hr, Context, SUCCEEDED(hr) ? InstanceId : NULL);
+
+    /* The callback may have freed this library, whose code runs until the thread exits */
+    FreeLibrary(CallbackModule);
+    FreeLibraryAndExitThread(Module, 0);
+}
+
+HRESULT
+WINAPI
+SwDeviceCreate(
+    _In_ PCWSTR pszEnumeratorName,
+    _In_ PCWSTR pszParentDeviceInstance,
+    _In_ const SW_DEVICE_CREATE_INFO *pCreateInfo,
+    _In_ ULONG cPropertyCount,
+    _In_reads_opt_(cPropertyCount) const DEVPROPERTY *pProperties,
+    _In_ SW_DEVICE_CREATE_CALLBACK pCallback,
+    _In_opt_ PVOID pContext,
+    _Out_ PHSWDEVICE phSwDevice)
+{
+    PSW_DEVICE Device;
+    HANDLE Lock;
+    BOOL InUse;
+    HRESULT hr;
+
+    TRACE("%s %s %p %lu %p %p %p %p\n", debugstr_w(pszEnumeratorName), debugstr_w(pszParentDeviceInstance),
+          pCreateInfo, cPropertyCount, pProperties, pCallback, pContext, phSwDevice);
+
+    if (!phSwDevice)
+        return E_POINTER;
+    *phSwDevice = NULL;
+
+    if (!pszEnumeratorName || !*pszEnumeratorName || wcschr(pszEnumeratorName, L'\\') ||
+        !pszParentDeviceInstance || !*pszParentDeviceInstance || !pCreateInfo || pCreateInfo->cbSize < sizeof(*pCreateInfo) ||
+        !pCreateInfo->pszInstanceId || !*pCreateInfo->pszInstanceId || wcschr(pCreateInfo->pszInstanceId, L'\\') ||
+        !pCallback ||
+        (pCreateInfo->pSecurityDescriptor && !IsSelfRelativeSecurityDescriptor((PSECURITY_DESCRIPTOR)pCreateInfo->pSecurityDescriptor)) ||
+        (pCreateInfo->CapabilityFlags & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall |
+                                          SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
+    {
+        return E_INVALIDARG;
+    }
+
+    Device = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Device));
+    if (!Device)
+        return E_OUTOFMEMORY;
+
+    if (_snwprintf(Device->InstanceId, ARRAYSIZE(Device->InstanceId) - 1, L"SWD\\%s\\%s",
+                   pszEnumeratorName, pCreateInfo->pszInstanceId) < 0)
+    {
+        FreeSwDevice(Device);
+        return E_INVALIDARG;
+    }
+
+    /* Windows 11 answers at once when a handle of the instance ID is open in any process */
+    Lock = LockSwDeviceOwners();
+    InUse = Lock && GetOwner(Device->InstanceId) == SwOwnerInUse;
+    if (Lock)
+        UnlockSwDeviceOwners(Lock);
+    if (InUse)
+    {
+        FreeSwDevice(Device);
+        return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    }
+
+    Device->Idle = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (!Device->Idle)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeSwDevice(Device);
+        return hr;
+    }
+    InitializeCriticalSection(&Device->LifetimeLock);
+
+    Device->ActiveCalls = 1;
+    Device->Lifetime = SWDeviceLifetimeHandle;
+    Device->Capabilities = pCreateInfo->CapabilityFlags;
+    Device->Callback = pCallback;
+    Device->Context = pContext;
+    Device->Parent = DupBuffer(pszParentDeviceInstance, (wcslen(pszParentDeviceInstance) + 1) * sizeof(WCHAR));
+    Device->HardwareIds = DupBuffer(pCreateInfo->pszzHardwareIds, MultiSzSize(pCreateInfo->pszzHardwareIds));
+    Device->CompatibleIds = DupBuffer(pCreateInfo->pszzCompatibleIds, MultiSzSize(pCreateInfo->pszzCompatibleIds));
+    if (pCreateInfo->pszDeviceDescription)
+        Device->Description = DupBuffer(pCreateInfo->pszDeviceDescription,
+                                        (wcslen(pCreateInfo->pszDeviceDescription) + 1) * sizeof(WCHAR));
+    if (pCreateInfo->pszDeviceLocation)
+        Device->Location = DupBuffer(pCreateInfo->pszDeviceLocation,
+                                     (wcslen(pCreateInfo->pszDeviceLocation) + 1) * sizeof(WCHAR));
+    if (!Device->Parent ||
+        (pCreateInfo->pszzHardwareIds && !Device->HardwareIds) ||
+        (pCreateInfo->pszzCompatibleIds && !Device->CompatibleIds) ||
+        (pCreateInfo->pszDeviceDescription && !Device->Description) ||
+        (pCreateInfo->pszDeviceLocation && !Device->Location))
+    {
+        FreeSwDevice(Device);
+        return E_OUTOFMEMORY;
+    }
+    if (pCreateInfo->pContainerId)
+    {
+        Device->ContainerId = *pCreateInfo->pContainerId;
+        Device->HasContainerId = TRUE;
+    }
+    if (pCreateInfo->pSecurityDescriptor)
+    {
+        Device->SecurityDescriptorSize = GetSecurityDescriptorLength((PSECURITY_DESCRIPTOR)pCreateInfo->pSecurityDescriptor);
+        Device->SecurityDescriptor = DupBuffer(pCreateInfo->pSecurityDescriptor, Device->SecurityDescriptorSize);
+        if (!Device->SecurityDescriptor)
+        {
+            FreeSwDevice(Device);
+            return E_OUTOFMEMORY;
+        }
+    }
+
+    hr = CopyProperties(cPropertyCount, pProperties, &Device->Properties);
+    if (FAILED(hr))
+    {
+        FreeSwDevice(Device);
+        return hr;
+    }
+    Device->PropertyCount = cPropertyCount;
+
+    /* Windows 11 answers ERROR_MOD_NOT_FOUND for a callback that this lookup finds in no module */
+    if (!ReferenceModule((PVOID)(ULONG_PTR)pCallback, &Device->CallbackModule))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeSwDevice(Device);
+        return hr;
+    }
+    if (!ReferenceModule((PVOID)(ULONG_PTR)SwDeviceCreateThread, &Device->Module))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeLibrary(Device->CallbackModule);
+        FreeSwDevice(Device);
+        return hr;
+    }
+
+    Device->Thread = CreateThread(NULL, 0, SwDeviceCreateThread, Device, CREATE_SUSPENDED, &Device->ThreadId);
+    if (!Device->Thread)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        FreeLibrary(Device->Module);
+        FreeLibrary(Device->CallbackModule);
+        FreeSwDevice(Device);
+        return hr;
+    }
+
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    InsertTailList(&SwDeviceList, &Device->OpenEntry);
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
+
+    *phSwDevice = (HSWDEVICE)Device;
+    if (ResumeThread(Device->Thread) == (DWORD)-1)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        TerminateThread(Device->Thread, 0);
+        CloseHandle(Device->Thread);
+        FreeLibrary(Device->Module);
+        FreeLibrary(Device->CallbackModule);
+        AcquireSRWLockExclusive(&SwDeviceListLock);
+        RemoveEntryList(&Device->OpenEntry);
+        ReleaseSRWLockExclusive(&SwDeviceListLock);
+        FreeSwDevice(Device);
+        *phSwDevice = NULL;
+        return hr;
+    }
+    return S_OK;
+}
+
+VOID
+WINAPI
+SwDeviceClose(
+    _In_ HSWDEVICE hSwDevice)
+{
+    PSW_DEVICE Device = NULL;
+    PLIST_ENTRY Entry;
+    BOOL Wait = FALSE;
+
+    TRACE("%p\n", hSwDevice);
+
+    AcquireSRWLockExclusive(&SwDeviceListLock);
+    for (Entry = SwDeviceList.Flink; Entry != &SwDeviceList; Entry = Entry->Flink)
+    {
+        if (CONTAINING_RECORD(Entry, SW_DEVICE, OpenEntry) == (PSW_DEVICE)hSwDevice)
+        {
+            Device = (PSW_DEVICE)hSwDevice;
+            RemoveEntryList(&Device->OpenEntry);
+            Wait = --Device->ActiveCalls != 0;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&SwDeviceListLock);
+    if (!Device)
+        return;
+    Device->Closing = TRUE;
+    if (Wait)
+        WaitForSingleObject(Device->Idle, INFINITE);
+
+    if (Device->Thread)
+    {
+        if (Device->ThreadId != GetCurrentThreadId())
+            WaitForSingleObject(Device->Thread, INFINITE);
+        CloseHandle(Device->Thread);
+    }
+
+    if (Device->DevInst)
+        ReleaseSwDeviceNode(Device, Device->Lifetime == SWDeviceLifetimeHandle);
+
+    FreeSwDevice(Device);
+}
+
+HRESULT
+WINAPI
+SwDeviceSetLifetime(
+    _In_ HSWDEVICE hSwDevice,
+    _In_ SW_DEVICE_LIFETIME Lifetime)
+{
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    SW_DEVICE_LIFETIME Previous;
+    HRESULT hr = S_OK;
+
+    if (!Device || (Lifetime != SWDeviceLifetimeHandle && Lifetime != SWDeviceLifetimeParentPresent))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    EnterCriticalSection(&Device->LifetimeLock);
+    Previous = Device->Lifetime;
+
+    if (Device->DevInst && Lifetime != Previous && GetGeneration(Device->InstanceId) == Device->Generation)
+    {
+        hr = CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                                   Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0));
+        if (SUCCEEDED(hr))
+        {
+            hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
+            if (FAILED(hr))
+            {
+                CfgmgrWatchSoftwareDevice(Device->InstanceId,
+                                          Previous == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0);
+            }
+        }
+    }
+    if (SUCCEEDED(hr))
+        Device->Lifetime = Lifetime;
+    LeaveCriticalSection(&Device->LifetimeLock);
+
+    LeaveSwDevice(Device);
+    return hr;
+}
+
+HRESULT
+WINAPI
+SwDeviceGetLifetime(
+    _In_ HSWDEVICE hSwDevice,
+    _Out_ PSW_DEVICE_LIFETIME pLifetime)
+{
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+
+    if (!Device || !pLifetime)
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    EnterCriticalSection(&Device->LifetimeLock);
+    *pLifetime = Device->Lifetime;
+    LeaveCriticalSection(&Device->LifetimeLock);
+    LeaveSwDevice(Device);
+    return S_OK;
+}
+
+HRESULT
+WINAPI
+SwDevicePropertySet(
+    _In_ HSWDEVICE hSwDevice,
+    _In_ ULONG cPropertyCount,
+    _In_reads_(cPropertyCount) const DEVPROPERTY *pProperties)
+{
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+
+    HRESULT hr;
+
+    if (!Device || (cPropertyCount && !pProperties))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    hr = Device->DevInst ? ApplyProperties(Device->DevInst, cPropertyCount, pProperties) : E_INVALIDARG;
+    LeaveSwDevice(Device);
+    return hr;
+}
+
+static LSTATUS
+SetInterfaceProperty(_In_ HKEY ReferenceKey, _In_ const DEVPROPERTY *Property)
+{
+    const DEVPROPKEY *PropKey = &Property->CompKey.Key;
+    PCWSTR Name = NULL;
+    DWORD Type = 0xffff0000 | (Property->Type & 0xffff);
+    WCHAR Path[64];
+    LSTATUS Error;
+    HKEY Key;
+
+    if (!memcmp(PropKey, &DEVPKEY_DeviceInterface_FriendlyName, sizeof(*PropKey)))
+    {
+        if (Property->Type == DEVPROP_TYPE_EMPTY)
+            return RegDeleteKeyValueW(ReferenceKey, L"Device Parameters", L"FriendlyName");
+        if (Property->Type != DEVPROP_TYPE_STRING)
+            return ERROR_INVALID_PARAMETER;
+        wcscpy(Path, L"Device Parameters");
+        Name = L"FriendlyName";
+        Type = REG_SZ;
+    }
+    else
+    {
+        _snwprintf(Path, ARRAYSIZE(Path), L"Properties\\{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\\%04lX",
+                   PropKey->fmtid.Data1, PropKey->fmtid.Data2, PropKey->fmtid.Data3,
+                   PropKey->fmtid.Data4[0], PropKey->fmtid.Data4[1], PropKey->fmtid.Data4[2], PropKey->fmtid.Data4[3],
+                   PropKey->fmtid.Data4[4], PropKey->fmtid.Data4[5], PropKey->fmtid.Data4[6], PropKey->fmtid.Data4[7],
+                   PropKey->pid);
+        if (Property->Type == DEVPROP_TYPE_EMPTY)
+            return RegDeleteKeyW(ReferenceKey, Path);
+    }
+
+    Error = RegCreateKeyExW(ReferenceKey, Path, 0, NULL, 0, KEY_SET_VALUE, NULL, &Key, NULL);
+    if (!Error)
+    {
+        Error = RegSetValueExW(Key, Name, 0, Type, Property->Buffer, Property->BufferSize);
+        RegCloseKey(Key);
+    }
+    return Error;
+}
+
+static HRESULT
+SetInterfaceProperties(
+    _In_ PSW_DEVICE Device,
+    _In_ PCWSTR InterfaceId,
+    _In_ ULONG Count,
+    _In_reads_opt_(Count) const DEVPROPERTY *Properties)
+{
+    struct device_interface Interface;
+    WCHAR Instance[MAX_DEVICE_ID_LEN];
+    DWORD Size = sizeof(Instance);
+    HKEY InterfaceKey, ReferenceKey;
+    LSTATUS Error = ERROR_SUCCESS;
+    ULONG i;
+
+    if (wcslen(InterfaceId) >= MAX_PATH || init_device_interface(&Interface, InterfaceId) ||
+        open_device_interface_key(&Interface, KEY_QUERY_VALUE, TRUE, &InterfaceKey))
+    {
+        return E_INVALIDARG;
+    }
+    if (RegGetValueW(InterfaceKey, NULL, L"DeviceInstance", RRF_RT_REG_SZ, NULL, Instance, &Size) ||
+        _wcsicmp(Instance, Device->InstanceId) ||
+        RegOpenKeyExW(InterfaceKey, Interface.refstr, 0, KEY_ALL_ACCESS, &ReferenceKey))
+    {
+        RegCloseKey(InterfaceKey);
+        return E_INVALIDARG;
+    }
+    RegCloseKey(InterfaceKey);
+
+    for (i = 0; !Error && i < Count; i++)
+    {
+        if (Properties[i].CompKey.Store != DEVPROP_STORE_SYSTEM || (Properties[i].BufferSize && !Properties[i].Buffer))
+            Error = ERROR_INVALID_PARAMETER;
+        else
+            Error = SetInterfaceProperty(ReferenceKey, &Properties[i]);
+    }
+    RegCloseKey(ReferenceKey);
+    return HRESULT_FROM_WIN32(Error);
+}
+
+HRESULT
+WINAPI
+SwDeviceInterfaceRegister(
+    _In_ HSWDEVICE hSwDevice,
+    _In_ const GUID *pInterfaceClassGuid,
+    _In_opt_ PCWSTR pszReferenceString,
+    _In_ ULONG cPropertyCount,
+    _In_reads_opt_(cPropertyCount) const DEVPROPERTY *pProperties,
+    _In_ BOOL fEnabled,
+    _Out_opt_ PWSTR *ppszDeviceInterfaceId)
+{
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    WCHAR Link[2 * MAX_PATH];
+    ULONG Length = ARRAYSIZE(Link);
+    PWSTR InterfaceId;
+    HRESULT hr;
+
+    TRACE("%p %s %s %lu %p %d %p\n", hSwDevice, debugstr_guid(pInterfaceClassGuid), debugstr_w(pszReferenceString),
+          cPropertyCount, pProperties, fEnabled, ppszDeviceInterfaceId);
+
+    if (ppszDeviceInterfaceId)
+        *ppszDeviceInterfaceId = NULL;
+    if (!Device || !pInterfaceClassGuid || (cPropertyCount && !pProperties))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    /* The interface functions of this library hold an interface path in MAX_PATH characters */
+    if (!Device->DevInst ||
+        4 + wcslen(Device->InstanceId) + 1 + 38 + (pszReferenceString ? 1 + wcslen(pszReferenceString) : 0) >= MAX_PATH)
+    {
+        hr = E_INVALIDARG;
+    }
+    else
+    {
+        hr = CrToHresult(CM_Register_Device_InterfaceW(Device->DevInst, (LPGUID)pInterfaceClassGuid, pszReferenceString,
+                                                       Link, &Length, 0));
+    }
+    if (SUCCEEDED(hr))
+    {
+        /* The kernel returns the \??\ form of the link */
+        Link[1] = L'\\';
+        hr = SetInterfaceProperties(Device, Link, cPropertyCount, pProperties);
+    }
+    if (SUCCEEDED(hr) && fEnabled)
+        hr = CrToHresult(CfgmgrSetSoftwareDeviceInterfaceState(Link, TRUE));
+    if (SUCCEEDED(hr) && ppszDeviceInterfaceId)
+    {
+        InterfaceId = DupBuffer(Link, (wcslen(Link) + 1) * sizeof(WCHAR));
+        if (InterfaceId)
+            *ppszDeviceInterfaceId = InterfaceId;
+        else
+            hr = E_OUTOFMEMORY;
+    }
+
+    LeaveSwDevice(Device);
+    return hr;
+}
+
+VOID
+WINAPI
+SwMemFree(
+    _In_ PVOID pMem)
+{
+    HeapFree(GetProcessHeap(), 0, pMem);
+}
+
+HRESULT
+WINAPI
+SwDeviceInterfaceSetState(
+    _In_ HSWDEVICE hSwDevice,
+    _In_ PCWSTR pszDeviceInterfaceId,
+    _In_ BOOL fEnabled)
+{
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    HRESULT hr;
+
+    TRACE("%p %s %d\n", hSwDevice, debugstr_w(pszDeviceInterfaceId), fEnabled);
+
+    if (!Device || !pszDeviceInterfaceId)
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    hr = Device->DevInst ? SetInterfaceProperties(Device, pszDeviceInterfaceId, 0, NULL) : E_INVALIDARG;
+    /* Windows 11 answers ERROR_NOT_FOUND for an interface the device has not registered */
+    if (hr == E_INVALIDARG && Device->DevInst)
+        hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+    if (SUCCEEDED(hr))
+        hr = CrToHresult(CfgmgrSetSoftwareDeviceInterfaceState(pszDeviceInterfaceId, fEnabled));
+    LeaveSwDevice(Device);
+    return hr;
+}
+
+HRESULT
+WINAPI
+SwDeviceInterfacePropertySet(
+    _In_ HSWDEVICE hSwDevice,
+    _In_ PCWSTR pszDeviceInterfaceId,
+    _In_ ULONG cPropertyCount,
+    _In_reads_(cPropertyCount) const DEVPROPERTY *pProperties)
+{
+    PSW_DEVICE Device = (PSW_DEVICE)hSwDevice;
+    HRESULT hr;
+
+    TRACE("%p %s %lu %p\n", hSwDevice, debugstr_w(pszDeviceInterfaceId), cPropertyCount, pProperties);
+
+    if (!Device || !pszDeviceInterfaceId || (cPropertyCount && !pProperties))
+        return E_INVALIDARG;
+    if (!EnterSwDevice(Device))
+        return E_HANDLE;
+
+    hr = Device->DevInst ? SetInterfaceProperties(Device, pszDeviceInterfaceId, cPropertyCount, pProperties) : E_INVALIDARG;
+    LeaveSwDevice(Device);
+    return hr;
+}

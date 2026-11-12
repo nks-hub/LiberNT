@@ -33,9 +33,11 @@ list(APPEND SOURCE
     RtlEncryptMemory.c
     SaferIdentifyLevel.c
     ServiceArgs.c
+    ServiceChangeNotify.c
     ServiceCrash.c
     ServiceEnv.c
     ServiceNetwork.c
+    ServiceSidInfo.c
     TriggerInfo.c
     TokenBnoIsolation.c
     TraceGuids.c

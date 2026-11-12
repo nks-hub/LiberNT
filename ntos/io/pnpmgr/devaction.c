@@ -67,6 +67,7 @@ typedef struct _DEVICE_ACTION_REQUEST
     NTSTATUS *CompletionStatus;
     DEVICE_ACTION Action;
     PPI_QUERY_REMOVE_DATA RemoveData;
+    PDEVICE_NODE ChildNode;
 } DEVICE_ACTION_REQUEST, *PDEVICE_ACTION_REQUEST;
 
 typedef enum _ADD_DEV_DRIVER_TYPE
@@ -2432,6 +2433,8 @@ IopSendRemoveDevice(IN PDEVICE_OBJECT DeviceObject)
     }
     if (DeviceNode->Flags & DNF_DEVICE_GONE)
         PipQueueLeakCheck(DeviceObject, &DeviceNode->InstancePath);
+    if (DeviceNode->Parent == NULL)
+        PnpRootRetireDevice(DeviceObject);
     ObDereferenceObject(DeviceObject);
 }
 
@@ -3143,7 +3146,8 @@ PiEnumerateDevice(
     // mark children nodes as non-present (those not returned in DR request will be removed)
     for (PDEVICE_NODE child = DeviceNode->Child; child != NULL; child = child->Sibling)
     {
-        PiClearDevNodeFlag(child, DNF_ENUMERATED);
+        if (DeviceNode == IopRootDeviceNode || child->PhysicalDeviceObject->DriverObject != IopRootDriverObject)
+            PiClearDevNodeFlag(child, DNF_ENUMERATED);
     }
 
     DPRINT("PiEnumerateDevice: enumerating %u children\n", DeviceRelations->Count);
@@ -3582,6 +3586,8 @@ ActionToStr(
             return "PiActionCloseRemovedDevice";
         case PiActionEjectDevice:
             return "PiActionEjectDevice";
+        case PiActionInsertChildDevice:
+            return "PiActionInsertChildDevice";
         default:
             return "(request unknown)";
     }
@@ -3741,12 +3747,28 @@ PipRunDeviceActionRequest(
 
         case PiActionRemoveDevice:
             status = PipQueryAndRemoveDevice(Request->DeviceObject, NULL);
-            if (deviceNode->State == DeviceNodeRemoved && deviceNode->Parent == IopRootDeviceNode)
+            if (deviceNode->State == DeviceNodeRemoved)
                 PnpRootRetireDevice(Request->DeviceObject);
             break;
 
         case PiActionEjectDevice:
             status = PipEjectDevice(Request->DeviceObject);
+            break;
+
+        case PiActionInsertChildDevice:
+            ASSERT(Request->ChildNode != NULL);
+            ASSERT(Request->ChildNode->Parent == NULL);
+            if (deviceNode->State >= DeviceNodeAwaitingQueuedDeletion)
+            {
+                status = STATUS_NO_SUCH_DEVICE;
+                break;
+            }
+            status = PnpRootRegisterDevice(Request->ChildNode->PhysicalDeviceObject);
+            if (!NT_SUCCESS(status))
+                break;
+            ObReferenceObject(Request->ChildNode->PhysicalDeviceObject);
+            PiInsertDevNode(Request->ChildNode, deviceNode);
+            ASSERT(Request->ChildNode->Parent == deviceNode);
             break;
 
         default:
@@ -3878,7 +3900,8 @@ PipQueueDeviceAction(
     _In_ DEVICE_ACTION Action,
     _In_opt_ PKEVENT CompletionEvent,
     _Out_opt_ NTSTATUS *CompletionStatus,
-    _Out_opt_ PPI_QUERY_REMOVE_DATA RemoveData)
+    _Out_opt_ PPI_QUERY_REMOVE_DATA RemoveData,
+    _In_opt_ PDEVICE_NODE ChildNode)
 {
     PDEVICE_ACTION_REQUEST Request;
     KIRQL OldIrql;
@@ -3895,6 +3918,7 @@ PipQueueDeviceAction(
     Request->CompletionEvent = CompletionEvent;
     Request->CompletionStatus = CompletionStatus;
     Request->RemoveData = RemoveData;
+    Request->ChildNode = ChildNode;
 
     KeAcquireSpinLock(&IopDeviceActionLock, &OldIrql);
     InsertTailList(&IopDeviceActionRequestList, &Request->RequestListEntry);
@@ -3931,7 +3955,7 @@ PiQueueDeviceAction(
     _In_opt_ PKEVENT CompletionEvent,
     _Out_opt_ NTSTATUS *CompletionStatus)
 {
-    PipQueueDeviceAction(DeviceObject, Action, CompletionEvent, CompletionStatus, NULL);
+    PipQueueDeviceAction(DeviceObject, Action, CompletionEvent, CompletionStatus, NULL, NULL);
 }
 
 /**
@@ -3968,7 +3992,25 @@ PiQueryRemoveDevice(
 
     RtlZeroMemory(RemoveData, sizeof(*RemoveData));
     KeInitializeEvent(&Event, SynchronizationEvent, FALSE);
-    PipQueueDeviceAction(DeviceObject, PiActionQueryRemoveDevice, &Event, &Status, RemoveData);
+    PipQueueDeviceAction(DeviceObject, PiActionQueryRemoveDevice, &Event, &Status, RemoveData, NULL);
+    KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+    return Status;
+}
+
+NTSTATUS
+PiInsertChildDevNode(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ PDEVICE_NODE ParentNode)
+{
+    KEVENT Event;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(DeviceNode->Parent == NULL);
+    ASSERT(ParentNode->PhysicalDeviceObject != NULL);
+
+    KeInitializeEvent(&Event, SynchronizationEvent, FALSE);
+    PipQueueDeviceAction(ParentNode->PhysicalDeviceObject, PiActionInsertChildDevice, &Event, &Status, NULL, DeviceNode);
     KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
     return Status;
 }

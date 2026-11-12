@@ -17,6 +17,7 @@
 #include <winbase_undoc.h>
 #include <userenv.h>
 #include <strsafe.h>
+#include <ndk/sefuncs.h>
 
 #define NDEBUG
 #include <debug.h>
@@ -36,6 +37,8 @@ static DWORD ServiceTag = 0;
 
 /* The critical section synchronizes service control requests */
 static CRITICAL_SECTION ControlServiceCriticalSection;
+static HANDLE ScmDelayedAutoStartStop;
+static HANDLE ScmDelayedAutoStartWorker;
 static DWORD PipeTimeout = 30000; /* 30 Seconds */
 
 
@@ -495,6 +498,308 @@ done:
 }
 
 
+static PVOID
+ScmQueryTokenInfo(
+    _In_ HANDLE hToken,
+    _In_ TOKEN_INFORMATION_CLASS InfoClass)
+{
+    DWORD dwSize = 0;
+    PVOID pInfo;
+
+    GetTokenInformation(hToken, InfoClass, NULL, 0, &dwSize);
+    if (dwSize == 0)
+        return NULL;
+    pInfo = HeapAlloc(GetProcessHeap(), 0, dwSize);
+    if (pInfo != NULL && !GetTokenInformation(hToken, InfoClass, pInfo, dwSize, &dwSize))
+    {
+        HeapFree(GetProcessHeap(), 0, pInfo);
+        pInfo = NULL;
+    }
+    return pInfo;
+}
+
+static DWORD
+ScmCreateServiceSidToken(
+    _In_ HANDLE hBaseToken,
+    _In_ PCWSTR pszServiceName,
+    _Out_ PHANDLE phToken)
+{
+    SECURITY_QUALITY_OF_SERVICE Qos = { sizeof(Qos), SecurityImpersonation, SECURITY_STATIC_TRACKING, FALSE };
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    UNICODE_STRING ServiceName;
+    PTOKEN_USER pUser = NULL;
+    PTOKEN_GROUPS pGroups = NULL, pNewGroups = NULL;
+    PTOKEN_PRIVILEGES pPrivileges = NULL;
+    PTOKEN_OWNER pOwner = NULL;
+    PTOKEN_PRIMARY_GROUP pPrimaryGroup = NULL;
+    PTOKEN_DEFAULT_DACL pDefaultDacl = NULL;
+    PTOKEN_SOURCE pSource = NULL;
+    PTOKEN_STATISTICS pStatistics = NULL;
+    PSID pServiceSid = NULL;
+    ULONG ulSidLength = 0;
+    SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    union
+    {
+        SID Sid;
+        BYTE Buffer[SECURITY_MAX_SID_SIZE];
+    } LogonSid;
+    LUID LogonId;
+    BOOL bHasLogonSid = FALSE;
+    BOOLEAN bWasEnabled;
+    NTSTATUS Status;
+    DWORD i;
+
+    *phToken = NULL;
+
+    RtlInitUnicodeString(&ServiceName, pszServiceName);
+    Status = RtlCreateServiceSid(&ServiceName, NULL, &ulSidLength);
+    if (Status != STATUS_BUFFER_TOO_SMALL)
+        return RtlNtStatusToDosError(Status);
+    pServiceSid = HeapAlloc(GetProcessHeap(), 0, ulSidLength);
+    if (pServiceSid == NULL)
+        return ERROR_NOT_ENOUGH_MEMORY;
+    Status = RtlCreateServiceSid(&ServiceName, pServiceSid, &ulSidLength);
+    if (!NT_SUCCESS(Status))
+        goto done;
+
+    pUser = ScmQueryTokenInfo(hBaseToken, TokenUser);
+    pGroups = ScmQueryTokenInfo(hBaseToken, TokenGroups);
+    pPrivileges = ScmQueryTokenInfo(hBaseToken, TokenPrivileges);
+    pOwner = ScmQueryTokenInfo(hBaseToken, TokenOwner);
+    pPrimaryGroup = ScmQueryTokenInfo(hBaseToken, TokenPrimaryGroup);
+    pDefaultDacl = ScmQueryTokenInfo(hBaseToken, TokenDefaultDacl);
+    pSource = ScmQueryTokenInfo(hBaseToken, TokenSource);
+    pStatistics = ScmQueryTokenInfo(hBaseToken, TokenStatistics);
+    if (!pUser || !pGroups || !pPrivileges || !pOwner || !pPrimaryGroup || !pDefaultDacl || !pSource || !pStatistics)
+    {
+        Status = STATUS_NO_MEMORY;
+        goto done;
+    }
+
+    pNewGroups = HeapAlloc(GetProcessHeap(), 0,
+                           FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 2]));
+    if (pNewGroups == NULL)
+    {
+        Status = STATUS_NO_MEMORY;
+        goto done;
+    }
+    for (i = 0; i < pGroups->GroupCount; i++)
+    {
+        pNewGroups->Groups[i] = pGroups->Groups[i];
+        if ((pGroups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID)
+            bHasLogonSid = TRUE;
+    }
+    pNewGroups->Groups[i].Sid = pServiceSid;
+    pNewGroups->Groups[i].Attributes = SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_OWNER;
+    i++;
+
+    /* The token of the SCM, the base of a LocalSystem service, comes from no logon and has no logon SID */
+    if (!bHasLogonSid)
+    {
+        Status = NtAllocateLocallyUniqueId(&LogonId);
+        if (!NT_SUCCESS(Status))
+            goto done;
+        RtlInitializeSid(&LogonSid.Sid, &NtAuthority, SECURITY_LOGON_IDS_RID_COUNT);
+        *RtlSubAuthoritySid(&LogonSid.Sid, 0) = SECURITY_LOGON_IDS_RID;
+        *RtlSubAuthoritySid(&LogonSid.Sid, 1) = (ULONG)LogonId.HighPart;
+        *RtlSubAuthoritySid(&LogonSid.Sid, 2) = LogonId.LowPart;
+        pNewGroups->Groups[i].Sid = &LogonSid.Sid;
+        pNewGroups->Groups[i].Attributes = SE_GROUP_MANDATORY | SE_GROUP_ENABLED | SE_GROUP_ENABLED_BY_DEFAULT | SE_GROUP_LOGON_ID;
+        i++;
+    }
+    pNewGroups->GroupCount = i;
+
+    InitializeObjectAttributes(&ObjectAttributes, NULL, 0, NULL, NULL);
+    ObjectAttributes.SecurityQualityOfService = &Qos;
+    Status = RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, TRUE, FALSE, &bWasEnabled);
+    if (!NT_SUCCESS(Status))
+        goto done;
+    Status = NtCreateToken(phToken,
+                           TOKEN_ALL_ACCESS,
+                           &ObjectAttributes,
+                           TokenPrimary,
+                           &pStatistics->AuthenticationId,
+                           &pStatistics->ExpirationTime,
+                           pUser,
+                           pNewGroups,
+                           pPrivileges,
+                           pOwner,
+                           pPrimaryGroup,
+                           pDefaultDacl,
+                           pSource);
+    RtlAdjustPrivilege(SE_CREATE_TOKEN_PRIVILEGE, bWasEnabled, FALSE, &bWasEnabled);
+
+done:
+    if (pNewGroups) HeapFree(GetProcessHeap(), 0, pNewGroups);
+    if (pStatistics) HeapFree(GetProcessHeap(), 0, pStatistics);
+    if (pSource) HeapFree(GetProcessHeap(), 0, pSource);
+    if (pDefaultDacl) HeapFree(GetProcessHeap(), 0, pDefaultDacl);
+    if (pPrimaryGroup) HeapFree(GetProcessHeap(), 0, pPrimaryGroup);
+    if (pOwner) HeapFree(GetProcessHeap(), 0, pOwner);
+    if (pPrivileges) HeapFree(GetProcessHeap(), 0, pPrivileges);
+    if (pGroups) HeapFree(GetProcessHeap(), 0, pGroups);
+    if (pUser) HeapFree(GetProcessHeap(), 0, pUser);
+    HeapFree(GetProcessHeap(), 0, pServiceSid);
+    return NT_SUCCESS(Status) ? ERROR_SUCCESS : RtlNtStatusToDosError(Status);
+}
+
+static BOOL
+ScmSharesServiceImage(
+    _In_ PSERVICE pService,
+    _In_ PSERVICE_IMAGE pImage)
+{
+    RTL_QUERY_REGISTRY_TABLE QueryTable[3];
+    UNICODE_STRING ImagePath;
+    UNICODE_STRING ObjectName;
+    NTSTATUS Status;
+    BOOL bShares;
+
+    RtlInitUnicodeString(&ImagePath, NULL);
+    RtlInitUnicodeString(&ObjectName, NULL);
+    RtlZeroMemory(&QueryTable, sizeof(QueryTable));
+    QueryTable[0].Name = L"ImagePath";
+    QueryTable[0].Flags = RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_REQUIRED;
+    QueryTable[0].EntryContext = &ImagePath;
+    QueryTable[1].Name = L"ObjectName";
+    QueryTable[1].Flags = RTL_QUERY_REGISTRY_DIRECT;
+    QueryTable[1].EntryContext = &ObjectName;
+
+    Status = RtlQueryRegistryValues(RTL_REGISTRY_SERVICES, pService->lpServiceName, QueryTable, NULL, NULL);
+    bShares = NT_SUCCESS(Status) && ImagePath.Buffer != NULL &&
+              _wcsicmp(ImagePath.Buffer, pImage->pszImagePath) == 0 &&
+              ScmIsSameServiceAccount(pImage->pszAccountName, ObjectName.Buffer);
+    RtlFreeUnicodeString(&ObjectName);
+    RtlFreeUnicodeString(&ImagePath);
+    return bShares;
+}
+
+static DWORD
+ScmWriteRestrictServiceToken(
+    _Inout_ PSERVICE_IMAGE pImage)
+{
+    static SID WorldSid = { SID_REVISION, 1, { SECURITY_WORLD_SID_AUTHORITY }, { SECURITY_WORLD_RID } };
+    static SID WriteRestrictedSid = { SID_REVISION, 1, { SECURITY_NT_AUTHORITY }, { SECURITY_WRITE_RESTRICTED_CODE_RID } };
+    static const SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY };
+    PTOKEN_GROUPS pGroups, pRestricted;
+    HANDLE hToken;
+    NTSTATUS Status;
+    PISID pSid;
+    DWORD i;
+
+    pGroups = ScmQueryTokenInfo(pImage->hToken, TokenGroups);
+    if (pGroups == NULL)
+        return ERROR_NOT_ENOUGH_MEMORY;
+    pRestricted = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, FIELD_OFFSET(TOKEN_GROUPS, Groups[pGroups->GroupCount + 2]));
+    if (pRestricted == NULL)
+    {
+        HeapFree(GetProcessHeap(), 0, pGroups);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+
+    for (i = 0; i < pGroups->GroupCount; i++)
+    {
+        pSid = pGroups->Groups[i].Sid;
+        if ((pGroups->Groups[i].Attributes & SE_GROUP_LOGON_ID) == SE_GROUP_LOGON_ID ||
+            (pSid->SubAuthorityCount == SECURITY_SERVICE_ID_RID_COUNT &&
+             pSid->SubAuthority[0] == SECURITY_SERVICE_ID_BASE_RID &&
+             RtlEqualMemory(&pSid->IdentifierAuthority, &NtAuthority, sizeof(NtAuthority))))
+        {
+            pRestricted->Groups[pRestricted->GroupCount++].Sid = pSid;
+        }
+    }
+    pRestricted->Groups[pRestricted->GroupCount++].Sid = &WorldSid;
+    pRestricted->Groups[pRestricted->GroupCount++].Sid = &WriteRestrictedSid;
+
+    Status = NtFilterToken(pImage->hToken, WRITE_RESTRICTED, NULL, NULL, pRestricted, &hToken);
+    HeapFree(GetProcessHeap(), 0, pRestricted);
+    HeapFree(GetProcessHeap(), 0, pGroups);
+    if (!NT_SUCCESS(Status))
+    {
+        DPRINT1("Restricting the service token of %S failed (Status 0x%lx)\n", pImage->pszImagePath, Status);
+        return RtlNtStatusToDosError(Status);
+    }
+
+    CloseHandle(pImage->hToken);
+    pImage->hToken = hToken;
+    return ERROR_SUCCESS;
+}
+
+static DWORD
+ScmAddServiceSid(
+    _In_ PSERVICE pService,
+    _Inout_ PSERVICE_IMAGE pImage,
+    _Inout_ PBOOL pbRestricted)
+{
+    DWORD dwSidType;
+    HANDLE hBaseToken = pImage->hToken, hToken;
+    DWORD dwError;
+
+    dwSidType = ScmGetServiceDword(pService, L"ServiceSidType", SERVICE_SID_TYPE_NONE);
+    if (dwSidType != SERVICE_SID_TYPE_UNRESTRICTED && dwSidType != SERVICE_SID_TYPE_RESTRICTED)
+        return ERROR_SUCCESS;
+    if (dwSidType == SERVICE_SID_TYPE_RESTRICTED)
+        *pbRestricted = TRUE;
+
+    if (hBaseToken == NULL &&
+        !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_QUERY_SOURCE | TOKEN_DUPLICATE, &hBaseToken))
+    {
+        return GetLastError();
+    }
+
+    dwError = ScmCreateServiceSidToken(hBaseToken, pService->lpServiceName, &hToken);
+    if (hBaseToken != pImage->hToken)
+        CloseHandle(hBaseToken);
+    if (dwError != ERROR_SUCCESS)
+    {
+        DPRINT1("Adding the service SID of %S failed (Error %lu)\n", pService->lpServiceName, dwError);
+        return dwError;
+    }
+
+    if (pImage->hToken != NULL)
+        CloseHandle(pImage->hToken);
+    pImage->hToken = hToken;
+    return ERROR_SUCCESS;
+}
+
+static DWORD
+ScmApplyServiceSid(
+    _In_ PSERVICE pService,
+    _Inout_ PSERVICE_IMAGE pImage)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService;
+    DWORD dwError = ERROR_SUCCESS;
+    BOOL bRestricted = FALSE;
+
+    if (pService->Status.dwServiceType & SERVICE_WIN32_OWN_PROCESS)
+    {
+        dwError = ScmAddServiceSid(pService, pImage, &bRestricted);
+    }
+    else
+    {
+        /* The token of a started process cannot get a SID later, so it takes the SID of every service that can join the process */
+        ScmLockDatabaseShared();
+        for (ServiceEntry = ServiceListHead.Flink;
+             ServiceEntry != &ServiceListHead && dwError == ERROR_SUCCESS;
+             ServiceEntry = ServiceEntry->Flink)
+        {
+            CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+            if ((CurrentService->Status.dwServiceType & SERVICE_WIN32_SHARE_PROCESS) &&
+                !CurrentService->bDeleted &&
+                ScmSharesServiceImage(CurrentService, pImage))
+            {
+                dwError = ScmAddServiceSid(CurrentService, pImage, &bRestricted);
+            }
+        }
+        ScmUnlockDatabase();
+    }
+
+    if (dwError == ERROR_SUCCESS && bRestricted)
+        dwError = ScmWriteRestrictServiceToken(pImage);
+    return dwError;
+}
+
+
 static
 DWORD
 ScmLogonService(
@@ -513,7 +818,9 @@ ScmLogonService(
 
     if (ScmIsLocalSystemAccount(pImage->pszAccountName) ||
         ((ScmLiveSetup || ScmSetupInProgress) && !ScmIsBuiltinServiceAccount(pImage->pszAccountName)))
+    {
         return ERROR_SUCCESS;
+    }
 
     /* Get the user and domain names */
     ptr = wcschr(pImage->pszAccountName, L'\\');
@@ -591,6 +898,22 @@ done:
 
     if (ptr != NULL)
         *ptr = L'\\';
+
+    if (dwError != ERROR_SUCCESS)
+    {
+        if (pImage->hProfile != NULL)
+        {
+            ScmEnableBackupRestorePrivileges(pImage->hToken, TRUE);
+            UnloadUserProfile(pImage->hToken, pImage->hProfile);
+            ScmEnableBackupRestorePrivileges(pImage->hToken, FALSE);
+            pImage->hProfile = NULL;
+        }
+        if (pImage->hToken != NULL)
+        {
+            CloseHandle(pImage->hToken);
+            pImage->hToken = NULL;
+        }
+    }
 
     return dwError;
 }
@@ -692,13 +1015,17 @@ ScmCreateOrReferenceServiceImage(PSERVICE pService)
 
         bSecurityService = ScmIsSecurityService(pServiceImage);
 
-        /* Create the control pipe */
-        dwError = ScmCreateNewControlPipe(pServiceImage,
-                                          bSecurityService);
+        dwError = ScmApplyServiceSid(pService, pServiceImage);
+        if (dwError == ERROR_SUCCESS)
+        {
+            /* Create the control pipe */
+            dwError = ScmCreateNewControlPipe(pServiceImage,
+                                              bSecurityService);
+            if (dwError != ERROR_SUCCESS)
+                DPRINT1("ScmCreateNewControlPipe() failed (Error %lu)\n", dwError);
+        }
         if (dwError != ERROR_SUCCESS)
         {
-            DPRINT1("ScmCreateNewControlPipe() failed (Error %lu)\n", dwError);
-
             /* Unload the user profile */
             if (pServiceImage->hProfile != NULL)
             {
@@ -1279,6 +1606,9 @@ DWORD ScmDeleteService(PSERVICE lpService)
         return dwError;
     }
 
+    /* SERVICE_NOTIFY_DELETED reports this point, not the mark for delete */
+    ScmNotifyServiceDatabase(SERVICE_NOTIFY_DELETED, lpService->lpServiceName);
+
     /* Delete the Service */
     ScmDeleteServiceRecord(lpService);
 
@@ -1641,7 +1971,23 @@ ScmCreateServiceDatabase(VOID)
 VOID
 ScmShutdownServiceDatabase(VOID)
 {
+    HANDLE hWorker;
+
     DPRINT("ScmShutdownServiceDatabase() called\n");
+
+    EnterCriticalSection(&ControlServiceCriticalSection);
+    hWorker = ScmDelayedAutoStartWorker;
+    ScmDelayedAutoStartWorker = NULL;
+    LeaveCriticalSection(&ControlServiceCriticalSection);
+
+    if (hWorker != NULL)
+    {
+        SetEvent(ScmDelayedAutoStartStop);
+        WaitForSingleObject(hWorker, INFINITE);
+        CloseHandle(hWorker);
+        CloseHandle(ScmDelayedAutoStartStop);
+        ScmDelayedAutoStartStop = NULL;
+    }
 
     ScmDeleteMarkedServices();
     RtlDeleteResource(&DatabaseLock);
@@ -1777,23 +2123,68 @@ ScmGetBootAndSystemDriverState(VOID)
 }
 
 
+/* The pipe may still write the OVERLAPPED and the buffers of a cancelled request until the request completes. */
+static BOOL
+ScmCancelPipeIo(
+    _In_ HANDLE hPipe,
+    _Inout_ LPOVERLAPPED pOverlapped,
+    _Out_ PDWORD pdwTransferred)
+{
+    if (!CancelIoEx(hPipe, pOverlapped) && GetLastError() != ERROR_NOT_FOUND)
+        DPRINT1("CancelIoEx() failed (Error %lu)\n", GetLastError());
+
+    if (GetOverlappedResult(hPipe, pOverlapped, pdwTransferred, TRUE))
+        return TRUE;
+
+    *pdwTransferred = 0;
+    return FALSE;
+}
+
+
+/* The reply to a control that timed out arrives later and fails the next transceive with ERROR_PIPE_BUSY until it is read. */
+static BOOL
+ScmDiscardLateReplies(
+    _In_ HANDLE hPipe)
+{
+    SCM_REPLY_PACKET ReplyPacket;
+    OVERLAPPED Overlapped;
+    DWORD dwAvailable = 0, dwRead;
+    BOOL bDiscarded = FALSE, bResult;
+
+    while (PeekNamedPipe(hPipe, NULL, 0, NULL, &dwAvailable, NULL) && dwAvailable != 0)
+    {
+        ZeroMemory(&Overlapped, sizeof(Overlapped));
+        bResult = ReadFile(hPipe, &ReplyPacket, sizeof(ReplyPacket), &dwRead, &Overlapped);
+        if (!bResult && GetLastError() == ERROR_IO_PENDING)
+            bResult = GetOverlappedResult(hPipe, &Overlapped, &dwRead, TRUE);
+        if (!bResult && GetLastError() != ERROR_MORE_DATA)
+            break;
+        DPRINT1("Discarded a late reply of %lu bytes\n", dwRead);
+        bDiscarded = TRUE;
+    }
+
+    return bDiscarded;
+}
+
+
 /*
  * ScmSendControlPacket must never be called with the database lock being held.
  * The service passed must always be referenced instead.
  */
-DWORD
-ScmSendControlPacket(
+static DWORD
+ScmSendControlPacketWithTimeout(
     _In_ HANDLE hControlPipe,
     _In_ PCWSTR pServiceName,
     _In_ DWORD dwControl,
     _In_ DWORD dwControlPacketSize,
-    _In_ PVOID pControlPacket)
+    _In_ PVOID pControlPacket,
+    _In_ DWORD dwTimeout)
 {
-    DWORD dwError = ERROR_SUCCESS;
-    BOOL bResult;
+    DWORD dwError;
+    BOOL bResult, bRetried = FALSE;
     SCM_REPLY_PACKET ReplyPacket;
-    DWORD dwReadCount = 0;
-    OVERLAPPED Overlapped = {0};
+    DWORD dwReadCount;
+    OVERLAPPED Overlapped;
 
     DPRINT("ScmSendControlPacket(%p, %lu, %p) called\n",
            hControlPipe, dwControlPacketSize, pControlPacket);
@@ -1801,6 +2192,10 @@ ScmSendControlPacket(
     /* Acquire the service control critical section, to synchronize requests */
     EnterCriticalSection(&ControlServiceCriticalSection);
 
+Retry:
+    dwError = ERROR_SUCCESS;
+    dwReadCount = 0;
+    ZeroMemory(&Overlapped, sizeof(Overlapped));
     bResult = TransactNamedPipe(hControlPipe,
                                 pControlPacket,
                                 dwControlPacketSize,
@@ -1820,17 +2215,13 @@ ScmSendControlPacket(
 
         DPRINT("TransactNamedPipe(%S, %d) returned ERROR_IO_PENDING\n", pServiceName, dwControl);
 
-        dwError = WaitForSingleObject(hControlPipe, PipeTimeout);
+        dwError = WaitForSingleObject(hControlPipe, dwTimeout);
         DPRINT("WaitForSingleObject(%S, %d) returned %lu\n", pServiceName, dwControl, dwError);
 
         if (dwError == WAIT_TIMEOUT)
         {
             DPRINT1("WaitForSingleObject(%S, %d) timed out\n", pServiceName, dwControl);
-            bResult = CancelIo(hControlPipe);
-            if (!bResult)
-                DPRINT1("CancelIo(%S, %d) failed (Error %lu)\n", pServiceName, dwControl, GetLastError());
-
-            dwError = ERROR_SERVICE_REQUEST_TIMEOUT;
+            dwError = ScmCancelPipeIo(hControlPipe, &Overlapped, &dwReadCount) ? ERROR_SUCCESS : ERROR_SERVICE_REQUEST_TIMEOUT;
         }
         else if (dwError == WAIT_OBJECT_0)
         {
@@ -1847,6 +2238,12 @@ ScmSendControlPacket(
     }
 
 Done:
+    if (dwError == ERROR_PIPE_BUSY && !bRetried && ScmDiscardLateReplies(hControlPipe))
+    {
+        bRetried = TRUE;
+        goto Retry;
+    }
+
     /* Release the service control critical section */
     LeaveCriticalSection(&ControlServiceCriticalSection);
 
@@ -1854,6 +2251,18 @@ Done:
         dwError = ReplyPacket.dwError;
 
     return dwError;
+}
+
+
+DWORD
+ScmSendControlPacket(
+    _In_ HANDLE hControlPipe,
+    _In_ PCWSTR pServiceName,
+    _In_ DWORD dwControl,
+    _In_ DWORD dwControlPacketSize,
+    _In_ PVOID pControlPacket)
+{
+    return ScmSendControlPacketWithTimeout(hControlPipe, pServiceName, dwControl, dwControlPacketSize, pControlPacket, PipeTimeout);
 }
 
 
@@ -1958,12 +2367,13 @@ ScmControlServiceEx(
 }
 
 
-DWORD
-ScmControlService(
+static DWORD
+ScmControlServiceWithTimeout(
     _In_ HANDLE hControlPipe,
     _In_ PCWSTR pServiceName,
     _In_ DWORD dwControl,
-    _In_ DWORD hServiceStatus)
+    _In_ DWORD hServiceStatus,
+    _In_ DWORD dwTimeout)
 {
     DWORD dwError = ERROR_SUCCESS;
     PSCM_CONTROL_PACKET ControlPacket;
@@ -1992,17 +2402,29 @@ ScmControlService(
     wcscpy(Ptr, pServiceName);
 
     /* Send the control packet */
-    dwError = ScmSendControlPacket(hControlPipe,
-                                   pServiceName,
-                                   dwControl,
-                                   PacketSize,
-                                   ControlPacket);
+    dwError = ScmSendControlPacketWithTimeout(hControlPipe,
+                                              pServiceName,
+                                              dwControl,
+                                              PacketSize,
+                                              ControlPacket,
+                                              dwTimeout);
 
     /* Free the control packet */
     HeapFree(GetProcessHeap(), 0, ControlPacket);
 
     DPRINT("ScmControlService(%S, %d) done (Error %lu)\n", pServiceName, dwControl, dwError);
     return dwError;
+}
+
+
+DWORD
+ScmControlService(
+    _In_ HANDLE hControlPipe,
+    _In_ PCWSTR pServiceName,
+    _In_ DWORD dwControl,
+    _In_ DWORD hServiceStatus)
+{
+    return ScmControlServiceWithTimeout(hControlPipe, pServiceName, dwControl, hServiceStatus, PipeTimeout);
 }
 
 
@@ -2048,11 +2470,7 @@ ScmWaitForServiceConnect(PSERVICE Service)
 
             if (dwError == WAIT_TIMEOUT || dwError == WAIT_OBJECT_0 + 1)
             {
-                bResult = CancelIo(Service->lpImage->hControlPipe);
-                if (bResult == FALSE)
-                {
-                    DPRINT1("CancelIo() failed (Error: %lu)\n", GetLastError());
-                }
+                ScmCancelPipeIo(Service->lpImage->hControlPipe, &Overlapped, &dwRead);
 
 #if 0
                 _ultow(PipeTimeout, szBuffer1, 10);
@@ -2130,11 +2548,7 @@ ScmWaitForServiceConnect(PSERVICE Service)
                                              PipeTimeout);
             if (dwError == WAIT_TIMEOUT || dwError == WAIT_OBJECT_0 + 1)
             {
-                bResult = CancelIo(Service->lpImage->hControlPipe);
-                if (bResult == FALSE)
-                {
-                    DPRINT1("CancelIo() failed (Error: %lu)\n", GetLastError());
-                }
+                ScmCancelPipeIo(Service->lpImage->hControlPipe, &Overlapped, &dwRead);
 
 #if 0
                 _ultow(PipeTimeout, szBuffer1, 10);
@@ -2412,13 +2826,25 @@ ScmLoadService(PSERVICE Service,
         if (dwError == ERROR_SUCCESS)
         {
             ScmLockDatabaseExclusive();
-            Service->Status.dwCurrentState = SERVICE_START_PENDING;
-            Service->Status.dwControlsAccepted = 0;
-            ScmNotifyServiceStatus(Service);
-            ScmReferenceService(Service);
+            if (Service->bDeleted)
+            {
+                dwError = ERROR_SERVICE_MARKED_FOR_DELETE;
+            }
+            else if (Service->dwStartType == SERVICE_DISABLED)
+            {
+                dwError = ERROR_SERVICE_DISABLED;
+            }
+            else
+            {
+                Service->Status.dwCurrentState = SERVICE_START_PENDING;
+                Service->Status.dwControlsAccepted = 0;
+                ScmNotifyServiceStatus(Service);
+                ScmReferenceService(Service);
+            }
             ScmUnlockDatabase();
 
-            dwError = ScmStartUserModeService(Service, argc, argv);
+            if (dwError == ERROR_SUCCESS)
+                dwError = ScmStartUserModeService(Service, argc, argv);
             if (dwError == ERROR_SUCCESS)
             {
                 ScmLockDatabaseExclusive();
@@ -2556,6 +2982,126 @@ ScmIsDeferredDuringSetup(
 }
 
 
+DWORD
+ScmGetServiceDword(
+    _In_ PSERVICE pService,
+    _In_ PCWSTR pszValueName,
+    _In_ DWORD dwDefault)
+{
+    DWORD dwValue = dwDefault, dwSize = sizeof(dwValue), dwType = REG_NONE;
+    HKEY hServiceKey;
+
+    if (ScmOpenServiceKey(pService->lpServiceName, KEY_READ, &hServiceKey) != ERROR_SUCCESS)
+        return dwDefault;
+    if (RegQueryValueExW(hServiceKey, pszValueName, NULL, &dwType, (LPBYTE)&dwValue, &dwSize) != ERROR_SUCCESS ||
+        dwType != REG_DWORD || dwSize != sizeof(DWORD))
+    {
+        dwValue = dwDefault;
+    }
+    RegCloseKey(hServiceKey);
+    return dwValue;
+}
+
+#define SCM_DELAYED_AUTO_START_DELAY (120 * 1000)
+
+static DWORD
+WINAPI
+ScmDelayedAutoStartThread(
+    _In_ PVOID Context)
+{
+    PSERVICE *Services = Context;
+    DWORD dwError;
+    BOOL bStart;
+    ULONG Count, i;
+
+    for (Count = 0; Services[Count] != NULL; Count++)
+        ;
+
+    if (WaitForSingleObject(ScmDelayedAutoStartStop, SCM_DELAYED_AUTO_START_DELAY) == WAIT_TIMEOUT)
+    {
+        for (i = 0; i < Count && !ScmShutdown; i++)
+        {
+            /* Same order of locks as ScmStartService; a service disabled meanwhile stays stopped */
+            EnterCriticalSection(&ControlServiceCriticalSection);
+            ScmLockDatabaseShared();
+            bStart = !ScmShutdown && !Services[i]->bDeleted &&
+                     Services[i]->dwStartType == SERVICE_AUTO_START &&
+                     Services[i]->Status.dwCurrentState == SERVICE_STOPPED;
+            ScmUnlockDatabase();
+            dwError = bStart ? ScmLoadService(Services[i], 0, NULL) : ERROR_SUCCESS;
+            LeaveCriticalSection(&ControlServiceCriticalSection);
+            if (dwError != ERROR_SUCCESS && dwError != ERROR_SERVICE_ALREADY_RUNNING)
+                DPRINT1("Delayed start of %S failed (Error %lu)\n", Services[i]->lpServiceName, dwError);
+        }
+    }
+
+    ScmLockDatabaseExclusive();
+    for (i = 0; i < Count; i++)
+        ScmDereferenceService(Services[i]);
+    ScmUnlockDatabase();
+    HeapFree(GetProcessHeap(), 0, Services);
+    return 0;
+}
+
+static
+VOID
+ScmPromoteDelayedDependencies(
+    _Inout_ PSERVICE *Delayed,
+    _Inout_ PULONG DelayedCount)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE Service;
+    LPWSTR lpDependencies, lpName;
+    DWORD cchDependencies;
+    HKEY hServiceKey;
+    BOOL bPromoted;
+    ULONG i;
+
+    do
+    {
+        bPromoted = FALSE;
+
+        for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead && *DelayedCount != 0; ServiceEntry = ServiceEntry->Flink)
+        {
+            Service = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+            if (Service->dwStartType != SERVICE_AUTO_START || Service->ServiceVisited)
+                continue;
+
+            if (ScmOpenServiceKey(Service->lpServiceName, KEY_READ, &hServiceKey) != ERROR_SUCCESS)
+                continue;
+            ScmReadDependencies(hServiceKey, &lpDependencies, &cchDependencies);
+            RegCloseKey(hServiceKey);
+            if (lpDependencies == NULL)
+                continue;
+
+            for (lpName = lpDependencies; *lpName != 0; lpName += wcslen(lpName) + 1)
+            {
+                i = 0;
+                while (i < *DelayedCount)
+                {
+                    if (*lpName == SC_GROUP_IDENTIFIERW ?
+                        (Delayed[i]->lpGroup != NULL && _wcsicmp(Delayed[i]->lpGroup->lpGroupName, lpName + 1) == 0) :
+                        _wcsicmp(Delayed[i]->lpServiceName, lpName) == 0)
+                    {
+                        Delayed[i]->ServiceVisited = FALSE;
+                        ScmLockDatabaseExclusive();
+                        ScmDereferenceService(Delayed[i]);
+                        ScmUnlockDatabase();
+                        Delayed[i] = Delayed[--*DelayedCount];
+                        bPromoted = TRUE;
+                    }
+                    else
+                    {
+                        i++;
+                    }
+                }
+            }
+
+            HeapFree(GetProcessHeap(), 0, lpDependencies);
+        }
+    } while (bPromoted);
+}
+
 VOID
 ScmAutoStartServices(VOID)
 {
@@ -2566,6 +3112,8 @@ ScmAutoStartServices(VOID)
     PSERVICE CurrentService;
     DWORD SafeBootEnabled;
     HKEY hSafeBootKey = NULL;
+    PSERVICE *Delayed;
+    ULONG DelayedCount = 0;
     ULONG i;
 
     /*
@@ -2583,6 +3131,13 @@ ScmAutoStartServices(VOID)
             DPRINT1("WARNING: Could not open the associated Safe Boot key\n");
     }
 
+    i = 1;
+    for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
+        i++;
+    Delayed = HeapAlloc(GetProcessHeap(), 0, i * sizeof(*Delayed));
+    if (Delayed == NULL)
+        DPRINT1("Cannot delay the delayed automatic services, they start with the other ones\n");
+
     /* Acquire the service control critical section, to synchronize starts */
     EnterCriticalSection(&ControlServiceCriticalSection);
 
@@ -2597,8 +3152,19 @@ ScmAutoStartServices(VOID)
              !ScmIsSafeBootServiceAllowed(CurrentService, hSafeBootKey)) ||
             ScmIsDeferredDuringSetup(CurrentService);
 
+        if (Delayed != NULL && !CurrentService->ServiceVisited && CurrentService->dwStartType == SERVICE_AUTO_START &&
+            ScmGetServiceDword(CurrentService, L"DelayedAutostart", FALSE))
+        {
+            CurrentService->ServiceVisited = TRUE;
+            ScmReferenceService(CurrentService);
+            Delayed[DelayedCount++] = CurrentService;
+        }
+
         ServiceEntry = ServiceEntry->Flink;
     }
+
+    if (Delayed != NULL)
+        ScmPromoteDelayedDependencies(Delayed, &DelayedCount);
 
     /* Close the SafeBoot key now, it's no longer needed */
     if (hSafeBootKey != NULL)
@@ -2696,8 +3262,133 @@ ScmAutoStartServices(VOID)
         ServiceEntry = ServiceEntry->Flink;
     }
 
+    if (Delayed != NULL)
+    {
+        Delayed[DelayedCount] = NULL;
+
+        /* The shutdown takes the worker under this critical section, so it either finds it here or has set ScmShutdown before */
+        if (DelayedCount != 0 && !ScmShutdown)
+        {
+            ScmDelayedAutoStartStop = CreateEventW(NULL, TRUE, FALSE, NULL);
+            if (ScmDelayedAutoStartStop != NULL)
+                ScmDelayedAutoStartWorker = CreateThread(NULL, 0, ScmDelayedAutoStartThread, Delayed, 0, NULL);
+        }
+
+        if (ScmDelayedAutoStartWorker == NULL)
+        {
+            if (ScmDelayedAutoStartStop != NULL)
+            {
+                CloseHandle(ScmDelayedAutoStartStop);
+                ScmDelayedAutoStartStop = NULL;
+            }
+
+            for (i = 0; i < DelayedCount && !ScmShutdown; i++)
+            {
+                DPRINT1("Cannot delay the start of %S\n", Delayed[i]->lpServiceName);
+                ScmLoadService(Delayed[i], 0, NULL);
+            }
+
+            ScmLockDatabaseExclusive();
+            for (i = 0; i < DelayedCount; i++)
+                ScmDereferenceService(Delayed[i]);
+            ScmUnlockDatabase();
+            HeapFree(GetProcessHeap(), 0, Delayed);
+        }
+    }
+
     /* Release the critical section */
     LeaveCriticalSection(&ControlServiceCriticalSection);
+}
+
+
+static VOID
+ScmPreshutdownServices(VOID)
+{
+    PLIST_ENTRY ServiceEntry;
+    PSERVICE CurrentService;
+    struct
+    {
+        PSERVICE Service;
+        ULONGLONG Deadline;
+    } *Waits;
+    ULONG Count = 0, i, Running;
+    ULONGLONG Now;
+
+    ScmLockDatabaseShared();
+    for (ServiceEntry = ServiceListHead.Flink; ServiceEntry != &ServiceListHead; ServiceEntry = ServiceEntry->Flink)
+        Count++;
+    Waits = HeapAlloc(GetProcessHeap(), 0, max(Count, 1) * sizeof(*Waits));
+    Count = 0;
+    for (ServiceEntry = ServiceListHead.Flink;
+         Waits != NULL && ServiceEntry != &ServiceListHead;
+         ServiceEntry = ServiceEntry->Flink)
+    {
+        CurrentService = CONTAINING_RECORD(ServiceEntry, SERVICE, ServiceListEntry);
+        if ((CurrentService->Status.dwControlsAccepted & SERVICE_ACCEPT_PRESHUTDOWN) &&
+            CurrentService->lpImage != NULL &&
+            CurrentService->Status.dwCurrentState != SERVICE_STOPPED &&
+            CurrentService->Status.dwCurrentState != SERVICE_STOP_PENDING)
+        {
+            ScmReferenceService(CurrentService);
+            Waits[Count++].Service = CurrentService;
+        }
+    }
+    ScmUnlockDatabase();
+    if (Waits == NULL)
+        return;
+
+    for (i = 0; i < Count; i++)
+    {
+        HANDLE hControlPipe = NULL;
+        DWORD dwResumeCount = 0;
+        DWORD dwTimeout;
+
+        CurrentService = Waits[i].Service;
+        dwTimeout = ScmGetServiceDword(CurrentService, L"PreshutdownTimeout", 10000);
+        Waits[i].Deadline = GetTickCount64() + dwTimeout;
+
+        ScmLockDatabaseShared();
+        if (CurrentService->lpImage != NULL && CurrentService->Status.dwCurrentState != SERVICE_STOPPED &&
+            !DuplicateHandle(GetCurrentProcess(), CurrentService->lpImage->hControlPipe, GetCurrentProcess(),
+                             &hControlPipe, 0, FALSE, DUPLICATE_SAME_ACCESS))
+        {
+            hControlPipe = NULL;
+        }
+        dwResumeCount = CurrentService->dwResumeCount;
+        ScmUnlockDatabase();
+        if (hControlPipe == NULL)
+        {
+            Waits[i].Deadline = 0;
+            continue;
+        }
+
+        DPRINT("Preshutdown service: %S\n", CurrentService->lpServiceName);
+        if (ScmControlServiceWithTimeout(hControlPipe, CurrentService->lpServiceName, SERVICE_CONTROL_PRESHUTDOWN,
+                                         dwResumeCount, dwTimeout) != ERROR_SUCCESS)
+            Waits[i].Deadline = 0;
+        CloseHandle(hControlPipe);
+    }
+
+    do
+    {
+        Running = 0;
+        Now = GetTickCount64();
+        ScmLockDatabaseShared();
+        for (i = 0; i < Count; i++)
+        {
+            if (Waits[i].Service->Status.dwCurrentState != SERVICE_STOPPED && Now < Waits[i].Deadline)
+                Running++;
+        }
+        ScmUnlockDatabase();
+        if (Running)
+            Sleep(100);
+    } while (Running);
+
+    ScmLockDatabaseExclusive();
+    for (i = 0; i < Count; i++)
+        ScmDereferenceService(Waits[i].Service);
+    ScmUnlockDatabase();
+    HeapFree(GetProcessHeap(), 0, Waits);
 }
 
 
@@ -2710,6 +3401,8 @@ ScmAutoShutdownServices(VOID)
     DWORD dwResumeCount;
 
     DPRINT("ScmAutoShutdownServices() called\n");
+
+    ScmPreshutdownServices();
 
     /* Lock the service database exclusively */
     ScmLockDatabaseExclusive();

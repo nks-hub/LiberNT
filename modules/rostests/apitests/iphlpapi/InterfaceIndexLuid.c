@@ -43,6 +43,66 @@ CheckIdentity(NET_IFINDEX Index, NET_LUID Luid)
     ok(Row.InterfaceIndex == Index, "LUID %I64x: GetIfEntry2 index %lu, expected %lu\n", Luid.Value, Row.InterfaceIndex, Index);
 }
 
+static VOID
+CheckDriverKeys(PMIB_IF_TABLE2 Table)
+{
+    static const CHAR ClassPath[] = "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}";
+    HKEY ClassKey, DriverKey;
+    CHAR Name[64], InstanceId[64], RowId[64];
+    DWORD KeyIndex, Size, Type, LuidIndex, IfType;
+    BOOL HasIdentity, HasType;
+    LONG Error;
+    ULONG i;
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, ClassPath, 0, KEY_READ, &ClassKey) != ERROR_SUCCESS)
+    {
+        skip("Cannot open the network adapter class key\n");
+        return;
+    }
+
+    for (KeyIndex = 0; ; KeyIndex++)
+    {
+        Size = sizeof(Name);
+        Error = RegEnumKeyExA(ClassKey, KeyIndex, Name, &Size, NULL, NULL, NULL, NULL);
+        if (Error == ERROR_NO_MORE_ITEMS)
+            break;
+        if (Error != ERROR_SUCCESS || RegOpenKeyExA(ClassKey, Name, 0, KEY_QUERY_VALUE, &DriverKey) != ERROR_SUCCESS)
+            continue;
+
+        ZeroMemory(InstanceId, sizeof(InstanceId));
+        Size = sizeof(InstanceId) - 1;
+        HasIdentity = RegQueryValueExA(DriverKey, "NetCfgInstanceId", NULL, &Type, (BYTE *)InstanceId, &Size) == ERROR_SUCCESS &&
+                      Type == REG_SZ;
+        Size = sizeof(LuidIndex);
+        HasIdentity = HasIdentity &&
+                      RegQueryValueExA(DriverKey, "NetLuidIndex", NULL, &Type, (BYTE *)&LuidIndex, &Size) == ERROR_SUCCESS &&
+                      Type == REG_DWORD;
+        Size = sizeof(IfType);
+        HasType = RegQueryValueExA(DriverKey, "*IfType", NULL, &Type, (BYTE *)&IfType, &Size) == ERROR_SUCCESS && Type == REG_DWORD;
+        RegCloseKey(DriverKey);
+        if (!HasIdentity)
+            continue;
+
+        for (i = 0; i < Table->NumEntries; i++)
+        {
+            const GUID *Guid = &Table->Table[i].InterfaceGuid;
+            NET_LUID Luid = Table->Table[i].InterfaceLuid;
+
+            sprintf(RowId, "{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", Guid->Data1, Guid->Data2, Guid->Data3,
+                    Guid->Data4[0], Guid->Data4[1], Guid->Data4[2], Guid->Data4[3],
+                    Guid->Data4[4], Guid->Data4[5], Guid->Data4[6], Guid->Data4[7]);
+            if (lstrcmpiA(RowId, InstanceId) != 0)
+                continue;
+
+            ok(Luid.Info.NetLuidIndex == LuidIndex, "Adapter %s: NetLuidIndex %lu, driver key has %lu\n",
+               InstanceId, (ULONG)Luid.Info.NetLuidIndex, LuidIndex);
+            ok(!HasType || Luid.Info.IfType == IfType, "Adapter %s: IfType %lu, driver key has %lu\n",
+               InstanceId, (ULONG)Luid.Info.IfType, IfType);
+        }
+    }
+    RegCloseKey(ClassKey);
+}
+
 START_TEST(InterfaceIndexLuid)
 {
     PMIB_IF_TABLE2 Table = NULL;
@@ -71,6 +131,7 @@ START_TEST(InterfaceIndexLuid)
                "Rows %lu and %lu share LUID %I64x\n", j, i, Table->Table[i].InterfaceLuid.Value);
         }
     }
+    CheckDriverKeys(Table);
     FreeMibTable(Table);
 
     Error = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_ALL_INTERFACES, NULL, NULL, &Size);

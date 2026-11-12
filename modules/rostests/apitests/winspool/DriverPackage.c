@@ -848,7 +848,7 @@ static const char MalformedInf[] =
     "\"LiberNT\"=Models\r\n";
 
 static VOID
-TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, PCWSTR Outside, HRESULT Expected)
+TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, PCWSTR Outside, HRESULT Expected, PCWSTR Unsupported)
 {
     WCHAR Dir[MAX_PATH], InfName[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], Temp[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
@@ -869,6 +869,12 @@ TestRefusedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PCWSTR Present, 
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
         ok(Expected == E_FAIL ? FAILED(hr) : hr == Expected, "UploadPrinterDriverPackageW(%S) returned 0x%lx\n", InfName, hr);
+        if (hr == S_OK && Unsupported)
+        {
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, Unsupported, NULL, 0);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Unsupported, hr);
+            hr = S_OK;
+        }
         if (hr == S_OK)
             DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
 
@@ -3460,15 +3466,16 @@ TestDriverPackages(VOID)
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
     ok(hr == E_INVALIDARG, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
 
-    TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnunl", UnlistedInf, sizeof(UnlistedInf) - 1, L"TESTUNL.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
-    TestRefusedPackage(L"lntprnbad",MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", NULL, E_FAIL);
+    TestRefusedPackage(L"lntprnmiss", MissingInf, sizeof(MissingInf) - 1, L"TESTMISS.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), NULL);
+    TestRefusedPackage(L"lntprnneed", NeedsMissingInf, sizeof(NeedsMissingInf) - 1, L"TESTNM.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), NULL);
+    TestRefusedPackage(L"lntprnunl", UnlistedInf, sizeof(UnlistedInf) - 1, L"TESTUNL.DAT", NULL, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), NULL);
+    TestRefusedPackage(L"lntprnbad",MalformedInf, sizeof(MalformedInf) - 1, L"TESTBAD.DAT", NULL, E_FAIL, NULL);
     /* Windows 11 tells of a file outside the package directory that its hash is not in the catalog */
-    TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", L"lntprnesc.dll", SPAPI_E_FILE_HASH_NOT_IN_CATALOG);
-    TestRefusedPackage(L"lntprnsle", SlashEscapeInf, sizeof(SlashEscapeInf) - 1, L"TESTSLE.DAT", L"lntprnout.dll", SPAPI_E_FILE_HASH_NOT_IN_CATALOG);
-    /* and uploads a package whatever its Include names */
-    TestRefusedPackage(L"lntprnies", IncludeEscapeInf, sizeof(IncludeEscapeInf) - 1, L"TESTIES.DAT", L"lntprnout.inf", S_OK);
+    TestRefusedPackage(L"lntprnesc", EscapeInf, sizeof(EscapeInf) - 1, L"TESTESC.DAT", L"lntprnesc.dll", SPAPI_E_FILE_HASH_NOT_IN_CATALOG, NULL);
+    TestRefusedPackage(L"lntprnsle", SlashEscapeInf, sizeof(SlashEscapeInf) - 1, L"TESTSLE.DAT", L"lntprnout.dll", SPAPI_E_FILE_HASH_NOT_IN_CATALOG, NULL);
+    /* and uploads a package whatever its Include names; an INF outside the package it does not include when it installs */
+    TestRefusedPackage(L"lntprnies", IncludeEscapeInf, sizeof(IncludeEscapeInf) - 1, L"TESTIES.DAT", L"lntprnout.inf", S_OK,
+                       L"LiberNT Package Include Escape Printer");
     TestInstallPackage(L"lntprnplain", L"LiberNT Package Plain Printer", PlainInf, sizeof(PlainInf) - 1,
                        L"TESTPLAIN.DLL", L"TESTPLAIN.GPD", 1, NULL, NULL, S_OK);
     /* Windows 11 follows Needs only to a section of ntprint.inf, so the files that the sections of the package copy are missing */

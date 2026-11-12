@@ -5,8 +5,7 @@
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
-#ifndef _LIBERNT_DRVPKGLOCK_H
-#define _LIBERNT_DRVPKGLOCK_H
+#pragma once
 
 #include <sddl.h>
 
@@ -64,5 +63,3 @@ ReleasePackageLock(HANDLE Namespace, HANDLE Lock)
     CloseHandle(Lock);
     ClosePrivateNamespace(Namespace, 0);
 }
-
-#endif

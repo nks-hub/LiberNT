@@ -5,7 +5,8 @@
  *              requests made at DISPATCH_LEVEL, repeated registration, enabling
  *              the event from two threads at once, binding again after a failed bind,
  *              IP_PKTINFO and malformed control data on a send, bursts of datagrams,
- *              the limit on the datagrams a socket holds for its client
+ *              the limit on the datagrams a socket holds for its client,
+ *              closing a socket that receives, binding while IP_PKTINFO changes
  * COPYRIGHT:  Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -1401,6 +1402,139 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+NTSTATUS
+SetPktInfo(
+    _In_ PWSK_SOCKET Socket,
+    _In_ ULONG Value)
+{
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    Irp = NewIrp(&Event);
+    if (Irp == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    Status = ((PWSK_PROVIDER_DATAGRAM_DISPATCH)Socket->Dispatch)->WskControlSocket(
+        Socket, WskSetOption, IP_PKTINFO, IPPROTO_IP, sizeof(Value), &Value, 0, NULL, NULL, Irp);
+    Status = WaitIrp(Irp, &Event, Status);
+    IoFreeIrp(Irp);
+    return Status;
+}
+
+typedef struct _RACE_THREAD
+{
+    PWSK_SOCKET Socket;
+    PKEVENT Start;
+    ULONG PktInfo;
+    NTSTATUS Status;
+} RACE_THREAD, *PRACE_THREAD;
+
+static KSTART_ROUTINE RaceBindThread;
+static KSTART_ROUTINE RacePktInfoThread;
+
+static
+VOID
+NTAPI
+RaceBindThread(
+    _In_ PVOID Context)
+{
+    PRACE_THREAD Thread = Context;
+
+    KeWaitForSingleObject(Thread->Start, Executive, KernelMode, FALSE, NULL);
+    Thread->Status = BindSocket(Thread->Socket, 0x7f000001, WSKEVENTS_PORT + 9);
+}
+
+static
+VOID
+NTAPI
+RacePktInfoThread(
+    _In_ PVOID Context)
+{
+    PRACE_THREAD Thread = Context;
+
+    KeWaitForSingleObject(Thread->Start, Executive, KernelMode, FALSE, NULL);
+    Thread->Status = SetPktInfo(Thread->Socket, Thread->PktInfo);
+}
+
+static
+VOID
+TestBindWhileSettingPktInfo(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    RACE_THREAD Threads[2];
+    PKTHREAD ThreadObjects[2];
+    KEVENT Start;
+    NTSTATUS Status;
+    ULONG PktInfo;
+    LONG Round, Count;
+
+    Refuse = FALSE;
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Sender == NULL)
+        goto release;
+
+    /* The request that changes the option is the last one, so its value must be the one the datagram shows */
+    for (Round = 0; Round < 128; Round++)
+    {
+        PktInfo = Round & 1;
+        Receiver = CreateSocket(&ProviderNpi);
+        if (Receiver == NULL)
+            break;
+        Status = SetPktInfo(Receiver, !PktInfo);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+
+        KeInitializeEvent(&Start, NotificationEvent, FALSE);
+        Threads[0].Socket = Threads[1].Socket = Receiver;
+        Threads[0].Start = Threads[1].Start = &Start;
+        Threads[0].Status = Threads[1].Status = STATUS_UNSUCCESSFUL;
+        Threads[1].PktInfo = PktInfo;
+        ThreadObjects[0] = KmtStartThread(RaceBindThread, &Threads[0]);
+        ThreadObjects[1] = KmtStartThread(RacePktInfoThread, &Threads[1]);
+        KmtFinishThread(ThreadObjects[0], &Start);
+        KmtFinishThread(ThreadObjects[1], &Start);
+        ok_eq_hex(Threads[0].Status, STATUS_SUCCESS);
+        ok_eq_hex(Threads[1].Status, STATUS_SUCCESS);
+
+        ReceiveCount = 0;
+        LastControlLength = 0;
+        Status = SetReceiveEvent(Receiver, TRUE);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Status = SendTo(Sender, "RACE0001", WSKEVENTS_PORT + 9);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        Count = WaitReceives(1, 2000);
+        ok_eq_long(Count, 1L);
+        ok((LastControlLength != 0) == (PktInfo != 0),
+           "Round %ld: IP_PKTINFO was set to %lu, the datagram has %lu bytes of control data
+",
+           Round, PktInfo, LastControlLength);
+
+        CloseSocket(Receiver);
+    }
+    ok_eq_long(Round, 128L);
+
+    CloseSocket(Sender);
+release:
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -1455,5 +1589,6 @@ TestMessageHandler(
     TestBurst();
     TestReceiveLimit();
     TestCloseWhileReceiving();
+    TestBindWhileSettingPktInfo();
     return STATUS_SUCCESS;
 }

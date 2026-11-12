@@ -18,7 +18,7 @@
 #define LOOP_PEER_FRAMES 64
 #define LOOP_LINK_SPEED 1000000000ULL
 
-#if !defined(NETCXLOOP_WIFI) && !defined(NETCXLOOP_RAW_IP)
+#if !defined(NETCXLOOP_WIFI) && !defined(NETCXLOOP_NO_RECEIVE_FILTER)
 #define NETCXLOOP_LIGHTWEIGHT
 #endif
 
@@ -27,9 +27,16 @@ static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x57 
 #else
 static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x50 };
 #endif
-#ifndef NETCXLOOP_RAW_IP
-static const UCHAR LoopPeerAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x51 };
+
+#ifdef NETCXLOOP_RAW_IP
+/* The raw IP build is a device of its own; the lightweight adapter belongs to netcxloop */
+#undef NETCXLOOP_LIGHTWEIGHT
+#define LOOP_RAW_IP TRUE
+#else
+#define LOOP_RAW_IP FALSE
 #endif
+
+static const UCHAR LoopPeerAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x51 };
 #ifdef NETCXLOOP_LIGHTWEIGHT
 static const UCHAR LoopLightweightAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x52 };
 static const GUID LoopLightweightInterface = { 0x4c4f4f50, 0x4c57, 0x4d00, { 0x80, 0x00, 0x4c, 0x4f, 0x4f, 0x50, 0x4c, 0x57 } };
@@ -112,7 +119,6 @@ LoopStoreChecksum(
     Field[1] = (UCHAR)Checksum;
 }
 
-#ifndef NETCXLOOP_RAW_IP
 static
 BOOLEAN
 LoopBuildArpReply(
@@ -198,7 +204,7 @@ LoopBuildEchoReply(
         RtlZeroMemory(Reply->Data + 14 + TotalLength, 60 - (14 + TotalLength));
     return TRUE;
 }
-#else
+
 static
 BOOLEAN
 LoopBuildRawReply(
@@ -245,7 +251,6 @@ LoopBuildRawReply(
     Reply->Length = (USHORT)Length;
     return TRUE;
 }
-#endif
 
 static
 void
@@ -257,28 +262,27 @@ LoopPeerReceive(
     KIRQL OldIrql;
     LOOP_FRAME *Slot;
     BOOLEAN Queued = FALSE;
-#ifndef NETCXLOOP_RAW_IP
-    USHORT EtherType;
+    USHORT EtherType = 0;
 
-    if (Length < 14)
-        return;
-    EtherType = ((USHORT)Frame[12] << 8) | Frame[13];
-    if (EtherType != 0x0806 && EtherType != 0x0800)
-        return;
-#endif
+    if (!LOOP_RAW_IP)
+    {
+        if (Length < 14)
+            return;
+        EtherType = ((USHORT)Frame[12] << 8) | Frame[13];
+        if (EtherType != 0x0806 && EtherType != 0x0800)
+            return;
+    }
 
     KeAcquireSpinLock(&Adapter->Lock, &OldIrql);
     if (Adapter->Count < LOOP_PEER_FRAMES)
     {
         Slot = &Adapter->Frames[(Adapter->Head + Adapter->Count) % LOOP_PEER_FRAMES];
-#ifdef NETCXLOOP_RAW_IP
-        Queued = LoopBuildRawReply(Frame, Length, Slot);
-#else
-        if (EtherType == 0x0806)
+        if (LOOP_RAW_IP)
+            Queued = LoopBuildRawReply(Frame, Length, Slot);
+        else if (EtherType == 0x0806)
             Queued = LoopBuildArpReply(Frame, Length, Slot);
         else
             Queued = LoopBuildEchoReply(Frame, Length, Slot);
-#endif
         if (Queued)
             Adapter->Count++;
     }
@@ -427,11 +431,7 @@ LoopRxAdvance(
             Packet->FragmentCount = 1;
             Packet->Ignore = 0;
             RtlZeroMemory(&Packet->Layout, sizeof(Packet->Layout));
-#ifdef NETCXLOOP_RAW_IP
-            Packet->Layout.Layer2Type = NetPacketLayer2TypeNull;
-#else
-            Packet->Layout.Layer2Type = NetPacketLayer2TypeEthernet;
-#endif
+            Packet->Layout.Layer2Type = LOOP_RAW_IP ? NetPacketLayer2TypeNull : NetPacketLayer2TypeEthernet;
             FragmentRing->BeginIndex = NetRingIncrementIndex(FragmentRing, FragmentIndex);
             PacketRing->BeginIndex = NetRingIncrementIndex(PacketRing, PacketRing->BeginIndex);
             InterlockedIncrement64(&Adapter->RxFrames);
@@ -560,9 +560,7 @@ LoopStartAdapter(
     _In_reads_(6) UCHAR const *LinkLayerAddress)
 {
     NET_ADAPTER_LINK_LAYER_CAPABILITIES LinkLayer;
-#ifndef NETCXLOOP_RAW_IP
     NET_ADAPTER_LINK_LAYER_ADDRESS Address;
-#endif
     NET_ADAPTER_TX_CAPABILITIES TxCapabilities;
     NET_ADAPTER_RX_CAPABILITIES RxCapabilities;
     NET_ADAPTER_RECEIVE_FILTER_CAPABILITIES ReceiveFilter;
@@ -574,13 +572,12 @@ LoopStartAdapter(
     NetAdapterSetLinkLayerCapabilities(NetAdapter, &LinkLayer);
     NetAdapterSetLinkLayerMtuSize(NetAdapter, LOOP_MTU);
 
-#ifdef NETCXLOOP_RAW_IP
-    UNREFERENCED_PARAMETER(LinkLayerAddress);
-#else
-    NET_ADAPTER_LINK_LAYER_ADDRESS_INIT(&Address, 6, LinkLayerAddress);
-    NetAdapterSetPermanentLinkLayerAddress(NetAdapter, &Address);
-    NetAdapterSetCurrentLinkLayerAddress(NetAdapter, &Address);
-#endif
+    if (!LOOP_RAW_IP)
+    {
+        NET_ADAPTER_LINK_LAYER_ADDRESS_INIT(&Address, 6, LinkLayerAddress);
+        NetAdapterSetPermanentLinkLayerAddress(NetAdapter, &Address);
+        NetAdapterSetCurrentLinkLayerAddress(NetAdapter, &Address);
+    }
 
     NET_ADAPTER_TX_CAPABILITIES_INIT(&TxCapabilities, 1);
     NET_ADAPTER_RX_CAPABILITIES_INIT_SYSTEM_MANAGED(&RxCapabilities, LOOP_MAX_FRAME, 1);

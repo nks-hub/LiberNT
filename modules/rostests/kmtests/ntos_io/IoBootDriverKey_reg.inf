@@ -1,0 +1,6 @@
+; Boot-start test driver whose service key name differs from its image name
+[AddReg]
+HKLM,"SYSTEM\CurrentControlSet\Services\KmtBootKey","ErrorControl",0x00010001,0x00000000
+HKLM,"SYSTEM\CurrentControlSet\Services\KmtBootKey","ImagePath",0x00020000,"system32\drivers\kmtbootimg.sys"
+HKLM,"SYSTEM\CurrentControlSet\Services\KmtBootKey","Start",0x00010001,0x00000000
+HKLM,"SYSTEM\CurrentControlSet\Services\KmtBootKey","Type",0x00010001,0x00000001

@@ -1790,7 +1790,7 @@ NetioNotify(
     _In_ MIB_NOTIFICATION_TYPE Type,
     _In_ BOOLEAN InitialOnly)
 {
-    PNETIO_CHANGE_NOTIFY *Targets;
+    PNETIO_CHANGE_NOTIFY *Targets, Single;
     PLIST_ENTRY Entry;
     ULONG Count = 0, Capacity = 0, i;
     MIB_IPFORWARD_ROW2 Route;
@@ -1811,7 +1811,13 @@ NetioNotify(
 
     Targets = ExAllocatePoolWithTag(NonPagedPool, Capacity * sizeof(*Targets), NETIO_IPHLP_TAG);
     if (Targets == NULL)
-        return;
+    {
+        if (!InitialOnly)
+            return;
+        /* Without the array one pending initial callback is delivered per pass, and the pass is asked for again */
+        Targets = &Single;
+        Capacity = 1;
+    }
 
     KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
     for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList && Count < Capacity; Entry = Entry->Flink)
@@ -1873,6 +1879,12 @@ NetioNotify(
         NetioReleaseNotify(Targets[i]);
     }
 
+    if (Targets == &Single)
+    {
+        if (Count != 0)
+            KeSetEvent(&NetioChangeKick, IO_NO_INCREMENT, FALSE);
+        return;
+    }
     ExFreePoolWithTag(Targets, NETIO_IPHLP_TAG);
 }
 

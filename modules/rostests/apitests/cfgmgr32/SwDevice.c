@@ -1241,6 +1241,77 @@ test_OwnerReplaced(CREATED *State)
     ok(WaitGone(ReplacedId), "%S stayed after its handle closed\n", ReplacedId);
 }
 
+typedef struct _CLOSE_LATER
+{
+    HSWDEVICE Device;
+    DWORD Delay;
+} CLOSE_LATER;
+
+static DWORD WINAPI
+CloseLater(PVOID Parameter)
+{
+    CLOSE_LATER *Close = Parameter;
+
+    Sleep(Close->Delay);
+    SwDeviceClose(Close->Device);
+    return 0;
+}
+
+/* Windows 11 either creates the device before its parent leaves, and removes it with the parent, or keeps the creation waiting for the parent */
+static void
+test_ParentRemovalRace(CREATED *State)
+{
+    static const WCHAR ParentId[] = L"SWD\\" TEST_ENUMERATOR L"\\RaceParent";
+    static const WCHAR ChildId[] = L"SWD\\" TEST_ENUMERATOR L"\\RaceChild";
+    SW_DEVICE_CREATE_INFO Info = { sizeof(Info) };
+    CLOSE_LATER Close;
+    CREATED Racing;
+    HSWDEVICE Child;
+    HANDLE Thread;
+    BOOL Reported;
+    HRESULT hr;
+    ULONG i;
+
+    Info.pszInstanceId = L"RaceChild";
+    Info.pszzHardwareIds = TEST_HARDWARE_ID;
+    Info.pszDeviceDescription = L"LiberNT software device test";
+    Info.CapabilityFlags = SWDeviceCapabilitiesSilentInstall;
+    ZeroMemory(&Racing, sizeof(Racing));
+    Racing.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+
+    for (i = 0; i < 10; i++)
+    {
+        hr = Create(L"RaceParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Close.Device);
+        ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+        if (FAILED(hr))
+            break;
+
+        Close.Delay = 2 * i * i;
+        Racing.Result = E_PENDING;
+        ResetEvent(Racing.Event);
+        Thread = CreateThread(NULL, 0, CloseLater, &Close, 0, NULL);
+        hr = SwDeviceCreate(TEST_ENUMERATOR, ParentId, &Info, 0, NULL, Created, &Racing, &Child);
+        ok(hr == S_OK, "SwDeviceCreate below a parent that leaves after %lu ms returned 0x%08lx\n", Close.Delay, hr);
+        WaitForSingleObject(Thread, INFINITE);
+        CloseHandle(Thread);
+        ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+        if (FAILED(hr))
+            continue;
+
+        Reported = WaitForSingleObject(Racing.Event, 2000) == WAIT_OBJECT_0;
+        ok(!Reported || Racing.Result == S_OK, "The creation below a parent that left after %lu ms reported 0x%08lx\n", Close.Delay, Racing.Result);
+        ok(WaitGone(ChildId), "%S stayed after its parent left %lu ms into its creation\n", ChildId, Close.Delay);
+        SwDeviceClose(Child);
+        if (!Reported)
+        {
+            ok(WaitForSingleObject(Racing.Event, 10000) == WAIT_OBJECT_0 && Racing.Result == HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED),
+               "Closing the handle of a creation that lost its parent after %lu ms reported 0x%08lx\n", Close.Delay, Racing.Result);
+        }
+        ok(!IsPresent(ChildId), "%S is present without its parent\n", ChildId);
+    }
+    CloseHandle(Racing.Event);
+}
+
 START_TEST(SwDevice)
 {
     CREATED State;
@@ -1270,5 +1341,6 @@ START_TEST(SwDevice)
     test_DevNodeProperty(&State);
     test_ProcessEnd();
     test_OwnerReplaced(&State);
+    test_ParentRemovalRace(&State);
     CloseHandle(State.Event);
 }

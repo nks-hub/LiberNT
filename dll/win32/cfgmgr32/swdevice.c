@@ -742,19 +742,23 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     return S_OK;
 }
 
+static BOOL
+IsParentStarted(_In_ PSW_DEVICE Device)
+{
+    ULONG Status, Problem;
+
+    return CM_Locate_DevNodeW(&Device->ParentInst, Device->Parent, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+           CM_Get_DevNode_Status(&Status, &Problem, Device->ParentInst, 0) == CR_SUCCESS && (Status & DN_STARTED);
+}
+
 /* Windows 11 creates the device once its parent is present and started, and ends a creation that still waits when the handle closes */
 static HRESULT
 WaitForParent(_In_ PSW_DEVICE Device)
 {
-    ULONG Status, Problem;
-
     for (;;)
     {
-        if (CM_Locate_DevNodeW(&Device->ParentInst, Device->Parent, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
-            CM_Get_DevNode_Status(&Status, &Problem, Device->ParentInst, 0) == CR_SUCCESS && (Status & DN_STARTED))
-        {
+        if (IsParentStarted(Device))
             return S_OK;
-        }
         if (Device->Closing)
             return HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED);
         Sleep(250);
@@ -787,11 +791,14 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     WCHAR InstanceId[MAX_DEVICE_ID_LEN];
     HRESULT hr;
 
-    hr = WaitForParent(Device);
-    if (SUCCEEDED(hr))
-        hr = CreateSwDeviceNode(Device);
-    if (FAILED(hr))
+    for (;;)
     {
+        hr = WaitForParent(Device);
+        if (SUCCEEDED(hr))
+            hr = CreateSwDeviceNode(Device);
+        if (SUCCEEDED(hr))
+            break;
+
         ERR("Creating software device %s failed (0x%08lx)\n", debugstr_w(Device->InstanceId), hr);
 
         if (Device->DevInst)
@@ -799,6 +806,11 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
         EnterCriticalSection(&Device->LifetimeLock);
         Device->DevInst = 0;
         LeaveCriticalSection(&Device->LifetimeLock);
+        Device->Reopened = FALSE;
+
+        /* A parent that left during the creation took the device with it; the creation waits for the parent like one that began later */
+        if (hr == HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED) || IsParentStarted(Device))
+            break;
     }
 
     /* The callback may close the handle; nothing touches Device afterwards */

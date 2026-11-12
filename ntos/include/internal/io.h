@@ -666,6 +666,7 @@ typedef enum _DEVICE_ACTION
     PiActionQueryRemoveDevice,
     PiActionCloseRemovedDevice,
     PiActionEjectDevice,
+    PiActionInsertChildDevice,
 } DEVICE_ACTION;
 
 //
@@ -1830,6 +1831,11 @@ NTSTATUS
 PiQueryRemoveDevice(
     _In_ PDEVICE_OBJECT DeviceObject,
     _Out_ PPI_QUERY_REMOVE_DATA RemoveData);
+
+NTSTATUS
+PiInsertChildDevNode(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ PDEVICE_NODE ParentNode);
 
 //
 // PnP notifications

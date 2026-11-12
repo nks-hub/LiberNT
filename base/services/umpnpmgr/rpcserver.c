@@ -3370,6 +3370,64 @@ GenerateDeviceID(
 }
 
 
+typedef struct _SOFTWARE_DEVICE_WATCH
+{
+    LIST_ENTRY ListEntry;
+    HANDLE Process;
+    HANDLE Wait;
+    WCHAR szDeviceInstance[MAX_DEVICE_ID_LEN];
+} SOFTWARE_DEVICE_WATCH, *PSOFTWARE_DEVICE_WATCH;
+
+static LIST_ENTRY SoftwareDeviceWatches = { &SoftwareDeviceWatches, &SoftwareDeviceWatches };
+static SRWLOCK SoftwareDeviceWatchLock = SRWLOCK_INIT;
+/* Held while the watch of an ended owner removes its device and while a device is created: a watch only removes the device it was set for */
+static SRWLOCK SoftwareDeviceRemoveLock = SRWLOCK_INIT;
+
+static PSOFTWARE_DEVICE_WATCH
+TakeSoftwareDeviceWatch(
+    _In_opt_ PCWSTR pszDeviceInstance,
+    _In_opt_ PSOFTWARE_DEVICE_WATCH Watch)
+{
+    PLIST_ENTRY Entry;
+    PSOFTWARE_DEVICE_WATCH Found = NULL;
+
+    AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
+    for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches; Entry = Entry->Flink)
+    {
+        PSOFTWARE_DEVICE_WATCH Current = CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry);
+
+        if (Current == Watch ||
+            (pszDeviceInstance && _wcsicmp(Current->szDeviceInstance, pszDeviceInstance) == 0))
+        {
+            RemoveEntryList(&Current->ListEntry);
+            Found = Current;
+            break;
+        }
+    }
+    ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
+    return Found;
+}
+
+static VOID
+EndSoftwareDeviceWatch(
+    _In_opt_ PSOFTWARE_DEVICE_WATCH Watch)
+{
+    if (!Watch)
+        return;
+
+    UnregisterWaitEx(Watch->Wait, INVALID_HANDLE_VALUE);
+    CloseHandle(Watch->Process);
+    HeapFree(GetProcessHeap(), 0, Watch);
+}
+
+static VOID
+StopSoftwareDeviceWatch(
+    _In_ PCWSTR pszDeviceInstance)
+{
+    EndSoftwareDeviceWatch(TakeSoftwareDeviceWatch(pszDeviceInstance, NULL));
+}
+
+
 /* Function 28 */
 DWORD
 WINAPI
@@ -3381,11 +3439,12 @@ PNP_CreateDevInst(
     DWORD ulFlags)
 {
     PLUGPLAY_CONTROL_CHILD_DEVICE_DATA ControlData;
+    PSOFTWARE_DEVICE_WATCH StaleWatch = NULL;
     HKEY hKey = NULL;
     DWORD dwSize, dwPhantom;
     NTSTATUS Status;
     CONFIGRET ret = CR_SUCCESS;
-    BOOL bRootParent;
+    BOOL bRootParent, bSoftware = FALSE;
 
     DPRINT("PNP_CreateDevInst(%p %S %S %lu 0x%08lx)\n",
            hBinding, pszParentDeviceID, pszDeviceID, ulLength, ulFlags);
@@ -3428,6 +3487,10 @@ PNP_CreateDevInst(
     }
     else
     {
+        bSoftware = _wcsnicmp(pszDeviceID, L"SWD\\", 4) == 0;
+        if (bSoftware)
+            AcquireSRWLockExclusive(&SoftwareDeviceRemoveLock);
+
         /* Fail, if the device exists and is present */
         if ((hKey != NULL) && (IsPresentDeviceInstanceID(pszDeviceID)))
         {
@@ -3472,6 +3535,15 @@ PNP_CreateDevInst(
     }
 
 done:
+    if (bSoftware)
+    {
+        /* A watch that is still listed was set for an earlier device of this instance ID */
+        if (ret == CR_SUCCESS)
+            StaleWatch = TakeSoftwareDeviceWatch(pszDeviceID, NULL);
+        ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
+        EndSoftwareDeviceWatch(StaleWatch);
+    }
+
     if (hKey)
         RegCloseKey(hKey);
 
@@ -3687,56 +3759,6 @@ RemoveSoftwareDeviceInstance(
 }
 
 
-typedef struct _SOFTWARE_DEVICE_WATCH
-{
-    LIST_ENTRY ListEntry;
-    HANDLE Process;
-    HANDLE Wait;
-    WCHAR szDeviceInstance[MAX_DEVICE_ID_LEN];
-} SOFTWARE_DEVICE_WATCH, *PSOFTWARE_DEVICE_WATCH;
-
-static LIST_ENTRY SoftwareDeviceWatches = { &SoftwareDeviceWatches, &SoftwareDeviceWatches };
-static SRWLOCK SoftwareDeviceWatchLock = SRWLOCK_INIT;
-
-static PSOFTWARE_DEVICE_WATCH
-TakeSoftwareDeviceWatch(
-    _In_opt_ PCWSTR pszDeviceInstance,
-    _In_opt_ PSOFTWARE_DEVICE_WATCH Watch)
-{
-    PLIST_ENTRY Entry;
-    PSOFTWARE_DEVICE_WATCH Found = NULL;
-
-    AcquireSRWLockExclusive(&SoftwareDeviceWatchLock);
-    for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches; Entry = Entry->Flink)
-    {
-        PSOFTWARE_DEVICE_WATCH Current = CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry);
-
-        if (Current == Watch ||
-            (pszDeviceInstance && _wcsicmp(Current->szDeviceInstance, pszDeviceInstance) == 0))
-        {
-            RemoveEntryList(&Current->ListEntry);
-            Found = Current;
-            break;
-        }
-    }
-    ReleaseSRWLockExclusive(&SoftwareDeviceWatchLock);
-    return Found;
-}
-
-static VOID
-StopSoftwareDeviceWatch(
-    _In_ PCWSTR pszDeviceInstance)
-{
-    PSOFTWARE_DEVICE_WATCH Watch = TakeSoftwareDeviceWatch(pszDeviceInstance, NULL);
-
-    if (!Watch)
-        return;
-
-    UnregisterWaitEx(Watch->Wait, INVALID_HANDLE_VALUE);
-    CloseHandle(Watch->Process);
-    HeapFree(GetProcessHeap(), 0, Watch);
-}
-
 #define SOFTWARE_DEVICE_REMOVE_TRIES 10
 #define SOFTWARE_DEVICE_REMOVE_DELAY 500
 
@@ -3757,15 +3779,20 @@ SoftwareDeviceOwnerEnded(
     for (Try = 1; ; Try++)
     {
         Listed = FALSE;
+        AcquireSRWLockExclusive(&SoftwareDeviceRemoveLock);
         AcquireSRWLockShared(&SoftwareDeviceWatchLock);
         for (Entry = SoftwareDeviceWatches.Flink; Entry != &SoftwareDeviceWatches && !Listed; Entry = Entry->Flink)
             Listed = (CONTAINING_RECORD(Entry, SOFTWARE_DEVICE_WATCH, ListEntry) == Watch);
         ReleaseSRWLockShared(&SoftwareDeviceWatchLock);
 
         if (!Listed)
+        {
+            ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
             return;
+        }
 
         ret = RemoveSoftwareDeviceInstance(Watch->szDeviceInstance);
+        ReleaseSRWLockExclusive(&SoftwareDeviceRemoveLock);
         DPRINT("Owner of %S ended, removing it returned %lu\n", Watch->szDeviceInstance, ret);
         if (ret == CR_SUCCESS || Try == SOFTWARE_DEVICE_REMOVE_TRIES)
             break;

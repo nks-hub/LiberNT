@@ -17,6 +17,8 @@
 
 #define TEST_ENUMERATOR L"LntSwTest"
 #define TEST_HARDWARE_ID L"LntSwTestNoDriver\0"
+#define OWNER_PARENT_ID L"SWD\\" TEST_ENUMERATOR L"\\OwnerParent"
+#define OWNER_READY_EVENT L"LntSwTestOwnerReady"
 
 typedef struct _CREATED
 {
@@ -1132,22 +1134,31 @@ RunChild(void)
     ExitProcess(1);
 }
 
+static BOOL
+StartChild(PCWSTR Mode, PROCESS_INFORMATION *Process)
+{
+    WCHAR Path[MAX_PATH], CommandLine[MAX_PATH + 32];
+    STARTUPINFOW Startup = { sizeof(Startup) };
+
+    GetModuleFileNameW(NULL, Path, ARRAYSIZE(Path));
+    _snwprintf(CommandLine, ARRAYSIZE(CommandLine), L"\"%s\" SwDevice %s", Path, Mode);
+    if (!CreateProcessW(Path, CommandLine, NULL, NULL, FALSE, 0, NULL, NULL, &Startup, Process))
+    {
+        skip("CreateProcessW failed (%lu)\n", GetLastError());
+        return FALSE;
+    }
+    return TRUE;
+}
+
 static void
 test_ProcessEnd(void)
 {
-    WCHAR Path[MAX_PATH], CommandLine[MAX_PATH + 32];
     WCHAR InstanceId[] = L"SWD\\" TEST_ENUMERATOR L"\\ProcessEnd";
-    STARTUPINFOW Startup = { sizeof(Startup) };
     PROCESS_INFORMATION Process;
     DWORD ExitCode = 1;
 
-    GetModuleFileNameW(NULL, Path, ARRAYSIZE(Path));
-    _snwprintf(CommandLine, ARRAYSIZE(CommandLine), L"\"%s\" SwDevice child", Path);
-    if (!CreateProcessW(Path, CommandLine, NULL, NULL, FALSE, 0, NULL, NULL, &Startup, &Process))
-    {
-        skip("CreateProcessW failed (%lu)\n", GetLastError());
+    if (!StartChild(L"child", &Process))
         return;
-    }
     WaitForSingleObject(Process.hProcess, 60000);
     GetExitCodeProcess(Process.hProcess, &ExitCode);
     CloseHandle(Process.hThread);
@@ -1157,6 +1168,79 @@ test_ProcessEnd(void)
         ok(WaitGone(InstanceId), "%S stayed after the process holding its handle ended\n", InstanceId);
 }
 
+/* Holds a device below a parent of the test until the test ends this process */
+static void
+RunOwnerChild(void)
+{
+    HANDLE Ready = OpenEventW(EVENT_MODIFY_STATE, FALSE, OWNER_READY_EVENT);
+    CREATED State;
+    HSWDEVICE Device;
+
+    State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (Ready && SUCCEEDED(CreateBelow(OWNER_PARENT_ID, TEST_ENUMERATOR, L"Replaced", SWDeviceCapabilitiesSilentInstall, NULL, &State, &Device)) &&
+        State.Result == S_OK)
+    {
+        SetEvent(Ready);
+        Sleep(INFINITE);
+    }
+    ExitProcess(1);
+}
+
+/* The end of a process must not take a device that was created with the instance ID of a device the process had owned */
+static void
+test_OwnerReplaced(CREATED *State)
+{
+    static const WCHAR ReplacedId[] = L"SWD\\" TEST_ENUMERATOR L"\\Replaced";
+    HANDLE Ready = CreateEventW(NULL, TRUE, FALSE, OWNER_READY_EVENT), Wait[2];
+    PROCESS_INFORMATION Process;
+    DEVINST Root, DevInst;
+    HSWDEVICE Parent, Device;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = Create(L"OwnerParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Parent);
+    ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr) || !StartChild(L"owner", &Process))
+    {
+        if (SUCCEEDED(hr))
+            SwDeviceClose(Parent);
+        CloseHandle(Ready);
+        return;
+    }
+    Wait[0] = Ready;
+    Wait[1] = Process.hProcess;
+    ok(WaitForMultipleObjects(2, Wait, FALSE, 60000) == WAIT_OBJECT_0, "The child failed to create %S\n", ReplacedId);
+
+    SwDeviceClose(Parent);
+    ok(WaitGone(OWNER_PARENT_ID), "%S stayed after its handle closed\n", OWNER_PARENT_ID);
+    ok(WaitGone(ReplacedId), "%S stayed after its parent was removed\n", ReplacedId);
+
+    Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
+    if (Cr == CR_SUCCESS)
+        Cr = CM_Create_DevNodeW(&DevInst, (DEVINSTID_W)ReplacedId, Root, CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    if (Cr != CR_SUCCESS)
+        skip("CM_Create_DevNodeW cannot create %S (CR %lu)\n", ReplacedId, Cr);
+    else
+        ok(IsPresent(ReplacedId), "%S is not present after CM_Create_DevNodeW\n", ReplacedId);
+
+    TerminateProcess(Process.hProcess, 0);
+    WaitForSingleObject(Process.hProcess, 30000);
+    CloseHandle(Process.hThread);
+    CloseHandle(Process.hProcess);
+    CloseHandle(Ready);
+    if (Cr != CR_SUCCESS)
+        return;
+
+    Sleep(3000);
+    ok(IsPresent(ReplacedId), "%S left when the process that had owned a device of that instance ID ended\n", ReplacedId);
+
+    hr = Create(L"Replaced", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "Taking over %S returned 0x%08lx and reported 0x%08lx\n", ReplacedId, hr, State->Result);
+    if (SUCCEEDED(hr))
+        SwDeviceClose(Device);
+    ok(WaitGone(ReplacedId), "%S stayed after its handle closed\n", ReplacedId);
+}
+
 START_TEST(SwDevice)
 {
     CREATED State;
@@ -1164,6 +1248,8 @@ START_TEST(SwDevice)
 
     if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "child"))
         RunChild();
+    if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "owner"))
+        RunOwnerChild();
 
     State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
     test_Lifetime(&State);
@@ -1183,5 +1269,6 @@ START_TEST(SwDevice)
     test_InterfaceState(&State);
     test_DevNodeProperty(&State);
     test_ProcessEnd();
+    test_OwnerReplaced(&State);
     CloseHandle(State.Event);
 }

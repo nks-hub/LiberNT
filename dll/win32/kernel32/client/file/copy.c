@@ -275,6 +275,7 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
     IO_STATUS_BLOCK IoStatusBlock;
     FILE_STANDARD_INFORMATION FileStandard;
     FILE_BASIC_INFORMATION FileBasic;
+    FILE_END_OF_FILE_INFORMATION EndOfFile;
     BOOL RC = FALSE;
     BOOL KeepDestOnError = FALSE;
     BOOL NoDeleteAccess = FALSE;
@@ -340,14 +341,24 @@ BasepCopyFileExW(IN LPCWSTR lpExistingFileName,
                 {
                     if (!(dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS) && GetLastError() == ERROR_ALREADY_EXISTS)
                         SetLastError(ERROR_SUCCESS);
-                    errCode = CopyLoop(FileHandleSource,
-                                       FileHandleDest,
-                                       FileStandard.EndOfFile,
-                                       lpProgressRoutine,
-                                       lpData,
-                                       pbCancel,
-                                       dwCopyFlags,
-                                       &KeepDestOnError);
+                    /* Windows 11 gives the destination its full size before the first report and fails there when it does not fit */
+                    EndOfFile.EndOfFile = FileStandard.EndOfFile;
+                    errCode = NtSetInformationFile(FileHandleDest,
+                                                   &IoStatusBlock,
+                                                   &EndOfFile,
+                                                   sizeof(EndOfFile),
+                                                   FileEndOfFileInformation);
+                    if (NT_SUCCESS(errCode))
+                    {
+                        errCode = CopyLoop(FileHandleSource,
+                                           FileHandleDest,
+                                           FileStandard.EndOfFile,
+                                           lpProgressRoutine,
+                                           lpData,
+                                           pbCancel,
+                                           dwCopyFlags,
+                                           &KeepDestOnError);
+                    }
                     if (!NT_SUCCESS(errCode))
                     {
                         BaseSetLastNTError(errCode);

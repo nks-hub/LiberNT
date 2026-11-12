@@ -177,7 +177,7 @@ static const INFORMATION_CLASS_INFO SeTokenInformationClass[] = {
     /* TokenIntegrityLevel */
     IQS_SAME(TOKEN_MANDATORY_LABEL, ULONG, ICIF_QUERY | ICIF_QUERY_SIZE_VARIABLE | ICIF_SET | ICIF_SET_SIZE_VARIABLE),
     /* TokenUIAccess */
-    IQS_SAME(ULONG, ULONG, ICIF_QUERY),
+    IQS_SAME(ULONG, ULONG, ICIF_QUERY | ICIF_SET),
     /* TokenMandatoryPolicy */
     IQS_SAME(TOKEN_MANDATORY_POLICY, ULONG, ICIF_QUERY | ICIF_SET),
     /* TokenLogonSid */
@@ -2508,6 +2508,38 @@ NtSetInformationToken(
                 SepReleaseTokenLock(Token);
                 break;
             }
+
+            case TokenUIAccess:
+            {
+                ULONG UiAccess = 0;
+
+                _SEH2_TRY
+                {
+                    UiAccess = *(PULONG)TokenInformation;
+                }
+                _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    Status = _SEH2_GetExceptionCode();
+                    _SEH2_YIELD(goto Cleanup);
+                }
+                _SEH2_END;
+
+                if (!SeSinglePrivilegeCheck(SeTcbPrivilege, PreviousMode))
+                {
+                    Status = STATUS_PRIVILEGE_NOT_HELD;
+                    break;
+                }
+
+                SepAcquireTokenLockExclusive(Token);
+                if (UiAccess)
+                    Token->TokenFlags |= TOKEN_UIACCESS;
+                else
+                    Token->TokenFlags &= ~TOKEN_UIACCESS;
+                ExAllocateLocallyUniqueId(&Token->ModifiedId);
+                SepReleaseTokenLock(Token);
+                break;
+            }
+
             default:
             {
                 DPRINT1("Invalid TokenInformationClass: 0x%lx\n",

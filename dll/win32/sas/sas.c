@@ -5,12 +5,15 @@
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
+#define _INC_WINDOWS
+#define COM_NO_WINDOWS_H
 #include <windef.h>
 #include <winbase.h>
 #include <winreg.h>
 #include <sas.h>
 #include <strsafe.h>
 #include <winlogon_sas.h>
+#include <wlsas_c.h>
 
 #define NDEBUG
 #include <reactos/debug.h>
@@ -36,14 +39,52 @@ IsSasGenerationAllowed(
     if (Status != ERROR_SUCCESS)
         return FALSE;
 
-    /* TODO: SAS_GENERATION_EASE_OF_ACCESS needs a Winlogon event that uiAccess callers may signal */
-    if (AsUser)
+    return (Policy & (AsUser ? SAS_GENERATION_EASE_OF_ACCESS : SAS_GENERATION_SERVICES)) != 0;
+}
+
+/* An event cannot tell Winlogon who signals it, so Winlogon reads the uiAccess of the caller from the RPC connection */
+static
+VOID
+SendSasAsUser(
+    _In_ DWORD SessionId)
+{
+    WCHAR Endpoint[64];
+    RPC_WSTR StringBinding;
+    handle_t hBinding;
+    DWORD Error;
+
+    StringCchPrintfW(Endpoint, ARRAYSIZE(Endpoint), WINLOGON_SOFTWARE_SAS_ENDPOINT, SessionId);
+    if (RpcStringBindingComposeW(NULL, (RPC_WSTR)L"ncalrpc", NULL, Endpoint, NULL, &StringBinding) != RPC_S_OK)
+        return;
+
+    if (RpcBindingFromStringBindingW(StringBinding, &hBinding) == RPC_S_OK)
     {
-        DPRINT1("SendSAS for Ease of Access applications is not supported\n");
-        return FALSE;
+        RpcTryExcept
+        {
+            Error = WlSoftwareSasAsUser(hBinding);
+        }
+        RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+        {
+            Error = RpcExceptionCode();
+        }
+        RpcEndExcept;
+
+        if (Error != ERROR_SUCCESS)
+            DPRINT1("Winlogon refused the SAS of an Ease of Access application (%lu)\n", Error);
+        RpcBindingFree(&hBinding);
     }
 
-    return (Policy & SAS_GENERATION_SERVICES) != 0;
+    RpcStringFreeW(&StringBinding);
+}
+
+void __RPC_FAR * __RPC_USER midl_user_allocate(SIZE_T len)
+{
+    return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, len);
+}
+
+void __RPC_USER midl_user_free(void __RPC_FAR * ptr)
+{
+    HeapFree(GetProcessHeap(), 0, ptr);
 }
 
 VOID
@@ -78,7 +119,15 @@ SendSAS(
     {
         if (SessionId == 0)
             SessionId = WTSGetActiveConsoleSessionId();
-        if (SessionId != 0xFFFFFFFF)
+        if (SessionId == 0xFFFFFFFF)
+        {
+            DPRINT1("There is no console session\n");
+        }
+        else if (AsUser)
+        {
+            SendSasAsUser(SessionId);
+        }
+        else
         {
             StringCchPrintfW(EventName, ARRAYSIZE(EventName), WINLOGON_SOFTWARE_SAS_EVENT, SessionId);
             hEvent = OpenEventW(EVENT_MODIFY_STATE, FALSE, EventName);

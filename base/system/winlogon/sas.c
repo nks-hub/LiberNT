@@ -23,6 +23,7 @@
 #include <reactos/desktopready.h>
 #include <sddl.h>
 #include <winlogon_sas.h>
+#include <wlsas_s.h>
 
 /* GLOBALS ******************************************************************/
 
@@ -1423,18 +1424,14 @@ ShutdownComputerWindowProc(
 }
 
 static
-VOID
-CALLBACK
-SoftwareSasCallback(
-    IN PVOID Context,
-    IN BOOLEAN TimedOut)
+DWORD
+GenerateSoftwareSas(
+    IN PWLSESSION Session,
+    IN DWORD Callers)
 {
-    PWLSESSION Session = (PWLSESSION)Context;
     DWORD Policy = 0, Size = sizeof(Policy);
 
-    UNREFERENCED_PARAMETER(TimedOut);
-
-    /* A service can signal the event without going through sas.dll */
+    /* The caller reaches Winlogon without going through the policy check of sas.dll */
     if (RegGetValueW(HKEY_LOCAL_MACHINE,
                      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
                      L"SoftwareSASGeneration",
@@ -1442,10 +1439,10 @@ SoftwareSasCallback(
                      NULL,
                      &Policy,
                      &Size) != ERROR_SUCCESS ||
-        !(Policy & WINLOGON_SOFTWARE_SAS_SERVICES))
+        !(Policy & Callers))
     {
-        WARN("WL: Software SAS from a service is disabled by policy\n");
-        return;
+        WARN("WL: Software SAS is disabled by policy for callers 0x%lx\n", Callers);
+        return ERROR_ACCESS_DISABLED_BY_POLICY;
     }
 
     /* Same path as the keyboard; during setup the hotkey is not registered either */
@@ -1456,6 +1453,55 @@ SoftwareSasCallback(
                      IDHK_CTRL_ALT_DEL,
                      MAKELPARAM(MOD_CONTROL | MOD_ALT, VK_DELETE));
     }
+
+    return ERROR_SUCCESS;
+}
+
+static
+VOID
+CALLBACK
+SoftwareSasCallback(
+    IN PVOID Context,
+    IN BOOLEAN TimedOut)
+{
+    UNREFERENCED_PARAMETER(TimedOut);
+
+    GenerateSoftwareSas((PWLSESSION)Context, WINLOGON_SOFTWARE_SAS_SERVICES);
+}
+
+DWORD
+__stdcall
+WlSoftwareSasAsUser(
+    handle_t hBinding)
+{
+    HANDLE hToken;
+    DWORD UiAccess = 0, SessionId = 0xFFFFFFFF, Size;
+    RPC_STATUS Status;
+
+    Status = RpcImpersonateClient(hBinding);
+    if (Status != RPC_S_OK)
+        return Status;
+
+    /* Only the impersonation token counts: without one the caller is unknown and gets no access */
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, TRUE, &hToken))
+    {
+        if (!GetTokenInformation(hToken, TokenUIAccess, &UiAccess, sizeof(UiAccess), &Size))
+            UiAccess = 0;
+        if (!GetTokenInformation(hToken, TokenSessionId, &SessionId, sizeof(SessionId), &Size))
+            SessionId = 0xFFFFFFFF;
+        CloseHandle(hToken);
+    }
+    RpcRevertToSelf();
+
+    if (!UiAccess)
+        return ERROR_PRIVILEGE_NOT_HELD;
+    /* The endpoint of another session is open to every local caller, the SAS of this session is not */
+    if (SessionId != NtCurrentPeb()->SessionId)
+        return ERROR_ACCESS_DENIED;
+    if (!WLSession->SASWindow)
+        return ERROR_NOT_READY;
+
+    return GenerateSoftwareSas(WLSession, WINLOGON_SOFTWARE_SAS_EASE_OF_ACCESS);
 }
 
 static

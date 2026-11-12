@@ -3,7 +3,9 @@ include_directories(
     ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl
     ${CMAKE_CURRENT_BINARY_DIR})
 
-add_rpc_files(server ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl/winreg.idl)
+add_rpc_files(server
+    ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl/winreg.idl
+    ${REACTOS_SOURCE_DIR}/sdk/include/reactos/idl/wlsas.idl)
 
 list(APPEND SOURCE
     environment.c
@@ -17,7 +19,8 @@ list(APPEND SOURCE
     winlogon.c
     wlx.c
     winlogon.h
-    ${CMAKE_CURRENT_BINARY_DIR}/winreg_s.c)
+    ${CMAKE_CURRENT_BINARY_DIR}/winreg_s.c
+    ${CMAKE_CURRENT_BINARY_DIR}/wlsas_s.c)
 
 add_rc_deps(winlogon.rc ${CMAKE_CURRENT_SOURCE_DIR}/res/winlogon.ico)
 add_executable(winlogon ${SOURCE} winlogon.rc)

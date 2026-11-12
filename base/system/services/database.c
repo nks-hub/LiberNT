@@ -2141,6 +2141,32 @@ ScmCancelPipeIo(
 }
 
 
+/* The reply to a control that timed out arrives later and fails the next transceive with ERROR_PIPE_BUSY until it is read. */
+static BOOL
+ScmDiscardLateReplies(
+    _In_ HANDLE hPipe)
+{
+    SCM_REPLY_PACKET ReplyPacket;
+    OVERLAPPED Overlapped;
+    DWORD dwAvailable = 0, dwRead;
+    BOOL bDiscarded = FALSE, bResult;
+
+    while (PeekNamedPipe(hPipe, NULL, 0, NULL, &dwAvailable, NULL) && dwAvailable != 0)
+    {
+        ZeroMemory(&Overlapped, sizeof(Overlapped));
+        bResult = ReadFile(hPipe, &ReplyPacket, sizeof(ReplyPacket), &dwRead, &Overlapped);
+        if (!bResult && GetLastError() == ERROR_IO_PENDING)
+            bResult = GetOverlappedResult(hPipe, &Overlapped, &dwRead, TRUE);
+        if (!bResult && GetLastError() != ERROR_MORE_DATA)
+            break;
+        DPRINT1("Discarded a late reply of %lu bytes\n", dwRead);
+        bDiscarded = TRUE;
+    }
+
+    return bDiscarded;
+}
+
+
 /*
  * ScmSendControlPacket must never be called with the database lock being held.
  * The service passed must always be referenced instead.
@@ -2154,11 +2180,11 @@ ScmSendControlPacketWithTimeout(
     _In_ PVOID pControlPacket,
     _In_ DWORD dwTimeout)
 {
-    DWORD dwError = ERROR_SUCCESS;
-    BOOL bResult;
+    DWORD dwError;
+    BOOL bResult, bRetried = FALSE;
     SCM_REPLY_PACKET ReplyPacket;
-    DWORD dwReadCount = 0;
-    OVERLAPPED Overlapped = {0};
+    DWORD dwReadCount;
+    OVERLAPPED Overlapped;
 
     DPRINT("ScmSendControlPacket(%p, %lu, %p) called\n",
            hControlPipe, dwControlPacketSize, pControlPacket);
@@ -2166,6 +2192,10 @@ ScmSendControlPacketWithTimeout(
     /* Acquire the service control critical section, to synchronize requests */
     EnterCriticalSection(&ControlServiceCriticalSection);
 
+Retry:
+    dwError = ERROR_SUCCESS;
+    dwReadCount = 0;
+    ZeroMemory(&Overlapped, sizeof(Overlapped));
     bResult = TransactNamedPipe(hControlPipe,
                                 pControlPacket,
                                 dwControlPacketSize,
@@ -2208,6 +2238,12 @@ ScmSendControlPacketWithTimeout(
     }
 
 Done:
+    if (dwError == ERROR_PIPE_BUSY && !bRetried && ScmDiscardLateReplies(hControlPipe))
+    {
+        bRetried = TRUE;
+        goto Retry;
+    }
+
     /* Release the service control critical section */
     LeaveCriticalSection(&ControlServiceCriticalSection);
 

@@ -2449,9 +2449,10 @@ SoftwareDeviceAction(
 
 CONFIGRET
 CfgmgrRemoveSoftwareDevice(
-    _In_ PCWSTR pszInstanceId)
+    _In_ PCWSTR pszInstanceId,
+    _In_ ULONG ulGeneration)
 {
-    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, 0, pszInstanceId);
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, ulGeneration, pszInstanceId);
 }
 
 

@@ -508,12 +508,27 @@ PiControlInitializeDevice(
     /* Write the resource information to the registry */
     IopSetDeviceInstanceData(InstanceKey, DeviceNode);
 
-    // Finish the root device registration
-    PnpRootRegisterDevice(DeviceObject);
+    if (ParentObject != NULL)
+    {
+        Status = PiInsertChildDevNode(DeviceNode, ParentNode);
+        if (!NT_SUCCESS(Status))
+        {
+            ZwClose(InstanceKey);
+            PiSetDevNodeState(DeviceNode, DeviceNodeRemoved);
+            IopFreeDeviceNode(DeviceNode);
+            IoDeleteDevice(DeviceObject);
+            goto done;
+        }
+    }
+    else
+    {
+        // Finish the root device registration
+        PnpRootRegisterDevice(DeviceObject);
 
-    ObReferenceObject(DeviceObject);
+        ObReferenceObject(DeviceObject);
 
-    PiInsertDevNode(DeviceNode, ParentNode);
+        PiInsertDevNode(DeviceNode, ParentNode);
+    }
 
     /* Report the device to the user-mode pnp manager */
     IopQueueDeviceInstallEvent(&GUID_DEVICE_ENUMERATED, &DeviceNode->InstancePath);

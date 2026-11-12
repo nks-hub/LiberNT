@@ -335,6 +335,128 @@ static void test_shared_process(PCSTR service_nameA, PCWSTR service_nameW, void 
     CloseServiceHandle(scm);
 }
 
+static HANDLE create_check_token(HANDLE process_token, DWORD flags, PSID first, PSID second)
+{
+    SID_AND_ATTRIBUTES restricting[2] = { { first, 0 }, { second, 0 } };
+    HANDLE token = process_token, check_token = NULL;
+
+    if (first && !CreateRestrictedToken(process_token, flags, 0, NULL, 0, NULL, second ? 2 : 1, restricting, &token))
+        return NULL;
+    DuplicateTokenEx(token, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &check_token);
+    if (token != process_token)
+        CloseHandle(token);
+    return check_token;
+}
+
+static void test_owner_rights(void)
+{
+    static SID owner_rights = { SID_REVISION, 1, { SECURITY_CREATOR_SID_AUTHORITY }, { SECURITY_CREATOR_OWNER_RIGHTS_RID } };
+    static SID_IDENTIFIER_AUTHORITY nt_authority = { SECURITY_NT_AUTHORITY };
+    static const ACCESS_MASK desired[] = { READ_CONTROL, WRITE_DAC, MAXIMUM_ALLOWED };
+    static const PCSTR token_names[] = { "unrestricted", "restricted", "write-restricted", "restricted with the owner",
+                                         "write-restricted with the owner" };
+    static const struct
+    {
+        PCSTR name;
+        ACCESS_MASK granted[ARRAYSIZE(token_names)][ARRAYSIZE(desired)];
+    } tests[] =
+    {
+        { "user: all", { { 0x20000, 0x40000, 0x1f01ff }, { 0, 0, 0 }, { 0x20000, 0, 0x1200e9 }, { 0x20000, 0x40000, 0x1f01ff },
+                         { 0x20000, 0x40000, 0x1f01ff } } },
+        { "empty", { { 0x20000, 0x40000, 0x60000 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0x20000, 0x40000, 0x60000 }, { 0x20000, 0x40000, 0x60000 } } },
+        { "owner rights: RC WD", { { 0x20000, 0x40000, 0x60000 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0x20000, 0x40000, 0x60000 },
+                                   { 0x20000, 0x40000, 0x60000 } } },
+        { "restricting SID: all", { { 0x20000, 0x40000, 0x60000 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0x20000, 0x40000, 0x60000 },
+                                    { 0x20000, 0x40000, 0x60000 } } },
+        { "user: read", { { 0x20000, 0x40000, 0x160089 }, { 0, 0, 0 }, { 0x20000, 0, 0x120089 }, { 0x20000, 0x40000, 0x160089 },
+                          { 0x20000, 0x40000, 0x160089 } } },
+    };
+    GENERIC_MAPPING mapping = { FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_GENERIC_EXECUTE, FILE_ALL_ACCESS };
+    ULONG_PTR user_buffer[(sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE) / sizeof(ULONG_PTR) + 1];
+    ULONG privilege_buffer[64];
+    ULONG dacl_buffer[(sizeof(ACL) + sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE) / sizeof(ULONG) + 1];
+    HANDLE process_token, tokens[ARRAYSIZE(token_names)];
+    PSID user, service_sid = NULL, ace_sids[ARRAYSIZE(tests)];
+    ACCESS_MASK ace_access[ARRAYSIZE(tests)] = { FILE_ALL_ACCESS, 0, READ_CONTROL | WRITE_DAC, FILE_ALL_ACCESS, FILE_GENERIC_READ };
+    PACL dacl = (PACL)dacl_buffer;
+    SECURITY_DESCRIPTOR sd;
+    DWORD size, granted, i, j, k;
+    BOOL res, status;
+
+    if (!OpenProcessToken(GetCurrentProcess(), MAXIMUM_ALLOWED, &process_token))
+    {
+        skip("OpenProcessToken failed: %lu\n", GetLastError());
+        return;
+    }
+    res = GetTokenInformation(process_token, TokenUser, user_buffer, sizeof(user_buffer), &size);
+    ok(res, "GetTokenInformation(TokenUser) failed: %lu\n", GetLastError());
+    res = res && AllocateAndInitializeSid(&nt_authority, 6, SECURITY_SERVICE_ID_BASE_RID, 1, 2, 3, 4, 5, 0, 0, &service_sid);
+    ok(res, "AllocateAndInitializeSid failed: %lu\n", GetLastError());
+    if (!res)
+    {
+        CloseHandle(process_token);
+        return;
+    }
+    user = ((PTOKEN_USER)user_buffer)->User.Sid;
+
+    tokens[0] = create_check_token(process_token, 0, NULL, NULL);
+    tokens[1] = create_check_token(process_token, 0, service_sid, NULL);
+    tokens[2] = create_check_token(process_token, WRITE_RESTRICTED, service_sid, NULL);
+    tokens[3] = create_check_token(process_token, 0, service_sid, user);
+    tokens[4] = create_check_token(process_token, WRITE_RESTRICTED, service_sid, user);
+
+    ace_sids[0] = user;
+    ace_sids[1] = NULL;
+    ace_sids[2] = &owner_rights;
+    ace_sids[3] = service_sid;
+    ace_sids[4] = user;
+
+    for (i = 0; i < ARRAYSIZE(tests); i++)
+    {
+        InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION);
+        InitializeAcl(dacl, sizeof(dacl_buffer), ACL_REVISION);
+        res = !ace_sids[i] || AddAccessAllowedAce(dacl, ACL_REVISION, ace_access[i], ace_sids[i]);
+        ok(res, "DACL %s: AddAccessAllowedAce failed: %lu\n", tests[i].name, GetLastError());
+        SetSecurityDescriptorDacl(&sd, TRUE, dacl, FALSE);
+        SetSecurityDescriptorOwner(&sd, user, FALSE);
+        SetSecurityDescriptorGroup(&sd, user, FALSE);
+
+        for (j = 0; j < ARRAYSIZE(tokens); j++)
+        {
+            if (!tokens[j])
+            {
+                skip("the %s token could not be created\n", token_names[j]);
+                continue;
+            }
+            for (k = 0; k < ARRAYSIZE(desired); k++)
+            {
+                size = sizeof(privilege_buffer);
+                granted = 0xdeadbeef;
+                status = FALSE;
+                res = AccessCheck(&sd, tokens[j], desired[k], &mapping, (PPRIVILEGE_SET)privilege_buffer, &size, &granted, &status);
+                ok(res, "DACL %s, %s token, access 0x%lx: AccessCheck failed: %lu\n", tests[i].name, token_names[j], desired[k], GetLastError());
+                if (!res)
+                    continue;
+                ok(status == (tests[i].granted[j][k] != 0), "DACL %s, %s token, access 0x%lx: status %d\n",
+                   tests[i].name, token_names[j], desired[k], status);
+                if (status)
+                {
+                    ok(granted == tests[i].granted[j][k], "DACL %s, %s token, access 0x%lx: granted 0x%lx, expected 0x%lx\n",
+                       tests[i].name, token_names[j], desired[k], granted, tests[i].granted[j][k]);
+                }
+            }
+        }
+    }
+
+    for (j = 0; j < ARRAYSIZE(tokens); j++)
+    {
+        if (tokens[j])
+            CloseHandle(tokens[j]);
+    }
+    FreeSid(service_sid);
+    CloseHandle(process_token);
+}
+
 START_TEST(ServiceSidInfo)
 {
     SERVICE_SID_INFO info;
@@ -353,6 +475,7 @@ START_TEST(ServiceSidInfo)
         return;
     }
 
+    test_owner_rights();
     test_runner(test_shared_process, NULL);
     test_runner(test_write_restricted, NULL);
 

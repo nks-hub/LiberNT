@@ -6,7 +6,8 @@
  *              the event from two threads at once, binding again after a failed bind,
  *              IP_PKTINFO and malformed control data on a send, bursts of datagrams,
  *              the limit on the datagrams a socket holds for its client,
- *              closing a socket that receives, binding while IP_PKTINFO changes
+ *              closing a socket that receives, binding while IP_PKTINFO changes,
+ *              IP_PKTINFO naming a source and an interface that do not match
  * COPYRIGHT:  Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -29,6 +30,7 @@ static CHAR Seen[MAX_SEEN][9];
 static ULONG SeenSource[MAX_SEEN];
 static ULONG LastControlLength;
 static BOOLEAN SendAtDispatch;
+static ULONG SendAddress = 0x7f000001;
 
 #define BURST_COUNT 256
 #define BURST_SIZE 1400
@@ -334,7 +336,7 @@ SendToControl(
     RtlZeroMemory(&Address, sizeof(Address));
     Address.sin_family = AF_INET;
     Address.sin_port = RtlUshortByteSwap(Port);
-    Address.sin_addr.s_addr = RtlUlongByteSwap(0x7f000001);
+    Address.sin_addr.s_addr = RtlUlongByteSwap(SendAddress);
 
     Status = STATUS_INSUFFICIENT_RESOURCES;
     Irp = NewIrp(&Event);
@@ -1534,6 +1536,132 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+NTSTATUS
+SendPktInfo(
+    _In_ PWSK_SOCKET Socket,
+    _In_ PCSTR Payload,
+    _In_ BOOLEAN Messages,
+    _In_ ULONG Destination,
+    _In_ ULONG Source,
+    _In_ ULONG InterfaceIndex)
+{
+    union
+    {
+        CMSGHDR Header;
+        UCHAR Space[64];
+    } Control;
+    IN_PKTINFO PktInfo;
+    NTSTATUS Status;
+
+    RtlZeroMemory(&Control, sizeof(Control));
+    Control.Header.cmsg_len = WSA_CMSG_LEN(sizeof(PktInfo));
+    Control.Header.cmsg_level = IPPROTO_IP;
+    Control.Header.cmsg_type = IP_PKTINFO;
+    PktInfo.ipi_addr.s_addr = RtlUlongByteSwap(Source);
+    PktInfo.ipi_ifindex = InterfaceIndex;
+    RtlCopyMemory(WSA_CMSG_DATA(&Control.Header), &PktInfo, sizeof(PktInfo));
+
+    /* Multicast goes to a port nobody listens on, so only the unicast datagrams reach the receiver */
+    SendAddress = Destination;
+    Status = SendToControl(Socket, Payload, (Destination >> 28) == 0xe ? WSKEVENTS_PORT + 11 : WSKEVENTS_PORT + 10,
+                           Messages, (ULONG)WSA_CMSG_SPACE(sizeof(PktInfo)), &Control.Header);
+    SendAddress = 0x7f000001;
+    return Status;
+}
+
+static
+VOID
+TestSendInterface(
+    _In_ const WSKEVENTS_INTERFACES *Interfaces)
+{
+    const ULONG Group = 0xefff2a2a;
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    NTSTATUS Status;
+    BOOLEAN Messages;
+    LONG Count;
+    ULONG Source;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+    RtlZeroMemory(SeenSource, sizeof(SeenSource));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 10);
+    Sender = CreateSocket(&ProviderNpi);
+    if (Receiver == NULL || Sender == NULL)
+        goto close;
+    Status = BindSocket(Sender, 0, 0);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    /* Windows 11 answers WSAEADDRNOTAVAIL to a source that is not on the interface, with weak host sends on and off */
+    for (Messages = FALSE; Messages <= TRUE; Messages++)
+    {
+        Status = SendPktInfo(Sender, "IFPK0001", Messages, 0x7f000001, 0x7f000001, Interfaces->LoopbackIndex);
+        ok(Status == STATUS_SUCCESS, "Loopback source on the loopback interface, weak host %lu, messages %u: 0x%lx\n",
+           Interfaces->WeakHostSend, Messages, Status);
+        Status = SendPktInfo(Sender, "IFPK0002", Messages, Group, 0x7f000001, Interfaces->LoopbackIndex);
+        ok(Status == STATUS_SUCCESS, "Multicast from the loopback source on the loopback interface, weak host %lu, messages %u: 0x%lx\n",
+           Interfaces->WeakHostSend, Messages, Status);
+
+        Status = SendPktInfo(Sender, "IFPK0003", Messages, 0x7f000001, Interfaces->OtherAddress, Interfaces->LoopbackIndex);
+        ok(Status == STATUS_INVALID_ADDRESS, "Source of interface %lu on the loopback interface, weak host %lu, messages %u: 0x%lx\n",
+           Interfaces->OtherIndex, Interfaces->WeakHostSend, Messages, Status);
+        Status = SendPktInfo(Sender, "IFPK0004", Messages, 0x7f000001, 0x7f000001, Interfaces->OtherIndex);
+        ok(Status == STATUS_INVALID_ADDRESS, "Loopback source on interface %lu, weak host %lu, messages %u: 0x%lx\n",
+           Interfaces->OtherIndex, Interfaces->WeakHostSend, Messages, Status);
+        Status = SendPktInfo(Sender, "IFPK0005", Messages, Group, 0x7f000001, Interfaces->OtherIndex);
+        ok(Status == STATUS_INVALID_ADDRESS, "Multicast from the loopback source on interface %lu, weak host %lu, messages %u: 0x%lx\n",
+           Interfaces->OtherIndex, Interfaces->WeakHostSend, Messages, Status);
+        Status = SendPktInfo(Sender, "IFPK0006", Messages, Group, Interfaces->OtherAddress, Interfaces->LoopbackIndex);
+        ok(Status == STATUS_INVALID_ADDRESS,
+           "Multicast from the source of interface %lu on the loopback interface, weak host %lu, messages %u: 0x%lx\n",
+           Interfaces->OtherIndex, Interfaces->WeakHostSend, Messages, Status);
+
+        /* Windows 11 answers WSAEINVAL to an interface index that does not exist */
+        Status = SendPktInfo(Sender, "IFPK0007", Messages, 0x7f000001, 0, 0xfffffe);
+        ok(Status == STATUS_INVALID_PARAMETER, "Unicast on a missing interface, messages %u: 0x%lx\n", Messages, Status);
+        Status = SendPktInfo(Sender, "IFPK0008", Messages, Group, 0, 0xfffffe);
+        ok(Status == STATUS_INVALID_PARAMETER, "Multicast on a missing interface, messages %u: 0x%lx\n", Messages, Status);
+    }
+
+    Count = WaitReceives(2, 2000);
+    ok_eq_long(Count, 2L);
+    Count = WaitReceives(3, 500);
+    ok_eq_long(Count, 2L);
+    ok(WasSeen("IFPK0001"), "IFPK0001 was not indicated\n");
+    ok(!WasSeen("IFPK0003"), "IFPK0003 left the loopback interface with the source of interface %lu\n", Interfaces->OtherIndex);
+    Source = RtlUlongByteSwap(SeenSource[0]);
+    ok_eq_hex(Source, 0x7f000001UL);
+    Source = RtlUlongByteSwap(SeenSource[1]);
+    ok_eq_hex(Source, 0x7f000001UL);
+
+close:
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -1572,10 +1700,15 @@ TestMessageHandler(
     IN OUT PSIZE_T OutLength)
 {
     UNREFERENCED_PARAMETER(DeviceObject);
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(InLength);
-    UNREFERENCED_PARAMETER(OutLength);
 
+    if (ControlCode == IOCTL_WSKEVENTS_INTERFACES)
+    {
+        *OutLength = 0;
+        if (Buffer == NULL || InLength != sizeof(WSKEVENTS_INTERFACES))
+            return STATUS_INVALID_PARAMETER;
+        TestSendInterface(Buffer);
+        return STATUS_SUCCESS;
+    }
     if (ControlCode != IOCTL_WSKEVENTS_RUN)
         return STATUS_NOT_SUPPORTED;
 

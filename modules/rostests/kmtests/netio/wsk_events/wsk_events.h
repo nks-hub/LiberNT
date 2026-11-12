@@ -8,5 +8,14 @@
 #pragma once
 
 #define IOCTL_WSKEVENTS_RUN 1
+#define IOCTL_WSKEVENTS_INTERFACES 2
 
 #define WSKEVENTS_PORT 47377
+
+typedef struct _WSKEVENTS_INTERFACES
+{
+    ULONG LoopbackIndex;
+    ULONG OtherIndex;
+    ULONG OtherAddress;
+    ULONG WeakHostSend;
+} WSKEVENTS_INTERFACES, *PWSKEVENTS_INTERFACES;

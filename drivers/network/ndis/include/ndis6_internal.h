@@ -1272,6 +1272,9 @@ Ndis6MFreeSharedMemory(
 NET_IFINDEX
 Ndis6AllocateInterfaceIndex(VOID);
 
+NET_IFINDEX
+Ndis6AllocateUnusedInterfaceIndex(VOID);
+
 BOOLEAN
 Ndis6LookupProviderInterface(
     _In_ NET_IFINDEX IfIndex,

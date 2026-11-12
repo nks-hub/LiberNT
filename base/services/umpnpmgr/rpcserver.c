@@ -2257,6 +2257,7 @@ PNP_SetDeviceRegProp(
     CONFIGRET ret = CR_SUCCESS;
     LPWSTR lpValueName = NULL;
     HKEY hKey = 0;
+    LONG lError;
 
     UNREFERENCED_PARAMETER(hBinding);
     UNREFERENCED_PARAMETER(ulFlags);
@@ -2361,8 +2362,12 @@ PNP_SetDeviceRegProp(
 
     if (ulLength == 0)
     {
-        if (RegDeleteValueW(hKey,
-                            lpValueName))
+        /* Windows 11 keeps the configuration flags of a device */
+        if (ulProperty == CM_DRP_CONFIGFLAGS)
+            ret = CR_INVALID_DATA;
+        else if ((lError = RegDeleteValueW(hKey, lpValueName)) == ERROR_FILE_NOT_FOUND)
+            ret = CR_NO_SUCH_VALUE;
+        else if (lError != ERROR_SUCCESS)
             ret = CR_REGISTRY_ERROR;
     }
     else

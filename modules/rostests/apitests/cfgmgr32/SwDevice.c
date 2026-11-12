@@ -836,12 +836,76 @@ test_InterfaceState(CREATED *State)
     ok(WaitInterface(FALSE, &Class, Copy), "%S is present after its device was closed\n", Copy);
 }
 
+/* Windows 11 sets a property of the device registry only in its own type, and deletes it unless it is ConfigFlags */
+static void
+test_SystemPropertyTypes(DEVINST DevInst)
+{
+    static const WCHAR Name[] = L"LiberNT test name", Names[] = L"LntSwTestFilter\0";
+    static const WCHAR Guid[] = L"{4C6E7453-7754-4465-7669-636554657374}";
+    ULONG Flags = 0, After = 0, Value = 0x5a, Size, AfterSize;
+    DEVPROPTYPE Type = DEVPROP_TYPE_EMPTY, AfterType = DEVPROP_TYPE_EMPTY;
+    WCHAR Read[64];
+    CONFIGRET Cr, AfterCr;
+
+    Size = sizeof(Flags);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, &Type, (PBYTE)&Flags, &Size, 0);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(AfterCr == CR_INVALID_DATA, "Setting ConfigFlags from a string returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_UINT32 | DEVPROP_TYPEMOD_ARRAY, (const BYTE *)&Value,
+                                       sizeof(Value), 0);
+    ok(AfterCr == CR_INVALID_DATA, "Setting ConfigFlags from an array returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(AfterCr == CR_INVALID_DATA, "Deleting ConfigFlags returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, DEVPROP_TYPE_NULL, NULL, 0, 0);
+    ok(AfterCr == CR_INVALID_DATA, "Removing the value of ConfigFlags returned CR %lu\n", AfterCr);
+    AfterCr = CM_Set_DevNode_Registry_PropertyW(DevInst, CM_DRP_CONFIGFLAGS, NULL, 0, 0);
+    ok(AfterCr == CR_INVALID_DATA, "Deleting CM_DRP_CONFIGFLAGS returned CR %lu\n", AfterCr);
+    AfterSize = sizeof(After);
+    AfterCr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, &AfterType, (PBYTE)&After, &AfterSize, 0);
+    ok(AfterCr == Cr && AfterType == Type && AfterSize == Size && After == Flags,
+       "ConfigFlags changed from CR %lu, type 0x%lx, size %lu, 0x%lx to CR %lu, type 0x%lx, size %lu, 0x%lx\n",
+       Cr, Type, Size, Flags, AfterCr, AfterType, AfterSize, After);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ClassGuid, DEVPROP_TYPE_STRING, (const BYTE *)Guid, sizeof(Guid), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting ClassGuid from a string returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_UpperFilters, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting UpperFilters from a string returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_PDOName, DEVPROP_TYPE_UINT32, (const BYTE *)&Value, sizeof(Value), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting PDOName from a UINT32 returned CR %lu\n", Cr);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_SUCCESS, "Setting FriendlyName returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_UINT32, (const BYTE *)&Value, sizeof(Value), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting FriendlyName from a UINT32 returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING_LIST, (const BYTE *)Names, sizeof(Names), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting FriendlyName from a list returned CR %lu\n", Cr);
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, &Type, (PBYTE)Read, &Size, 0);
+    ok(Cr == CR_SUCCESS && Type == DEVPROP_TYPE_STRING && Size == sizeof(Name) && !wcscmp(Read, Name),
+       "FriendlyName is CR %lu, type 0x%lx, size %lu after the rejected types\n", Cr, Type, Size);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING_INDIRECT, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_SUCCESS, "Setting FriendlyName from an indirect string returned CR %lu\n", Cr);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(Cr == CR_SUCCESS, "Deleting FriendlyName returned CR %lu\n", Cr);
+    Size = sizeof(Read);
+    Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, &Type, (PBYTE)Read, &Size, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "The deleted FriendlyName is CR %lu, type 0x%lx, size %lu\n", Cr, Type, Size);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "Deleting FriendlyName again returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_NULL, NULL, 0, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "Removing the value of the deleted FriendlyName returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_Registry_PropertyW(DevInst, CM_DRP_FRIENDLYNAME, NULL, 0, 0);
+    ok(Cr == CR_NO_SUCH_VALUE, "Deleting the deleted CM_DRP_FRIENDLYNAME returned CR %lu\n", Cr);
+}
+
 static void
 test_DevNodeProperty(CREATED *State)
 {
     static const DEVPROPKEY Key = { { 0x4c6e7453, 0x7754, 0x4465, { 0x76, 0x69, 0x63, 0x65, 0x54, 0x65, 0x73, 0x74 } }, 4 };
     static const WCHAR Text[] = L"Text";
-    static const BYTE Bytes[16] = { 0 };
+    static const BYTE Bytes[16] = { 0 }, One[2] = { 0xff, 1 };
+    DEVPROP_BOOLEAN True = DEVPROP_TRUE;
     ULONG Value = 0x1234, Read, Size;
     DEVPROPTYPE Type;
     HSWDEVICE Device;
@@ -939,7 +1003,15 @@ test_DevNodeProperty(CREATED *State)
     ok(Cr != CR_SUCCESS, "A rejected value left a property of type 0x%lx, size %lu\n", Type, Size);
     Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, Bytes, 1, 0);
     ok(Cr == CR_SUCCESS, "Setting a BOOLEAN from 1 byte returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, (const BYTE *)&True, 1, 0);
+    ok(Cr == CR_SUCCESS, "Setting DEVPROP_TRUE returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN, One + 1, 1, 0);
+    ok(Cr == CR_INVALID_DATA, "Setting a BOOLEAN of 1 returned CR %lu\n", Cr);
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_BOOLEAN | DEVPROP_TYPEMOD_ARRAY, One, sizeof(One), 0);
+    ok(Cr == CR_INVALID_DATA, "Setting an array of BOOLEAN with a 1 returned CR %lu\n", Cr);
     CM_Set_DevNode_PropertyW(DevInst, &Key, DEVPROP_TYPE_EMPTY, NULL, 0, 0);
+
+    test_SystemPropertyTypes(DevInst);
 
 Done:
     SwDeviceClose(Device);

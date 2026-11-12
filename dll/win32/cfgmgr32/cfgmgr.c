@@ -7077,11 +7077,12 @@ CM_Set_DevNode_Registry_Property_ExW(
 
     RpcTryExcept
     {
+        /* The buffer is a reference pointer, also for a deletion without data */
         ret = PNP_SetDeviceRegProp(BindingHandle,
                                    lpDevInst,
                                    ulProperty,
                                    ulType,
-                                   (BYTE *)Buffer,
+                                   Buffer ? (BYTE *)Buffer : (BYTE *)&ulType,
                                    ulLength,
                                    ulFlags);
     }

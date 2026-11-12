@@ -1,7 +1,7 @@
 /*
  * PROJECT:     LiberNT Print Spooler DLL API Tests
  * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
- * PURPOSE:     A file with the version resource of a version 3 printer driver, for the packages of the DriverPackage test
+ * PURPOSE:     The version resource of a version 3 printer driver, for the driver file of the DriverPackage test
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 

@@ -33,7 +33,7 @@ BOOL WINAPI SetupUninstallOEMInfW(PCWSTR InfFileName, DWORD Flags, PVOID Reserve
 
 #define TEST_CATALOG L"lntprn.cat"
 
-/* Windows 11 installs a driver file only when its version resource says 0.3; winspool_apitest_drv.dll is such a file */
+/* Windows 11 installs a driver file whose version resource says 0.3 and whose DrvQueryDriverInfo tells that it runs in user mode */
 static WCHAR TestDriverFile[MAX_PATH];
 
 static BOOL
@@ -3257,42 +3257,83 @@ TestPackageSignature(VOID)
     DeleteSignedPackage(L"lntprnsig", Dir);
 }
 
-/* Windows 11 22621 blocks a driver file whose version resource does not say 0.3, as that of version.dll */
+/* Takes the export table from the file, so that it has no DrvQueryDriverInfo */
+static BOOL
+RemoveExports(PCWSTR Path)
+{
+    static const BYTE Empty[2 * sizeof(DWORD)];
+    IMAGE_DOS_HEADER Dos;
+    DWORD Done, Offset;
+    BOOL Ret = FALSE;
+    HANDLE hFile;
+    WORD Magic;
+
+    hFile = CreateFileW(Path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return FALSE;
+    if (ReadFile(hFile, &Dos, sizeof(Dos), &Done, NULL) && Done == sizeof(Dos) && Dos.e_magic == IMAGE_DOS_SIGNATURE)
+    {
+        Offset = Dos.e_lfanew + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
+        if (SetFilePointer(hFile, Offset, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+            ReadFile(hFile, &Magic, sizeof(Magic), &Done, NULL) && Done == sizeof(Magic))
+        {
+            Offset += Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC ? FIELD_OFFSET(IMAGE_OPTIONAL_HEADER64, DataDirectory)
+                                                             : FIELD_OFFSET(IMAGE_OPTIONAL_HEADER32, DataDirectory);
+            Ret = SetFilePointer(hFile, Offset, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+                  WriteFile(hFile, Empty, sizeof(Empty), &Done, NULL) && Done == sizeof(Empty);
+        }
+    }
+    CloseHandle(hFile);
+    return Ret;
+}
+
+/* Windows 11 22621 blocks a driver file whose version resource does not say 0.3, as that of version.dll, before it adds the driver. */
+/* One that says 0.3 it adds, loads and asks through DrvQueryDriverInfo whether it runs in user mode; a file without the export it */
+/* takes for a kernel mode driver and deletes the driver again, leaving the files it copied in the driver directory */
 static VOID
-TestBlockedDriverFile(VOID)
+TestBlockedDriverFile(PCWSTR Name, BOOL SystemFile, HRESULT Expected, PCSTR What)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Source[MAX_PATH], Target[MAX_PATH];
     ULONG Length = ARRAYSIZE(StoreInf);
+    DWORD Size = sizeof(Source);
     HRESULT hr;
     HKEY hKey;
 
     GetSystemDirectoryW(Source, ARRAYSIZE(Source));
     StringCchCatW(Source, ARRAYSIZE(Source), L"\\version.dll");
-    if (!CreateSignedPackage(L"lntprnblk", SignedInf, sizeof(SignedInf) - 1, Dir, InfPath) ||
-        FAILED(StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTSIG.DLL", Dir)) || !CopyFileW(Source, Target, FALSE))
+    if (!CreateSignedPackage(Name, SignedInf, sizeof(SignedInf) - 1, Dir, InfPath) ||
+        FAILED(StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTSIG.DLL", Dir)) ||
+        !(SystemFile ? CopyFileW(Source, Target, FALSE) : RemoveExports(Target)))
     {
-        skip("Failed to create the package lntprnblk (%lu)\n", GetLastError());
-        DeleteSignedPackage(L"lntprnblk", Dir);
+        skip("Failed to create the package %S (%lu)\n", Name, GetLastError());
+        DeleteSignedPackage(Name, Dir);
         return;
     }
 
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
-    ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for a package with version.dll as its driver file\n", hr);
+    ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for a package with %s as its driver file\n", hr, What);
     if (hr == S_OK)
     {
         hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, SIGNED_DRIVER_NAME, NULL, 0);
-        ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "InstallPrinterDriverFromPackageW returned 0x%lx for version.dll\n", hr);
+        ok(hr == Expected, "InstallPrinterDriverFromPackageW returned 0x%lx for %s\n", hr, What);
         hKey = OpenDriverKey(SIGNED_DRIVER_NAME);
-        ok(hKey == NULL, "Driver %S is registered with version.dll as its driver file\n", SIGNED_DRIVER_NAME);
+        ok(hKey == NULL, "Driver %S is registered with %s as its driver file\n", SIGNED_DRIVER_NAME, What);
         if (hKey)
         {
             RegCloseKey(hKey);
-            RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\" SIGNED_DRIVER_NAME);
+            DeletePrinterDriverExW(NULL, NULL, (PWSTR)SIGNED_DRIVER_NAME, 0, 0);
         }
         hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
         ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
     }
-    DeleteSignedPackage(L"lntprnblk", Dir);
+    if (GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)Source, Size, &Size))
+    {
+        StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\3\\TESTSIG.DLL", Source);
+        DeleteFileW(Target);
+        StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\3\\TESTSIG.DAT", Source);
+        DeleteFileW(Target);
+    }
+    DeleteSignedPackage(Name, Dir);
 }
 
 #if !defined(_M_IX86)
@@ -3472,7 +3513,8 @@ TestDriverPackages(VOID)
     TestMissingCopyFilesSection();
     TestPackageSignature();
     TestStaleDriverFile();
-    TestBlockedDriverFile();
+    TestBlockedDriverFile(L"lntprnblk", TRUE, HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "version.dll");
+    TestBlockedDriverFile(L"lntprnkm", FALSE, HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED), "a file without DrvQueryDriverInfo");
 #if !defined(_M_IX86)
     TestUndecoratedModels();
 #endif

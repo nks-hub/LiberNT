@@ -397,9 +397,35 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_
     return SUCCEEDED(StringCchCopyW(Path, PathSize, Copy));
 }
 
-/* Windows 11 installs a driver file whose version resource says 0.3 and whose machine is the one of the environment */
+typedef BOOL (APIENTRY *PDRV_QUERY_DRIVER_INFO)(DWORD dwMode, PVOID pBuffer, DWORD cbBuf, PDWORD pcbNeeded);
+#define DRVQUERY_USERMODE 1
+
+/* Windows 11 loads the driver file and asks it; a file that cannot be loaded or does not answer is a kernel mode driver to it */
+static BOOL
+IsUserModeDriverFile(PCWSTR Path)
+{
+    DWORD UserMode = FALSE, Needed = 0;
+    PDRV_QUERY_DRIVER_INFO Query;
+    HMODULE hModule;
+    UINT ErrorMode;
+    BOOL Ret;
+
+    ErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+    hModule = LoadLibraryExW(Path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    SetErrorMode(ErrorMode);
+    if (!hModule)
+        return FALSE;
+
+    Query = (PDRV_QUERY_DRIVER_INFO)GetProcAddress(hModule, "DrvQueryDriverInfo");
+    Ret = Query && Query(DRVQUERY_USERMODE, &UserMode, sizeof(UserMode), &Needed) && UserMode;
+    FreeLibrary(hModule);
+    return Ret;
+}
+
+/* Windows 11 installs a driver file whose version resource says 0.3, whose machine is the one of the environment and, */
+/* for the environment of this machine, which tells through DrvQueryDriverInfo that it runs in user mode */
 static HRESULT
-CheckDriverFile(PCWSTR Path, WORD Architecture)
+CheckDriverFile(PCWSTR Path, WORD Architecture, BOOL Local)
 {
     static const struct
     {
@@ -455,6 +481,8 @@ CheckDriverFile(PCWSTR Path, WORD Architecture)
         }
     }
     CloseHandle(hFile);
+    if (SUCCEEDED(hr) && Local && !IsUserModeDriverFile(Path))
+        hr = HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED);
     return hr;
 }
 
@@ -718,7 +746,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"DataFile", DataFile, ARRAYSIZE(DataFile), &SystemData))
         StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
 
-    /* TODO: LanguageMonitor and VendorSetup are not processed */
+    /* LanguageMonitor and VendorSetup are not processed */
 
     for (i = 0; i < Sections.Count; i++)
     {
@@ -756,7 +784,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         DependentLength += (DWORD)wcslen(FilePath) + 1;
     }
 
-    hr = CheckDriverFile(DriverPath, Architecture);
+    hr = CheckDriverFile(DriverPath, Architecture, Platform == NULL);
     if (FAILED(hr))
         goto Cleanup;
 

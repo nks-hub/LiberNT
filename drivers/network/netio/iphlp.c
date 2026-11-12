@@ -1754,6 +1754,7 @@ typedef struct _NETIO_CHANGE_NOTIFY
     BOOLEAN InitialPending;
     BOOLEAN FreeOnRelease;
     BOOLEAN Running;
+    ULONG Pass;
     KEVENT Released;
 } NETIO_CHANGE_NOTIFY, *PNETIO_CHANGE_NOTIFY;
 
@@ -1763,6 +1764,7 @@ static KSPIN_LOCK NetioChangeLock;
 #define NETIO_CHANGE_STARTING 1
 #define NETIO_CHANGE_RUNNING 2
 static volatile LONG NetioChangeState;
+static ULONG NetioChangePass;
 static KEVENT NetioChangeKick;
 static PETHREAD NetioChangeThread;
 
@@ -1790,102 +1792,80 @@ NetioNotify(
     _In_ MIB_NOTIFICATION_TYPE Type,
     _In_ BOOLEAN InitialOnly)
 {
-    PNETIO_CHANGE_NOTIFY *Targets, Single;
+    PNETIO_CHANGE_NOTIFY Target;
     PLIST_ENTRY Entry;
-    ULONG Count = 0, Capacity = 0, i;
+    ULONG Pass = 0;
     MIB_IPFORWARD_ROW2 Route;
     MIB_IPINTERFACE_ROW Interface;
-    BOOLEAN Invoke;
     KIRQL OldIrql;
 
     ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
     ASSERT(PsGetCurrentThread() == NetioChangeThread);
     ASSERT(InitialOnly || Row != NULL);
 
-    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-    for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList; Entry = Entry->Flink)
-        Capacity++;
-    KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-    if (Capacity == 0)
-        return;
-
-    Targets = ExAllocatePoolWithTag(NonPagedPool, Capacity * sizeof(*Targets), NETIO_IPHLP_TAG);
-    if (Targets == NULL)
+    /* A registration is called once per pass: it is marked when picked, so the list is searched again after each call */
+    for (;;)
     {
-        if (!InitialOnly)
-            return;
-        /* Without the array one pending initial callback is delivered per pass, and the pass is asked for again */
-        Targets = &Single;
-        Capacity = 1;
-    }
-
-    KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-    for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList && Count < Capacity; Entry = Entry->Flink)
-    {
-        PNETIO_CHANGE_NOTIFY Notify = CONTAINING_RECORD(Entry, NETIO_CHANGE_NOTIFY, Link);
-
-        ASSERT(Notify->Linked);
-        ASSERT(Notify->References > 0);
-
-        if (InitialOnly)
-        {
-            if (!Notify->InitialPending)
-                continue;
-            Notify->InitialPending = FALSE;
-        }
-        else if (Notify->Kind != Kind || (Notify->Family != AF_UNSPEC && Notify->Family != Family))
-        {
-            continue;
-        }
-        InterlockedIncrement(&Notify->References);
-        Targets[Count++] = Notify;
-    }
-    KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-
-    for (i = 0; i < Count; i++)
-    {
+        Target = NULL;
         KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-        ASSERT(!Targets[i]->Running);
-        Invoke = Targets[i]->Running = Targets[i]->Linked;
-        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-        if (!Invoke)
+        if (!InitialOnly && Pass == 0)
+            Pass = ++NetioChangePass;
+        for (Entry = NetioChangeList.Flink; Entry != &NetioChangeList; Entry = Entry->Flink)
         {
-            NetioReleaseNotify(Targets[i]);
-            continue;
+            PNETIO_CHANGE_NOTIFY Notify = CONTAINING_RECORD(Entry, NETIO_CHANGE_NOTIFY, Link);
+
+            ASSERT(Notify->Linked);
+            ASSERT(Notify->References > 0);
+
+            if (InitialOnly)
+            {
+                if (!Notify->InitialPending)
+                    continue;
+                Notify->InitialPending = FALSE;
+            }
+            else
+            {
+                if (Notify->Pass == Pass || Notify->Kind != Kind ||
+                    (Notify->Family != AF_UNSPEC && Notify->Family != Family))
+                {
+                    continue;
+                }
+                Notify->Pass = Pass;
+            }
+            InterlockedIncrement(&Notify->References);
+            ASSERT(!Notify->Running);
+            Notify->Running = TRUE;
+            Target = Notify;
+            break;
         }
+        KeReleaseSpinLock(&NetioChangeLock, OldIrql);
+        if (Target == NULL)
+            return;
 
         if (InitialOnly)
         {
-            if (Targets[i]->Kind == NETIO_CHANGE_ROUTE)
-                ((PIPFORWARD_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, NULL, MibInitialNotification);
+            if (Target->Kind == NETIO_CHANGE_ROUTE)
+                ((PIPFORWARD_CHANGE_CALLBACK)Target->Callback)(Target->Context, NULL, MibInitialNotification);
             else
-                ((PIPINTERFACE_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, NULL, MibInitialNotification);
+                ((PIPINTERFACE_CHANGE_CALLBACK)Target->Callback)(Target->Context, NULL, MibInitialNotification);
         }
         else if (Kind == NETIO_CHANGE_ROUTE)
         {
             Route = *(const MIB_IPFORWARD_ROW2 *)Row;
-            ((PIPFORWARD_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, &Route, Type);
+            ((PIPFORWARD_CHANGE_CALLBACK)Target->Callback)(Target->Context, &Route, Type);
         }
         else
         {
             Interface = *(const MIB_IPINTERFACE_ROW *)Row;
-            ((PIPINTERFACE_CHANGE_CALLBACK)Targets[i]->Callback)(Targets[i]->Context, &Interface, Type);
+            ((PIPINTERFACE_CHANGE_CALLBACK)Target->Callback)(Target->Context, &Interface, Type);
         }
 
         ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
         KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
-        Targets[i]->Running = FALSE;
+        Target->Running = FALSE;
         KeReleaseSpinLock(&NetioChangeLock, OldIrql);
-        NetioReleaseNotify(Targets[i]);
+        NetioReleaseNotify(Target);
     }
-
-    if (Targets == &Single)
-    {
-        if (Count != 0)
-            KeSetEvent(&NetioChangeKick, IO_NO_INCREMENT, FALSE);
-        return;
-    }
-    ExFreePoolWithTag(Targets, NETIO_IPHLP_TAG);
 }
 
 static
@@ -2202,6 +2182,7 @@ NetioRegisterChange(
 
     ASSERT(NetioChangeState == NETIO_CHANGE_RUNNING);
     KeAcquireSpinLock(&NetioChangeLock, &OldIrql);
+    Notify->Pass = NetioChangePass;
     InsertTailList(&NetioChangeList, &Notify->Link);
     KeReleaseSpinLock(&NetioChangeLock, OldIrql);
 

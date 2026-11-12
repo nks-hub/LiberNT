@@ -8,6 +8,7 @@
 #include "precomp.h"
 #include <winuser.h>
 #include <setupapi.h>
+#include <winver.h>
 #include <strsafe.h>
 #include <drvpkglock.h>
 #include <drvpkgenv.h>
@@ -390,7 +391,69 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_
     return SUCCEEDED(StringCchCopyW(Path, PathSize, Copy));
 }
 
-/* Windows 11 takes a rooted path with either slash, doubled or around ".", and refuses ".." and a relative path */
+/* Windows 11 installs a driver file whose version resource says 0.3 and whose machine is the one of the environment */
+static HRESULT
+CheckDriverFile(PCWSTR Path, WORD Architecture)
+{
+    static const struct
+    {
+        WORD Architecture;
+        WORD Machine;
+    } Machines[] =
+    {
+        { PROCESSOR_ARCHITECTURE_INTEL, IMAGE_FILE_MACHINE_I386 },
+        { PROCESSOR_ARCHITECTURE_AMD64, IMAGE_FILE_MACHINE_AMD64 },
+        { PROCESSOR_ARCHITECTURE_ARM, IMAGE_FILE_MACHINE_ARMNT },
+        { PROCESSOR_ARCHITECTURE_ARM64, IMAGE_FILE_MACHINE_ARM64 },
+        { PROCESSOR_ARCHITECTURE_IA64, IMAGE_FILE_MACHINE_IA64 },
+    };
+    HRESULT hr = HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED);
+    VS_FIXEDFILEINFO *Version;
+    IMAGE_FILE_HEADER Header;
+    IMAGE_DOS_HEADER Dos;
+    DWORD Size, Handle, Read, Signature, i;
+    UINT Length;
+    HANDLE hFile;
+    PVOID Data;
+
+    Size = GetFileVersionInfoSizeW(Path, &Handle);
+    Data = Size ? DllAllocSplMem(Size) : NULL;
+    if (!Data)
+        return hr;
+    if (GetFileVersionInfoW(Path, 0, Size, Data) && VerQueryValueW(Data, L"\\", (PVOID *)&Version, &Length) &&
+        Length >= sizeof(*Version))
+    {
+        if (Version->dwFileVersionMS == 3)
+            hr = S_OK;
+        else if (Version->dwFileVersionMS == 2)
+            hr = HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED);
+    }
+    DllFreeSplMem(Data);
+    if (FAILED(hr))
+        return hr;
+
+    hFile = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return HRESULT_FROM_WIN32(GetLastError());
+    hr = HRESULT_FROM_WIN32(ERROR_EXE_MACHINE_TYPE_MISMATCH);
+    if (ReadFile(hFile, &Dos, sizeof(Dos), &Read, NULL) && Read == sizeof(Dos) && Dos.e_magic == IMAGE_DOS_SIGNATURE &&
+        SetFilePointer(hFile, Dos.e_lfanew, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+        ReadFile(hFile, &Signature, sizeof(Signature), &Read, NULL) && Read == sizeof(Signature) && Signature == IMAGE_NT_SIGNATURE &&
+        ReadFile(hFile, &Header, sizeof(Header), &Read, NULL) && Read == sizeof(Header))
+    {
+        hr = S_OK;
+        for (i = 0; i < ARRAYSIZE(Machines); i++)
+        {
+            if (Machines[i].Architecture == Architecture && Machines[i].Machine != Header.Machine)
+                hr = HRESULT_FROM_WIN32(ERROR_EXE_MACHINE_TYPE_MISMATCH);
+        }
+    }
+    CloseHandle(hFile);
+    return hr;
+}
+
+/* Windows 11 takes a rooted path with either slash and with "." between directories; it refuses "..", a doubled slash, */
+/* "." as the directory of the INF and a relative path */
 static BOOL
 NormalizeInfPath(PCWSTR Given, PWSTR Path)
 {
@@ -415,11 +478,16 @@ NormalizeInfPath(PCWSTR Given, PWSTR Path)
 
     while (*Given)
     {
-        Given += wcsspn(Given, L"\\/");
+        Given++;
         Length = wcscspn(Given, L"\\/");
-        if (Length == 2 && Given[0] == L'.' && Given[1] == L'.')
+        if (Length == 0 || (Length == 2 && Given[0] == L'.' && Given[1] == L'.'))
             return FALSE;
-        if (Length > 1 || (Length == 1 && Given[0] != L'.'))
+        if (Length == 1 && Given[0] == L'.')
+        {
+            if (!Given[1] || !wcspbrk(Given + 2, L"\\/"))
+                return FALSE;
+        }
+        else
         {
             if ((SIZE_T)(Out - Path) + Length + 2 > MAX_PATH)
                 return FALSE;
@@ -681,6 +749,10 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         }
         DependentLength += (DWORD)wcslen(FilePath) + 1;
     }
+
+    hr = CheckDriverFile(DriverPath, Architecture);
+    if (FAILED(hr))
+        goto Cleanup;
 
     DependentFiles = DllAllocSplMem(DependentLength * sizeof(WCHAR));
     if (!DependentFiles)

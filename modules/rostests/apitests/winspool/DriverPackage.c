@@ -1288,7 +1288,7 @@ static const char CrossInf[] =
 static VOID
 TestOtherEnvironment(VOID)
 {
-    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH], Value[MAX_PATH];
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
     static const PCWSTR Names[] = { L"lntprncross.inf", OTHER_DRIVER_FILE, L"TESTCROSS.GPD" };
     static const char Text[] = "LiberNT package test file\r\n";
     WCHAR DriverDir[MAX_PATH] = L"";
@@ -1316,8 +1316,10 @@ TestOtherEnvironment(VOID)
             ok(wcsstr(StoreInf, L"\\lntprncross.inf_" OTHER_STORE_ARCHITECTURE L"_") != NULL,
                "%S is not a package of %S\n", StoreInf, OTHER_ENVIRONMENT);
 
+            /* The driver file of the test is one of this machine; Windows 11 does not install it for another */
             hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, CROSS_DRIVER_NAME, OTHER_ENVIRONMENT, 0);
-            ok(hr == S_OK, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_EXE_MACHINE_TYPE_MISMATCH), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n",
+               OTHER_ENVIRONMENT, hr);
 
             hKey = OpenDriverKey(CROSS_DRIVER_NAME);
             ok(hKey == NULL, "Driver %S is registered for %S\n", CROSS_DRIVER_NAME, TEST_ENVIRONMENT);
@@ -1325,22 +1327,10 @@ TestOtherEnvironment(VOID)
                 RegCloseKey(hKey);
 
             hKey = NULL;
-            ok(RegOpenKeyExW(HKEY_LOCAL_MACHINE, OTHER_DRIVER_KEY, 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS,
-               "Driver %S is not registered for %S\n", CROSS_DRIVER_NAME, OTHER_ENVIRONMENT);
+            ok(RegOpenKeyExW(HKEY_LOCAL_MACHINE, OTHER_DRIVER_KEY, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS,
+               "Driver %S is registered for %S\n", CROSS_DRIVER_NAME, OTHER_ENVIRONMENT);
             if (hKey)
-            {
-                Size = sizeof(Value);
-                ok(RegQueryValueExW(hKey, L"Driver", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
-                   !_wcsicmp(Value, OTHER_DRIVER_FILE), "Driver is %S\n", Value);
-                Size = sizeof(Value);
-                ok(RegQueryValueExW(hKey, L"InfPath", NULL, NULL, (PBYTE)Value, &Size) == ERROR_SUCCESS &&
-                   !_wcsicmp(Value, StoreInf), "InfPath is %S\n", Value);
                 RegCloseKey(hKey);
-
-                hr = DeletePrinterDriverPackageW(NULL, StoreInf, OTHER_ENVIRONMENT);
-                ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_PACKAGE_IN_USE),
-                   "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", OTHER_ENVIRONMENT, hr);
-            }
 
             hr = DeletePrinterDriverPackageW(NULL, StoreInf, TEST_ENVIRONMENT);
             ok(FAILED(hr), "DeletePrinterDriverPackageW(%S) returned 0x%lx for a package of %S\n",
@@ -3215,6 +3205,44 @@ TestPackageSignature(VOID)
     DeleteSignedPackage(L"lntprnsig", Dir);
 }
 
+/* Windows 11 22621 blocks a driver file whose version resource does not say 0.3, as that of version.dll */
+static VOID
+TestBlockedDriverFile(VOID)
+{
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Source[MAX_PATH], Target[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    HRESULT hr;
+    HKEY hKey;
+
+    GetSystemDirectoryW(Source, ARRAYSIZE(Source));
+    StringCchCatW(Source, ARRAYSIZE(Source), L"\\version.dll");
+    if (!CreateSignedPackage(L"lntprnblk", SignedInf, sizeof(SignedInf) - 1, Dir, InfPath) ||
+        FAILED(StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTSIG.DLL", Dir)) || !CopyFileW(Source, Target, FALSE))
+    {
+        skip("Failed to create the package lntprnblk (%lu)\n", GetLastError());
+        DeleteSignedPackage(L"lntprnblk", Dir);
+        return;
+    }
+
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for a package with version.dll as its driver file\n", hr);
+    if (hr == S_OK)
+    {
+        hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, SIGNED_DRIVER_NAME, NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "InstallPrinterDriverFromPackageW returned 0x%lx for version.dll\n", hr);
+        hKey = OpenDriverKey(SIGNED_DRIVER_NAME);
+        ok(hKey == NULL, "Driver %S is registered with version.dll as its driver file\n", SIGNED_DRIVER_NAME);
+        if (hKey)
+        {
+            RegCloseKey(hKey);
+            RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\" SIGNED_DRIVER_NAME);
+        }
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+    }
+    DeleteSignedPackage(L"lntprnblk", Dir);
+}
+
 static const struct
 {
     PCWSTR Name;
@@ -3345,6 +3373,7 @@ TestDriverPackages(VOID)
     TestMissingCopyFilesSection();
     TestPackageSignature();
     TestStaleDriverFile();
+    TestBlockedDriverFile();
 
     if (!CreateTestPackage(Dir, InfPath))
     {
@@ -3438,19 +3467,27 @@ TestDriverPackages(VOID)
         if (hNeeds)
             RegCloseKey(hNeeds);
 
-        /* The unknown driver tells that the path was taken: without a drive, in upper case, with "\\\\" and with "." */
+        /* The unknown driver tells that the path was taken: without a drive, in upper case and with "." after the drive */
         hr = InstallPrinterDriverFromPackageW(NULL, StoreInf + 2, L"No Such Printer", NULL, 0);
         ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", StoreInf + 2, hr);
         StringCchCopyW(Other, ARRAYSIZE(Other), StoreInf);
         _wcsupr(Other);
         hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
         ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.3s.\\%s", StoreInf, StoreInf + 3);
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
+        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+
+        /* A doubled backslash, after the drive or before the name, and "." as the directory of the INF are refused */
+        StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.3s\\%s", StoreInf, StoreInf + 3);
+        hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
         StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\%s", (int)(Last - StoreInf), StoreInf, Last);
         hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
-        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
         StringCchPrintfW(Other, ARRAYSIZE(Other), L"%.*s\\.%s", (int)(Last - StoreInf), StoreInf, Last);
         hr = InstallPrinterDriverFromPackageW(NULL, Other, L"No Such Printer", NULL, 0);
-        ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
+        ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW(%S) returned 0x%lx\n", Other, hr);
     }
 
     /* Windows 11 takes the published INF for its package under its full path with backslashes, and under no other */

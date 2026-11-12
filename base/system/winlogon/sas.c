@@ -1475,7 +1475,7 @@ WlSoftwareSasAsUser(
     handle_t hBinding)
 {
     HANDLE hToken;
-    DWORD UiAccess = 0, Size;
+    DWORD UiAccess = 0, SessionId = 0xFFFFFFFF, Size;
     RPC_STATUS Status;
 
     Status = RpcImpersonateClient(hBinding);
@@ -1487,12 +1487,17 @@ WlSoftwareSasAsUser(
     {
         if (!GetTokenInformation(hToken, TokenUIAccess, &UiAccess, sizeof(UiAccess), &Size))
             UiAccess = 0;
+        if (!GetTokenInformation(hToken, TokenSessionId, &SessionId, sizeof(SessionId), &Size))
+            SessionId = 0xFFFFFFFF;
         CloseHandle(hToken);
     }
     RpcRevertToSelf();
 
     if (!UiAccess)
         return ERROR_PRIVILEGE_NOT_HELD;
+    /* The endpoint of another session is open to every local caller, the SAS of this session is not */
+    if (SessionId != NtCurrentPeb()->SessionId)
+        return ERROR_ACCESS_DENIED;
     if (!WLSession->SASWindow)
         return ERROR_NOT_READY;
 

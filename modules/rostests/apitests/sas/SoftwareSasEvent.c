@@ -157,6 +157,7 @@ START_TEST(SoftwareSasEvent)
     PACL Dacl = NULL;
     ACCESS_ALLOWED_ACE *Ace;
     DWORD Error, i, ServiceMask = 0, SystemMask = 0, Policy = 0, Size = sizeof(Policy);
+    DWORD SessionId = 0xFFFFFFFF, Expected;
 
     hUiAccessToken = TestUiAccessToken();
 
@@ -218,8 +219,12 @@ START_TEST(SoftwareSasEvent)
     }
     else
     {
+        /* Winlogon serves the uiAccess callers of its own session only, and looks at the policy after that */
+        Expected = ProcessIdToSessionId(GetCurrentProcessId(), &SessionId) && SessionId == WTSGetActiveConsoleSessionId() ?
+                   ERROR_ACCESS_DISABLED_BY_POLICY : ERROR_ACCESS_DENIED;
         Error = RequestSasAsUser(hUiAccessToken);
-        ok(Error == ERROR_ACCESS_DISABLED_BY_POLICY, "Winlogon answered %lu to a uiAccess caller under policy %lu\n", Error, Policy);
+        ok(Error == Expected, "Winlogon answered %lu to a uiAccess caller of session %lu under policy %lu, expected %lu\n",
+           Error, SessionId, Policy, Expected);
     }
 
 Cleanup:

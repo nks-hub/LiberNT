@@ -48,7 +48,8 @@ StartRpcServer(VOID)
     StringCchPrintfW(Endpoint, ARRAYSIZE(Endpoint), WINLOGON_SOFTWARE_SAS_ENDPOINT, NtCurrentPeb()->SessionId);
     Status = RpcServerUseProtseqEpW(L"ncalrpc", RPC_C_PROTSEQ_MAX_REQS_DEFAULT, Endpoint, NULL);
     if (Status == RPC_S_OK)
-        Status = RpcServerRegisterIf(WinlogonSas_v1_0_s_ifspec, NULL, NULL);
+        Status = RpcServerRegisterIf2(WinlogonSas_v1_0_s_ifspec, NULL, NULL, RPC_IF_ALLOW_LOCAL_ONLY,
+                                      RPC_C_LISTEN_MAX_CALLS_DEFAULT, (UINT)-1, NULL);
     if (Status != RPC_S_OK)
         ERR("Registering the software SAS interface failed (Status %lx)\n", Status);
 

@@ -29,6 +29,15 @@ static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x4E 
 #else
 static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x50 };
 #endif
+
+#ifdef NETCXLOOP_RAW_IP
+/* The raw IP build is a device of its own; the lightweight adapter belongs to netcxloop */
+#undef NETCXLOOP_LIGHTWEIGHT
+#define LOOP_RAW_IP TRUE
+#else
+#define LOOP_RAW_IP FALSE
+#endif
+
 static const UCHAR LoopPeerAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x51 };
 #ifdef NETCXLOOP_LIGHTWEIGHT
 static const UCHAR LoopLightweightAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x52 };
@@ -201,6 +210,53 @@ LoopBuildEchoReply(
 }
 
 static
+BOOLEAN
+LoopBuildRawReply(
+    _In_reads_bytes_(Length) UCHAR const *Packet,
+    _In_ ULONG Length,
+    _Out_ LOOP_FRAME *Reply)
+{
+    ULONG HeaderLength;
+    ULONG TotalLength;
+    ULONG Sum;
+
+    if (Length < 20 || (Packet[0] >> 4) != 4 || Packet[9] != 1)
+        return FALSE;
+    HeaderLength = (Packet[0] & 0x0F) * 4;
+    TotalLength = ((ULONG)Packet[2] << 8) | Packet[3];
+    /* A tunnel refuses a packet that is not exactly as long as its IPv4 header says */
+    if (TotalLength != Length)
+    {
+        DbgPrint("NETCXLOOP: dropped an IPv4 packet of %lu bytes with a total length of %lu\n", Length, TotalLength);
+        return FALSE;
+    }
+    if (HeaderLength < 20 || HeaderLength > Length)
+        return FALSE;
+
+    RtlCopyMemory(Reply->Data, Packet, Length);
+    RtlCopyMemory(Reply->Data + 12, Packet + 16, 4);
+    RtlCopyMemory(Reply->Data + 16, Packet + 12, 4);
+    Reply->Data[8] = 128;
+    Reply->Data[10] = 0;
+    Reply->Data[11] = 0;
+    LoopStoreChecksum(Reply->Data + 10, LoopChecksum(Reply->Data, HeaderLength));
+
+    /* Each fragment of an echo request comes back as a fragment of the reply; only the first one holds the ICMP header */
+    if ((Packet[6] & 0x1F) == 0 && Packet[7] == 0)
+    {
+        if (Length < HeaderLength + 8 || Packet[HeaderLength] != 8 || Packet[HeaderLength + 1] != 0)
+            return FALSE;
+        Reply->Data[HeaderLength] = 0;
+        /* Type 8 becoming 0 adds 0x0800 to the one's complement checksum (RFC 1624) */
+        Sum = (((ULONG)Packet[HeaderLength + 2] << 8) | Packet[HeaderLength + 3]) + 0x0800;
+        Sum = (Sum & 0xFFFF) + (Sum >> 16);
+        LoopStoreChecksum(Reply->Data + HeaderLength + 2, (USHORT)Sum);
+    }
+    Reply->Length = (USHORT)Length;
+    return TRUE;
+}
+
+static
 void
 LoopPeerReceive(
     _In_ LOOP_ADAPTER *Adapter,
@@ -210,19 +266,24 @@ LoopPeerReceive(
     KIRQL OldIrql;
     LOOP_FRAME *Slot;
     BOOLEAN Queued = FALSE;
-    USHORT EtherType;
+    USHORT EtherType = 0;
 
-    if (Length < 14)
-        return;
-    EtherType = ((USHORT)Frame[12] << 8) | Frame[13];
-    if (EtherType != 0x0806 && EtherType != 0x0800)
-        return;
+    if (!LOOP_RAW_IP)
+    {
+        if (Length < 14)
+            return;
+        EtherType = ((USHORT)Frame[12] << 8) | Frame[13];
+        if (EtherType != 0x0806 && EtherType != 0x0800)
+            return;
+    }
 
     KeAcquireSpinLock(&Adapter->Lock, &OldIrql);
     if (Adapter->Count < LOOP_PEER_FRAMES)
     {
         Slot = &Adapter->Frames[(Adapter->Head + Adapter->Count) % LOOP_PEER_FRAMES];
-        if (EtherType == 0x0806)
+        if (LOOP_RAW_IP)
+            Queued = LoopBuildRawReply(Frame, Length, Slot);
+        else if (EtherType == 0x0806)
             Queued = LoopBuildArpReply(Frame, Length, Slot);
         else
             Queued = LoopBuildEchoReply(Frame, Length, Slot);
@@ -374,7 +435,7 @@ LoopRxAdvance(
             Packet->FragmentCount = 1;
             Packet->Ignore = 0;
             RtlZeroMemory(&Packet->Layout, sizeof(Packet->Layout));
-            Packet->Layout.Layer2Type = NetPacketLayer2TypeEthernet;
+            Packet->Layout.Layer2Type = LOOP_RAW_IP ? NetPacketLayer2TypeNull : NetPacketLayer2TypeEthernet;
             FragmentRing->BeginIndex = NetRingIncrementIndex(FragmentRing, FragmentIndex);
             PacketRing->BeginIndex = NetRingIncrementIndex(PacketRing, PacketRing->BeginIndex);
             InterlockedIncrement64(&Adapter->RxFrames);
@@ -519,9 +580,12 @@ LoopStartAdapter(
     NetAdapterSetLinkLayerCapabilities(NetAdapter, &LinkLayer);
     NetAdapterSetLinkLayerMtuSize(NetAdapter, LOOP_MTU);
 
-    NET_ADAPTER_LINK_LAYER_ADDRESS_INIT(&Address, 6, LinkLayerAddress);
-    NetAdapterSetPermanentLinkLayerAddress(NetAdapter, &Address);
-    NetAdapterSetCurrentLinkLayerAddress(NetAdapter, &Address);
+    if (!LOOP_RAW_IP)
+    {
+        NET_ADAPTER_LINK_LAYER_ADDRESS_INIT(&Address, 6, LinkLayerAddress);
+        NetAdapterSetPermanentLinkLayerAddress(NetAdapter, &Address);
+        NetAdapterSetCurrentLinkLayerAddress(NetAdapter, &Address);
+    }
 
     NET_ADAPTER_TX_CAPABILITIES_INIT(&TxCapabilities, 1);
     NET_ADAPTER_RX_CAPABILITIES_INIT_SYSTEM_MANAGED(&RxCapabilities, LOOP_MAX_FRAME, 1);

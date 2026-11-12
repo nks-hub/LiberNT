@@ -63,7 +63,7 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 
     if (!(dwFlags & UPDP_UPLOAD_ALWAYS))
         hr = DriverStoreFindDriverPackageW(pszInfPath, NULL, NULL, Architecture, NULL, StoreInf, &Length);
-    if ((dwFlags & UPDP_UPLOAD_ALWAYS) || FAILED(hr))
+    if ((dwFlags & UPDP_UPLOAD_ALWAYS) || (FAILED(hr) && !(dwFlags & UPDP_CHECK_DRIVERSTORE)))
     {
         Length = ARRAYSIZE(StoreInf);
         hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, Architecture, StoreInf, &Length);
@@ -162,21 +162,10 @@ HRESULT WINAPI
 InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszDriverName,
                                  LPCWSTR pszEnvironment, DWORD dwFlags)
 {
-    WCHAR InfPath[MAX_PATH];
-    DWORD Length;
     HRESULT hr;
 
     TRACE("InstallPrinterDriverFromPackageW(%S, %S, %S, %S, 0x%lx)\n",
           pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
-
-    /* The spooler does not have the current directory of the caller */
-    if (pszInfPath)
-    {
-        Length = GetFullPathNameW(pszInfPath, ARRAYSIZE(InfPath), InfPath, NULL);
-        if (Length == 0 || Length >= ARRAYSIZE(InfPath))
-            return E_INVALIDARG;
-        pszInfPath = InfPath;
-    }
 
     RpcTryExcept
     {

@@ -5,8 +5,7 @@
  * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
  */
 
-#ifndef _LIBERNT_DRVPKGENV_H
-#define _LIBERNT_DRVPKGENV_H
+#pragma once
 
 extern const WCHAR wszCurrentEnvironment[];
 
@@ -74,5 +73,3 @@ ResolvePackageInf(PCWSTR InfPath, WORD Architecture, PWSTR Resolved)
         *Resolved = UNICODE_NULL;
     return FALSE;
 }
-
-#endif

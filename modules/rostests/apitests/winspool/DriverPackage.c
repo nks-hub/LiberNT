@@ -2479,8 +2479,9 @@ RaceDeleteThread(PVOID Parameter)
     {
         if (DeletePrinterDriverPackageW(NULL, Test->StoreInf, NULL) == S_OK)
             Test->Deleted++;
+        /* TestConcurrentInstall signs the package once, as signing here would add a check per round */
         Length = ARRAYSIZE(StoreInf);
-        hr = UploadPrinterDriverPackageW(NULL, Test->InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        hr = UploadUnsignedPackage(NULL, Test->InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
         if (hr != S_OK || _wcsicmp(StoreInf, Test->StoreInf) != 0)
             Test->UploadFailed++;
     } while (GetTickCount() - Start < RACE_TIME);
@@ -2500,6 +2501,9 @@ TestConcurrentInstall(PCWSTR InfPath, PCWSTR StoreInf)
 
     Test.InfPath = InfPath;
     Test.StoreInf = StoreInf;
+    StringCchCopyW(Again, ARRAYSIZE(Again), InfPath);
+    *wcsrchr(Again, L'\\') = UNICODE_NULL;
+    ok(SignTestPackage(Again, TrustedSigner.Cert), "Signing the package in %S failed with 0x%lx\n", Again, GetLastError());
     Threads[0] = CreateThread(NULL, 0, RaceInstallThread, &Test, 0, NULL);
     Threads[1] = CreateThread(NULL, 0, RaceDeleteThread, &Test, 0, NULL);
     for (i = 0; i < ARRAYSIZE(Threads); i++)

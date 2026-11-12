@@ -10,6 +10,7 @@ list(APPEND SOURCE
     smsessn.c
     smsubsys.c
     smutil.c
+    update.c
     smss.c
     smss.h)
 

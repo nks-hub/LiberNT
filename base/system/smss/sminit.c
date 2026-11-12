@@ -2639,6 +2639,8 @@ SmpLoadDataFromRegistry(OUT PUNICODE_STRING InitialCommand)
 
     /* Now do any pending file rename operations... */
     if (!MiniNTBoot) SmpProcessFileRenames();
+    Status = SmpInitializeUpdateRegistry();
+    if (!NT_SUCCESS(Status)) return Status;
 
     /* And initialize known DLLs... */
     Status = SmpInitializeKnownDlls();
@@ -2674,9 +2676,6 @@ SmpLoadDataFromRegistry(OUT PUNICODE_STRING InitialCommand)
         /* Now create all the paging files for the descriptors that we have */
         SmpCreatePagingFiles();
     }
-
-    /* Tell Cm it's now safe to fully enable write access to the registry */
-    NtInitializeRegistry(CM_BOOT_FLAG_SMSS);
 
     /* Create all the system-based environment variables for later inheriting */
     Status = SmpCreateDynamicEnvironmentVariables();

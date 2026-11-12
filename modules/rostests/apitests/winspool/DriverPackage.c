@@ -14,9 +14,13 @@
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
+#include <wincrypt.h>
+#include <mscat.h>
+#include <mssip.h>
 #include <lm.h>
 #include <strsafe.h>
 #include <drvpkglock.h>
+#include <wine/mssign.h>
 
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
 #define SP_COPY_NOOVERWRITE 0x0000008
@@ -25,6 +29,318 @@ BOOL WINAPI SetupCopyOEMInfW(PCWSTR SourceInfFileName, PCWSTR OEMSourceMediaLoca
                              PWSTR DestinationInfFileName, DWORD DestinationInfFileNameSize, PDWORD RequiredSize,
                              PWSTR *DestinationInfFileNameComponent);
 BOOL WINAPI SetupUninstallOEMInfW(PCWSTR InfFileName, DWORD Flags, PVOID Reserved);
+
+#define TEST_CATALOG L"lntprn.cat"
+
+typedef struct _TEST_SIGNER
+{
+    WCHAR Container[32];
+    HCRYPTPROV Provider;
+    PCCERT_CONTEXT Cert;
+} TEST_SIGNER, *PTEST_SIGNER;
+
+static TEST_SIGNER TrustedSigner, UntrustedSigner;
+
+/* A self-signed certificate with its key, made the way the setupapi devinst test of Wine makes its own */
+static BOOL
+CreateTestSigner(PTEST_SIGNER Signer, PCWSTR Container, PCSTR Subject)
+{
+    BYTE Name[128], KeyId[256], PublicKey[1024], Hash[20], Encoded[2048], Serial[16];
+    PCERT_PUBLIC_KEY_INFO KeyInfo = (PCERT_PUBLIC_KEY_INFO)PublicKey;
+    CRYPT_ALGORITHM_IDENTIFIER Algorithm = { (PSTR)szOID_RSA_SHA1RSA };
+    CRYPT_KEY_PROV_INFO ProviderInfo = { 0 };
+    CERT_AUTHORITY_KEY_ID_INFO Authority;
+    CERT_EXTENSION Extension;
+    CERT_INFO Info = { 0 };
+    WCHAR ProviderNameW[128];
+    char ProviderName[128];
+    HCRYPTKEY hKey;
+    DWORD Size;
+
+    ZeroMemory(Signer, sizeof(*Signer));
+    StringCchCopyW(Signer->Container, ARRAYSIZE(Signer->Container), Container);
+
+    /* The container of a run that did not finish */
+    CryptAcquireContextW(&Signer->Provider, Container, NULL, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    Signer->Provider = 0;
+    if (!CryptAcquireContextW(&Signer->Provider, Container, NULL, PROV_RSA_FULL, CRYPT_NEWKEYSET) ||
+        !CryptGenKey(Signer->Provider, AT_SIGNATURE, CRYPT_EXPORTABLE, &hKey))
+    {
+        return FALSE;
+    }
+    CryptDestroyKey(hKey);
+
+    Size = sizeof(Name);
+    if (!CertStrToNameA(X509_ASN_ENCODING, Subject, CERT_X500_NAME_STR, NULL, Name, &Size, NULL))
+        return FALSE;
+    Authority.CertIssuer.cbData = Size;
+    Authority.CertIssuer.pbData = Name;
+
+    Size = sizeof(PublicKey);
+    if (!CryptExportPublicKeyInfo(Signer->Provider, AT_SIGNATURE, X509_ASN_ENCODING, KeyInfo, &Size))
+        return FALSE;
+    Size = sizeof(Hash);
+    if (!CryptHashPublicKeyInfo(Signer->Provider, CALG_MD5, 0, X509_ASN_ENCODING, KeyInfo, Hash, &Size))
+        return FALSE;
+    Authority.KeyId.cbData = Size;
+    Authority.KeyId.pbData = Hash;
+
+    if (!CryptGenRandom(Signer->Provider, sizeof(Serial), Serial))
+        return FALSE;
+    Authority.CertSerialNumber.cbData = sizeof(Serial);
+    Authority.CertSerialNumber.pbData = Serial;
+
+    Size = sizeof(KeyId);
+    if (!CryptEncodeObject(X509_ASN_ENCODING, X509_AUTHORITY_KEY_ID, &Authority, KeyId, &Size))
+        return FALSE;
+    Extension.pszObjId = (PSTR)szOID_AUTHORITY_KEY_IDENTIFIER;
+    Extension.fCritical = TRUE;
+    Extension.Value.cbData = Size;
+    Extension.Value.pbData = KeyId;
+
+    Info.dwVersion = CERT_V3;
+    Info.SerialNumber = Authority.CertSerialNumber;
+    Info.SignatureAlgorithm = Algorithm;
+    Info.Issuer = Authority.CertIssuer;
+    Info.Subject = Authority.CertIssuer;
+    Info.SubjectPublicKeyInfo = *KeyInfo;
+    Info.cExtension = 1;
+    Info.rgExtension = &Extension;
+    GetSystemTimeAsFileTime(&Info.NotBefore);
+    Info.NotAfter = Info.NotBefore;
+    Info.NotBefore.dwHighDateTime -= 0x100;
+    Info.NotAfter.dwHighDateTime += 0x100;
+
+    Size = sizeof(Encoded);
+    if (!CryptSignAndEncodeCertificate(Signer->Provider, AT_SIGNATURE, X509_ASN_ENCODING, X509_CERT_TO_BE_SIGNED, &Info,
+                                       &Algorithm, NULL, Encoded, &Size))
+    {
+        return FALSE;
+    }
+    Signer->Cert = CertCreateCertificateContext(X509_ASN_ENCODING, Encoded, Size);
+    if (!Signer->Cert)
+        return FALSE;
+
+    Size = sizeof(ProviderName);
+    if (!CryptGetProvParam(Signer->Provider, PP_NAME, (PBYTE)ProviderName, &Size, 0))
+        return FALSE;
+    MultiByteToWideChar(CP_ACP, 0, ProviderName, -1, ProviderNameW, ARRAYSIZE(ProviderNameW));
+    ProviderInfo.pwszContainerName = Signer->Container;
+    ProviderInfo.pwszProvName = ProviderNameW;
+    ProviderInfo.dwProvType = PROV_RSA_FULL;
+    ProviderInfo.dwKeySpec = AT_SIGNATURE;
+    return CertSetCertificateContextProperty(Signer->Cert, CERT_KEY_PROV_INFO_PROP_ID, 0, &ProviderInfo);
+}
+
+static VOID
+DeleteTestSigner(PTEST_SIGNER Signer)
+{
+    HCRYPTPROV Deleted;
+
+    if (Signer->Cert)
+        CertFreeCertificateContext(Signer->Cert);
+    if (Signer->Provider)
+    {
+        CryptReleaseContext(Signer->Provider, 0);
+        CryptAcquireContextW(&Deleted, Signer->Container, NULL, PROV_RSA_FULL, CRYPT_DELETEKEYSET);
+    }
+    ZeroMemory(Signer, sizeof(*Signer));
+}
+
+/* Puts the certificate of the trusted signer into a store of the machine, or takes it out */
+static BOOL
+TrustTestSigner(PCWSTR StoreName, BOOL Trust)
+{
+    HCERTSTORE Store = CertOpenStore(CERT_STORE_PROV_SYSTEM_REGISTRY_W, 0, 0, CERT_SYSTEM_STORE_LOCAL_MACHINE, StoreName);
+    PCCERT_CONTEXT Found;
+    BOOL Ret = TRUE;
+
+    if (!Store)
+        return FALSE;
+    if (Trust)
+    {
+        Ret = CertAddCertificateContextToStore(Store, TrustedSigner.Cert, CERT_STORE_ADD_REPLACE_EXISTING, NULL);
+    }
+    else
+    {
+        while ((Found = CertFindCertificateInStore(Store, X509_ASN_ENCODING, 0, CERT_FIND_EXISTING, TrustedSigner.Cert, NULL)) != NULL)
+            CertDeleteCertificateFromStore(Found);
+    }
+    CertCloseStore(Store, 0);
+    return Ret;
+}
+
+static VOID
+AddCatalogMember(HANDLE hCatalog, PCWSTR File)
+{
+    SIP_SUBJECTINFO Subject = { sizeof(Subject) };
+    PSIP_INDIRECT_DATA Data;
+    WCHAR Tag[2 * 64 + 1];
+    DWORD Size = 0, i;
+    GUID Type;
+
+    if (!CryptSIPRetrieveSubjectGuidForCatalogFile(File, NULL, &Type))
+        return;
+    Subject.pgSubjectType = &Type;
+    Subject.pwsFileName = File;
+    Subject.DigestAlgorithm.pszObjId = (PSTR)szOID_OIWSEC_sha1;
+    if (!CryptSIPCreateIndirectData(&Subject, &Size, NULL))
+        return;
+    Data = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Size);
+    if (!Data)
+        return;
+
+    if (CryptSIPCreateIndirectData(&Subject, &Size, Data) && Data->Digest.cbData <= 64)
+    {
+        for (i = 0; i < Data->Digest.cbData; i++)
+            StringCchPrintfW(Tag + i * 2, 3, L"%02X", Data->Digest.pbData[i]);
+        CryptCATPutMemberInfo(hCatalog, (PWSTR)File, Tag, &Type, 0, Size, (PBYTE)Data);
+    }
+    HeapFree(GetProcessHeap(), 0, Data);
+}
+
+static VOID
+AddCatalogMembers(HANDLE hCatalog, PCWSTR Dir)
+{
+    WCHAR Path[MAX_PATH];
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+    SIZE_T Length;
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\*", Dir);
+    hFind = FindFirstFileW(Path, &Find);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+
+    do
+    {
+        Length = wcslen(Find.cFileName);
+        if (!wcscmp(Find.cFileName, L".") || !wcscmp(Find.cFileName, L"..") ||
+            (Length > 4 && !_wcsicmp(Find.cFileName + Length - 4, L".cat")) ||
+            FAILED(StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Find.cFileName)))
+        {
+            continue;
+        }
+
+        if (Find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            AddCatalogMembers(hCatalog, Path);
+        else
+            AddCatalogMember(hCatalog, Path);
+    } while (FindNextFileW(hFind, &Find));
+    FindClose(hFind);
+}
+
+static BOOL
+SignTestFile(PCWSTR File, PCCERT_CONTEXT Cert)
+{
+    static HRESULT (WINAPI *pSignerSign)(SIGNER_SUBJECT_INFO *, SIGNER_CERT *, SIGNER_SIGNATURE_INFO *, SIGNER_PROVIDER_INFO *,
+                                         PCWSTR, CRYPT_ATTRIBUTES *, PVOID);
+    SIGNER_ATTR_AUTHCODE Authcode = { sizeof(Authcode) };
+    SIGNER_SIGNATURE_INFO Signature = { sizeof(Signature) };
+    SIGNER_SUBJECT_INFO Subject = { sizeof(Subject) };
+    SIGNER_CERT_STORE_INFO Store = { sizeof(Store) };
+    SIGNER_FILE_INFO FileInfo = { sizeof(FileInfo) };
+    SIGNER_CERT CertInfo = { sizeof(CertInfo) };
+    HMODULE hSign;
+    DWORD Index = 0;
+
+    if (!pSignerSign)
+    {
+        hSign = LoadLibraryW(L"mssign32.dll");
+        if (hSign)
+            pSignerSign = (PVOID)GetProcAddress(hSign, "SignerSign");
+        if (!pSignerSign)
+            return FALSE;
+    }
+
+    Subject.dwSubjectChoice = 1;
+    Subject.pdwIndex = &Index;
+    Subject.pSignerFileInfo = &FileInfo;
+    FileInfo.pwszFileName = File;
+    CertInfo.dwCertChoice = SIGNER_CERT_STORE;
+    CertInfo.pCertStoreInfo = &Store;
+    Store.pSigningCert = Cert;
+    Signature.algidHash = CALG_SHA_256;
+    Signature.dwAttrChoice = SIGNER_AUTHCODE_ATTR;
+    Signature.pAttrAuthcode = &Authcode;
+    Authcode.pwszName = L"";
+    Authcode.pwszInfo = L"";
+    return pSignerSign(&Subject, &CertInfo, &Signature, NULL, NULL, NULL, NULL) == S_OK;
+}
+
+/* Makes the catalog of the files that are in the directory now; without a certificate it stays unsigned */
+static BOOL
+SignTestPackage(PCWSTR Dir, PCCERT_CONTEXT Cert)
+{
+    WCHAR Path[MAX_PATH];
+    HANDLE hCatalog;
+    BOOL Ret;
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\" TEST_CATALOG, Dir);
+    hCatalog = CryptCATOpen(Path, CRYPTCAT_OPEN_CREATENEW, 0, CRYPTCAT_VERSION_1, 0);
+    if (hCatalog == INVALID_HANDLE_VALUE)
+        return FALSE;
+    AddCatalogMembers(hCatalog, Dir);
+    Ret = CryptCATPersistStore(hCatalog);
+    CryptCATClose(hCatalog);
+    return Ret && (!Cert || SignTestFile(Path, Cert));
+}
+
+/* Windows 11 refuses a package without a signed catalog, so every package of the temporary directory is signed as it is uploaded */
+static HRESULT WINAPI
+UploadSignedPackage(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEnvironment, DWORD dwFlags, HWND hwnd,
+                    LPWSTR pszDestInfPath, PULONG pcchDestInfPath)
+{
+    WCHAR Temp[MAX_PATH], Dir[MAX_PATH];
+    PWSTR Last, Slash;
+
+    if (pszInfPath && (dwFlags & (UPDP_UPLOAD_ALWAYS | UPDP_CHECK_DRIVERSTORE)) != UPDP_CHECK_DRIVERSTORE &&
+        GetTempPathW(ARRAYSIZE(Temp), Temp) &&
+        !_wcsnicmp(pszInfPath, Temp, wcslen(Temp)) && GetFileAttributesW(pszInfPath) != INVALID_FILE_ATTRIBUTES &&
+        SUCCEEDED(StringCchCopyW(Dir, ARRAYSIZE(Dir), pszInfPath)))
+    {
+        Last = wcsrchr(Dir, L'\\');
+        Slash = wcsrchr(Dir, L'/');
+        if (Slash > Last)
+            Last = Slash;
+        if (Last)
+        {
+            *Last = UNICODE_NULL;
+            ok(SignTestPackage(Dir, TrustedSigner.Cert), "Signing the package in %S failed with 0x%lx\n", Dir, GetLastError());
+        }
+    }
+    return UploadPrinterDriverPackageW(pszServer, pszInfPath, pszEnvironment, dwFlags, hwnd, pszDestInfPath, pcchDestInfPath);
+}
+
+static HRESULT (WINAPI *UploadUnsignedPackage)(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, HWND, LPWSTR, PULONG) = UploadPrinterDriverPackageW;
+#define UploadPrinterDriverPackageW UploadSignedPackage
+
+/* The catalogs that UploadSignedPackage left in the package directories, and the directories that are empty without them */
+static VOID
+DeleteTestCatalogs(VOID)
+{
+    WCHAR Temp[MAX_PATH], Path[MAX_PATH];
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+
+    if (!GetTempPathW(ARRAYSIZE(Temp), Temp))
+        return;
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%slntprn*", Temp);
+    hFind = FindFirstFileW(Path, &Find);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+
+    do
+    {
+        if (!(Find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+            continue;
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s%s\\" TEST_CATALOG, Temp, Find.cFileName);
+        DeleteFileW(Path);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s%s", Temp, Find.cFileName);
+        RemoveDirectoryW(Path);
+    } while (FindNextFileW(hFind, &Find));
+    FindClose(hFind);
+}
 
 #define TEST_DRIVER_NAME L"LiberNT Package Test Printer"
 #define NEEDS_DRIVER_NAME L"LiberNT Package Needs Printer"
@@ -67,6 +383,7 @@ static const char TestInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
@@ -265,6 +582,7 @@ static const char MissingInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models\r\n"
@@ -296,6 +614,7 @@ static const char NeedsMissingInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models\r\n"
@@ -334,6 +653,7 @@ static const char UnlistedInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models\r\n"
@@ -364,6 +684,7 @@ static const char EscapeInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models\r\n"
@@ -395,6 +716,7 @@ static const char IncludeEscapeInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models\r\n"
@@ -422,6 +744,7 @@ static const char SlashEscapeInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models\r\n"
@@ -523,6 +846,7 @@ static const char PlainInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "LiberNT=Models\r\n"
@@ -556,6 +880,7 @@ static const char TwoNeedsInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "LiberNT=Models\r\n"
@@ -606,6 +931,7 @@ BuildBigInf(VOID)
                    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
                    "Provider=LiberNT\r\n"
                    "DriverVer=11/06/2026,1.0.0.0\r\n"
+                   "CatalogFile=lntprn.cat\r\n"
                    "\r\n"
                    "[Manufacturer]\r\n"
                    "LiberNT=Models\r\n"
@@ -662,6 +988,7 @@ BuildBigInf(VOID)
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n" \
     "Provider=LiberNT\r\n" \
     "DriverVer=11/06/2026,1.0.0.0\r\n" \
+    "CatalogFile=lntprn.cat\r\n" \
     "\r\n" \
     "[Manufacturer]\r\n" \
     "LiberNT=Models\r\n" \
@@ -901,6 +1228,7 @@ static const char CrossInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
@@ -1033,6 +1361,7 @@ static const char JunctionInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "LiberNT=Models\r\n"
@@ -1337,6 +1666,7 @@ static const char NoSectionInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "LiberNT=Models\r\n"
@@ -1651,6 +1981,7 @@ static const char UpdateInf[] =
     "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
     "Provider=LiberNT\r\n"
     "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
     "\r\n"
     "[Manufacturer]\r\n"
     "LiberNT=Models\r\n"
@@ -2675,7 +3006,167 @@ TestFailedPackageDelete(PCWSTR InfPath, PCWSTR StoreInf)
     }
 }
 
-START_TEST(DriverPackage)
+#define SIGNED_INF(Driver, Config, Data, Help) \
+    "[Version]\r\n" \
+    "Signature=\"$Windows NT$\"\r\n" \
+    "Class=Printer\r\n" \
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n" \
+    "Provider=LiberNT\r\n" \
+    "DriverVer=11/06/2026,1.0.0.0\r\n" \
+    "CatalogFile=lntprn.cat\r\n" \
+    "\r\n" \
+    "[Manufacturer]\r\n" \
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n" \
+    "\r\n" \
+    "[Models.NTamd64]\r\n" \
+    "\"LiberNT Package Signed Printer\"=TESTSIG,LiberNT_Package_Signed\r\n" \
+    "[Models.NTx86]\r\n" \
+    "\"LiberNT Package Signed Printer\"=TESTSIG,LiberNT_Package_Signed\r\n" \
+    "[Models.NTarm64]\r\n" \
+    "\"LiberNT Package Signed Printer\"=TESTSIG,LiberNT_Package_Signed\r\n" \
+    "\r\n" \
+    "[TESTSIG]\r\n" \
+    "CopyFiles=@TESTSIG.DLL,@TESTSIG.DAT\r\n" \
+    "DriverFile=" Driver "\r\n" \
+    "ConfigFile=" Config "\r\n" \
+    "DataFile=" Data "\r\n" \
+    Help \
+    "\r\n" \
+    "[DestinationDirs]\r\n" \
+    "DefaultDestDir=66000\r\n" \
+    "\r\n" \
+    "[SourceDisksNames]\r\n" \
+    "1=\"Disk\",,,\r\n" \
+    "\r\n" \
+    "[SourceDisksFiles]\r\n" \
+    "TESTSIG.DLL=1\r\n" \
+    "TESTSIG.DAT=1\r\n"
+
+#define SIGNED_DRIVER_NAME L"LiberNT Package Signed Printer"
+
+static const char SignedInf[] = SIGNED_INF("TESTSIG.DLL", "TESTSIG.DLL", "TESTSIG.DAT", "");
+
+static BOOL
+CreateSignedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PWSTR Dir, PWSTR InfPath)
+{
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR System[MAX_PATH], Source[MAX_PATH], Target[MAX_PATH], InfName[MAX_PATH];
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, Name);
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfName, ARRAYSIZE(InfName), L"%s.inf", Name);
+    StringCchPrintfW(InfPath, MAX_PATH, L"%s\\%s", Dir, InfName);
+
+    GetSystemDirectoryW(System, ARRAYSIZE(System));
+    StringCchPrintfW(Source, ARRAYSIZE(Source), L"%s\\version.dll", System);
+    StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTSIG.DLL", Dir);
+    return CopyFileW(Source, Target, FALSE) && WriteTestFile(Dir, InfName, Inf, InfSize) &&
+           WriteTestFile(Dir, L"TESTSIG.DAT", Text, sizeof(Text) - 1);
+}
+
+static VOID
+DeleteSignedPackage(PCWSTR Name, PCWSTR Dir)
+{
+    static const PCWSTR Names[] = { L"TESTSIG.DLL", L"TESTSIG.DAT", TEST_CATALOG };
+    WCHAR Path[MAX_PATH];
+    UINT i;
+
+    for (i = 0; i < ARRAYSIZE(Names); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, Names[i]);
+        DeleteFileW(Path);
+    }
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s.inf", Dir, Name);
+    DeleteFileW(Path);
+    RemoveDirectoryW(Dir);
+}
+
+static VOID
+TestRefusedSignature(PCWSTR InfPath, HRESULT Expected, PCSTR What)
+{
+    WCHAR StoreInf[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    HRESULT hr;
+
+    hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(hr == Expected, "UploadPrinterDriverPackageW returned 0x%lx for a package %s\n", hr, What);
+    if (hr == S_OK)
+        DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+
+    Length = ARRAYSIZE(StoreInf);
+    hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, StoreInf, &Length);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "The driver store lookup returned 0x%lx after the upload of a package %s\n", hr, What);
+}
+
+/* The results are those of Windows 11 22621 */
+static VOID
+TestPackageSignature(VOID)
+{
+    static const char Changed[] = "changed after the catalog was made\r\n";
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Again[MAX_PATH], Path[MAX_PATH], StoreFile[MAX_PATH];
+    ULONG Length;
+    HRESULT hr;
+
+    if (!CreateSignedPackage(L"lntprnsig", SignedInf, sizeof(SignedInf) - 1, Dir, InfPath))
+    {
+        skip("Failed to create the package lntprnsig (%lu)\n", GetLastError());
+        DeleteSignedPackage(L"lntprnsig", Dir);
+        return;
+    }
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\TESTSIG.DAT", Dir);
+
+    TestRefusedSignature(InfPath, HRESULT_FROM_WIN32(ERROR_CANCELLED), "without its catalog");
+
+    ok(SignTestPackage(Dir, NULL), "Making the catalog failed with 0x%lx\n", GetLastError());
+    TestRefusedSignature(InfPath, TRUST_E_NOSIGNATURE, "with an unsigned catalog");
+
+    ok(SignTestPackage(Dir, UntrustedSigner.Cert), "Signing the catalog failed with 0x%lx\n", GetLastError());
+    TestRefusedSignature(InfPath, CERT_E_UNTRUSTEDROOT, "signed by a certificate that is in no store");
+
+    ok(SignTestPackage(Dir, TrustedSigner.Cert), "Signing the catalog failed with 0x%lx\n", GetLastError());
+    ok(TrustTestSigner(L"TrustedPublisher", FALSE), "Removing the trusted publisher failed with 0x%lx\n", GetLastError());
+    TestRefusedSignature(InfPath, SPAPI_E_AUTHENTICODE_TRUST_NOT_ESTABLISHED, "signed by a root that is not a trusted publisher");
+    ok(TrustTestSigner(L"TrustedPublisher", TRUE), "Adding the trusted publisher failed with 0x%lx\n", GetLastError());
+
+    ok(TrustTestSigner(L"Root", FALSE), "Removing the root failed with 0x%lx\n", GetLastError());
+    TestRefusedSignature(InfPath, CERT_E_UNTRUSTEDROOT, "signed by a trusted publisher that is not a root");
+    ok(TrustTestSigner(L"Root", TRUE), "Adding the root failed with 0x%lx\n", GetLastError());
+
+    ok(WriteTestFile(Dir, L"TESTSIG.DAT", Changed, sizeof(Changed) - 1), "Changing TESTSIG.DAT failed\n");
+    TestRefusedSignature(InfPath, SPAPI_E_FILE_HASH_NOT_IN_CATALOG, "with a file changed after the catalog was made");
+    ok(WriteTestFile(Dir, L"TESTSIG.DAT", Text, sizeof(Text) - 1), "Restoring TESTSIG.DAT failed\n");
+
+    Length = ARRAYSIZE(StoreInf);
+    hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for a signed package\n", hr);
+    if (hr == S_OK)
+    {
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%.*s\\" TEST_CATALOG, (int)(wcsrchr(StoreInf, L'\\') - StoreInf), StoreInf);
+        ok(GetFileAttributesW(StoreFile) != INVALID_FILE_ATTRIBUTES, "%S is not in the store\n", StoreFile);
+
+        /* Windows 11 returns S_OK and keeps the package it has; here the package is staged again, refused, and the old one kept */
+        StringCchPrintfW(StoreFile, ARRAYSIZE(StoreFile), L"%.*s\\TESTSIG.DAT", (int)(wcsrchr(StoreInf, L'\\') - StoreInf), StoreInf);
+        ok(WriteTestFile(Dir, L"TESTSIG.DAT", Changed, sizeof(Changed) - 1), "Changing TESTSIG.DAT failed\n");
+        Length = ARRAYSIZE(Again);
+        hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_UPLOAD_ALWAYS, NULL, Again, &Length);
+        ok(hr == SPAPI_E_FILE_HASH_NOT_IN_CATALOG || hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx over a staged package\n", hr);
+        ok(WriteTestFile(Dir, L"TESTSIG.DAT", Text, sizeof(Text) - 1), "Restoring TESTSIG.DAT failed\n");
+        ok(FilesMatch(StoreFile, Path), "%S was replaced by a refused upload\n", StoreFile);
+        Length = ARRAYSIZE(Again);
+        hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, Again, &Length);
+        ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "The driver store lookup returned 0x%lx after a refused upload\n", hr);
+
+        hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+        ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+    }
+
+    DeleteSignedPackage(L"lntprnsig", Dir);
+}
+
+static VOID
+TestDriverPackages(VOID)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH];
     PWSTR Dependent;
@@ -2722,6 +3213,7 @@ START_TEST(DriverPackage)
     TestOemInfRace();
     TestStandardUserOemInf();
     TestMissingCopyFilesSection();
+    TestPackageSignature();
 
     if (!CreateTestPackage(Dir, InfPath))
     {
@@ -3146,4 +3638,27 @@ START_TEST(DriverPackage)
     ok(GetFileAttributesW(StoreInf) == INVALID_FILE_ATTRIBUTES, "%S still exists\n", StoreInf);
 
     DeleteTestPackage(Dir);
+}
+
+START_TEST(DriverPackage)
+{
+    if (!CreateTestSigner(&TrustedSigner, L"LiberNT winspool apitest", "CN=LiberNT winspool apitest") ||
+        !CreateTestSigner(&UntrustedSigner, L"LiberNT winspool apitest 2", "CN=LiberNT winspool apitest untrusted") ||
+        !TrustTestSigner(L"Root", TRUE) || !TrustTestSigner(L"TrustedPublisher", TRUE))
+    {
+        skip("No trusted test certificate (0x%lx)\n", GetLastError());
+    }
+    else
+    {
+        TestDriverPackages();
+        DeleteTestCatalogs();
+    }
+
+    if (TrustedSigner.Cert)
+    {
+        TrustTestSigner(L"TrustedPublisher", FALSE);
+        TrustTestSigner(L"Root", FALSE);
+    }
+    DeleteTestSigner(&UntrustedSigner);
+    DeleteTestSigner(&TrustedSigner);
 }

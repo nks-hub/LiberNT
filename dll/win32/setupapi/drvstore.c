@@ -1157,18 +1157,214 @@ DeleteStoreLeftovers(
 }
 
 static BOOL
+GetCatalogName(
+    IN HINF hInf,
+    IN WORD Architecture,
+    OUT PWSTR Name,
+    IN DWORD NameSize)
+{
+    WCHAR Key[64];
+    INFCONTEXT Context;
+
+    swprintf(Key, ARRAY_SIZE(Key), L"%s.NT%s", CatalogFile, GetArchitectureName(Architecture));
+    return (SetupFindFirstLineW(hInf, VersionSection, Key, &Context) ||
+            SetupFindFirstLineW(hInf, VersionSection, L"CatalogFile.NT", &Context) ||
+            SetupFindFirstLineW(hInf, VersionSection, CatalogFile, &Context)) &&
+           SetupGetStringFieldW(&Context, 1, Name, NameSize, NULL) && Name[0];
+}
+
+/* A catalog names a member by its hash, as bytes or as the upper case hexadecimal string of them */
+static BOOL
+IsFileInCatalog(
+    IN PCCTL_CONTEXT Catalog,
+    IN HCATADMIN Sha256 OPTIONAL,
+    IN PCWSTR FileName)
+{
+    BYTE Hash[2][32];
+    DWORD Size[2] = { sizeof(Hash[0]), sizeof(Hash[1]) }, Kind, Entry, i, TagSize;
+    PCRYPT_DATA_BLOB Id;
+    WCHAR Tag[65];
+    HANDLE hFile;
+
+    hFile = CreateFileW(FileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return FALSE;
+    if (!CryptCATAdminCalcHashFromFileHandle(hFile, &Size[0], Hash[0], 0))
+        Size[0] = 0;
+    if (!Sha256 || SetFilePointer(hFile, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+        !CryptCATAdminCalcHashFromFileHandle2(Sha256, hFile, &Size[1], Hash[1], 0))
+    {
+        Size[1] = 0;
+    }
+    CloseHandle(hFile);
+
+    for (Kind = 0; Kind < ARRAY_SIZE(Size); Kind++)
+    {
+        if (Size[Kind] == 0 || Size[Kind] > sizeof(Hash[Kind]))
+            continue;
+        for (i = 0; i < Size[Kind]; i++)
+            swprintf(Tag + i * 2, 3, L"%02X", Hash[Kind][i]);
+        TagSize = Size[Kind] * 2 * sizeof(WCHAR);
+
+        for (Entry = 0; Entry < Catalog->pCtlInfo->cCTLEntry; Entry++)
+        {
+            Id = &Catalog->pCtlInfo->rgCTLEntry[Entry].SubjectIdentifier;
+            if ((Id->cbData == Size[Kind] && !memcmp(Id->pbData, Hash[Kind], Size[Kind])) ||
+                ((Id->cbData == TagSize || Id->cbData == TagSize + sizeof(WCHAR)) && !memcmp(Id->pbData, Tag, TagSize)))
+            {
+                return TRUE;
+            }
+        }
+    }
+    return FALSE;
+}
+
+static BOOL
+IsTreeInCatalog(
+    IN PCWSTR Directory,
+    IN PCCTL_CONTEXT Catalog,
+    IN HCATADMIN Sha256 OPTIONAL)
+{
+    WCHAR Path[MAX_PATH];
+    WIN32_FIND_DATAW FindData;
+    SIZE_T Length;
+    HANDLE hFind;
+    BOOL Result = TRUE;
+
+    if (!CombinePath(Path, Directory, L"*"))
+        return FALSE;
+
+    hFind = FindFirstFileW(Path, &FindData);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return FALSE;
+
+    do
+    {
+        if (!wcscmp(FindData.cFileName, L".") || !wcscmp(FindData.cFileName, L".."))
+            continue;
+
+        /* A catalog does not list itself */
+        Length = wcslen(FindData.cFileName);
+        if (!(FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && Length > 4 &&
+            !_wcsicmp(FindData.cFileName + Length - 4, L".cat"))
+        {
+            continue;
+        }
+
+        if (!CombinePath(Path, Directory, FindData.cFileName))
+            Result = FALSE;
+        else if (FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            Result = IsTreeInCatalog(Path, Catalog, Sha256);
+        else
+            Result = IsFileInCatalog(Catalog, Sha256, Path);
+    } while (Result && FindNextFileW(hFind, &FindData));
+
+    FindClose(hFind);
+    return Result;
+}
+
+/* The errors are those of Windows 11 22621 for a package without a catalog, with one that is not signed or not trusted */
+static DWORD
+VerifyStagedPackage(
+    IN PCWSTR Staging,
+    IN PCWSTR CatalogName)
+{
+    CERT_CHAIN_PARA ChainPara = { sizeof(ChainPara) };
+    CERT_CHAIN_POLICY_PARA PolicyPara = { sizeof(PolicyPara) };
+    CERT_CHAIN_POLICY_STATUS Status = { sizeof(Status) };
+    PCCERT_CONTEXT Signer = NULL, Publisher = NULL;
+    PCCERT_CHAIN_CONTEXT Chain = NULL;
+    PCCTL_CONTEXT Catalog = NULL;
+    HCERTSTORE Certificates, Publishers;
+    HCATADMIN Sha256 = NULL;
+    DWORD Error = (DWORD)TRUST_E_NOSIGNATURE, Size, Read, Signers = 0;
+    WCHAR Path[MAX_PATH];
+    PBYTE Data = NULL;
+    HANDLE hFile;
+
+    if (!CatalogName[0] || !CombinePath(Path, Staging, CatalogName))
+        return ERROR_CANCELLED;
+    hFile = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return ERROR_CANCELLED;
+
+    Size = GetFileSize(hFile, NULL);
+    if (Size != INVALID_FILE_SIZE && Size != 0)
+        Data = MyMalloc(Size);
+    if (Data && ReadFile(hFile, Data, Size, &Read, NULL) && Read == Size)
+        Catalog = CertCreateCTLContext(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, Data, Size);
+    CloseHandle(hFile);
+    MyFree(Data);
+    if (!Catalog)
+        return Error;
+
+    Size = sizeof(Signers);
+    if (CryptMsgGetParam(Catalog->hCryptMsg, CMSG_SIGNER_COUNT_PARAM, 0, &Signers, &Size) && Signers != 0 &&
+        CryptMsgGetAndVerifySigner(Catalog->hCryptMsg, 0, NULL, 0, &Signer, NULL))
+    {
+        Certificates = CertOpenStore(CERT_STORE_PROV_MSG, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING, 0, 0, Catalog->hCryptMsg);
+        if (!CertGetCertificateChain(NULL, Signer, NULL, Certificates, &ChainPara, 0, NULL, &Chain) ||
+            !CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_BASE, Chain, &PolicyPara, &Status))
+        {
+            Error = (DWORD)CERT_E_UNTRUSTEDROOT;
+        }
+        else if (Status.dwError != ERROR_SUCCESS)
+        {
+            Error = Status.dwError;
+        }
+        else
+        {
+            Publishers = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_READONLY_FLAG,
+                                       L"TrustedPublisher");
+            if (Publishers)
+            {
+                Publisher = CertFindCertificateInStore(Publishers, X509_ASN_ENCODING, 0, CERT_FIND_EXISTING, Signer, NULL);
+                CertCloseStore(Publishers, 0);
+            }
+
+            if (!Publisher)
+            {
+                Error = (DWORD)SPAPI_E_AUTHENTICODE_TRUST_NOT_ESTABLISHED;
+            }
+            else
+            {
+                CertFreeCertificateContext(Publisher);
+                if (!CryptCATAdminAcquireContext2(&Sha256, NULL, L"SHA256", NULL, 0))
+                    Sha256 = NULL;
+                Error = IsTreeInCatalog(Staging, Catalog, Sha256) ? ERROR_SUCCESS : (DWORD)SPAPI_E_FILE_HASH_NOT_IN_CATALOG;
+                if (Sha256)
+                    CryptCATAdminReleaseContext(Sha256, 0);
+            }
+        }
+
+        if (Chain)
+            CertFreeCertificateChain(Chain);
+        if (Certificates)
+            CertCloseStore(Certificates, 0);
+        CertFreeCertificateContext(Signer);
+    }
+
+    CertFreeCTLContext(Catalog);
+    return Error;
+}
+
+/* The thread whose staging is for DriverStoreAddDriverPackageW; written under the package lock */
+static DWORD VerifyingThread;
+
+static BOOL
 StageLockedDriverPackage(
     IN PCWSTR SourceInfFileName,
     IN WORD Architecture,
     OUT PWSTR StoreInfFileName OPTIONAL)
 {
     WCHAR Source[MAX_PATH], SourceRoot[MAX_PATH], Root[MAX_PATH], Store[MAX_PATH], Staging[MAX_PATH], Target[MAX_PATH];
+    WCHAR Catalog[MAX_PATH] = L"";
     STAGE_PACKAGE_CONTEXT Package;
     SP_ALTPLATFORM_INFO Platform;
     PWSTR BaseName;
     HINF hInf;
     DWORD Length, Error;
-    BOOL Staged, Added;
+    BOOL Staged, Added, Verify = VerifyingThread == GetCurrentThreadId();
 
     Length = GetFullPathNameW(SourceInfFileName, ARRAY_SIZE(Source), Source, &BaseName);
     if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName)
@@ -1231,6 +1427,8 @@ StageLockedDriverPackage(
         Staged = MarkNameSeen(&Package.Includes, BaseName, &Added) &&
                  StageCatalogFiles(hInf, SourceRoot, Staging) && StageCopyFiles(hInf, &Package);
         Error = GetLastError();
+        if (!Verify || !GetCatalogName(hInf, Architecture, Catalog, ARRAY_SIZE(Catalog)))
+            Catalog[0] = UNICODE_NULL;
         FreeNameList(&Package.Sections);
         FreeNameList(&Package.Files);
         FreeNameList(&Package.Installs);
@@ -1245,7 +1443,17 @@ StageLockedDriverPackage(
 
     if (Staged)
     {
-        Staged = CopyFileW(Source, Target, FALSE) && ReplaceStoreDirectory(Staging, Store);
+        Staged = CopyFileW(Source, Target, FALSE);
+        Error = GetLastError();
+    }
+    if (Staged && Verify)
+    {
+        Error = VerifyStagedPackage(Staging, Catalog);
+        Staged = Error == ERROR_SUCCESS;
+    }
+    if (Staged)
+    {
+        Staged = ReplaceStoreDirectory(Staging, Store);
         Error = GetLastError();
     }
     if (!Staged)
@@ -1814,28 +2022,14 @@ DriverStoreFindDriverPackageW(
     return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
 }
 
-HRESULT
-WINAPI
-DriverStoreAddDriverPackageW(
-    IN PCWSTR InfPath,
-    IN PVOID Reserved1,
-    IN PVOID Reserved2,
+static HRESULT
+AddLockedDriverPackage(
+    IN OUT PWSTR Source,
+    IN PCWSTR BaseName,
     IN WORD Architecture,
-    OUT PWSTR ReturnPath,
-    IN OUT PDWORD ReturnLength)
+    OUT PWSTR StoreInf)
 {
-    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH], Published[MAX_PATH];
-    PWSTR BaseName;
-    DWORD Length;
-    HRESULT hr;
-
-    hr = CheckStoreRequest(Architecture, ReturnLength);
-    if (FAILED(hr))
-        return hr;
-
-    Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
-    if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName || GetFileAttributesW(Source) == INVALID_FILE_ATTRIBUTES)
-        return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+    WCHAR Published[MAX_PATH];
 
     /* SetupCopyOEMInfW publishes for the native architecture only */
     if (Architecture == GetNativeArchitecture())
@@ -1845,7 +2039,7 @@ DriverStoreAddDriverPackageW(
         /* A source inside the store that is not a package INF does not name the package staged from it */
         if (!FindStoreInf(Published, BaseName, Architecture, StoreInf))
             return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
-        return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
+        return S_OK;
     }
 
     /* A published INF stands for the package it was published from */
@@ -1858,6 +2052,43 @@ DriverStoreAddDriverPackageW(
     }
     if (!StageDriverPackage(Source, Architecture, StoreInf))
         return HRESULT_FROM_WIN32(GetLastError());
+
+    return S_OK;
+}
+
+HRESULT
+WINAPI
+DriverStoreAddDriverPackageW(
+    IN PCWSTR InfPath,
+    IN PVOID Reserved1,
+    IN PVOID Reserved2,
+    IN WORD Architecture,
+    OUT PWSTR ReturnPath,
+    IN OUT PDWORD ReturnLength)
+{
+    WCHAR Source[MAX_PATH], StoreInf[MAX_PATH];
+    HANDLE Namespace, Lock;
+    PWSTR BaseName;
+    DWORD Length;
+    HRESULT hr;
+
+    hr = CheckStoreRequest(Architecture, ReturnLength);
+    if (FAILED(hr))
+        return hr;
+
+    Length = GetFullPathNameW(InfPath, ARRAY_SIZE(Source), Source, &BaseName);
+    if (Length == 0 || Length >= ARRAY_SIZE(Source) || !BaseName || GetFileAttributesW(Source) == INVALID_FILE_ATTRIBUTES)
+        return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+
+    VerifyingThread = GetCurrentThreadId();
+    hr = AddLockedDriverPackage(Source, BaseName, Architecture, StoreInf);
+    VerifyingThread = 0;
+    ReleasePackageLock(Namespace, Lock);
+    if (FAILED(hr))
+        return hr;
 
     return ReturnStorePath(StoreInf, ReturnPath, ReturnLength);
 }

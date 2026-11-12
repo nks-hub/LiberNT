@@ -1857,6 +1857,10 @@ static BOOL CRYPT_CriticalExtensionsSupported(PCCERT_CONTEXT cert)
                 ret = TRUE;
             else if (!strcmp(oid, szOID_ENHANCED_KEY_USAGE))
                 ret = TRUE;
+#ifdef __REACTOS__
+            else if (!strcmp(oid, szOID_AUTHORITY_KEY_IDENTIFIER))
+                ret = TRUE;
+#endif
             else
             {
                 FIXME("unsupported critical extension %s\n",

@@ -385,7 +385,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 }, Owned = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"", RecordedInf[MAX_PATH], IncludePath[MAX_PATH], InfPath[MAX_PATH];
+    WCHAR StagingDir[MAX_PATH] = L"", IncludePath[MAX_PATH], InfPath[MAX_PATH];
     BOOL Found, InPackage;
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
@@ -417,8 +417,12 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         Platform = &OtherPlatform;
     }
 
-    Size = GetFullPathNameW(pszInfPath, ARRAYSIZE(InfPath), InfPath, NULL);
-    if (Size == 0 || Size >= ARRAYSIZE(InfPath) ||
+    /* Windows 11 takes the INF of a package in the store alone, and not the INF that the package was uploaded from */
+    Size = GetFullPathNameW(pszInfPath, ARRAYSIZE(FilePath), FilePath, NULL);
+    i = ARRAYSIZE(InfPath);
+    if (Size == 0 || Size >= ARRAYSIZE(FilePath) ||
+        FAILED(DriverStoreFindDriverPackageW(FilePath, NULL, NULL, Architecture, NULL, InfPath, &i)) ||
+        _wcsicmp(FilePath, InfPath) != 0 ||
         FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), InfPath)) ||
         !(Slash = wcsrchr(PackageDir, L'\\')))
     {
@@ -628,8 +632,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
     DriverInfo.pDependentFiles = DependentFiles;
     DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
-    ResolvePackageInf(InfPath, Architecture, RecordedInf);
-    DriverInfo.pszInfPath = *RecordedInf ? RecordedInf : InfPath;
+    DriverInfo.pszInfPath = InfPath;
 
     /* A package directory with an open file cannot be renamed, so the package is neither deleted nor replaced without the lock */
     hPin = CreateFileW(InfPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);

@@ -404,11 +404,12 @@ IopCaptureUnicodeString(PUNICODE_STRING DstName, PUNICODE_STRING SrcName)
 static
 NTSTATUS
 PiControlInitializeDevice(
-    _In_ PPLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData)
+    _In_ PPLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData,
+    _In_opt_ PUNICODE_STRING ParentInstance)
 {
-    UNICODE_STRING DeviceInstance;
-    PDEVICE_OBJECT DeviceObject;
-    PDEVICE_NODE DeviceNode;
+    UNICODE_STRING DeviceInstance, Parent;
+    PDEVICE_OBJECT DeviceObject, ParentObject = NULL;
+    PDEVICE_NODE DeviceNode, ParentNode = IopRootDeviceNode;
     NTSTATUS Status = STATUS_SUCCESS;
     HANDLE InstanceKey;
 
@@ -421,6 +422,31 @@ PiControlInitializeDevice(
     }
 
     DPRINT("Device: %wZ\n", &DeviceInstance);
+
+    if (ParentInstance != NULL)
+    {
+        Status = IopCaptureUnicodeString(&Parent, ParentInstance);
+        if (!NT_SUCCESS(Status))
+            goto done;
+
+        if (Parent.Length != 0)
+            ParentObject = IopGetDeviceObjectFromDeviceInstance(&Parent);
+        if (Parent.Buffer != NULL)
+            ExFreePool(Parent.Buffer);
+        if (ParentObject == NULL)
+        {
+            Status = STATUS_NO_SUCH_DEVICE;
+            goto done;
+        }
+
+        ParentNode = IopGetDeviceNode(ParentObject);
+        ASSERT(ParentNode != NULL);
+        if (ParentNode->State >= DeviceNodeAwaitingQueuedDeletion)
+        {
+            Status = STATUS_NO_SUCH_DEVICE;
+            goto done;
+        }
+    }
 
     /* Leave, if the device already exists */
     DeviceObject = IopGetDeviceObjectFromDeviceInstance(&DeviceInstance);
@@ -487,14 +513,15 @@ PiControlInitializeDevice(
 
     ObReferenceObject(DeviceObject);
 
-    /* Insert as a root enumerated device node */
-    PiInsertDevNode(DeviceNode, IopRootDeviceNode);
+    PiInsertDevNode(DeviceNode, ParentNode);
 
     /* Report the device to the user-mode pnp manager */
     IopQueueDeviceInstallEvent(&GUID_DEVICE_ENUMERATED, &DeviceNode->InstancePath);
 
     ZwClose(InstanceKey);
 done:
+    if (ParentObject != NULL)
+        ObDereferenceObject(ParentObject);
     ExFreePool(DeviceInstance.Buffer);
 
     return Status;
@@ -1810,7 +1837,7 @@ NTSTATUS
 PiControlSetDeviceCapabilities(
     _In_ PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA ControlData)
 {
-    BOOLEAN Removable = FALSE, SilentInstall = FALSE, NoDisplayInUI = FALSE;
+    BOOLEAN Removable = FALSE, SilentInstall = FALSE, NoDisplayInUI = FALSE, RawDeviceOK = FALSE, SurpriseRemovalOK = FALSE;
     DEVICE_CAPABILITIES DeviceCapabilities;
     UNICODE_STRING DeviceInstance;
     PDEVICE_OBJECT DeviceObject;
@@ -1824,6 +1851,8 @@ PiControlSetDeviceCapabilities(
         Removable = ControlData->Removable;
         SilentInstall = ControlData->SilentInstall;
         NoDisplayInUI = ControlData->NoDisplayInUI;
+        RawDeviceOK = ControlData->RawDeviceOK;
+        SurpriseRemovalOK = ControlData->SurpriseRemovalOK;
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -1841,7 +1870,8 @@ PiControlSetDeviceCapabilities(
     if (DeviceObject == NULL)
         return STATUS_NO_SUCH_DEVICE;
 
-    Status = PnpRootSetDeviceCapabilities(DeviceObject, Removable != FALSE, SilentInstall != FALSE, NoDisplayInUI != FALSE);
+    Status = PnpRootSetDeviceCapabilities(DeviceObject, Removable != FALSE, SilentInstall != FALSE, NoDisplayInUI != FALSE,
+                                          RawDeviceOK != FALSE, SurpriseRemovalOK != FALSE);
     if (NT_SUCCESS(Status))
         Status = IopQueryDeviceCapabilities(IopGetDeviceNode(DeviceObject), &DeviceCapabilities);
 
@@ -2121,7 +2151,13 @@ NtPlugPlayControl(IN PLUGPLAY_CONTROL_CLASS PlugPlayControlClass,
         case PlugPlayControlInitializeDevice:
             if (!Buffer || BufferLength < sizeof(PLUGPLAY_CONTROL_DEVICE_CONTROL_DATA))
                 return STATUS_INVALID_PARAMETER;
-            return PiControlInitializeDevice((PPLUGPLAY_CONTROL_DEVICE_CONTROL_DATA)Buffer);
+            return PiControlInitializeDevice((PPLUGPLAY_CONTROL_DEVICE_CONTROL_DATA)Buffer, NULL);
+
+        case PlugPlayControlInitializeChildDevice:
+            if (!Buffer || BufferLength < sizeof(PLUGPLAY_CONTROL_CHILD_DEVICE_DATA))
+                return STATUS_INVALID_PARAMETER;
+            return PiControlInitializeDevice((PPLUGPLAY_CONTROL_DEVICE_CONTROL_DATA)Buffer,
+                                             &((PPLUGPLAY_CONTROL_CHILD_DEVICE_DATA)Buffer)->ParentInstance);
 
         case PlugPlayControlStartDevice:
         case PlugPlayControlResetDevice:

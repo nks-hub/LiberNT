@@ -3380,11 +3380,12 @@ PNP_CreateDevInst(
     PNP_RPC_STRING_LEN ulLength,
     DWORD ulFlags)
 {
-    PLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData;
+    PLUGPLAY_CONTROL_CHILD_DEVICE_DATA ControlData;
     HKEY hKey = NULL;
     DWORD dwSize, dwPhantom;
     NTSTATUS Status;
     CONFIGRET ret = CR_SUCCESS;
+    BOOL bRootParent;
 
     DPRINT("PNP_CreateDevInst(%p %S %S %lu 0x%08lx)\n",
            hBinding, pszParentDeviceID, pszDeviceID, ulLength, ulFlags);
@@ -3395,8 +3396,9 @@ PNP_CreateDevInst(
     if (pszDeviceID == NULL || pszParentDeviceID == NULL)
         return CR_INVALID_POINTER;
 
-    /* Fail, if the parent device is not the root device */
-    if (!IsRootDeviceInstanceID(pszParentDeviceID))
+    /* Only a software device has a parent other than the root device */
+    bRootParent = IsRootDeviceInstanceID(pszParentDeviceID);
+    if (!bRootParent && _wcsnicmp(pszDeviceID, L"SWD\\", 4) != 0)
         return CR_INVALID_DEVINST;
 
     if (ulFlags & CM_CREATE_DEVNODE_GENERATE_ID)
@@ -3447,7 +3449,8 @@ PNP_CreateDevInst(
 
         /* Create a device node for the device */
         RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceID);
-        Status = NtPlugPlayControl(PlugPlayControlInitializeDevice,
+        RtlInitUnicodeString(&ControlData.ParentInstance, pszParentDeviceID);
+        Status = NtPlugPlayControl(bRootParent ? PlugPlayControlInitializeDevice : PlugPlayControlInitializeChildDevice,
                                    &ControlData,
                                    sizeof(ControlData));
         if (!NT_SUCCESS(Status))
@@ -3859,8 +3862,11 @@ SetSoftwareDeviceCapabilities(
     PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA ControlData;
     NTSTATUS Status;
 
-    if (dwCapabilities & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI))
+    if (dwCapabilities & ~(SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesSilentInstall | SWDeviceCapabilitiesNoDisplayInUI |
+                           SWDeviceCapabilitiesDriverRequired))
+    {
         return CR_INVALID_FLAG;
+    }
     if (pszDeviceInstance == NULL ||
         !IsValidDeviceInstanceID(pszDeviceInstance) ||
         _wcsnicmp(pszDeviceInstance, L"SWD\\", 4) != 0)
@@ -3872,6 +3878,9 @@ SetSoftwareDeviceCapabilities(
     ControlData.Removable = (dwCapabilities & SWDeviceCapabilitiesRemovable) != 0;
     ControlData.SilentInstall = (dwCapabilities & SWDeviceCapabilitiesSilentInstall) != 0;
     ControlData.NoDisplayInUI = (dwCapabilities & SWDeviceCapabilitiesNoDisplayInUI) != 0;
+    /* Windows 11 reports RawDeviceOK for a software device unless it requires a driver, and SurpriseRemovalOK for each of them */
+    ControlData.RawDeviceOK = (dwCapabilities & SWDeviceCapabilitiesDriverRequired) == 0;
+    ControlData.SurpriseRemovalOK = TRUE;
     Status = NtPlugPlayControl(PlugPlayControlSetDeviceCapabilities, &ControlData, sizeof(ControlData));
     return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
 }

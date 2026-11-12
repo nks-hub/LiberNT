@@ -8,6 +8,7 @@
 #include "cfgmgr32_private.h"
 #include <devpkey.h>
 #include <newdev.h>
+#include <rpc.h>
 #include <sddl.h>
 #include <swdevice.h>
 
@@ -17,6 +18,9 @@ typedef struct _SW_DEVICE
 {
     WCHAR InstanceId[MAX_DEVICE_ID_LEN];
     DEVINST DevInst;
+    PWSTR Parent;
+    DEVINST ParentInst;
+    volatile BOOL Closing;
     SW_DEVICE_LIFETIME Lifetime;
     ULONG Capabilities;
     PWSTR HardwareIds;
@@ -180,6 +184,7 @@ FreeSwDevice(_In_ PSW_DEVICE Device)
         CloseHandle(Device->Idle);
         DeleteCriticalSection(&Device->LifetimeLock);
     }
+    HeapFree(GetProcessHeap(), 0, Device->Parent);
     HeapFree(GetProcessHeap(), 0, Device->HardwareIds);
     HeapFree(GetProcessHeap(), 0, Device->CompatibleIds);
     HeapFree(GetProcessHeap(), 0, Device->Description);
@@ -237,7 +242,7 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
     {
         if (DriverRequired)
             CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
-        return S_OK;
+        return S_FALSE;
     }
 
     hSetupApi = LoadLibraryW(L"setupapi.dll");
@@ -276,6 +281,7 @@ InstallSwDeviceDriver(_In_ PSW_DEVICE Device)
         WARN("No driver installed for %s (error %lu)\n", debugstr_w(Device->InstanceId), Error);
         if (DriverRequired)
             CM_Set_DevNode_Problem(Device->DevInst, CM_PROB_FAILED_INSTALL, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
+        hr = S_FALSE;
     }
 
     pSetupDiDestroyDeviceInfoList(DevInfo);
@@ -545,21 +551,17 @@ ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
 static HRESULT
 ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
 {
-    DEVINST Root, DevInst = 0;
+    DEVINST DevInst = 0;
     SW_DEVICE_LIFETIME Lifetime;
     CONFIGRET Cr;
     HANDLE Lock;
     HRESULT hr = S_OK;
 
-    Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
-    if (Cr != CR_SUCCESS)
-        return CrToHresult(Cr);
-
     Lock = LockSwDeviceOwners();
     if (!Lock)
         return HRESULT_FROM_WIN32(GetLastError());
 
-    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Root,
+    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
     if (Cr == CR_ALREADY_SUCH_DEVINST)
     {
@@ -574,7 +576,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 if (CfgmgrRemoveSoftwareDevice(Device->InstanceId) == CR_SUCCESS)
                 {
                     TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
-                    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Root,
+                    Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
                                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
                 }
                 break;
@@ -604,9 +606,63 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
     return hr;
 }
 
+/* Windows 11: the given container, else a container of its own for a removable device and the container of the parent for any other */
+static HRESULT
+SetContainerId(_In_ PSW_DEVICE Device)
+{
+    WCHAR Path[ARRAYSIZE(L"SYSTEM\\CurrentControlSet\\Enum\\") + MAX_DEVICE_ID_LEN], Text[39];
+    GUID Container, Inherited, Own;
+    ULONG Size = sizeof(Inherited);
+    DEVPROPTYPE Type;
+    BOOL HasInherited;
+    RPC_STATUS Status;
+    LONG Error;
+    HKEY Key;
+
+    HasInherited = CM_Get_DevNode_PropertyW(Device->ParentInst, &DEVPKEY_Device_ContainerId, &Type,
+                                            (PBYTE)&Inherited, &Size, 0) == CR_SUCCESS;
+    if (Device->HasContainerId)
+    {
+        Container = Device->ContainerId;
+    }
+    else if (!(Device->Capabilities & SWDeviceCapabilitiesRemovable))
+    {
+        if (!HasInherited)
+            return S_OK;
+        Container = Inherited;
+    }
+    else
+    {
+        /* A device that is created again keeps the container it had as a removable device */
+        Size = sizeof(Own);
+        if (CM_Get_DevNode_PropertyW(Device->DevInst, &DEVPKEY_Device_ContainerId, &Type, (PBYTE)&Own, &Size, 0) == CR_SUCCESS &&
+            (!HasInherited || !IsEqualGUID(&Own, &Inherited)))
+        {
+            return S_OK;
+        }
+        Status = UuidCreate(&Container);
+        if (Status != RPC_S_OK && Status != RPC_S_UUID_LOCAL_ONLY)
+            return HRESULT_FROM_WIN32(Status);
+    }
+
+    _snwprintf(Text, ARRAYSIZE(Text), L"{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}",
+               Container.Data1, Container.Data2, Container.Data3, Container.Data4[0], Container.Data4[1], Container.Data4[2],
+               Container.Data4[3], Container.Data4[4], Container.Data4[5], Container.Data4[6], Container.Data4[7]);
+    wcscpy(Path, L"SYSTEM\\CurrentControlSet\\Enum\\");
+    wcscat(Path, Device->InstanceId);
+    Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_SET_VALUE, &Key);
+    if (!Error)
+    {
+        Error = RegSetValueExW(Key, L"ContainerID", 0, REG_SZ, (const BYTE *)Text, sizeof(Text));
+        RegCloseKey(Key);
+    }
+    return HRESULT_FROM_WIN32(Error);
+}
+
 static HRESULT
 CreateSwDeviceNode(_In_ PSW_DEVICE Device)
 {
+    ULONG Status, Problem;
     CONFIGRET Cr;
     HRESULT hr;
 
@@ -614,7 +670,8 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     if (FAILED(hr))
         return hr;
 
-    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities & ~SWDeviceCapabilitiesDriverRequired);
+    /* A device that may start without a driver would start before the driver it gets below is installed */
+    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities | SWDeviceCapabilitiesDriverRequired);
     if (Cr != CR_SUCCESS)
         return CrToHresult(Cr);
 
@@ -653,29 +710,55 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
         if (Cr != CR_SUCCESS)
             return CrToHresult(Cr);
     }
-    if (Device->HasContainerId)
-    {
-        Cr = CM_Set_DevNode_PropertyW(Device->DevInst, &DEVPKEY_Device_ContainerId, DEVPROP_TYPE_GUID,
-                                      (const BYTE *)&Device->ContainerId, sizeof(GUID), 0);
-        if (Cr != CR_SUCCESS)
-            return CrToHresult(Cr);
-    }
+    hr = SetContainerId(Device);
+    if (FAILED(hr))
+        return hr;
 
     hr = ApplyProperties(Device->DevInst, Device->PropertyCount, Device->Properties);
     if (FAILED(hr))
         return hr;
 
-    if (Device->Reopened)
+    if (!Device->Reopened || CM_Get_DevNode_Status(&Status, &Problem, Device->DevInst, 0) != CR_SUCCESS ||
+        !(Status & DN_DRIVER_LOADED))
     {
-        ULONG Status, Problem;
+        hr = InstallSwDeviceDriver(Device);
+        if (FAILED(hr))
+            return hr;
+    }
+    if (Device->Capabilities & SWDeviceCapabilitiesDriverRequired)
+        return S_OK;
 
-        if (CM_Get_DevNode_Status(&Status, &Problem, Device->DevInst, 0) == CR_SUCCESS &&
-            (Status & DN_DRIVER_LOADED))
+    Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities);
+    if (Cr != CR_SUCCESS)
+        return CrToHresult(Cr);
+
+    /* Windows 11 starts a device that does not require a driver and found none */
+    if (hr == S_FALSE)
+    {
+        Cr = CM_Setup_DevNode(Device->DevInst, CM_SETUP_DEVNODE_READY);
+        if (Cr != CR_SUCCESS)
+            WARN("Starting %s without a driver failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
+    }
+    return S_OK;
+}
+
+/* Windows 11 creates the device once its parent is present and started, and ends a creation that still waits when the handle closes */
+static HRESULT
+WaitForParent(_In_ PSW_DEVICE Device)
+{
+    ULONG Status, Problem;
+
+    for (;;)
+    {
+        if (CM_Locate_DevNodeW(&Device->ParentInst, Device->Parent, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+            CM_Get_DevNode_Status(&Status, &Problem, Device->ParentInst, 0) == CR_SUCCESS && (Status & DN_STARTED))
         {
             return S_OK;
         }
+        if (Device->Closing)
+            return HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED);
+        Sleep(250);
     }
-    return InstallSwDeviceDriver(Device);
 }
 
 /* Windows 11 finds the module in kernelbase, where a program that maps a library by hand redirects the lookup of its code */
@@ -704,7 +787,9 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
     WCHAR InstanceId[MAX_DEVICE_ID_LEN];
     HRESULT hr;
 
-    hr = CreateSwDeviceNode(Device);
+    hr = WaitForParent(Device);
+    if (SUCCEEDED(hr))
+        hr = CreateSwDeviceNode(Device);
     if (FAILED(hr))
     {
         ERR("Creating software device %s failed (0x%08lx)\n", debugstr_w(Device->InstanceId), hr);
@@ -737,8 +822,6 @@ SwDeviceCreate(
     _In_opt_ PVOID pContext,
     _Out_ PHSWDEVICE phSwDevice)
 {
-    WCHAR RootId[MAX_DEVICE_ID_LEN];
-    DEVINST Root, Parent;
     PSW_DEVICE Device;
     HRESULT hr;
 
@@ -750,7 +833,7 @@ SwDeviceCreate(
     *phSwDevice = NULL;
 
     if (!pszEnumeratorName || !*pszEnumeratorName || wcschr(pszEnumeratorName, L'\\') ||
-        !pszParentDeviceInstance || !pCreateInfo || pCreateInfo->cbSize < sizeof(*pCreateInfo) ||
+        !pszParentDeviceInstance || !*pszParentDeviceInstance || !pCreateInfo || pCreateInfo->cbSize < sizeof(*pCreateInfo) ||
         !pCreateInfo->pszInstanceId || !*pCreateInfo->pszInstanceId || wcschr(pCreateInfo->pszInstanceId, L'\\') ||
         !pCallback ||
         (pCreateInfo->pSecurityDescriptor && !IsSelfRelativeSecurityDescriptor((PSECURITY_DESCRIPTOR)pCreateInfo->pSecurityDescriptor)) ||
@@ -758,18 +841,6 @@ SwDeviceCreate(
                                           SWDeviceCapabilitiesNoDisplayInUI | SWDeviceCapabilitiesDriverRequired)))
     {
         return E_INVALIDARG;
-    }
-
-    if (CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS ||
-        CM_Get_Device_IDW(Root, RootId, ARRAYSIZE(RootId), 0) != CR_SUCCESS ||
-        CM_Locate_DevNodeW(&Parent, (DEVINSTID_W)pszParentDeviceInstance, CM_LOCATE_DEVNODE_NORMAL) != CR_SUCCESS)
-    {
-        return HRESULT_FROM_WIN32(ERROR_NO_SUCH_DEVINST);
-    }
-    if (Parent != Root)
-    {
-        FIXME("Software devices below %s are not supported\n", debugstr_w(pszParentDeviceInstance));
-        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
     }
 
     Device = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*Device));
@@ -797,6 +868,7 @@ SwDeviceCreate(
     Device->Capabilities = pCreateInfo->CapabilityFlags;
     Device->Callback = pCallback;
     Device->Context = pContext;
+    Device->Parent = DupBuffer(pszParentDeviceInstance, (wcslen(pszParentDeviceInstance) + 1) * sizeof(WCHAR));
     Device->HardwareIds = DupBuffer(pCreateInfo->pszzHardwareIds, MultiSzSize(pCreateInfo->pszzHardwareIds));
     Device->CompatibleIds = DupBuffer(pCreateInfo->pszzCompatibleIds, MultiSzSize(pCreateInfo->pszzCompatibleIds));
     if (pCreateInfo->pszDeviceDescription)
@@ -805,7 +877,8 @@ SwDeviceCreate(
     if (pCreateInfo->pszDeviceLocation)
         Device->Location = DupBuffer(pCreateInfo->pszDeviceLocation,
                                      (wcslen(pCreateInfo->pszDeviceLocation) + 1) * sizeof(WCHAR));
-    if ((pCreateInfo->pszzHardwareIds && !Device->HardwareIds) ||
+    if (!Device->Parent ||
+        (pCreateInfo->pszzHardwareIds && !Device->HardwareIds) ||
         (pCreateInfo->pszzCompatibleIds && !Device->CompatibleIds) ||
         (pCreateInfo->pszDeviceDescription && !Device->Description) ||
         (pCreateInfo->pszDeviceLocation && !Device->Location))
@@ -909,6 +982,7 @@ SwDeviceClose(
     ReleaseSRWLockExclusive(&SwDeviceListLock);
     if (!Device)
         return;
+    Device->Closing = TRUE;
     if (Wait)
         WaitForSingleObject(Device->Idle, INFINITE);
 

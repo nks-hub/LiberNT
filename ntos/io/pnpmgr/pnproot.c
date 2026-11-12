@@ -39,6 +39,8 @@ typedef struct _PNPROOT_DEVICE
     BOOLEAN Removable;
     BOOLEAN SilentInstall;
     BOOLEAN NoDisplayInUI;
+    BOOLEAN RawDeviceOK;
+    BOOLEAN SurpriseRemovalOK;
 } PNPROOT_DEVICE, *PPNPROOT_DEVICE;
 
 /* Physical Device Object device extension for a child device */
@@ -222,7 +224,9 @@ PnpRootSetDeviceCapabilities(
     _In_ PDEVICE_OBJECT DeviceObject,
     _In_ BOOLEAN Removable,
     _In_ BOOLEAN SilentInstall,
-    _In_ BOOLEAN NoDisplayInUI)
+    _In_ BOOLEAN NoDisplayInUI,
+    _In_ BOOLEAN RawDeviceOK,
+    _In_ BOOLEAN SurpriseRemovalOK)
 {
     PPNPROOT_FDO_DEVICE_EXTENSION FdoDeviceExtension = &PnpRootDOExtension;
     PPNPROOT_PDO_DEVICE_EXTENSION DeviceExtension;
@@ -245,6 +249,8 @@ PnpRootSetDeviceCapabilities(
         DeviceExtension->DeviceInfo->Removable = Removable;
         DeviceExtension->DeviceInfo->SilentInstall = SilentInstall;
         DeviceExtension->DeviceInfo->NoDisplayInUI = NoDisplayInUI;
+        DeviceExtension->DeviceInfo->RawDeviceOK = RawDeviceOK;
+        DeviceExtension->DeviceInfo->SurpriseRemovalOK = SurpriseRemovalOK;
         Status = STATUS_SUCCESS;
     }
     KeReleaseGuardedMutex(&FdoDeviceExtension->DeviceListLock);
@@ -1158,6 +1164,8 @@ PdoQueryCapabilities(
         DeviceCapabilities->Removable = DeviceExtension->DeviceInfo->Removable;
         DeviceCapabilities->SilentInstall = DeviceExtension->DeviceInfo->SilentInstall;
         DeviceCapabilities->NoDisplayInUI = DeviceExtension->DeviceInfo->NoDisplayInUI;
+        DeviceCapabilities->RawDeviceOK = DeviceExtension->DeviceInfo->RawDeviceOK;
+        DeviceCapabilities->SurpriseRemovalOK = DeviceExtension->DeviceInfo->SurpriseRemovalOK;
     }
     KeReleaseGuardedMutex(&PnpRootDOExtension.DeviceListLock);
     /* FIXME: Fill other fields */

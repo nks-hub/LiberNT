@@ -138,10 +138,17 @@ NciSetConnectionName(
     if (!FormatGuid(Guid, Id) || FAILED(StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\Connection", Id)))
         return ERROR_INVALID_PARAMETER;
 
-    Error = RegCreateKeyExW(HKEY_LOCAL_MACHINE, NETWORK_CLASS_KEY, 0, NULL, 0,
-                            KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE | KEY_CREATE_SUB_KEY, NULL, &Network, NULL);
+    Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, NETWORK_CLASS_KEY, 0, KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE, &Network);
     if (Error != ERROR_SUCCESS)
         return Error;
+
+    /* Windows 11 answers an unknown connection with ERROR_FILE_NOT_FOUND, whatever the name, and creates nothing */
+    Error = RegOpenKeyExW(Network, Path, 0, KEY_SET_VALUE, &Connection);
+    if (Error != ERROR_SUCCESS)
+    {
+        RegCloseKey(Network);
+        return Error;
+    }
 
     /* Two renames must not both find the same name free; whoever may write the key may take the lock */
     Wait = WAIT_FAILED;
@@ -149,21 +156,20 @@ NciSetConnectionName(
         Wait = WaitForSingleObject(NamesLock, INFINITE);
     if (Wait != WAIT_OBJECT_0 && Wait != WAIT_ABANDONED)
     {
+        RegCloseKey(Connection);
         RegCloseKey(Network);
         return ERROR_ACCESS_DENIED;
     }
 
     Error = CheckNameIsFree(Network, Id, NewName);
     if (Error == ERROR_SUCCESS)
-        Error = RegCreateKeyExW(Network, Path, 0, NULL, 0, KEY_SET_VALUE, NULL, &Connection, NULL);
-    if (Error == ERROR_SUCCESS)
     {
         Error = RegSetValueExW(Connection, L"Name", 0, REG_SZ, (const BYTE *)NewName,
                                (DWORD)((Length + 1) * sizeof(WCHAR)));
-        RegCloseKey(Connection);
     }
 
     ReleaseMutex(NamesLock);
+    RegCloseKey(Connection);
     RegCloseKey(Network);
     return Error;
 }

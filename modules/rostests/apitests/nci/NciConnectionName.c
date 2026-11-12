@@ -11,6 +11,7 @@
 #include <winsock2.h>
 #include <iphlpapi.h>
 #include <objbase.h>
+#include <strsafe.h>
 
 typedef DWORD (WINAPI *PFN_NCI_GET)(const GUID *, PWSTR, DWORD, DWORD *);
 typedef DWORD (WINAPI *PFN_NCI_SET)(const GUID *, PCWSTR);
@@ -51,8 +52,9 @@ START_TEST(NciConnectionName)
 {
     HMODULE hNci = LoadLibraryW(L"nci.dll");
     GUID Guids[2], Unknown = { 0x12345678, 0x1234, 0x1234, { 1, 2, 3, 4, 5, 6, 7, 8 } };
-    WCHAR Names[2][256], Name[256];
+    WCHAR Names[2][256], Name[256], Path[160];
     DWORD Error, Size;
+    HKEY Key;
     ULONG Count;
 
     if (!hNci)
@@ -74,6 +76,29 @@ START_TEST(NciConnectionName)
     ok(Error != NO_ERROR, "A connection that does not exist has a name\n");
 
     Count = GetConnections(Guids, Names);
+
+    CoCreateGuid(&Unknown);
+    StringFromGUID2(&Unknown, Name, ARRAYSIZE(Name));
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"SYSTEM\\CurrentControlSet\\Control\\Network\\{4D36E972-E325-11CE-BFC1-08002BE10318}\\%s", Name);
+    Error = pNciSetConnectionName(&Unknown, L"NciConnectionName unknown");
+    ok(Error == ERROR_FILE_NOT_FOUND, "Naming an unknown connection returned %lu\n", Error);
+    if (Count)
+    {
+        Error = pNciSetConnectionName(&Unknown, Names[0]);
+        ok(Error == ERROR_FILE_NOT_FOUND, "Giving an unknown connection a used name returned %lu\n", Error);
+    }
+    Error = RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_READ, &Key);
+    ok(Error == ERROR_FILE_NOT_FOUND, "Opening the key of an unknown connection returned %lu\n", Error);
+    if (Error == ERROR_SUCCESS)
+    {
+        RegDeleteKeyW(Key, L"Connection");
+        RegCloseKey(Key);
+        RegDeleteKeyW(HKEY_LOCAL_MACHINE, Path);
+    }
+    Size = sizeof(Name);
+    Error = pNciGetConnectionName(&Unknown, Name, sizeof(Name), &Size);
+    ok(Error == ERROR_FILE_NOT_FOUND, "Reading the name of an unknown connection returned %lu\n", Error);
+
     if (Count == 0)
     {
         skip("No connection to test with\n");

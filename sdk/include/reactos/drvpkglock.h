@@ -15,9 +15,10 @@ AcquirePackageLock(PHANDLE Namespace, PHANDLE Lock)
 {
     SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
     BYTE Admins[SECURITY_MAX_SID_SIZE];
+    WCHAR Alias[40] = L"PrinterDriverPackages", LockName[48];
     DWORD Size = sizeof(Admins), Wait;
+    ULONG Try, Length = 21, Shift;
     HANDLE Boundary;
-    ULONG Try;
 
     *Namespace = NULL;
     *Lock = NULL;
@@ -27,21 +28,27 @@ AcquirePackageLock(PHANDLE Namespace, PHANDLE Lock)
     {
         return FALSE;
     }
+    /* An alias belongs to the whole process, so each holder, nested or on another thread, names its own after its handle variable */
+    for (Shift = sizeof(ULONG_PTR) * 8; Shift; Shift -= 4)
+        Alias[Length++] = L"0123456789ABCDEF"[((ULONG_PTR)Namespace >> (Shift - 4)) & 0xF];
+    Alias[Length] = L'\0';
+    lstrcpyW(LockName, Alias);
+    lstrcatW(LockName, L"\\Lock");
     Boundary = CreateBoundaryDescriptorW(L"PrinterDriverPackages", 0);
     if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
     {
         /* The namespace ends with its last handle, so it can be gone again once creating it found it */
         for (Try = 0; !*Namespace && Try < 3; Try++)
         {
-            *Namespace = CreatePrivateNamespaceW(&Security, Boundary, L"PrinterDriverPackages");
+            *Namespace = CreatePrivateNamespaceW(&Security, Boundary, Alias);
             if (!*Namespace)
-                *Namespace = OpenPrivateNamespaceW(Boundary, L"PrinterDriverPackages");
+                *Namespace = OpenPrivateNamespaceW(Boundary, Alias);
         }
     }
     if (Boundary)
         DeleteBoundaryDescriptor(Boundary);
     if (*Namespace)
-        *Lock = CreateMutexW(&Security, FALSE, L"PrinterDriverPackages\\Lock");
+        *Lock = CreateMutexW(&Security, FALSE, LockName);
     LocalFree(Security.lpSecurityDescriptor);
 
     if (*Lock)

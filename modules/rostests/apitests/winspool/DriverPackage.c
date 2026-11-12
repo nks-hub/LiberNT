@@ -567,26 +567,33 @@ OpenDriverKey(PCWSTR DriverName)
     return hKey;
 }
 
+/* The whole files: the test INFs have the same first 253 bytes */
 static BOOL
 FilesMatch(PCWSTR First, PCWSTR Second)
 {
-    char A[256], B[256];
-    DWORD ReadA = 0, ReadB = 0;
+    char A[4096], B[4096];
+    DWORD ReadA = 0, ReadB = 0, Total = 0;
     HANDLE hA, hB;
+    BOOL Same = FALSE;
 
     hA = CreateFileW(First, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
     hB = CreateFileW(Second, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    while (hA != INVALID_HANDLE_VALUE && hB != INVALID_HANDLE_VALUE &&
+           ReadFile(hA, A, sizeof(A), &ReadA, NULL) && ReadFile(hB, B, sizeof(B), &ReadB, NULL) &&
+           ReadA == ReadB && memcmp(A, B, ReadA) == 0)
+    {
+        if (!ReadA)
+        {
+            Same = Total != 0;
+            break;
+        }
+        Total += ReadA;
+    }
     if (hA != INVALID_HANDLE_VALUE)
-    {
-        ReadFile(hA, A, sizeof(A), &ReadA, NULL);
         CloseHandle(hA);
-    }
     if (hB != INVALID_HANDLE_VALUE)
-    {
-        ReadFile(hB, B, sizeof(B), &ReadB, NULL);
         CloseHandle(hB);
-    }
-    return ReadA != 0 && ReadA == ReadB && memcmp(A, B, ReadA) == 0;
+    return Same;
 }
 
 static VOID

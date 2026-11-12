@@ -13,6 +13,9 @@ static const WCHAR VersionSection[] = L"Version";
 static const WCHAR CatalogFile[] = L"CatalogFile";
 static const WCHAR StagingPattern[] = L".stage-*";
 
+/* The thread whose staging is for DriverStoreAddDriverPackageW; written under the package lock */
+static DWORD VerifyingThread;
+
 #define RESTORE_ATTEMPTS 5
 #define RESTORE_DELAY 100
 
@@ -262,9 +265,7 @@ ResolvePackagePath(
     OUT PWSTR Path)
 {
     WCHAR Joined[MAX_PATH], Base[MAX_PATH];
-    DWORD Length, BaseLength, Attributes;
-    PWSTR Cursor;
-    WCHAR Saved;
+    DWORD Length, BaseLength;
 
     if (!CombinePath(Joined, Root, Relative))
         return ERROR_FILENAME_EXCED_RANGE;
@@ -281,21 +282,7 @@ ResolvePackagePath(
     if (_wcsnicmp(Path, Base, BaseLength) != 0 || Path[BaseLength] != L'\\' || !Path[BaseLength + 1])
         return ERROR_BAD_PATHNAME;
 
-    /* A junction or a link, the root itself or below it, leads out of the root although the path does not */
-    for (Cursor = Path + BaseLength; ; Cursor++)
-    {
-        Saved = *Cursor;
-        if (Saved != L'\\' && Saved != UNICODE_NULL)
-            continue;
-
-        *Cursor = UNICODE_NULL;
-        Attributes = GetFileAttributesW(Path);
-        *Cursor = Saved;
-        if (Attributes != INVALID_FILE_ATTRIBUTES && (Attributes & FILE_ATTRIBUTE_REPARSE_POINT))
-            return ERROR_BAD_PATHNAME;
-        if (Saved == UNICODE_NULL)
-            break;
-    }
+    /* Windows 11 follows a junction and a directory link of the package; what it stages has to be in the catalog */
     return ERROR_SUCCESS;
 }
 
@@ -466,6 +453,9 @@ StagePackageFile(
         if (!Required)
             return TRUE;
         ERR("Package file %s cannot be taken from the package directory\n", debugstr_w(Relative));
+        /* Windows 11 tells of a file outside the package directory that its hash is not in the catalog */
+        if (Error == ERROR_BAD_PATHNAME && VerifyingThread == GetCurrentThreadId())
+            Error = (DWORD)SPAPI_E_FILE_HASH_NOT_IN_CATALOG;
         SetLastError(Error);
         return FALSE;
     }
@@ -706,15 +696,8 @@ StageIncludedInfs(
         {
             if (!SetupGetStringFieldW(&Context, Field, Name, ARRAY_SIZE(Name), NULL) || !Name[0])
                 continue;
-            if (!IsSafeRelativePath(Name))
-            {
-                ERR("Included INF %s is not a name in the package directory\n", debugstr_w(Name));
-                SetLastError(ERROR_BAD_PATHNAME);
-                return FALSE;
-            }
-
-            /* An INF that is not in the package directory belongs to the system, not to the package */
-            if (ResolvePackagePath(Package->SourceRoot, Name, Path) != ERROR_SUCCESS ||
+            /* Windows 11 stages a package whatever its Include names; an INF outside the package directory is not of the package */
+            if (!IsSafeRelativePath(Name) || ResolvePackagePath(Package->SourceRoot, Name, Path) != ERROR_SUCCESS ||
                 GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES)
             {
                 continue;
@@ -1363,8 +1346,6 @@ VerifyStagedPackage(
     return Error;
 }
 
-/* The thread whose staging is for DriverStoreAddDriverPackageW; written under the package lock */
-static DWORD VerifyingThread;
 
 static BOOL
 StageLockedDriverPackage(

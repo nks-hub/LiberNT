@@ -11,6 +11,7 @@ list(APPEND SOURCE
     icmp.c
     icmp_echo.c
     InitializeIpInterfaceEntry.c
+    InterfaceIndexLuid.c
     NotifyIpInterfaceChange.c
     SendARP.c
     UnicastIpAddressChange.c

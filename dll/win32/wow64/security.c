@@ -153,6 +153,9 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     if (!prev)
         return NtAdjustGroupsToken( handle, reset, groups64, len, NULL, retlen );
 
+    /* as on Windows 11, a missing new state fails the call before the outputs are looked at */
+    if (!reset && !groups) return STATUS_INVALID_PARAMETER;
+
     /* as on Windows 11, a length that cannot be written fails the call before the token is touched */
     if (!retlen) return STATUS_ACCESS_VIOLATION;
     *(volatile ULONG *)retlen = *(volatile ULONG *)retlen;

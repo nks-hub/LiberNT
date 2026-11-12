@@ -80,7 +80,7 @@ QueryBestRoute(
     }
     ok(i < Interfaces->NumEntries, "The route to 0x%08lx uses interface %lu, which the system does not have\n",
        Request.Destination, Request.Route.InterfaceIndex);
-    if (i < Interfaces->NumEntries && Interfaces->Table[i].Type != IF_TYPE_SOFTWARE_LOOPBACK)
+    if (i < Interfaces->NumEntries)
     {
         ok(Interfaces->Table[i].InterfaceLuid.Value == Request.Route.InterfaceLuid.Value,
            "The route to 0x%08lx has LUID 0x%I64x, expected 0x%I64x\n",
@@ -102,7 +102,13 @@ TestGetBestRoute2(
     ULONG i, Count, Gateway = 0, Index = 0;
     DWORD Error;
 
-    QueryBestRoute(0, Interfaces, &Best);
+    if (QueryBestRoute(0, Interfaces, &Best))
+        ok_eq_hex(Best.NextHop.Ipv4.sin_addr.s_addr, 0UL);
+    if (QueryBestRoute(NETIOIPHLP_LOOPBACK_ADDRESS, Interfaces, &Best))
+    {
+        ok_eq_hex(Best.NextHop.Ipv4.sin_addr.s_addr, 0UL);
+        ok_eq_ulong((ULONG)Best.InterfaceLuid.Info.IfType, (ULONG)IF_TYPE_SOFTWARE_LOOPBACK);
+    }
 
     Error = GetIpForwardTable2(AF_INET, &Routes);
     ok_eq_ulong(Error, (DWORD)NO_ERROR);
@@ -213,6 +219,10 @@ START_TEST(NetioIpHlp)
         ok(!EndsWithGuid(Kernel.Description, Guid), "Description \"%ls\" is the device name\n", Kernel.Description);
         ok_eq_wstr(Kernel.Alias, User.Alias);
         ok_eq_wstr(Kernel.Description, User.Description);
+        ok(Kernel.TransmitLinkSpeed == User.TransmitLinkSpeed, "Transmit speed %I64u, expected %I64u\n",
+           Kernel.TransmitLinkSpeed, User.TransmitLinkSpeed);
+        ok(Kernel.ReceiveLinkSpeed == User.ReceiveLinkSpeed, "Receive speed %I64u, expected %I64u\n",
+           Kernel.ReceiveLinkSpeed, User.ReceiveLinkSpeed);
         Tested++;
     }
 
@@ -220,6 +230,9 @@ START_TEST(NetioIpHlp)
         skip(FALSE, "No interface other than the loopback\n");
 
     TestGetBestRoute2(Table);
+
+    Error = KmtSendToDriver(IOCTL_NETIOIPHLP_NOTIFY);
+    ok_eq_ulong(Error, (DWORD)ERROR_SUCCESS);
 
     KmtCloseDriver();
     KmtUnloadDriver();

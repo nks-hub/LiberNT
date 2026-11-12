@@ -236,6 +236,94 @@ TestCloseWhileOthersOpen(void)
         ClosePrivateNamespace(Namespace, PRIVATE_NAMESPACE_FLAG_DESTROY);
 }
 
+typedef HANDLE (WINAPI *PFN_CREATE_PRIVATE_NAMESPACE)(LPSECURITY_ATTRIBUTES, LPVOID, LPCWSTR);
+
+/* The alias is a name of the process: a second namespace under it fails after the kernel call, whatever the boundary or the module */
+static void
+TestAliasInUse(void)
+{
+    PFN_CREATE_PRIVATE_NAMESPACE pKernelBaseCreate;
+    OBJECT_ATTRIBUTES Attributes;
+    HANDLE Namespace, Second, Other, Boundary, Raw = NULL;
+    HMODULE KernelBase;
+    DWORD Error;
+
+    Namespace = CreateNs(L"K32NsDupA", L"K32NsDup", &Error);
+    ok(Namespace != NULL, "CreatePrivateNamespace failed with %lu\n", Error);
+    if (!Namespace)
+        return;
+
+    Second = CreateNs(L"K32NsDupB", L"K32NsDup", &Error);
+    ok(Second == NULL && Error == ERROR_DUP_NAME, "another boundary under the alias: %p, error %lu\n", Second, Error);
+    if (Second)
+        ClosePrivateNamespace(Second, 0);
+    ExpectGone(L"K32NsDupB", L"K32NsDupX", __LINE__);
+    Second = CreateNs(L"K32NsDupB", L"k32nsdup", &Error);
+    ok(Second == NULL && Error == ERROR_DUP_NAME, "the alias in lower case: %p, error %lu\n", Second, Error);
+    if (Second)
+        ClosePrivateNamespace(Second, 0);
+    Second = OpenNs(L"K32NsDupA", L"K32NsDup", &Error);
+    ok(Second == NULL && Error == ERROR_DUP_NAME, "opening the same namespace under the alias: %p, error %lu\n", Second, Error);
+    if (Second)
+        ClosePrivateNamespace(Second, 0);
+    Second = OpenNs(L"K32NsDupMissing", L"K32NsDup", &Error);
+    ok(Second == NULL && Error == ERROR_PATH_NOT_FOUND, "opening a missing namespace under the alias: %p, error %lu\n", Second, Error);
+    if (Second)
+        ClosePrivateNamespace(Second, 0);
+    Second = CreateNs(L"K32NsDupA", L"K32NsDup", &Error);
+    ok(Second == NULL && Error == ERROR_ALREADY_EXISTS, "creating an existing namespace under the alias: %p, error %lu\n", Second, Error);
+    if (Second)
+        ClosePrivateNamespace(Second, 0);
+
+    KernelBase = LoadLibraryW(L"kernelbase.dll");
+    pKernelBaseCreate = KernelBase ? (PFN_CREATE_PRIVATE_NAMESPACE)GetProcAddress(KernelBase, "CreatePrivateNamespaceW") : NULL;
+    Boundary = MakeBoundary(L"K32NsDupB");
+    if (pKernelBaseCreate && Boundary)
+    {
+        SetLastError(0xdeadbeef);
+        Second = pKernelBaseCreate(NULL, Boundary, L"K32NsDup");
+        Error = GetLastError();
+        ok(Second == NULL && Error == ERROR_DUP_NAME, "kernelbase under the alias of kernel32: %p, error %lu\n", Second, Error);
+        if (Second)
+            ClosePrivateNamespace(Second, 0);
+    }
+    else
+    {
+        skip("No CreatePrivateNamespaceW in kernelbase\n");
+    }
+    if (Boundary)
+        DeleteBoundaryDescriptor(Boundary);
+
+    Boundary = MakeBoundary(L"K32NsDupA");
+    if (Boundary)
+    {
+        InitializeObjectAttributes(&Attributes, NULL, 0, NULL, NULL);
+        ok_hex(NtOpenPrivateNamespace(&Raw, MAXIMUM_ALLOWED, &Attributes, Boundary), STATUS_SUCCESS);
+        DeleteBoundaryDescriptor(Boundary);
+    }
+    Other = OpenNs(L"K32NsDupA", L"K32NsDupOther", &Error);
+    ok(Other != NULL, "opening the namespace under another alias failed with %lu\n", Error);
+    ok(ClosePrivateNamespace(Namespace, 0), "ClosePrivateNamespace failed with %lu\n", GetLastError());
+    Namespace = OpenNs(L"K32NsDupA", L"K32NsDup", &Error);
+    ok(Namespace != NULL, "opening under the alias after ClosePrivateNamespace failed with %lu\n", Error);
+    if (Namespace)
+        ClosePrivateNamespace(Namespace, 0);
+    if (Other)
+        ClosePrivateNamespace(Other, 0);
+    if (Raw)
+        CloseHandle(Raw);
+
+    Namespace = CreateNs(L"K32NsDupC", L"K32NsDupKept", &Error);
+    ok(Namespace != NULL, "CreatePrivateNamespace failed with %lu\n", Error);
+    if (!Namespace)
+        return;
+    CloseHandle(Namespace);
+    Second = CreateNs(L"K32NsDupD", L"K32NsDupKept", &Error);
+    ok(Second == NULL && Error == ERROR_DUP_NAME, "the alias of a handle closed with CloseHandle: %p, error %lu\n", Second, Error);
+    if (Second)
+        ClosePrivateNamespace(Second, 0);
+}
+
 START_TEST(PrivateNamespaceLifetime)
 {
     DWORD Size = sizeof(WorldSid);
@@ -253,4 +341,6 @@ START_TEST(PrivateNamespaceLifetime)
     TestLastHandle();
     TestDestroyAndClose();
     TestCloseWhileOthersOpen();
+    /* Last: it leaves an alias whose handle CloseHandle closed */
+    TestAliasInUse();
 }

@@ -279,6 +279,109 @@ PingPeer(const char *Ip, int Count)
 
 static
 BOOL
+PingSize(const char *Ip, DWORD Size)
+{
+    PICMP_ECHO_REPLY Echo;
+    DWORD ReplySize = sizeof(ICMP_ECHO_REPLY) + Size + 64;
+    char *Data, *Reply;
+    HANDLE Icmp;
+    DWORD Status, i;
+    BOOL Ok;
+
+    Data = HeapAlloc(GetProcessHeap(), 0, Size);
+    Reply = HeapAlloc(GetProcessHeap(), 0, ReplySize);
+    Icmp = IcmpCreateFile();
+    if (!Data || !Reply || Icmp == INVALID_HANDLE_VALUE)
+    {
+        Report("NETCXTEST: no resources for an echo of %lu bytes", Size);
+        Ok = FALSE;
+        goto done;
+    }
+    for (i = 0; i < Size; i++)
+        Data[i] = (char)(i * 7 + 1);
+    Echo = (PICMP_ECHO_REPLY)Reply;
+    Status = IcmpSendEcho(Icmp, inet_addr(Ip), Data, (WORD)Size, NULL, Reply, ReplySize, 2000);
+    Ok = Status && Echo->Status == IP_SUCCESS && Echo->DataSize == Size && !memcmp(Echo->Data, Data, Size);
+    Report("NETCXTEST: echo of %lu bytes: count %lu status %lu size %u error %lu",
+           Size, Status, Status ? Echo->Status : 0, Status ? Echo->DataSize : 0, Status ? 0 : GetLastError());
+done:
+    if (Icmp != INVALID_HANDLE_VALUE)
+        IcmpCloseHandle(Icmp);
+    HeapFree(GetProcessHeap(), 0, Reply);
+    HeapFree(GetProcessHeap(), 0, Data);
+    return Ok;
+}
+
+static
+BOOL
+FindRawIpInterface(MIB_IF_ROW2 *Row)
+{
+    static const WCHAR Description[] = L"LiberNT NetAdapterCx Raw IP Test Adapter";
+    MIB_IF_TABLE2 *Table;
+    BOOL Found = FALSE;
+    ULONG i;
+
+    if (GetIfTable2(&Table) != NO_ERROR)
+        return FALSE;
+    for (i = 0; i < Table->NumEntries; i++)
+    {
+        if (!wcsncmp(Table->Table[i].Description, Description, ARRAYSIZE(Description) - 1) &&
+            Table->Table[i].OperStatus == IfOperStatusUp)
+        {
+            *Row = Table->Table[i];
+            Found = TRUE;
+            break;
+        }
+    }
+    FreeMibTable(Table);
+    return Found;
+}
+
+/* The adapter answers only packets exactly as long as their IPv4 total length, as a tunnel does */
+static
+void
+TestRawIp(const WCHAR *InfPath)
+{
+    static const DWORD Sizes[] = { 32, 1472, 1473, 3000, 2952, 8000 };
+    WCHAR RawIpInfPath[MAX_PATH];
+    WCHAR InstanceId[MAX_DEVICE_ID_LEN];
+    MIB_IF_ROW2 Row;
+    WCHAR *Slash;
+    char What[64];
+    int i;
+
+    lstrcpynW(RawIpInfPath, InfPath, ARRAYSIZE(RawIpInfPath));
+    Slash = wcsrchr(RawIpInfPath, L'\\');
+    if (Slash)
+        Slash[1] = 0;
+    lstrcatW(RawIpInfPath, L"netcxloopip.inf");
+
+    Check(InstallDevice(RawIpInfPath, L"ROOT\\NETCXLOOPIP\0", InstanceId), "raw IP install");
+    for (i = 0; i < 100 && !FindRawIpInterface(&Row); i++)
+    {
+        if (i % 10 == 9)
+            Report("NETCXTEST: waiting for the raw IP interface, %d ms", (i + 1) * 100);
+        Sleep(100);
+    }
+    Check(i < 100, "raw IP interface up");
+    if (i == 100)
+    {
+        ReportInterfaceTable();
+        return;
+    }
+    ReportInterface("raw IP", &Row);
+    Check(Row.PhysicalAddressLength == 0, "raw IP interface without a link address");
+    Check(Row.Mtu == 1500, "raw IP mtu 1500");
+    Check(AddAddress(Row.InterfaceLuid, "10.235.0.1"), "raw IP address preferred");
+    for (i = 0; i < (int)ARRAYSIZE(Sizes); i++)
+    {
+        _snprintf(What, sizeof(What), "raw IP peer answers an echo of %lu bytes", Sizes[i]);
+        Check(PingSize("10.235.0.2", Sizes[i]), What);
+    }
+}
+
+static
+BOOL
 SetDeviceEnabled(BOOL Enable)
 {
     DEVINST DevInst;
@@ -350,6 +453,13 @@ wmain(int argc, WCHAR **argv)
         if (Slash)
             Slash[1] = 0;
         lstrcatW(InfPath, L"netcxloop.inf");
+    }
+
+    if (argc > 2 && !_wcsicmp(argv[2], L"rawip"))
+    {
+        TestRawIp(InfPath);
+        Report("NETCXTEST: DONE %d failures", Failures);
+        return Failures ? 1 : 0;
     }
 
     lstrcpynW(WifiInfPath, InfPath, ARRAYSIZE(WifiInfPath));

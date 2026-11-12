@@ -18,13 +18,19 @@
 #define LOOP_PEER_FRAMES 64
 #define LOOP_LINK_SPEED 1000000000ULL
 
+#if !defined(NETCXLOOP_WIFI) && !defined(NETCXLOOP_RAW_IP)
+#define NETCXLOOP_LIGHTWEIGHT
+#endif
+
 #ifdef NETCXLOOP_WIFI
 static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x57 };
 #else
 static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x50 };
 #endif
+#ifndef NETCXLOOP_RAW_IP
 static const UCHAR LoopPeerAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x51 };
-#ifndef NETCXLOOP_WIFI
+#endif
+#ifdef NETCXLOOP_LIGHTWEIGHT
 static const UCHAR LoopLightweightAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x52 };
 static const GUID LoopLightweightInterface = { 0x4c4f4f50, 0x4c57, 0x4d00, { 0x80, 0x00, 0x4c, 0x4f, 0x4f, 0x50, 0x4c, 0x57 } };
 static NETADAPTER LoopLightweightAdapter;
@@ -106,6 +112,7 @@ LoopStoreChecksum(
     Field[1] = (UCHAR)Checksum;
 }
 
+#ifndef NETCXLOOP_RAW_IP
 static
 BOOLEAN
 LoopBuildArpReply(
@@ -191,6 +198,54 @@ LoopBuildEchoReply(
         RtlZeroMemory(Reply->Data + 14 + TotalLength, 60 - (14 + TotalLength));
     return TRUE;
 }
+#else
+static
+BOOLEAN
+LoopBuildRawReply(
+    _In_reads_bytes_(Length) UCHAR const *Packet,
+    _In_ ULONG Length,
+    _Out_ LOOP_FRAME *Reply)
+{
+    ULONG HeaderLength;
+    ULONG TotalLength;
+    ULONG Sum;
+
+    if (Length < 20 || (Packet[0] >> 4) != 4 || Packet[9] != 1)
+        return FALSE;
+    HeaderLength = (Packet[0] & 0x0F) * 4;
+    TotalLength = ((ULONG)Packet[2] << 8) | Packet[3];
+    /* A tunnel refuses a packet that is not exactly as long as its IPv4 header says */
+    if (TotalLength != Length)
+    {
+        DbgPrint("NETCXLOOP: dropped an IPv4 packet of %lu bytes with a total length of %lu\n", Length, TotalLength);
+        return FALSE;
+    }
+    if (HeaderLength < 20 || HeaderLength > Length)
+        return FALSE;
+
+    RtlCopyMemory(Reply->Data, Packet, Length);
+    RtlCopyMemory(Reply->Data + 12, Packet + 16, 4);
+    RtlCopyMemory(Reply->Data + 16, Packet + 12, 4);
+    Reply->Data[8] = 128;
+    Reply->Data[10] = 0;
+    Reply->Data[11] = 0;
+    LoopStoreChecksum(Reply->Data + 10, LoopChecksum(Reply->Data, HeaderLength));
+
+    /* Each fragment of an echo request comes back as a fragment of the reply; only the first one holds the ICMP header */
+    if ((Packet[6] & 0x1F) == 0 && Packet[7] == 0)
+    {
+        if (Length < HeaderLength + 8 || Packet[HeaderLength] != 8 || Packet[HeaderLength + 1] != 0)
+            return FALSE;
+        Reply->Data[HeaderLength] = 0;
+        /* Type 8 becoming 0 adds 0x0800 to the one's complement checksum (RFC 1624) */
+        Sum = (((ULONG)Packet[HeaderLength + 2] << 8) | Packet[HeaderLength + 3]) + 0x0800;
+        Sum = (Sum & 0xFFFF) + (Sum >> 16);
+        LoopStoreChecksum(Reply->Data + HeaderLength + 2, (USHORT)Sum);
+    }
+    Reply->Length = (USHORT)Length;
+    return TRUE;
+}
+#endif
 
 static
 void
@@ -202,6 +257,7 @@ LoopPeerReceive(
     KIRQL OldIrql;
     LOOP_FRAME *Slot;
     BOOLEAN Queued = FALSE;
+#ifndef NETCXLOOP_RAW_IP
     USHORT EtherType;
 
     if (Length < 14)
@@ -209,15 +265,20 @@ LoopPeerReceive(
     EtherType = ((USHORT)Frame[12] << 8) | Frame[13];
     if (EtherType != 0x0806 && EtherType != 0x0800)
         return;
+#endif
 
     KeAcquireSpinLock(&Adapter->Lock, &OldIrql);
     if (Adapter->Count < LOOP_PEER_FRAMES)
     {
         Slot = &Adapter->Frames[(Adapter->Head + Adapter->Count) % LOOP_PEER_FRAMES];
+#ifdef NETCXLOOP_RAW_IP
+        Queued = LoopBuildRawReply(Frame, Length, Slot);
+#else
         if (EtherType == 0x0806)
             Queued = LoopBuildArpReply(Frame, Length, Slot);
         else
             Queued = LoopBuildEchoReply(Frame, Length, Slot);
+#endif
         if (Queued)
             Adapter->Count++;
     }
@@ -366,7 +427,11 @@ LoopRxAdvance(
             Packet->FragmentCount = 1;
             Packet->Ignore = 0;
             RtlZeroMemory(&Packet->Layout, sizeof(Packet->Layout));
+#ifdef NETCXLOOP_RAW_IP
+            Packet->Layout.Layer2Type = NetPacketLayer2TypeNull;
+#else
             Packet->Layout.Layer2Type = NetPacketLayer2TypeEthernet;
+#endif
             FragmentRing->BeginIndex = NetRingIncrementIndex(FragmentRing, FragmentIndex);
             PacketRing->BeginIndex = NetRingIncrementIndex(PacketRing, PacketRing->BeginIndex);
             InterlockedIncrement64(&Adapter->RxFrames);
@@ -495,7 +560,9 @@ LoopStartAdapter(
     _In_reads_(6) UCHAR const *LinkLayerAddress)
 {
     NET_ADAPTER_LINK_LAYER_CAPABILITIES LinkLayer;
+#ifndef NETCXLOOP_RAW_IP
     NET_ADAPTER_LINK_LAYER_ADDRESS Address;
+#endif
     NET_ADAPTER_TX_CAPABILITIES TxCapabilities;
     NET_ADAPTER_RX_CAPABILITIES RxCapabilities;
     NET_ADAPTER_RECEIVE_FILTER_CAPABILITIES ReceiveFilter;
@@ -507,9 +574,13 @@ LoopStartAdapter(
     NetAdapterSetLinkLayerCapabilities(NetAdapter, &LinkLayer);
     NetAdapterSetLinkLayerMtuSize(NetAdapter, LOOP_MTU);
 
+#ifdef NETCXLOOP_RAW_IP
+    UNREFERENCED_PARAMETER(LinkLayerAddress);
+#else
     NET_ADAPTER_LINK_LAYER_ADDRESS_INIT(&Address, 6, LinkLayerAddress);
     NetAdapterSetPermanentLinkLayerAddress(NetAdapter, &Address);
     NetAdapterSetCurrentLinkLayerAddress(NetAdapter, &Address);
+#endif
 
     NET_ADAPTER_TX_CAPABILITIES_INIT(&TxCapabilities, 1);
     NET_ADAPTER_RX_CAPABILITIES_INIT_SYSTEM_MANAGED(&RxCapabilities, LOOP_MAX_FRAME, 1);
@@ -725,7 +796,7 @@ LoopDriverUnload(
 {
     UNREFERENCED_PARAMETER(Driver);
 
-#ifndef NETCXLOOP_WIFI
+#ifdef NETCXLOOP_LIGHTWEIGHT
     if (LoopLightweightAdapter)
     {
         NetAdapterStop(LoopLightweightAdapter);
@@ -742,7 +813,7 @@ DriverEntry(
     _In_ PUNICODE_STRING RegistryPath)
 {
     WDF_DRIVER_CONFIG Config;
-#ifndef NETCXLOOP_WIFI
+#ifdef NETCXLOOP_LIGHTWEIGHT
     NETADAPTER_INIT *AdapterInit;
 #endif
     NTSTATUS Status;
@@ -753,7 +824,7 @@ DriverEntry(
     if (!NT_SUCCESS(Status))
         return Status;
 
-#ifndef NETCXLOOP_WIFI
+#ifdef NETCXLOOP_LIGHTWEIGHT
     AdapterInit = NetAdapterLightweightInitAllocate(&LoopLightweightInterface);
     if (AdapterInit)
         (VOID)LoopCreateAdapter(AdapterInit, LoopLightweightAddress, &LoopLightweightAdapter);

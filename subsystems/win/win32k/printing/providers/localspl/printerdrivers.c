@@ -1589,3 +1589,210 @@ BOOL WINAPI LocalAddPrinterDriver(LPWSTR pName, DWORD level, LPBYTE pDriverInfo)
 
     return myAddPrinterDriverEx(level, pDriverInfo, APD_COPY_NEW_FILES, TRUE);
 }
+
+static const WCHAR * const dpd_file_values[] = { driverW, data_fileW, configuration_fileW, help_fileW, dependent_filesW };
+
+/* Each list is a value of the driver read as strings ended by an empty one, NULL when the driver has no such value */
+static DWORD dpd_read_files( HKEY hversion, const WCHAR *name, WCHAR **lists )
+{
+    const DWORD flags = RRF_RT_REG_SZ | RRF_RT_REG_MULTI_SZ;
+    DWORD i, size, error = ERROR_SUCCESS;
+
+    for (i = 0; i < ARRAYSIZE(dpd_file_values); i++)
+        lists[i] = NULL;
+
+    for (i = 0; i < ARRAYSIZE(dpd_file_values) && error == ERROR_SUCCESS; i++)
+    {
+        size = 0;
+        error = RegGetValueW( hversion, name, dpd_file_values[i], flags, NULL, NULL, &size );
+        if (error == ERROR_FILE_NOT_FOUND)
+        {
+            error = ERROR_SUCCESS;
+            continue;
+        }
+        if (error != ERROR_SUCCESS)
+            break;
+        lists[i] = HeapAlloc( GetProcessHeap(), HEAP_ZERO_MEMORY, size + 2 * sizeof(WCHAR) );
+        if (!lists[i])
+            error = ERROR_NOT_ENOUGH_MEMORY;
+        else
+            error = RegGetValueW( hversion, name, dpd_file_values[i], flags, NULL, lists[i], &size );
+    }
+    return error;
+}
+
+static void dpd_free_files( WCHAR **lists )
+{
+    DWORD i;
+
+    for (i = 0; i < ARRAYSIZE(dpd_file_values); i++)
+        HeapFree( GetProcessHeap(), 0, lists[i] );
+}
+
+/* Whether a driver of the version other than the one named "self" names the file */
+static DWORD dpd_file_shared( HKEY hversion, const WCHAR *self, const WCHAR *file, BOOL *shared )
+{
+    WCHAR name[MAX_PATH], *lists[ARRAYSIZE(dpd_file_values)], *entry;
+    DWORD i, j, len, error = ERROR_SUCCESS;
+
+    *shared = FALSE;
+    for (i = 0; !*shared && error == ERROR_SUCCESS; i++)
+    {
+        len = ARRAYSIZE(name);
+        error = RegEnumKeyExW( hversion, i, name, &len, NULL, NULL, NULL, NULL );
+        if (error == ERROR_NO_MORE_ITEMS)
+            return ERROR_SUCCESS;
+        if (error != ERROR_SUCCESS || (self && !lstrcmpiW( name, self )))
+            continue;
+
+        error = dpd_read_files( hversion, name, lists );
+        for (j = 0; error == ERROR_SUCCESS && !*shared && j < ARRAYSIZE(dpd_file_values); j++)
+        {
+            for (entry = lists[j]; entry && *entry && !*shared; entry += lstrlenW( entry ) + 1)
+                *shared = !lstrcmpiW( entry, file );
+        }
+        dpd_free_files( lists );
+    }
+    return error;
+}
+
+static BOOL dpd_driver_in_use( const WCHAR *name )
+{
+    PSKIPLIST_NODE node;
+
+    for (node = PrinterList.Head.Next[0]; node; node = node->Next[0])
+    {
+        if (!lstrcmpiW( ((PLOCAL_PRINTER)node->Element)->pwszPrinterDriver, name ))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/* Pass 0 finds the driver in any version, pass 1 refuses to delete a selected version, pass 2 deletes the selected versions */
+static DWORD dpd_version( const PRINTENV_T *env, HKEY hversion, DWORD version, const WCHAR *name, DWORD flags, DWORD pass )
+{
+    WCHAR *lists[ARRAYSIZE(dpd_file_values)], *entry, path[MAX_PATH * 2];
+    BOOL files = (flags & (DPD_DELETE_UNUSED_FILES | DPD_DELETE_ALL_FILES)) != 0;
+    DWORD i, size, len = 0, error;
+    BOOL shared = FALSE;
+
+    if (pass == 1 && env == validate_envW( wszCurrentEnvironment ) && dpd_driver_in_use( name ))
+        return ERROR_PRINTER_DRIVER_IN_USE;
+    if (pass == 0 || (pass == 1 && !(flags & DPD_DELETE_ALL_FILES)))
+        return ERROR_SUCCESS;
+
+    error = dpd_read_files( hversion, name, lists );
+    if (error == ERROR_SUCCESS && pass == 2)
+    {
+        error = RegDeleteKeyW( hversion, name );
+        size = sizeof(path);
+        if (files && LocalGetPrinterDriverDirectory( NULL, (WCHAR *)env->envname, 1, (BYTE *)path, size, &size ))
+            len = lstrlenW( path );
+        else
+            files = FALSE;
+    }
+
+    for (i = 0; error == ERROR_SUCCESS && files && i < ARRAYSIZE(lists); i++)
+    {
+        for (entry = lists[i]; entry && *entry && error == ERROR_SUCCESS; entry += lstrlenW( entry ) + 1)
+        {
+            if (pass == 1)
+            {
+                error = dpd_file_shared( hversion, name, entry, &shared );
+                if (error == ERROR_SUCCESS && shared)
+                    error = ERROR_PRINTER_DRIVER_IN_USE;
+            }
+            /* A file that another driver names, that cannot be read about or that is open stays, as on Windows 11 */
+            else if (!wcspbrk( entry, L"\\/:" ) && dpd_file_shared( hversion, NULL, entry, &shared ) == ERROR_SUCCESS && !shared &&
+                     SUCCEEDED(StringCchPrintfW( path + len, ARRAYSIZE(path) - len, L"\\%lu\\%s", version, entry )))
+            {
+                DeleteFileW( path );
+            }
+        }
+    }
+    dpd_free_files( lists );
+    return error;
+}
+
+static DWORD dpd_delete( const PRINTENV_T *env, const WCHAR *name, DWORD flags, DWORD version )
+{
+    WCHAR key[MAX_PATH];
+    HKEY hdrivers, hversion, hdriver;
+    DWORD i, pass, number, len, error = ERROR_SUCCESS;
+    BOOL found = FALSE;
+    WCHAR *end;
+
+    StringCchPrintfW( key, ARRAYSIZE(key), fmt_driversW, env->envname, emptyW );
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, key, 0, KEY_ENUMERATE_SUB_KEYS, &hdrivers ) != ERROR_SUCCESS)
+        return ERROR_UNKNOWN_PRINTER_DRIVER;
+
+    for (pass = 0; pass < 3 && error == ERROR_SUCCESS; pass++)
+    {
+        if (pass == 1 && !found)
+            error = ERROR_UNKNOWN_PRINTER_DRIVER;
+        for (i = 0; error == ERROR_SUCCESS; i++)
+        {
+            len = ARRAYSIZE(key);
+            if (RegEnumKeyExW( hdrivers, i, key, &len, NULL, NULL, NULL, NULL ) != ERROR_SUCCESS)
+                break;
+            if (_wcsnicmp( key, L"Version-", 8 ) || !iswdigit( key[8] ))
+                continue;
+            number = wcstoul( key + 8, &end, 10 );
+            if (*end || (pass && (flags & DPD_DELETE_SPECIFIC_VERSION) && number != version))
+                continue;
+            if (RegOpenKeyExW( hdrivers, key, 0, KEY_ENUMERATE_SUB_KEYS | KEY_QUERY_VALUE, &hversion ) != ERROR_SUCCESS)
+                continue;
+            if (RegOpenKeyExW( hversion, name, 0, KEY_QUERY_VALUE, &hdriver ) == ERROR_SUCCESS)
+            {
+                RegCloseKey( hdriver );
+                found = TRUE;
+                error = dpd_version( env, hversion, number, name, flags, pass );
+            }
+            RegCloseKey( hversion );
+        }
+    }
+    RegCloseKey( hdrivers );
+    return error;
+}
+
+/******************************************************************************
+ * DeletePrinterDriverEx [exported through PRINTPROVIDOR]
+ *
+ * Removes a driver from the versions of an environment and, on request, its files that no other driver of a version names.
+ * Windows 11 deletes nothing when the driver is used by a printer, or when all files are to go and another driver names one.
+ */
+BOOL WINAPI LocalDeletePrinterDriverEx(LPWSTR pName, LPWSTR pEnvironment, LPWSTR pDriverName, DWORD dwDeleteFlag, DWORD dwVersionFlag)
+{
+    const DWORD known = DPD_DELETE_UNUSED_FILES | DPD_DELETE_SPECIFIC_VERSION | DPD_DELETE_ALL_FILES;
+    const PRINTENV_T *env;
+    HANDLE hNamespace, hLock;
+    DWORD error;
+
+    TRACE("(%s, %s, %s, 0x%lx, %lu)\n", debugstr_w(pName), debugstr_w(pEnvironment), debugstr_w(pDriverName), dwDeleteFlag, dwVersionFlag);
+
+    if (!pDriverName || !*pDriverName || (dwDeleteFlag & ~known))
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (copy_servername_from_name(pName, NULL))
+    {
+        SetLastError(ERROR_INVALID_NAME);
+        return FALSE;
+    }
+    env = validate_envW(pEnvironment);
+    if (!env)
+        return FALSE;
+
+    /* The package functions install the files that a driver shares, and delete a package only while no driver names it */
+    if (!AcquirePackageLock(&hNamespace, &hLock))
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    error = dpd_delete(env, pDriverName, dwDeleteFlag, dwVersionFlag);
+    ReleasePackageLock(hNamespace, hLock);
+
+    SetLastError(error);
+    return error == ERROR_SUCCESS;
+}

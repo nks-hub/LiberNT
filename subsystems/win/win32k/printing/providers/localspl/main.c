@@ -104,7 +104,7 @@ static const PRINTPROVIDOR _PrintProviderFunctions = {
     NULL,                                       // fpDeletePrinterDataEx
     NULL,                                       // fpDeletePrinterKey
     NULL,                                       // fpSeekPrinter
-    NULL,                                       // fpDeletePrinterDriverEx
+    LocalDeletePrinterDriverEx,                 // fpDeletePrinterDriverEx
     NULL,                                       // fpAddPerMachineConnection
     NULL,                                       // fpDeletePerMachineConnection
     NULL,                                       // fpEnumPerMachineConnections

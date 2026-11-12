@@ -430,7 +430,7 @@ GetOwner(_In_ PCWSTR InstanceId)
 
 static HANDLE SwDeviceOwnersLock, SwDeviceOwnersNamespace;
 
-/* Any process can create a global name first and hold it; only administrators can open this namespace */
+/* Any process can create a global name first and hold it; only administrators can open this namespace. S-1-5-33 admits the write-restricted token of a restricted service */
 static BOOL
 CALLBACK
 CreateSwDeviceOwnersLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ PVOID *Context)
@@ -446,7 +446,7 @@ CreateSwDeviceOwnersLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _
     UNREFERENCED_PARAMETER(Context);
 
     if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
-        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;S-1-5-33)", SDDL_REVISION_1,
                                                               &Security.lpSecurityDescriptor, NULL))
     {
         return FALSE;

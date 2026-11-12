@@ -20,6 +20,10 @@
 #define OWNER_PARENT_ID L"SWD\\" TEST_ENUMERATOR L"\\OwnerParent"
 #define OWNER_READY_EVENT L"LntSwTestOwnerReady"
 
+#ifndef WRITE_RESTRICTED
+#define WRITE_RESTRICTED 0x8
+#endif
+
 typedef struct _CREATED
 {
     HANDLE Event;
@@ -1312,6 +1316,185 @@ test_ParentRemovalRace(CREATED *State)
     CloseHandle(Racing.Event);
 }
 
+/* The token the service control manager builds for a service with SERVICE_SID_TYPE_RESTRICTED */
+static HANDLE
+CreateRestrictedServiceToken(void)
+{
+    static SID_IDENTIFIER_AUTHORITY NtAuthority = { SECURITY_NT_AUTHORITY }, WorldAuthority = { SECURITY_WORLD_SID_AUTHORITY };
+    HANDLE Token, Restricted = NULL, Impersonation = NULL;
+    PSID Service = NULL, World = NULL, WriteRestricted = NULL;
+    SID_AND_ATTRIBUTES Restricting[4];
+    BYTE Buffer[4096];
+    TOKEN_GROUPS *Groups = (TOKEN_GROUPS *)Buffer;
+    DWORD Count = 0, Size, i;
+
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY, &Token))
+        return NULL;
+    ZeroMemory(Restricting, sizeof(Restricting));
+    if (AllocateAndInitializeSid(&NtAuthority, 6, SECURITY_SERVICE_ID_BASE_RID, 1, 2, 3, 4, 5, 0, 0, &Service) &&
+        AllocateAndInitializeSid(&WorldAuthority, 1, SECURITY_WORLD_RID, 0, 0, 0, 0, 0, 0, 0, &World) &&
+        AllocateAndInitializeSid(&NtAuthority, 1, SECURITY_WRITE_RESTRICTED_CODE_RID, 0, 0, 0, 0, 0, 0, 0, &WriteRestricted))
+    {
+        Restricting[Count++].Sid = Service;
+        if (GetTokenInformation(Token, TokenGroups, Buffer, sizeof(Buffer), &Size))
+        {
+            for (i = 0; i < Groups->GroupCount; i++)
+            {
+                if (Groups->Groups[i].Attributes & SE_GROUP_LOGON_ID)
+                {
+                    Restricting[Count++].Sid = Groups->Groups[i].Sid;
+                    break;
+                }
+            }
+        }
+        Restricting[Count++].Sid = World;
+        Restricting[Count++].Sid = WriteRestricted;
+        if (CreateRestrictedToken(Token, WRITE_RESTRICTED, 0, NULL, 0, NULL, Count, Restricting, &Restricted))
+        {
+            DuplicateTokenEx(Restricted, MAXIMUM_ALLOWED, NULL, SecurityImpersonation, TokenImpersonation, &Impersonation);
+            CloseHandle(Restricted);
+        }
+    }
+    if (Service)
+        FreeSid(Service);
+    if (World)
+        FreeSid(World);
+    if (WriteRestricted)
+        FreeSid(WriteRestricted);
+    CloseHandle(Token);
+    return Impersonation;
+}
+
+/* Opens the lock of a private namespace of administrators the way the library opens the lock of its owner records */
+static HANDLE
+OpenNamespaceLock(PCWSTR Name, PCWSTR Dacl, BOOL Create, HANDLE *Namespace, DWORD *Error)
+{
+    SECURITY_ATTRIBUTES Security = { sizeof(Security), NULL, FALSE };
+    BYTE Admins[SECURITY_MAX_SID_SIZE];
+    DWORD Size = sizeof(Admins);
+    WCHAR LockName[64];
+    HANDLE Boundary, Lock;
+
+    *Namespace = NULL;
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(Dacl, SDDL_REVISION_1, &Security.lpSecurityDescriptor, NULL))
+    {
+        *Error = GetLastError();
+        return NULL;
+    }
+    Boundary = CreateBoundaryDescriptorW(Name, 0);
+    if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
+    {
+        if (Create)
+            *Namespace = CreatePrivateNamespaceW(&Security, Boundary, Name);
+        if (!*Namespace)
+            *Namespace = OpenPrivateNamespaceW(Boundary, Name);
+    }
+    if (Boundary)
+        DeleteBoundaryDescriptor(Boundary);
+
+    /* A namespace this process has open already cannot be opened again, and its name leads to the lock all the same */
+    _snwprintf(LockName, ARRAYSIZE(LockName), L"%s\\Lock", Name);
+    SetLastError(ERROR_SUCCESS);
+    Lock = CreateMutexW(&Security, FALSE, LockName);
+    *Error = GetLastError();
+    LocalFree(Security.lpSecurityDescriptor);
+    return Lock;
+}
+
+#define LIBRARY_NAMESPACE L"SoftwareDeviceOwners"
+#define LIBRARY_DACL L"D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;S-1-5-33)"
+#define ADMIN_NAMESPACE L"LntSwTestAdministratorsOnly"
+#define ADMIN_DACL L"D:(A;;GA;;;BA)(A;;GA;;;SY)"
+
+#define RESTRICTED_RAN 0x100
+#define RESTRICTED_NAMESPACE_OPENED 0x1
+#define RESTRICTED_LOCK_OPENED 0x2
+#define RESTRICTED_LOCK_TAKEN 0x4
+#define RESTRICTED_ADMIN_LOCK_DENIED 0x8
+
+/* Opens the locks its parent holds as a restricted service would and reports what it got in its exit code */
+static void
+RunRestrictedChild(void)
+{
+    HANDLE Token = CreateRestrictedServiceToken(), Namespace, AdminNamespace, Lock, AdminLock;
+    DWORD Error, AdminError, Code = RESTRICTED_RAN;
+
+    if (!Token || !SetThreadToken(NULL, Token))
+        ExitProcess(0);
+    Lock = OpenNamespaceLock(LIBRARY_NAMESPACE, LIBRARY_DACL, FALSE, &Namespace, &Error);
+    AdminLock = OpenNamespaceLock(ADMIN_NAMESPACE, ADMIN_DACL, FALSE, &AdminNamespace, &AdminError);
+    RevertToSelf();
+
+    if (Namespace)
+        Code |= RESTRICTED_NAMESPACE_OPENED;
+    if (Lock && Error == ERROR_ALREADY_EXISTS)
+        Code |= RESTRICTED_LOCK_OPENED;
+    if (Lock && WaitForSingleObject(Lock, 10000) == WAIT_OBJECT_0)
+    {
+        Code |= RESTRICTED_LOCK_TAKEN;
+        ReleaseMutex(Lock);
+    }
+    if (!AdminLock && AdminError == ERROR_ACCESS_DENIED)
+        Code |= RESTRICTED_ADMIN_LOCK_DENIED;
+    printf("The restricted child got namespace %p, lock %p (error %lu), administrators only lock %p (error %lu)\n",
+           Namespace, Lock, Error, AdminLock, AdminError);
+    ExitProcess(Code);
+}
+
+/* Windows 11 grants a write-restricted token all access to a mutex only when the DACL of the mutex names a restricting SID of the token */
+static void
+test_RestrictedServiceLock(CREATED *State)
+{
+    HANDLE HeldNamespace, HeldLock, HeldAdminNamespace, HeldAdminLock;
+    PROCESS_INFORMATION Process;
+    DWORD Error, AdminError, ExitCode = 0;
+    HSWDEVICE Device;
+    HRESULT hr;
+
+    /* The library holds its lock from its first device on; on Windows the test holds a lock with the same DACL instead */
+    hr = Create(L"RestrictedLock", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "SwDeviceCreate returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    HeldLock = OpenNamespaceLock(LIBRARY_NAMESPACE, LIBRARY_DACL, TRUE, &HeldNamespace, &Error);
+    HeldAdminLock = OpenNamespaceLock(ADMIN_NAMESPACE, ADMIN_DACL, TRUE, &HeldAdminNamespace, &AdminError);
+    if (!HeldLock || !HeldAdminLock)
+    {
+        skip("No lock in a namespace of administrators (errors %lu, %lu)\n", Error, AdminError);
+    }
+    else if (StartChild(L"restricted", &Process))
+    {
+        WaitForSingleObject(Process.hProcess, 60000);
+        GetExitCodeProcess(Process.hProcess, &ExitCode);
+        CloseHandle(Process.hThread);
+        CloseHandle(Process.hProcess);
+        if (!(ExitCode & RESTRICTED_RAN))
+        {
+            skip("The child has no write-restricted token (exit code 0x%lx)\n", ExitCode);
+        }
+        else
+        {
+            ok(ExitCode & RESTRICTED_NAMESPACE_OPENED, "A restricted service cannot open the namespace of the owner records\n");
+            ok(ExitCode & RESTRICTED_LOCK_OPENED, "A restricted service cannot open the lock of the owner records another process holds\n");
+            ok(ExitCode & RESTRICTED_LOCK_TAKEN, "A restricted service cannot take the lock of the owner records\n");
+            ok(ExitCode & RESTRICTED_ADMIN_LOCK_DENIED, "A restricted service opened a lock whose DACL only names administrators\n");
+        }
+    }
+
+    if (HeldLock)
+        CloseHandle(HeldLock);
+    if (HeldAdminLock)
+        CloseHandle(HeldAdminLock);
+    if (HeldNamespace)
+        ClosePrivateNamespace(HeldNamespace, 0);
+    if (HeldAdminNamespace)
+        ClosePrivateNamespace(HeldAdminNamespace, 0);
+    if (SUCCEEDED(hr))
+    {
+        SwDeviceClose(Device);
+        WaitGone(State->InstanceId);
+    }
+}
+
 START_TEST(SwDevice)
 {
     CREATED State;
@@ -1321,6 +1504,8 @@ START_TEST(SwDevice)
         RunChild();
     if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "owner"))
         RunOwnerChild();
+    if (winetest_get_mainargs(&argv) >= 3 && !strcmp(argv[2], "restricted"))
+        RunRestrictedChild();
 
     State.Event = CreateEventW(NULL, TRUE, FALSE, NULL);
     test_Lifetime(&State);
@@ -1342,5 +1527,6 @@ START_TEST(SwDevice)
     test_ProcessEnd();
     test_OwnerReplaced(&State);
     test_ParentRemovalRace(&State);
+    test_RestrictedServiceLock(&State);
     CloseHandle(State.Event);
 }

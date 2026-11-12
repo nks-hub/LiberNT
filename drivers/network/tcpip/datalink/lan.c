@@ -1534,7 +1534,11 @@ BOOLEAN BindAdapter(
                 &IF->Description));
 
     /* Register interface with IP layer */
-    IPRegisterInterface(IF);
+    if (!IPRegisterInterface(IF)) {
+        TI_DbgPrint(MIN_TRACE, ("Interface index %u is already in use.\n", IF->NdisIfIndex));
+        IPDestroyInterface(IF);
+        return FALSE;
+    }
 
     /* Store adapter context */
     Adapter->Context = IF;

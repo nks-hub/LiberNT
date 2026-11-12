@@ -63,7 +63,7 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 
     if (!(dwFlags & UPDP_UPLOAD_ALWAYS))
         hr = DriverStoreFindDriverPackageW(pszInfPath, NULL, NULL, Architecture, NULL, StoreInf, &Length);
-    if ((dwFlags & UPDP_UPLOAD_ALWAYS) || FAILED(hr))
+    if ((dwFlags & UPDP_UPLOAD_ALWAYS) || (FAILED(hr) && !(dwFlags & UPDP_CHECK_DRIVERSTORE)))
     {
         Length = ARRAYSIZE(StoreInf);
         hr = DriverStoreAddDriverPackageW(pszInfPath, NULL, NULL, Architecture, StoreInf, &Length);

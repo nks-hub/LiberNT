@@ -2733,6 +2733,10 @@ START_TEST(DriverPackage)
     hr = UploadPrinterDriverPackageW(NULL, L"C:\\does-not-exist\\none.inf", NULL, 0, NULL, StoreInf, &Length);
     ok(FAILED(hr), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
 
+    Length = ARRAYSIZE(StoreInf);
+    hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, StoreInf, &Length);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "UploadPrinterDriverPackageW returned 0x%lx for a package that is not in the store\n", hr);
+
     Length = 1;
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
     ok(hr == HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);

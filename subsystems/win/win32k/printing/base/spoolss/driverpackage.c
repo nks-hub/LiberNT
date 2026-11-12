@@ -775,8 +775,9 @@ InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR 
     if (!pszDriverName || !*pszDriverName || (dwFlags & ~IPDFP_COPY_ALL_FILES))
         return E_INVALIDARG;
 
+    /* Without an INF Windows 11 looks the driver up in the packages it ships with; there are none here */
     if (!pszInfPath)
-        return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED);
+        return HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
 
     hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
     if (FAILED(hr))

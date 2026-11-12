@@ -23,6 +23,7 @@
 #include <wine/mssign.h>
 
 #define ERROR_SECTION_NOT_FOUND (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x101)
+#define ERROR_CLASS_MISMATCH (APPLICATION_ERROR_MASK | ERROR_SEVERITY_ERROR | 0x201)
 #define SP_COPY_NOOVERWRITE 0x0000008
 
 BOOL WINAPI SetupCopyOEMInfW(PCWSTR SourceInfFileName, PCWSTR OEMSourceMediaLocation, DWORD OEMSourceMediaType, DWORD CopyStyle,
@@ -31,6 +32,32 @@ BOOL WINAPI SetupCopyOEMInfW(PCWSTR SourceInfFileName, PCWSTR OEMSourceMediaLoca
 BOOL WINAPI SetupUninstallOEMInfW(PCWSTR InfFileName, DWORD Flags, PVOID Reserved);
 
 #define TEST_CATALOG L"lntprn.cat"
+
+/* Windows 11 installs a driver file only when its version resource says 0.3; winspool_apitest_drv.dll is such a file */
+static WCHAR TestDriverFile[MAX_PATH];
+
+static BOOL
+FindTestDriverFile(VOID)
+{
+    PWSTR Last;
+
+    if (!GetModuleFileNameW(NULL, TestDriverFile, ARRAYSIZE(TestDriverFile)))
+        return FALSE;
+    Last = wcsrchr(TestDriverFile, L'\\');
+    if (!Last)
+        return FALSE;
+    Last[1] = UNICODE_NULL;
+    return SUCCEEDED(StringCchCatW(TestDriverFile, ARRAYSIZE(TestDriverFile), L"winspool_apitest_drv.dll")) &&
+           GetFileAttributesW(TestDriverFile) != INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL
+CopyTestDriverFile(PCWSTR Dir, PCWSTR Name)
+{
+    WCHAR Target[MAX_PATH];
+
+    return SUCCEEDED(StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\%s", Dir, Name)) && CopyFileW(TestDriverFile, Target, FALSE);
+}
 
 typedef struct _TEST_SIGNER
 {
@@ -465,7 +492,7 @@ WriteTestFile(PCWSTR Dir, PCWSTR Name, const void *Data, DWORD Size)
 static BOOL
 CreateTestPackage(PWSTR Dir, PWSTR InfPath)
 {
-    WCHAR System[MAX_PATH], Source[MAX_PATH], Target[MAX_PATH];
+    WCHAR Source[MAX_PATH], Target[MAX_PATH];
     static const char Text[] = "LiberNT package test file\r\n";
 
     GetTempPathW(MAX_PATH, Dir);
@@ -473,8 +500,7 @@ CreateTestPackage(PWSTR Dir, PWSTR InfPath)
     CreateDirectoryW(Dir, NULL);
     StringCchPrintfW(InfPath, MAX_PATH, L"%s\\lntprnpkg.inf", Dir);
 
-    GetSystemDirectoryW(System, ARRAYSIZE(System));
-    StringCchPrintfW(Source, ARRAYSIZE(Source), L"%s\\version.dll", System);
+    StringCchCopyW(Source, ARRAYSIZE(Source), TestDriverFile);
     StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTDRV.DLL", Dir);
     if (!CopyFileW(Source, Target, FALSE))
         return FALSE;
@@ -1058,8 +1084,7 @@ TestInstallPackage(PCWSTR Name, PCWSTR DriverName, const char *Inf, DWORD InfSiz
     StringCchPrintfW(InfName, ARRAYSIZE(InfName), L"%s.inf", Name);
     StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, InfName);
 
-    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
-    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchCopyW(Path, ARRAYSIZE(Path), TestDriverFile);
     StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\%s", Dir, DriverFile);
     Created = CopyFileW(Path, File, FALSE) && WriteTestFile(Dir, InfName, Inf, InfSize);
     for (i = 0; Created && i < FileCount; i++)
@@ -1168,8 +1193,7 @@ TestAbsoluteInclude(VOID)
     StringCchPrintfW(Outside, ARRAYSIZE(Outside), L"%slntprnabsc.inf", Temp);
     CreateDirectoryW(Dir, NULL);
 
-    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
-    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchCopyW(Path, ARRAYSIZE(Path), TestDriverFile);
     StringCchPrintfW(StoreInf, ARRAYSIZE(StoreInf), L"%s\\TESTINC.DLL", Dir);
     if (SUCCEEDED(StringCchPrintfA(Inf, ARRAYSIZE(Inf), AbsoluteIncludeInf, Outside)) &&
         CopyFileW(Path, StoreInf, FALSE) &&
@@ -1282,7 +1306,7 @@ TestOtherEnvironment(VOID)
     CreateDirectoryW(Path, NULL);
 
     if (WriteTestFile(Dir, L"lntprncross.inf", CrossInf, sizeof(CrossInf) - 1) &&
-        WriteTestFile(Dir, L"bin\\" OTHER_DRIVER_FILE, Text, sizeof(Text) - 1) &&
+        CopyTestDriverFile(Dir, L"bin\\" OTHER_DRIVER_FILE) &&
         WriteTestFile(Dir, L"TESTCROSS.GPD", Text, sizeof(Text) - 1))
     {
         hr = UploadPrinterDriverPackageW(NULL, InfPath, OTHER_ENVIRONMENT, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
@@ -1707,8 +1731,7 @@ TestMissingCopyFilesSection(VOID)
     StringCchCatW(Dir, MAX_PATH, L"lntprnnosec");
     CreateDirectoryW(Dir, NULL);
     StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\%s", Dir, Names[0]);
-    GetSystemDirectoryW(Path, ARRAYSIZE(Path));
-    StringCchCatW(Path, ARRAYSIZE(Path), L"\\version.dll");
+    StringCchCopyW(Path, ARRAYSIZE(Path), TestDriverFile);
     StringCchPrintfW(File, ARRAYSIZE(File), L"%s\\%s", Dir, Names[1]);
 
     if (CopyFileW(Path, File, FALSE) &&
@@ -2038,7 +2061,7 @@ TestIncompleteUpdate(VOID)
     StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnupd.inf", Dir);
 
     if (WriteTestFile(Dir, L"lntprnupd.inf", UpdateInf, sizeof(UpdateInf) - 1) &&
-        WriteTestFile(Dir, L"TESTUPD.DLL", Text, sizeof(Text) - 1) &&
+        CopyTestDriverFile(Dir, L"TESTUPD.DLL") &&
         WriteTestFile(Dir, L"TESTUPD.GPD", Text, sizeof(Text) - 1) &&
         WriteTestFile(DriverDir, L"TESTUPD.DAT", Installed, sizeof(Installed) - 1))
     {
@@ -3050,7 +3073,7 @@ static BOOL
 CreateSignedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PWSTR Dir, PWSTR InfPath)
 {
     static const char Text[] = "LiberNT package test file\r\n";
-    WCHAR System[MAX_PATH], Source[MAX_PATH], Target[MAX_PATH], InfName[MAX_PATH];
+    WCHAR Source[MAX_PATH], Target[MAX_PATH], InfName[MAX_PATH];
 
     GetTempPathW(MAX_PATH, Dir);
     StringCchCatW(Dir, MAX_PATH, Name);
@@ -3058,8 +3081,7 @@ CreateSignedPackage(PCWSTR Name, const char *Inf, DWORD InfSize, PWSTR Dir, PWST
     StringCchPrintfW(InfName, ARRAYSIZE(InfName), L"%s.inf", Name);
     StringCchPrintfW(InfPath, MAX_PATH, L"%s\\%s", Dir, InfName);
 
-    GetSystemDirectoryW(System, ARRAYSIZE(System));
-    StringCchPrintfW(Source, ARRAYSIZE(Source), L"%s\\version.dll", System);
+    StringCchCopyW(Source, ARRAYSIZE(Source), TestDriverFile);
     StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTSIG.DLL", Dir);
     return CopyFileW(Source, Target, FALSE) && WriteTestFile(Dir, InfName, Inf, InfSize) &&
            WriteTestFile(Dir, L"TESTSIG.DAT", Text, sizeof(Text) - 1);
@@ -3138,6 +3160,33 @@ TestPackageSignature(VOID)
     TestRefusedSignature(InfPath, SPAPI_E_FILE_HASH_NOT_IN_CATALOG, "with a file changed after the catalog was made");
     ok(WriteTestFile(Dir, L"TESTSIG.DAT", Text, sizeof(Text) - 1), "Restoring TESTSIG.DAT failed\n");
 
+    /* A buffer of less than MAX_PATH characters is refused before anything is staged, and its length is left alone */
+    Length = MAX_PATH - 1;
+    hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+    ok(hr == E_INVALIDARG && Length == MAX_PATH - 1, "UploadPrinterDriverPackageW returned 0x%lx and the length %lu for a short buffer\n", hr, Length);
+    Length = MAX_PATH;
+    hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, NULL, &Length);
+    ok(hr == E_INVALIDARG, "UploadPrinterDriverPackageW returned 0x%lx without a buffer\n", hr);
+    Length = ARRAYSIZE(StoreInf);
+    hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, StoreInf, &Length);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_FOUND), "The driver store lookup returned 0x%lx after refused buffers\n", hr);
+
+    /* An INF of another class */
+    {
+        static char NetInf[sizeof(SignedInf)];
+        char *Class;
+
+        CopyMemory(NetInf, SignedInf, sizeof(SignedInf));
+        Class = strstr(NetInf, "Class=Printer");
+        if (Class)
+            CopyMemory(Class, "Class=Net;;;;", 13);
+        ok(WriteTestFile(Dir, L"lntprnsig.inf", NetInf, sizeof(NetInf) - 1), "Changing lntprnsig.inf failed\n");
+        ok(SignTestPackage(Dir, TrustedSigner.Cert), "Signing the catalog failed with 0x%lx\n", GetLastError());
+        TestRefusedSignature(InfPath, (HRESULT)ERROR_CLASS_MISMATCH, "of the class Net");
+        ok(WriteTestFile(Dir, L"lntprnsig.inf", SignedInf, sizeof(SignedInf) - 1), "Restoring lntprnsig.inf failed\n");
+        ok(SignTestPackage(Dir, TrustedSigner.Cert), "Signing the catalog failed with 0x%lx\n", GetLastError());
+    }
+
     Length = ARRAYSIZE(StoreInf);
     hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
     ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for a signed package\n", hr);
@@ -3157,6 +3206,7 @@ TestPackageSignature(VOID)
         Length = ARRAYSIZE(Again);
         hr = UploadUnsignedPackage(NULL, InfPath, NULL, UPDP_CHECK_DRIVERSTORE, NULL, Again, &Length);
         ok(hr == S_OK && _wcsicmp(Again, StoreInf) == 0, "The driver store lookup returned 0x%lx after a refused upload\n", hr);
+        ok(Length == ARRAYSIZE(Again), "The driver store lookup changed the length to %lu\n", Length);
 
         hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
         ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
@@ -3260,7 +3310,7 @@ TestDriverPackages(VOID)
     hr = UploadPrinterDriverPackageW(NULL, L"C:\\x.inf", L"Invalid Env", 0, NULL, StoreInf, &Length);
     ok(hr == HRESULT_FROM_WIN32(ERROR_INVALID_ENVIRONMENT), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
     hr = InstallPrinterDriverFromPackageW(NULL, NULL, TEST_DRIVER_NAME, NULL, 0);
-    ok(hr == HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED), "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER), "InstallPrinterDriverFromPackageW returned 0x%lx without an INF\n", hr);
     hr = InstallPrinterDriverFromPackageW(NULL, L"C:\\x.inf", TEST_DRIVER_NAME, NULL, 0x80);
     ok(hr == E_INVALIDARG, "InstallPrinterDriverFromPackageW returned 0x%lx\n", hr);
     hr = DeletePrinterDriverPackageW(NULL, NULL, NULL);
@@ -3312,8 +3362,8 @@ TestDriverPackages(VOID)
 
     Length = 1;
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
-    ok(hr == HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER), "UploadPrinterDriverPackageW returned 0x%lx\n", hr);
-    ok(Length > 1, "Length is %lu\n", Length);
+    ok(hr == E_INVALIDARG, "UploadPrinterDriverPackageW returned 0x%lx for a buffer of one character\n", hr);
+    ok(Length == 1, "Length is %lu\n", Length);
 
     Length = ARRAYSIZE(StoreInf);
     hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
@@ -3723,6 +3773,12 @@ TestDriverPackages(VOID)
 
 START_TEST(DriverPackage)
 {
+    if (!FindTestDriverFile())
+    {
+        skip("%S is not next to the test\n", TestDriverFile);
+        return;
+    }
+
     if (!CreateTestSigner(&TrustedSigner, L"LiberNT winspool apitest", "CN=LiberNT winspool apitest") ||
         !CreateTestSigner(&UntrustedSigner, L"LiberNT winspool apitest 2", "CN=LiberNT winspool apitest untrusted") ||
         !TrustTestSigner(L"Root", TRUE) || !TrustTestSigner(L"TrustedPublisher", TRUE))

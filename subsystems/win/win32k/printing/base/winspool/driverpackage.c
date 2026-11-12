@@ -7,6 +7,7 @@
 
 #include "precomp.h"
 #include <winnls.h>
+#include <setupapi.h>
 #include <drvpkglock.h>
 #include <drvpkgenv.h>
 
@@ -16,20 +17,25 @@ HRESULT WINAPI DriverStoreDeleteDriverPackageW(PCWSTR InfPath, PVOID Reserved1, 
 
 #define DRIVERS_KEY L"SYSTEM\\CurrentControlSet\\Control\\Print\\Environments\\%s\\Drivers\\Version-3"
 
-static HRESULT
-ReturnString(PCWSTR Source, PWSTR Destination, PULONG pcchDestination)
+/* Windows 11 refuses an INF of another class with the Setup API error itself */
+static BOOL
+IsPrinterClassInf(PCWSTR InfPath)
 {
-    ULONG Needed = (ULONG)wcslen(Source) + 1;
+    WCHAR Class[64];
+    INFCONTEXT Context;
+    BOOL Printer = TRUE;
+    HINF hInf;
 
-    if (!Destination || *pcchDestination < Needed)
+    hInf = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
+    if (hInf == INVALID_HANDLE_VALUE)
+        return TRUE;
+    if (SetupFindFirstLineW(hInf, L"Version", L"Class", &Context) &&
+        SetupGetStringFieldW(&Context, 1, Class, ARRAYSIZE(Class), NULL))
     {
-        *pcchDestination = Needed;
-        return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
+        Printer = _wcsicmp(Class, L"Printer") == 0;
     }
-
-    StringCchCopyW(Destination, *pcchDestination, Source);
-    *pcchDestination = Needed;
-    return S_OK;
+    SetupCloseInfFile(hInf);
+    return Printer;
 }
 
 HRESULT WINAPI
@@ -41,6 +47,7 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     HANDLE Namespace, Lock;
     PCWSTR Environment;
     WORD Architecture;
+    BOOL Lookup = (dwFlags & (UPDP_UPLOAD_ALWAYS | UPDP_CHECK_DRIVERSTORE)) == UPDP_CHECK_DRIVERSTORE;
     HRESULT hr;
 
     TRACE("UploadPrinterDriverPackageW(%S, %S, %S, 0x%lx, %p, %p, %p)\n",
@@ -48,7 +55,8 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
 
     UNREFERENCED_PARAMETER(hwnd);
 
-    if (!pszInfPath || !pcchDestInfPath ||
+    /* Windows 11 takes no buffer of less than MAX_PATH characters, also for a shorter path */
+    if (!pszInfPath || !pszDestInfPath || !pcchDestInfPath || *pcchDestInfPath < MAX_PATH ||
         (dwFlags & ~(UPDP_SILENT_UPLOAD | UPDP_UPLOAD_ALWAYS | UPDP_CHECK_DRIVERSTORE)))
     {
         return E_INVALIDARG;
@@ -57,6 +65,9 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
     if (FAILED(hr))
         return hr;
+
+    if (!Lookup && !IsPrinterClassInf(pszInfPath))
+        return (HRESULT)ERROR_CLASS_MISMATCH;
 
     if (!AcquirePackageLock(&Namespace, &Lock))
         return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
@@ -73,7 +84,11 @@ UploadPrinterDriverPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszEn
     if (FAILED(hr))
         return hr;
 
-    return ReturnString(StoreInf, pszDestInfPath, pcchDestInfPath);
+    /* Windows 11 leaves the length alone when it only looked the package up */
+    StringCchCopyW(pszDestInfPath, *pcchDestInfPath, StoreInf);
+    if (!Lookup)
+        *pcchDestInfPath = (ULONG)wcslen(StoreInf) + 1;
+    return S_OK;
 }
 
 static HRESULT
@@ -213,7 +228,7 @@ UploadPrinterDriverPackageA(LPCSTR pszServer, LPCSTR pszInfPath, LPCSTR pszEnvir
     HRESULT hr = S_OK;
     INT Needed;
 
-    if (!pcchDestInfPath)
+    if (!pszDestInfPath || !pcchDestInfPath || *pcchDestInfPath < MAX_PATH)
         return E_INVALIDARG;
 
     ServerW = AnsiToHeapUnicode(pszServer, &hr);

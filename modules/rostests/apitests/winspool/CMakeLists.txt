@@ -1,4 +1,6 @@
 
+add_subdirectory(driver)
+
 include_directories(${REACTOS_SOURCE_DIR}/subsystems/win/win32k/printing/include)
 
 list(APPEND SOURCE

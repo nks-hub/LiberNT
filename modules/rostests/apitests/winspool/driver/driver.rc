@@ -1,0 +1,34 @@
+/*
+ * PROJECT:     LiberNT Print Spooler DLL API Tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     A file with the version resource of a version 3 printer driver, for the packages of the DriverPackage test
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ */
+
+#include <windef.h>
+#include <winver.h>
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+1 VERSIONINFO
+FILEVERSION 0, 3, 0, 0
+PRODUCTVERSION 1, 0, 0, 0
+FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_DRV
+FILESUBTYPE VFT2_DRV_VERSIONED_PRINTER
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName", "LiberNT"
+            VALUE "FileDescription", "Printer driver file of the DriverPackage test"
+            VALUE "FileVersion", "0.3.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 0x4B0
+    END
+END

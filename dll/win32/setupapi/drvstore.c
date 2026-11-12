@@ -330,6 +330,7 @@ typedef struct _STAGE_PACKAGE_CONTEXT
     PSP_ALTPLATFORM_INFO Platform;
     WORD Architecture;
     BOOL Required;
+    BOOL Verify;
 } STAGE_PACKAGE_CONTEXT, *PSTAGE_PACKAGE_CONTEXT;
 
 static BOOL
@@ -696,7 +697,23 @@ StageIncludedInfs(
         {
             if (!SetupGetStringFieldW(&Context, Field, Name, ARRAY_SIZE(Name), NULL) || !Name[0])
                 continue;
-            /* Windows 11 stages a package whatever its Include names; an INF outside the package directory is not of the package */
+            /* For a printer driver package Windows 11 includes the INF that another package of the store is published as, and */
+            /* stages what its needed sections copy from the including package. It neither stages nor reads an INF of the package */
+            /* directory or one that only lies in the INF directory */
+            if (Package->Verify)
+            {
+                if (wcspbrk(Name, L"\\/:") || !SETUPAPI_FindDriverStoreInf(Name, Path))
+                    continue;
+                if (!MarkNameSeen(&Package->Includes, Name, &Added))
+                    return FALSE;
+                if (!Added)
+                    continue;
+                if (!SetupOpenAppendInfFileW(Path, hInf, NULL))
+                    return FALSE;
+                continue;
+            }
+
+            /* The Setup API stages a package whatever its Include names; an INF outside the package directory is not of the package */
             if (!IsSafeRelativePath(Name) || ResolvePackagePath(Package->SourceRoot, Name, Path) != ERROR_SUCCESS ||
                 GetFileAttributesW(Path) == INVALID_FILE_ATTRIBUTES)
             {
@@ -818,6 +835,10 @@ StageCopyFiles(
     Package->Required = TRUE;
     if (!StageModelCopyFiles(hInf, Package))
         return FALSE;
+
+    /* For a printer driver package Windows 11 stages what a model installs and nothing else, not the CopyFiles of a DataSection */
+    if (Package->Verify)
+        return TRUE;
 
     Package->Required = FALSE;
     for (Index = 0; SetupEnumInfSectionsW(hInf, Index, Section, ARRAY_SIZE(Section), NULL); Index++)
@@ -1410,6 +1431,7 @@ StageLockedDriverPackage(
         Package.SourceRoot = SourceRoot;
         Package.StoreRoot = Staging;
         Package.Architecture = Architecture;
+        Package.Verify = Verify;
         if (Architecture != GetProcessArchitecture())
         {
             ZeroMemory(&Platform, sizeof(Platform));

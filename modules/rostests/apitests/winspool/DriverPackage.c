@@ -14,6 +14,7 @@
 #include <wingdi.h>
 #include <winreg.h>
 #include <winspool.h>
+#include <winver.h>
 #include <wincrypt.h>
 #include <mscat.h>
 #include <mssip.h>
@@ -3269,11 +3270,44 @@ RemoveExports(PCWSTR Path)
     return Ret;
 }
 
-/* Windows 11 22621 blocks a driver file whose version resource does not say 0.3, as that of version.dll, before it adds the driver. */
-/* One that says 0.3 it adds, loads and asks through DrvQueryDriverInfo whether it runs in user mode; a file without the export it */
-/* takes for a kernel mode driver and deletes the driver again, leaving the files it copied in the driver directory */
+/* Writes the major part of the file version into the version resource of the file */
+static BOOL
+SetFileVersion(PCWSTR Path, DWORD VersionMS)
+{
+    static const BYTE Signature[] = { 0xBD, 0x04, 0xEF, 0xFE };
+    static BYTE Data[16384];
+    DWORD Size = 0, Done, i;
+    BOOL Ret = FALSE;
+    HANDLE hFile;
+
+    hFile = CreateFileW(Path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return FALSE;
+    if (ReadFile(hFile, Data, sizeof(Data), &Size, NULL))
+    {
+        for (i = 0; i + sizeof(VS_FIXEDFILEINFO) <= Size && memcmp(Data + i, Signature, sizeof(Signature)) != 0; i += sizeof(DWORD));
+        Ret = i + sizeof(VS_FIXEDFILEINFO) <= Size &&
+              SetFilePointer(hFile, i + FIELD_OFFSET(VS_FIXEDFILEINFO, dwFileVersionMS), NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+              WriteFile(hFile, &VersionMS, sizeof(VersionMS), &Done, NULL) && Done == sizeof(VersionMS);
+    }
+    CloseHandle(hFile);
+    return Ret;
+}
+
+typedef enum _BLOCKED_FILE
+{
+    BlockedSystemFile,
+    BlockedNoExport,
+    BlockedVersion2,
+    BlockedVersion4,
+} BLOCKED_FILE;
+
+/* Windows 11 22621 blocks a driver file whose version resource does not say 0.3 before it adds the driver: one that says 0.2 as a */
+/* kernel mode driver, every other, as version.dll or one that says 0.4, as a blocked driver. One that says 0.3 it adds, loads and */
+/* asks through DrvQueryDriverInfo whether it runs in user mode; a file without the export it takes for a kernel mode driver and */
+/* deletes the driver again, leaving the files it copied in the driver directory. Measured with an empty driver directory */
 static VOID
-TestBlockedDriverFile(PCWSTR Name, BOOL SystemFile, HRESULT Expected, PCSTR What)
+TestBlockedDriverFile(PCWSTR Name, BLOCKED_FILE Kind, HRESULT Expected, PCSTR What)
 {
     WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Source[MAX_PATH], Target[MAX_PATH];
     ULONG Length = ARRAYSIZE(StoreInf);
@@ -3285,7 +3319,8 @@ TestBlockedDriverFile(PCWSTR Name, BOOL SystemFile, HRESULT Expected, PCSTR What
     StringCchCatW(Source, ARRAYSIZE(Source), L"\\version.dll");
     if (!CreateSignedPackage(Name, SignedInf, sizeof(SignedInf) - 1, Dir, InfPath) ||
         FAILED(StringCchPrintfW(Target, ARRAYSIZE(Target), L"%s\\TESTSIG.DLL", Dir)) ||
-        !(SystemFile ? CopyFileW(Source, Target, FALSE) : RemoveExports(Target)))
+        !(Kind == BlockedSystemFile ? CopyFileW(Source, Target, FALSE) :
+          Kind == BlockedNoExport ? RemoveExports(Target) : SetFileVersion(Target, Kind == BlockedVersion2 ? 2 : 4)))
     {
         skip("Failed to create the package %S (%lu)\n", Name, GetLastError());
         DeleteSignedPackage(Name, Dir);
@@ -3445,6 +3480,327 @@ TestStaleDriverFile(VOID)
     }
 }
 
+/* The files of the directory of a staged package are those named, and no other */
+static VOID
+CheckStagedFiles(PCWSTR StoreInf, const PCWSTR *Names, UINT Count, PCSTR What)
+{
+    WCHAR Path[MAX_PATH];
+    int DirLength = (int)(wcsrchr(StoreInf, L'\\') - StoreInf);
+    WIN32_FIND_DATAW Find;
+    HANDLE hFind;
+    UINT i, Files = 0;
+
+    for (i = 0; i < Count; i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%.*s\\%s", DirLength, StoreInf, Names[i]);
+        ok(GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES, "%S is not staged for %s\n", Names[i], What);
+    }
+
+    StringCchPrintfW(Path, ARRAYSIZE(Path), L"%.*s\\*", DirLength, StoreInf);
+    hFind = FindFirstFileW(Path, &Find);
+    if (hFind == INVALID_HANDLE_VALUE)
+        return;
+    do
+    {
+        if (Find.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+        {
+            ok(!wcscmp(Find.cFileName, L".") || !wcscmp(Find.cFileName, L".."), "The directory %S is staged for %s\n", Find.cFileName, What);
+            continue;
+        }
+        Files++;
+        for (i = 0; i < Count && _wcsicmp(Find.cFileName, Names[i]) != 0; i++);
+        ok(i < Count, "%S is staged for %s\n", Find.cFileName, What);
+    } while (FindNextFileW(hFind, &Find));
+    FindClose(hFind);
+    ok(Files == Count, "%u files are staged for %s, not %u\n", Files, What, Count);
+}
+
+static const char StagedInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "Class=Printer\r\n"
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n"
+    "Provider=LiberNT\r\n"
+    "DriverVer=11/06/2026,1.0.0.0\r\n"
+    "CatalogFile=lntprn.cat\r\n"
+    "\r\n"
+    "[Manufacturer]\r\n"
+    "\"LiberNT\"=Models,NTamd64,NTx86,NTarm64\r\n"
+    "\r\n"
+    "[Models.NTamd64]\r\n"
+    "\"LiberNT Package Staged Printer\"=TESTSTG,LiberNT_Package_Staged\r\n"
+    "[Models.NTx86]\r\n"
+    "\"LiberNT Package Staged Printer\"=TESTSTG,LiberNT_Package_Staged\r\n"
+    "[Models.NTarm64]\r\n"
+    "\"LiberNT Package Staged Printer\"=TESTSTG,LiberNT_Package_Staged\r\n"
+    "\r\n"
+    "[TESTSTG]\r\n"
+    "CopyFiles=@TESTSTG.DLL,TESTSTG_FILES\r\n"
+    "DataSection=TESTSTG_DATA\r\n"
+    "Include=lntprnstgi.inf\r\n"
+    "Needs=TESTSTG_NEEDED,TESTSTG_INCLUDED\r\n"
+    "\r\n"
+    "[TESTSTG_FILES]\r\n"
+    "TESTSTG.DAT\r\n"
+    "TESTSTGR.DAT,TESTSTGS.DAT\r\n"
+    "\r\n"
+    "[TESTSTG_DATA]\r\n"
+    "CopyFiles=@TESTSTGD.DAT\r\n"
+    "DriverFile=TESTSTG.DLL\r\n"
+    "ConfigFile=TESTSTG.DLL\r\n"
+    "DataFile=TESTSTG.DAT\r\n"
+    "\r\n"
+    "[TESTSTG_NEEDED]\r\n"
+    "CopyFiles=@TESTSTGN.DAT\r\n"
+    "Needs=TESTSTG_NEEDED_MORE\r\n"
+    "\r\n"
+    "[TESTSTG_NEEDED_MORE]\r\n"
+    "CopyFiles=@TESTSTGM.DAT\r\n"
+    "\r\n"
+    "[TESTSTG_UNUSED]\r\n"
+    "CopyFiles=@TESTSTGU.DAT\r\n"
+    "\r\n"
+    "[DestinationDirs]\r\n"
+    "DefaultDestDir=66000\r\n"
+    "\r\n"
+    "[SourceDisksNames]\r\n"
+    "1=\"Disk\",,,\r\n"
+    "\r\n"
+    "[SourceDisksFiles]\r\n"
+    "TESTSTG.DLL=1\r\n"
+    "TESTSTG.DAT=1\r\n"
+    "TESTSTGS.DAT=1\r\n"
+    "TESTSTGD.DAT=1\r\n"
+    "TESTSTGN.DAT=1\r\n"
+    "TESTSTGM.DAT=1\r\n"
+    "TESTSTGU.DAT=1\r\n"
+    "TESTSTGX.DAT=1\r\n";
+
+static const char StagedIncludedInf[] =
+    "[Version]\r\n"
+    "Signature=\"$Windows NT$\"\r\n"
+    "\r\n"
+    "[TESTSTG_INCLUDED]\r\n"
+    "CopyFiles=@TESTSTGI.DAT\r\n";
+
+/* Windows 11 22621 stages the INF, its catalog and what the CopyFiles lists of the install sections of the models copy, under the */
+/* name of the source, with the sections of the INF that they need. It stages neither the CopyFiles of a DataSection or of a */
+/* section that no model installs, nor an INF of the package that Include names or what its sections copy, nor any other file */
+static VOID
+TestStagedFiles(VOID)
+{
+    static const PCWSTR Staged[] = { L"lntprnstg.inf", TEST_CATALOG, L"TESTSTG.DLL", L"TESTSTG.DAT", L"TESTSTGS.DAT", L"TESTSTGN.DAT", L"TESTSTGM.DAT" };
+    static const PCWSTR Left[] = { L"TESTSTGD.DAT", L"TESTSTGU.DAT", L"TESTSTGI.DAT", L"TESTSTGX.DAT", L"lntprnstgi.inf" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], Path[MAX_PATH];
+    ULONG Length = ARRAYSIZE(StoreInf);
+    BOOL Created;
+    HRESULT hr;
+    UINT i;
+
+    GetTempPathW(MAX_PATH, Dir);
+    StringCchCatW(Dir, MAX_PATH, L"lntprnstg");
+    CreateDirectoryW(Dir, NULL);
+    StringCchPrintfW(InfPath, ARRAYSIZE(InfPath), L"%s\\lntprnstg.inf", Dir);
+
+    Created = WriteTestFile(Dir, L"lntprnstg.inf", StagedInf, sizeof(StagedInf) - 1) && CopyTestDriverFile(Dir, L"TESTSTG.DLL") &&
+              WriteTestFile(Dir, L"lntprnstgi.inf", StagedIncludedInf, sizeof(StagedIncludedInf) - 1);
+    for (i = 3; Created && i < ARRAYSIZE(Staged); i++)
+        Created = WriteTestFile(Dir, Staged[i], Text, sizeof(Text) - 1);
+    for (i = 0; Created && i + 1 < ARRAYSIZE(Left); i++)
+        Created = WriteTestFile(Dir, Left[i], Text, sizeof(Text) - 1);
+
+    if (Created)
+    {
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW(lntprnstg.inf) returned 0x%lx\n", hr);
+        if (hr == S_OK)
+        {
+            CheckStagedFiles(StoreInf, Staged, ARRAYSIZE(Staged), "lntprnstg.inf");
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+        }
+    }
+    else
+    {
+        skip("Failed to create the package lntprnstg.inf (%lu)\n", GetLastError());
+    }
+
+    for (i = 0; i < ARRAYSIZE(Staged) + ARRAYSIZE(Left); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", Dir, i < ARRAYSIZE(Staged) ? Staged[i] : Left[i - ARRAYSIZE(Staged)]);
+        DeleteFileW(Path);
+    }
+    RemoveDirectoryW(Dir);
+}
+
+#define INCLUDED_DRIVER_NAME L"LiberNT Package Included Printer"
+#define INCLUDING_DRIVER_NAME L"LiberNT Package Including Printer"
+
+#define STORE_INF(Models, Driver, Section, Rest) \
+    "[Version]\r\n" \
+    "Signature=\"$Windows NT$\"\r\n" \
+    "Class=Printer\r\n" \
+    "ClassGUID={4D36E979-E325-11CE-BFC1-08002BE10318}\r\n" \
+    "Provider=LiberNT\r\n" \
+    "DriverVer=11/06/2026,1.0.0.0\r\n" \
+    "CatalogFile=lntprn.cat\r\n" \
+    "\r\n" \
+    "[Manufacturer]\r\n" \
+    "\"LiberNT " Models "\"=" Models ",NTamd64,NTx86,NTarm64\r\n" \
+    "\r\n" \
+    "[" Models ".NTamd64]\r\n" \
+    "\"" Driver "\"=" Section ",LiberNT_" Section "\r\n" \
+    "[" Models ".NTx86]\r\n" \
+    "\"" Driver "\"=" Section ",LiberNT_" Section "\r\n" \
+    "[" Models ".NTarm64]\r\n" \
+    "\"" Driver "\"=" Section ",LiberNT_" Section "\r\n" \
+    "\r\n" \
+    "[" Section "]\r\n" \
+    "CopyFiles=@" Section ".DLL,@" Section ".DAT\r\n" \
+    "DriverFile=" Section ".DLL\r\n" \
+    "ConfigFile=" Section ".DLL\r\n" \
+    "DataFile=" Section ".DAT\r\n" \
+    Rest \
+    "\r\n" \
+    "[DestinationDirs]\r\n" \
+    "DefaultDestDir=66000\r\n" \
+    "\r\n" \
+    "[SourceDisksNames]\r\n" \
+    "1=\"Disk\",,,\r\n" \
+    "\r\n" \
+    "[SourceDisksFiles]\r\n" \
+    Section ".DLL=1\r\n" \
+    Section ".DAT=1\r\n"
+
+static const char IncludedStoreInf[] =
+    STORE_INF("ModelsA", "LiberNT Package Included Printer", "TESTINA",
+              "\r\n[TESTINA_SHARED]\r\nCopyFiles=@TESTINA.DAT\r\n"
+              "\r\n[TESTINA_OTHER]\r\nCopyFiles=@TESTINB.DAT\r\n"
+              "\r\n[TESTINA_GONE]\r\nCopyFiles=@TESTGONE.DAT\r\n"
+              "\r\n[TESTINA_UNUSED]\r\nCopyFiles=@TESTINA.DAT\r\n");
+static const char IncludingStoreInf[] = STORE_INF("ModelsB", "LiberNT Package Including Printer", "TESTINB", "Include=%S\r\n%s");
+
+/* Windows 11 22621 includes the INF that another package of the store is published as and follows Needs to a section of that INF. */
+/* What the section copies is staged from the including package, which is not uploaded without the file, and is installed from the */
+/* included package, which has to have the file too */
+static VOID
+TestStoreInclude(VOID)
+{
+    static const struct
+    {
+        PCSTR Needs;
+        HRESULT Upload;
+        HRESULT Install;
+    } Cases[] =
+    {
+        { "Needs=TESTINA_GONE\r\n", __HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), S_OK },
+        { "Needs=TESTINA_OTHER\r\n", S_OK, __HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) },
+        { "", S_OK, S_OK },
+        { "Needs=TESTINA_SHARED\r\n", __HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), S_OK },
+        { "Needs=TESTINA_SHARED\r\n;both\r\n", S_OK, S_OK },
+    };
+    static const PCWSTR IncludedNames[] = { L"lntprnina.inf", TEST_CATALOG, L"TESTINA.DLL", L"TESTINA.DAT" };
+    static const PCWSTR IncludingNames[] = { L"lntprninb.inf", TEST_CATALOG, L"TESTINB.DLL", L"TESTINB.DAT", L"TESTINA.DAT" };
+    static const char Text[] = "LiberNT package test file\r\n";
+    static const char Other[] = "the file of the including package\r\n";
+    static char Inf[sizeof(IncludingStoreInf) + MAX_PATH];
+    WCHAR Temp[MAX_PATH], DirA[MAX_PATH], DirB[MAX_PATH], InfA[MAX_PATH], InfB[MAX_PATH], StoreA[MAX_PATH], StoreB[MAX_PATH];
+    WCHAR Published[MAX_PATH], Path[MAX_PATH], DriverDir[MAX_PATH] = L"";
+    static WCHAR Value[1024];
+    DWORD Size = sizeof(DriverDir);
+    PWSTR Entry;
+    ULONG Length;
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    GetTempPathW(ARRAYSIZE(Temp), Temp);
+    StringCchPrintfW(DirA, ARRAYSIZE(DirA), L"%slntprnina", Temp);
+    StringCchPrintfW(DirB, ARRAYSIZE(DirB), L"%slntprninb", Temp);
+    StringCchPrintfW(InfA, ARRAYSIZE(InfA), L"%s\\lntprnina.inf", DirA);
+    StringCchPrintfW(InfB, ARRAYSIZE(InfB), L"%s\\lntprninb.inf", DirB);
+    CreateDirectoryW(DirA, NULL);
+    CreateDirectoryW(DirB, NULL);
+    GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size);
+
+    Length = ARRAYSIZE(StoreA);
+    if (!WriteTestFile(DirA, L"lntprnina.inf", IncludedStoreInf, sizeof(IncludedStoreInf) - 1) || !CopyTestDriverFile(DirA, L"TESTINA.DLL") ||
+        !WriteTestFile(DirA, L"TESTINA.DAT", Text, sizeof(Text) - 1) ||
+        !CopyTestDriverFile(DirB, L"TESTINB.DLL") || !WriteTestFile(DirB, L"TESTINB.DAT", Text, sizeof(Text) - 1))
+    {
+        skip("Failed to create the packages lntprnina.inf and lntprninb.inf (%lu)\n", GetLastError());
+    }
+    else if ((hr = UploadPrinterDriverPackageW(NULL, InfA, NULL, UPDP_SILENT_UPLOAD, NULL, StoreA, &Length)) != S_OK ||
+             !FindPublishedInf(InfA, Published))
+    {
+        ok(FALSE, "lntprnina.inf is not uploaded and published (0x%lx)\n", hr);
+        if (hr == S_OK)
+            DeletePrinterDriverPackageW(NULL, StoreA, NULL);
+    }
+    else
+    {
+        for (i = 0; i < ARRAYSIZE(Cases); i++)
+        {
+            StringCchPrintfA(Inf, ARRAYSIZE(Inf), IncludingStoreInf, wcsrchr(Published, L'\\') + 1, Cases[i].Needs);
+            ok(WriteTestFile(DirB, L"lntprninb.inf", Inf, (DWORD)strlen(Inf)), "Writing lntprninb.inf failed\n");
+            /* The last case has the file of the included package in the including one too */
+            if (strstr(Cases[i].Needs, "both"))
+                ok(WriteTestFile(DirB, L"TESTINA.DAT", Other, sizeof(Other) - 1), "Writing TESTINA.DAT failed\n");
+
+            Length = ARRAYSIZE(StoreB);
+            hr = UploadPrinterDriverPackageW(NULL, InfB, NULL, UPDP_SILENT_UPLOAD, NULL, StoreB, &Length);
+            ok(hr == Cases[i].Upload, "UploadPrinterDriverPackageW returned 0x%lx for %s\n", hr, Cases[i].Needs);
+            if (hr != S_OK)
+                continue;
+            CheckStagedFiles(StoreB, IncludingNames, strstr(Cases[i].Needs, "both") ? 5 : 4, Cases[i].Needs);
+
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreB, INCLUDING_DRIVER_NAME, NULL, 0);
+            ok(hr == Cases[i].Install, "InstallPrinterDriverFromPackageW returned 0x%lx for %s\n", hr, Cases[i].Needs);
+            hKey = OpenDriverKey(INCLUDING_DRIVER_NAME);
+            ok((hKey != NULL) == (Cases[i].Install == S_OK), "Driver %S is %s for %s\n", INCLUDING_DRIVER_NAME,
+               hKey ? "registered" : "not registered", Cases[i].Needs);
+            if (hKey)
+            {
+                Size = sizeof(Value) - 2 * sizeof(WCHAR);
+                ZeroMemory(Value, sizeof(Value));
+                RegQueryValueExW(hKey, L"Dependent Files", NULL, NULL, (PBYTE)Value, &Size);
+                for (Entry = Value; *Entry && _wcsicmp(Entry, L"TESTINA.DAT"); Entry += wcslen(Entry) + 1);
+                ok((*Entry != UNICODE_NULL) == (strstr(Cases[i].Needs, "SHARED") != NULL), "TESTINA.DAT is %s for %s\n",
+                   *Entry ? "a dependent file" : "no dependent file", Cases[i].Needs);
+                ok(DriverFileExists(L"TESTINA.DAT") == (strstr(Cases[i].Needs, "SHARED") != NULL), "TESTINA.DAT is %s for %s\n",
+                   *Entry ? "installed" : "not installed", Cases[i].Needs);
+                if (strstr(Cases[i].Needs, "SHARED"))
+                    ok(DriverFileIs(L"TESTINA.DAT", Text), "TESTINA.DAT is not the file of the included package\n");
+                RegCloseKey(hKey);
+                RemoveTestDriver(INCLUDING_DRIVER_NAME);
+            }
+            hr = DeletePrinterDriverPackageW(NULL, StoreB, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx for %s\n", hr, Cases[i].Needs);
+        }
+
+        hr = DeletePrinterDriverPackageW(NULL, StoreA, NULL);
+        ok(hr == S_OK, "DeletePrinterDriverPackageW(%S) returned 0x%lx\n", StoreA, hr);
+    }
+
+    for (i = 0; i < ARRAYSIZE(IncludingNames); i++)
+    {
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", DirA, IncludedNames[i < ARRAYSIZE(IncludedNames) ? i : 0]);
+        DeleteFileW(Path);
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\%s", DirB, IncludingNames[i]);
+        DeleteFileW(Path);
+        if (DriverDir[0])
+        {
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", DriverDir, IncludedNames[i < ARRAYSIZE(IncludedNames) ? i : 0]);
+            DeleteFileW(Path);
+            StringCchPrintfW(Path, ARRAYSIZE(Path), L"%s\\3\\%s", DriverDir, IncludingNames[i]);
+            DeleteFileW(Path);
+        }
+    }
+    RemoveDirectoryW(DirA);
+    RemoveDirectoryW(DirB);
+}
+
 static VOID
 TestDriverPackages(VOID)
 {
@@ -3504,8 +3860,12 @@ TestDriverPackages(VOID)
     TestMissingCopyFilesSection();
     TestPackageSignature();
     TestStaleDriverFile();
-    TestBlockedDriverFile(L"lntprnblk", TRUE, HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "version.dll");
-    TestBlockedDriverFile(L"lntprnkm", FALSE, HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED), "a file without DrvQueryDriverInfo");
+    TestBlockedDriverFile(L"lntprnblk", BlockedSystemFile, HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "version.dll");
+    TestBlockedDriverFile(L"lntprnkm", BlockedNoExport, HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED), "a file without DrvQueryDriverInfo");
+    TestBlockedDriverFile(L"lntprnv2", BlockedVersion2, HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED), "a file of the version 0.2");
+    TestBlockedDriverFile(L"lntprnv4", BlockedVersion4, HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED), "a file of the version 0.4");
+    TestStagedFiles();
+    TestStoreInclude();
 #if !defined(_M_IX86)
     TestUndecoratedModels();
 #endif

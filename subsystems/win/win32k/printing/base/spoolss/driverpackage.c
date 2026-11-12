@@ -309,8 +309,28 @@ LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR Driver
     return FALSE;
 }
 
+/* The directories of the included packages are the sources of the list, which has the INF names */
 static BOOL
-ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_FILES Owned, PCWSTR PackageDir, PCWSTR DriverDir,
+LocateIncludedFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Included, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
+{
+    BOOL System = FALSE;
+    DWORD i;
+
+    for (i = 0; i < Included->Count; i++)
+    {
+        if (!Included->Sources[i])
+            System = TRUE;
+        else if (LocatePackageFile(hInf, Decoration, Included->Sources[i], NULL, Name, Path, PathSize))
+            return TRUE;
+    }
+
+    /* An included INF that is no package of the store has its files in the driver directory */
+    return System && !wcspbrk(Name, L"\\/:") && SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
+           GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL
+ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_FILES Owned, PPACKAGE_FILES Included, PCWSTR PackageDir, PCWSTR DriverDir,
                    PCWSTR Name, BOOL System, PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
 {
     WCHAR Copy[MAX_PATH];
@@ -335,10 +355,17 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_
     }
     System = TRUE;
 
-    /* The driver directory has the file only when an INF of the system copies or names it and the package does not copy it */
+    /* A file that the package does not copy is one of an included package or, for an INF of the system, of the driver directory */
     for (i = 0; i < Owned->Count && _wcsicmp(Owned->Names[i], Name) != 0; i++);
-    if (!LocatePackageFile(hInf, Decoration, PackageDir, System && i == Owned->Count ? DriverDir : NULL, Source, Path, PathSize))
+    if (i < Owned->Count)
+    {
+        if (!LocatePackageFile(hInf, Decoration, PackageDir, NULL, Source, Path, PathSize))
+            return FALSE;
+    }
+    else if (!LocateIncludedFile(hInf, Decoration, Included, DriverDir, Source, Path, PathSize))
+    {
         return FALSE;
+    }
     if (Source == Name)
         return TRUE;
     if (wcspbrk(Name, L"\\/:"))
@@ -529,8 +556,9 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 }, Owned = { 0 };
-    WCHAR StagingDir[MAX_PATH] = L"", InfPath[MAX_PATH];
+    WCHAR StagingDir[MAX_PATH] = L"", InfPath[MAX_PATH], IncludePath[MAX_PATH], IncludeDir[MAX_PATH];
     BOOL Found, SystemDriver, SystemConfig, SystemData, SystemHelp;
+    PACKAGE_FILES Foreign = { 0 };
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     PSP_ALTPLATFORM_INFO Platform = NULL;
@@ -643,25 +671,40 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
                 if (!SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL))
                     continue;
 
-                Size = Includes.Count;
-                if (!AddPackageFile(&Includes, Include, NULL))
-                {
-                    hr = E_OUTOFMEMORY;
-                    goto Cleanup;
-                }
-                if (Includes.Count == Size)
+                for (Size = 0; Size < Includes.Count && _wcsicmp(Includes.Names[Size], Include) != 0; Size++);
+                if (Size < Includes.Count)
                     continue;
 
-                /* Windows 11 includes ntprint.inf alone: it returns ERROR_NOT_FOUND for a rooted path, ERROR_PATH_NOT_FOUND for */
-                /* a name with a directory, and ERROR_NOT_SUPPORTED for a path with ".." and for any other INF, of the package too */
+                /* Windows 11 includes an INF of the INF directory that is one of a package of the store, its own ntprint.inf or one */
+                /* that a package is published as. It returns ERROR_NOT_FOUND for a rooted path, ERROR_PATH_NOT_FOUND for a name with */
+                /* a directory, and ERROR_NOT_SUPPORTED for a path with ".." and for any other INF, of the package directory too */
+                *IncludeDir = UNICODE_NULL;
+                StringCchCopyW(IncludePath, ARRAYSIZE(IncludePath), Include);
                 if (wcschr(Include, L':') || *Include == L'\\' || *Include == L'/')
+                {
                     hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
-                else if (!IsSafeRelativePath(Include) || !wcspbrk(Include, L"\\/"))
-                    hr = _wcsicmp(Include, L"ntprint.inf") != 0 ? HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED) : S_OK;
-                else
+                }
+                else if (IsSafeRelativePath(Include) && wcspbrk(Include, L"\\/"))
+                {
                     hr = HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
-                if (SUCCEEDED(hr) && !SetupOpenAppendInfFileW(Include, hInf, NULL))
+                }
+                else if (IsSafeRelativePath(Include) && (Size = GetSystemWindowsDirectoryW(FilePath, ARRAYSIZE(FilePath))) != 0 &&
+                         Size < ARRAYSIZE(FilePath) && SUCCEEDED(StringCchCatW(FilePath, ARRAYSIZE(FilePath), L"\\INF\\")) &&
+                         SUCCEEDED(StringCchCatW(FilePath, ARRAYSIZE(FilePath), Include)) &&
+                         SetupGetInfDriverStoreLocationW(FilePath, NULL, NULL, IncludePath, ARRAYSIZE(IncludePath), NULL))
+                {
+                    hr = StringCchCopyW(IncludeDir, ARRAYSIZE(IncludeDir), IncludePath);
+                    if (wcsrchr(IncludeDir, L'\\'))
+                        *wcsrchr(IncludeDir, L'\\') = UNICODE_NULL;
+                }
+                else
+                {
+                    hr = _wcsicmp(Include, L"ntprint.inf") != 0 ? HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED) : S_OK;
+                }
+                if (SUCCEEDED(hr) && !SetupOpenAppendInfFileW(IncludePath, hInf, NULL))
                     hr = HRESULT_FROM_WIN32(GetLastError());
+                if (SUCCEEDED(hr) && !AddPackageFile(&Includes, Include, IncludeDir))
+                    hr = E_OUTOFMEMORY;
                 if (FAILED(hr))
                 {
                     ERR("INF %S cannot be included (0x%lx)\n", Include, hr);
@@ -726,14 +769,33 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         }
     }
 
-    if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DriverFile, SystemDriver, StagingDir, &Staged,
+    /* Windows 11 takes the file of a section of an included INF from the included package, also when the package copies that name */
+    for (i = 0; i < Sections.Count; i++)
+    {
+        if (SetupGetLineCountW(hPackage, Sections.Names[i]) < 0 && !CollectCopyFiles(hInf, Sections.Names[i], &Foreign))
+        {
+            hr = E_OUTOFMEMORY;
+            goto Cleanup;
+        }
+    }
+    for (i = 0; i < Foreign.Count; i++)
+    {
+        if (!LocateIncludedFile(hInf, Decoration, &Includes, DriverDir, Foreign.Sources[i] ? Foreign.Sources[i] : Foreign.Names[i],
+                                FilePath, ARRAYSIZE(FilePath)))
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+            goto Cleanup;
+        }
+    }
+
+    if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, DriverFile, SystemDriver, StagingDir, &Staged,
                             DriverPath, ARRAYSIZE(DriverPath)) ||
-        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, ConfigFile, SystemConfig, StagingDir, &Staged,
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, ConfigFile, SystemConfig, StagingDir, &Staged,
                             ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DataFile, SystemData, StagingDir, &Staged,
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, DataFile, SystemData, StagingDir, &Staged,
                             DataPath, ARRAYSIZE(DataPath)) ||
         (*HelpFile &&
-         !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, HelpFile, SystemHelp, StagingDir, &Staged,
+         !ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, HelpFile, SystemHelp, StagingDir, &Staged,
                              HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -742,7 +804,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
 
     for (i = 0; i < Files.Count; i++)
     {
-        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -771,7 +833,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
             continue;
         }
 
-        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)) ||
             FAILED(StringCchCopyW(Next, DependentLength - (DWORD)(Next - DependentFiles), FilePath)))
         {
@@ -825,6 +887,7 @@ Cleanup:
     FreePackageFiles(&Staged);
     FreePackageFiles(&Files);
     FreePackageFiles(&Owned);
+    FreePackageFiles(&Foreign);
     FreePackageFiles(&Sections);
     FreePackageFiles(&Includes);
     SetupCloseInfFile(hPackage);

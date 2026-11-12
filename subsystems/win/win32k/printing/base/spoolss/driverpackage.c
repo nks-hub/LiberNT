@@ -180,6 +180,18 @@ GetDirective(HINF hInf, PWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR V
     return FALSE;
 }
 
+/* System tells that only an INF of the system names the file, and none of the package */
+static BOOL
+GetFileDirective(HINF hInf, HINF hPackage, PWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR Value, DWORD ValueSize,
+                 PBOOL System)
+{
+    WCHAR Own[MAX_PATH];
+    BOOL Found = GetDirective(hInf, Sections, SectionCount, Key, Value, ValueSize);
+
+    *System = Found && !GetDirective(hPackage, Sections, SectionCount, Key, Own, ARRAYSIZE(Own));
+    return Found;
+}
+
 static BOOL
 FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
 {
@@ -304,7 +316,6 @@ LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR Driver
         return TRUE;
     }
 
-    /* Only a file that the package does not copy itself is taken from the driver directory */
     if (DriverDir && !wcspbrk(Name, L"\\/:") &&
         SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
         GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
@@ -318,7 +329,7 @@ LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR Driver
 
 static BOOL
 ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_FILES Owned, PCWSTR PackageDir, PCWSTR DriverDir,
-                   PCWSTR Name, PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
+                   PCWSTR Name, BOOL System, PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
 {
     WCHAR Copy[MAX_PATH];
     PCWSTR Source = Name;
@@ -326,12 +337,16 @@ ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_
 
     for (i = 0; i < Files->Count; i++)
     {
-        if (Files->Sources[i] && _wcsicmp(Files->Names[i], Name) == 0)
+        if (_wcsicmp(Files->Names[i], Name) != 0)
+            continue;
+        System = TRUE;
+        if (Files->Sources[i])
             Source = Files->Sources[i];
     }
 
+    /* The driver directory has the file only when an INF of the system copies or names it and the package does not copy it */
     for (i = 0; i < Owned->Count && _wcsicmp(Owned->Names[i], Name) != 0; i++);
-    if (!LocatePackageFile(hInf, Decoration, PackageDir, i == Owned->Count ? DriverDir : NULL, Source, Path, PathSize))
+    if (!LocatePackageFile(hInf, Decoration, PackageDir, System && i == Owned->Count ? DriverDir : NULL, Source, Path, PathSize))
         return FALSE;
     if (Source == Name)
         return TRUE;
@@ -429,7 +444,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
     DWORD Field, FieldCount, Size, i, DependentLength = 1;
     PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 }, Owned = { 0 };
     WCHAR StagingDir[MAX_PATH] = L"", IncludePath[MAX_PATH], InfPath[MAX_PATH];
-    BOOL Found, InPackage;
+    BOOL Found, InPackage, SystemDriver, SystemConfig, SystemData, SystemHelp;
     PWSTR DependentFiles = NULL, Next, Slash;
     DRIVER_INFO_8W DriverInfo = { 0 };
     PSP_ALTPLATFORM_INFO Platform = NULL;
@@ -617,13 +632,16 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         goto Cleanup;
     }
 
-    if (!GetDirective(hInf, Sections.Names, Sections.Count, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile)))
+    if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile), &SystemDriver))
         StringCchCopyW(DriverFile, ARRAYSIZE(DriverFile), InstallSection);
-    if (!GetDirective(hInf, Sections.Names, Sections.Count, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile)))
+    if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile), &SystemConfig))
+    {
         StringCchCopyW(ConfigFile, ARRAYSIZE(ConfigFile), DriverFile);
-    GetDirective(hInf, Sections.Names, Sections.Count, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile));
+        SystemConfig = SystemDriver;
+    }
+    GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile), &SystemHelp);
     GetDirective(hInf, Sections.Names, Sections.Count, L"DefaultDataType", DefaultDataType, ARRAYSIZE(DefaultDataType));
-    if (!GetDirective(hInf, Sections.Names, Sections.Count, L"DataFile", DataFile, ARRAYSIZE(DataFile)))
+    if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"DataFile", DataFile, ARRAYSIZE(DataFile), &SystemData))
         StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
 
     /* TODO: LanguageMonitor and VendorSetup are not processed */
@@ -639,11 +657,15 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
         }
     }
 
-    if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DriverFile, StagingDir, &Staged, DriverPath, ARRAYSIZE(DriverPath)) ||
-        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, ConfigFile, StagingDir, &Staged, ConfigPath, ARRAYSIZE(ConfigPath)) ||
-        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DataFile, StagingDir, &Staged, DataPath, ARRAYSIZE(DataPath)) ||
+    if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DriverFile, SystemDriver, StagingDir, &Staged,
+                            DriverPath, ARRAYSIZE(DriverPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, ConfigFile, SystemConfig, StagingDir, &Staged,
+                            ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, DataFile, SystemData, StagingDir, &Staged,
+                            DataPath, ARRAYSIZE(DataPath)) ||
         (*HelpFile &&
-         !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, HelpFile, StagingDir, &Staged, HelpPath, ARRAYSIZE(HelpPath))))
+         !ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, HelpFile, SystemHelp, StagingDir, &Staged,
+                             HelpPath, ARRAYSIZE(HelpPath))))
     {
         hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         goto Cleanup;
@@ -651,7 +673,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
 
     for (i = 0; i < Files.Count; i++)
     {
-        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)))
         {
             hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
@@ -676,7 +698,7 @@ InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, 
             continue;
         }
 
-        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], StagingDir, &Staged,
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
                                 FilePath, ARRAYSIZE(FilePath)) ||
             FAILED(StringCchCopyW(Next, DependentLength - (DWORD)(Next - DependentFiles), FilePath)))
         {

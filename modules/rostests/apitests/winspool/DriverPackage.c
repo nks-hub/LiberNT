@@ -3165,6 +3165,86 @@ TestPackageSignature(VOID)
     DeleteSignedPackage(L"lntprnsig", Dir);
 }
 
+static const struct
+{
+    PCWSTR Name;
+    PCSTR Directive;
+    const char *Inf;
+    DWORD InfSize;
+    PCWSTR Stale;
+} StaleFiles[] =
+{
+#define STALE_INF(Driver, Config, Data, Help) SIGNED_INF(Driver, Config, Data, Help), sizeof(SIGNED_INF(Driver, Config, Data, Help)) - 1
+    { L"lntprnstdr", "DriverFile", STALE_INF("TESTSTALE.DLL", "TESTSIG.DLL", "TESTSIG.DAT", ""), L"TESTSTALE.DLL" },
+    { L"lntprnstcf", "ConfigFile", STALE_INF("TESTSIG.DLL", "TESTSTALE.DLL", "TESTSIG.DAT", ""), L"TESTSTALE.DLL" },
+    { L"lntprnstda", "DataFile", STALE_INF("TESTSIG.DLL", "TESTSIG.DLL", "TESTSTALE.DAT", ""), L"TESTSTALE.DAT" },
+    { L"lntprnsthl", "HelpFile", STALE_INF("TESTSIG.DLL", "TESTSIG.DLL", "TESTSIG.DAT", "HelpFile=TESTSTALE.HLP\r\n"), L"TESTSTALE.HLP" },
+#undef STALE_INF
+};
+
+/* Windows 11 22621 does not take a file that the package names and does not have from the driver directory */
+static VOID
+TestStaleDriverFile(VOID)
+{
+    WCHAR Dir[MAX_PATH], InfPath[MAX_PATH], StoreInf[MAX_PATH], DriverDir[MAX_PATH], Stale[MAX_PATH], Source[MAX_PATH];
+    DWORD Size = sizeof(DriverDir);
+    ULONG Length;
+    HRESULT hr;
+    HKEY hKey;
+    UINT i;
+
+    if (!GetPrinterDriverDirectoryW(NULL, NULL, 1, (PBYTE)DriverDir, Size, &Size))
+    {
+        skip("No printer driver directory (%lu)\n", GetLastError());
+        return;
+    }
+    StringCchCatW(DriverDir, ARRAYSIZE(DriverDir), L"\\3");
+    CreateDirectoryW(DriverDir, NULL);
+
+    for (i = 0; i < ARRAYSIZE(StaleFiles); i++)
+    {
+        if (!CreateSignedPackage(StaleFiles[i].Name, StaleFiles[i].Inf, StaleFiles[i].InfSize, Dir, InfPath))
+        {
+            skip("Failed to create the package %S (%lu)\n", StaleFiles[i].Name, GetLastError());
+            DeleteSignedPackage(StaleFiles[i].Name, Dir);
+            continue;
+        }
+
+        Length = ARRAYSIZE(StoreInf);
+        hr = UploadPrinterDriverPackageW(NULL, InfPath, NULL, UPDP_SILENT_UPLOAD, NULL, StoreInf, &Length);
+        ok(hr == S_OK, "UploadPrinterDriverPackageW returned 0x%lx for a package without its %s\n", hr, StaleFiles[i].Directive);
+        if (hr == S_OK)
+        {
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, SIGNED_DRIVER_NAME, NULL, 0);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND), "InstallPrinterDriverFromPackageW returned 0x%lx without the %s\n",
+               hr, StaleFiles[i].Directive);
+
+            StringCchPrintfW(Stale, ARRAYSIZE(Stale), L"%s\\%s", DriverDir, StaleFiles[i].Stale);
+            StringCchPrintfW(Source, ARRAYSIZE(Source), L"%s\\TESTSIG.DLL", Dir);
+            ok(CopyFileW(Source, Stale, FALSE), "Writing %S failed with %lu\n", Stale, GetLastError());
+            hr = InstallPrinterDriverFromPackageW(NULL, StoreInf, SIGNED_DRIVER_NAME, NULL, 0);
+            ok(hr == HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND),
+               "InstallPrinterDriverFromPackageW returned 0x%lx with a %s of that name in the driver directory\n", hr, StaleFiles[i].Directive);
+            hKey = OpenDriverKey(SIGNED_DRIVER_NAME);
+            ok(hKey == NULL, "Driver %S is registered with a %s that is not of its package\n", SIGNED_DRIVER_NAME, StaleFiles[i].Directive);
+            if (hKey)
+            {
+                RegCloseKey(hKey);
+                RegDeleteKeyW(HKEY_LOCAL_MACHINE, TEST_DRIVERS_KEY L"\\" SIGNED_DRIVER_NAME);
+            }
+            DeleteFileW(Stale);
+            StringCchPrintfW(Stale, ARRAYSIZE(Stale), L"%s\\TESTSIG.DLL", DriverDir);
+            DeleteFileW(Stale);
+            StringCchPrintfW(Stale, ARRAYSIZE(Stale), L"%s\\TESTSIG.DAT", DriverDir);
+            DeleteFileW(Stale);
+
+            hr = DeletePrinterDriverPackageW(NULL, StoreInf, NULL);
+            ok(hr == S_OK, "DeletePrinterDriverPackageW returned 0x%lx\n", hr);
+        }
+        DeleteSignedPackage(StaleFiles[i].Name, Dir);
+    }
+}
+
 static VOID
 TestDriverPackages(VOID)
 {
@@ -3214,6 +3294,7 @@ TestDriverPackages(VOID)
     TestStandardUserOemInf();
     TestMissingCopyFilesSection();
     TestPackageSignature();
+    TestStaleDriverFile();
 
     if (!CreateTestPackage(Dir, InfPath))
     {

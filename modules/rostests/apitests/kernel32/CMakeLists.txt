@@ -5,6 +5,7 @@ add_subdirectory(redirptest)
 add_message_headers(ANSI FormatMessage.mc)
 
 list(APPEND SOURCE
+    ActCtxDependencyVersions.c
     ConsoleAlias.c
     ApiSetCoreSynch.c
     BaseSetLastNTError.c
@@ -58,6 +59,8 @@ list(APPEND SOURCE
     JapaneseCalendar.c
     JobObject.c
     JobObjectUI.c
+    KernelBaseModuleHandle.c
+    KnownDlls.c
     LCMapString.c
     LoadLibraryExW.c
     LockFileEx.c

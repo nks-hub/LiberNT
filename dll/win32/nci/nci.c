@@ -55,7 +55,7 @@ CheckNameIsFree(_In_ HKEY Network, _In_ PCWSTR Self, _In_ PCWSTR Name)
 static INIT_ONCE NamesLockOnce = INIT_ONCE_STATIC_INIT;
 static HANDLE NamesNamespace, NamesLock;
 
-/* Any process can create a global name first and hold it; only administrators can open this namespace */
+/* Any process can create a global name first and hold it; only administrators can open this namespace. S-1-5-33 admits the write-restricted token of a restricted service */
 static BOOL
 CALLBACK
 CreateNamesLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ PVOID *Context)
@@ -71,7 +71,7 @@ CreateNamesLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ 
     UNREFERENCED_PARAMETER(Context);
 
     if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, NULL, Admins, &Size) ||
-        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)", SDDL_REVISION_1,
+        !ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(A;;GA;;;BA)(A;;GA;;;SY)(A;;GA;;;S-1-5-33)", SDDL_REVISION_1,
                                                               &Security.lpSecurityDescriptor, NULL))
     {
         return FALSE;

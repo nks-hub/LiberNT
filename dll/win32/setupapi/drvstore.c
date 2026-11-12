@@ -1263,16 +1263,18 @@ IsTreeInCatalog(
     return Result;
 }
 
-/* The errors are those of Windows 11 22621 for a package without a catalog, with one that is not signed or not trusted */
+/* The errors are those of Windows 11 22621, which also takes a package whose signer certificate has expired */
 static DWORD
 VerifyStagedPackage(
     IN PCWSTR Staging,
     IN PCWSTR CatalogName)
 {
     CERT_CHAIN_PARA ChainPara = { sizeof(ChainPara) };
-    CERT_CHAIN_POLICY_PARA PolicyPara = { sizeof(PolicyPara) };
-    CERT_CHAIN_POLICY_STATUS Status = { sizeof(Status) };
+    CERT_CHAIN_POLICY_PARA PolicyPara = { sizeof(PolicyPara), CERT_CHAIN_POLICY_IGNORE_ALL_NOT_TIME_VALID_FLAGS };
+    CERT_CHAIN_POLICY_PARA RootPara = { sizeof(RootPara) };
+    CERT_CHAIN_POLICY_STATUS Status = { sizeof(Status) }, RootStatus = { sizeof(RootStatus) };
     PCCERT_CONTEXT Signer = NULL, Publisher = NULL;
+    BOOL Trusted;
     PCCERT_CHAIN_CONTEXT Chain = NULL;
     PCCTL_CONTEXT Catalog = NULL;
     HCERTSTORE Certificates, Publishers;
@@ -1314,21 +1316,28 @@ VerifyStagedPackage(
         }
         else
         {
-            Publishers = CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0, CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_READONLY_FLAG,
-                                       L"TrustedPublisher");
+            /* Windows 11 takes a hardware compatibility signature, which chains to a root of Microsoft, without a trusted publisher */
+            Trusted = CertVerifyCertificateChainPolicy(CERT_CHAIN_POLICY_MICROSOFT_ROOT, Chain, &RootPara, &RootStatus) &&
+                      RootStatus.dwError == ERROR_SUCCESS;
+            Publishers = Trusted ? NULL : CertOpenStore(CERT_STORE_PROV_SYSTEM_W, 0, 0,
+                                                        CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_READONLY_FLAG, L"TrustedPublisher");
             if (Publishers)
             {
                 Publisher = CertFindCertificateInStore(Publishers, X509_ASN_ENCODING, 0, CERT_FIND_EXISTING, Signer, NULL);
                 CertCloseStore(Publishers, 0);
             }
+            if (Publisher)
+            {
+                CertFreeCertificateContext(Publisher);
+                Trusted = TRUE;
+            }
 
-            if (!Publisher)
+            if (!Trusted)
             {
                 Error = (DWORD)SPAPI_E_AUTHENTICODE_TRUST_NOT_ESTABLISHED;
             }
             else
             {
-                CertFreeCertificateContext(Publisher);
                 if (!CryptCATAdminAcquireContext2(&Sha256, NULL, L"SHA256", NULL, 0))
                     Sha256 = NULL;
                 Error = IsTreeInCatalog(Staging, Catalog, Sha256) ? ERROR_SUCCESS : (DWORD)SPAPI_E_FILE_HASH_NOT_IN_CATALOG;

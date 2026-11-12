@@ -54,6 +54,15 @@ add_importlibs(ioadddeviceunload_drv ntoskrnl hal)
 add_rostests_file(TARGET ioadddeviceunload_drv)
 
 #
+# IoBootDriverKey
+#
+add_library(kmtbootimg MODULE IoBootDriverKey_drv.c)
+set_module_type(kmtbootimg kernelmodedriver)
+add_importlibs(kmtbootimg ntoskrnl hal)
+add_cd_file(TARGET kmtbootimg DESTINATION reactos/system32/drivers FOR all)
+add_registry_inf(IoBootDriverKey_reg.inf)
+
+#
 # IoHelper
 #
 list(APPEND IOHELPER_DRV_SOURCE

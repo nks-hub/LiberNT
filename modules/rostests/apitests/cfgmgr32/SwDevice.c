@@ -1245,6 +1245,77 @@ test_OwnerReplaced(CREATED *State)
     ok(WaitGone(ReplacedId), "%S stayed after its handle closed\n", ReplacedId);
 }
 
+/* Windows 11 keeps an instance ID for its open handle, also while the device is away, and a handle only removes the device it created */
+static void
+test_StaleHandle(CREATED *State)
+{
+    static const WCHAR ParentId[] = L"SWD\\" TEST_ENUMERATOR L"\\StaleParent";
+    static const WCHAR StaleId[] = L"SWD\\" TEST_ENUMERATOR L"\\Stale";
+    HSWDEVICE Parent, Stale, Device;
+    DEVINST Root, DevInst;
+    CONFIGRET Cr;
+    HRESULT hr;
+
+    hr = Create(L"StaleParent", SWDeviceCapabilitiesSilentInstall, NULL, State, &Parent);
+    ok(hr == S_OK && State->Result == S_OK, "Creating the parent returned 0x%08lx and reported 0x%08lx\n", hr, State->Result);
+    if (FAILED(hr))
+        return;
+    hr = CreateBelow(ParentId, TEST_ENUMERATOR, L"Stale", SWDeviceCapabilitiesSilentInstall, NULL, State, &Stale);
+    ok(hr == S_OK && State->Result == S_OK, "Creating a device below %S returned 0x%08lx and reported 0x%08lx\n", ParentId, hr, State->Result);
+    if (FAILED(hr))
+    {
+        SwDeviceClose(Parent);
+        WaitGone(ParentId);
+        return;
+    }
+
+    Device = NULL;
+    hr = Create(L"Stale", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) && Device == NULL, "Creating %S a second time returned 0x%08lx, handle %p\n", StaleId, hr, Device);
+    if (SUCCEEDED(hr))
+        SwDeviceClose(Device);
+    ok(IsPresent(StaleId), "%S left with the refused second creation\n", StaleId);
+
+    SwDeviceClose(Parent);
+    ok(WaitGone(ParentId), "%S stayed after its handle closed\n", ParentId);
+    ok(WaitGone(StaleId), "%S stayed after its parent was removed\n", StaleId);
+
+    Device = NULL;
+    hr = Create(L"Stale", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) && Device == NULL, "Creating %S while the handle of the removed device is open returned 0x%08lx, handle %p\n",
+       StaleId, hr, Device);
+    if (SUCCEEDED(hr))
+    {
+        SwDeviceClose(Device);
+        WaitGone(StaleId);
+    }
+
+    Cr = CM_Locate_DevNodeW(&Root, NULL, CM_LOCATE_DEVNODE_NORMAL);
+    if (Cr == CR_SUCCESS)
+        Cr = CM_Create_DevNodeW(&DevInst, (DEVINSTID_W)StaleId, Root, CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
+    if (Cr != CR_SUCCESS)
+    {
+        skip("CM_Create_DevNodeW cannot create %S (CR %lu)\n", StaleId, Cr);
+        SwDeviceClose(Stale);
+        return;
+    }
+    ok(IsPresent(StaleId), "%S is not present after CM_Create_DevNodeW\n", StaleId);
+
+    hr = SwDeviceSetLifetime(Stale, SWDeviceLifetimeParentPresent);
+    ok(hr == S_OK, "SwDeviceSetLifetime of the handle of the removed device returned 0x%08lx\n", hr);
+    hr = SwDeviceSetLifetime(Stale, SWDeviceLifetimeHandle);
+    ok(hr == S_OK, "SwDeviceSetLifetime of the handle of the removed device returned 0x%08lx\n", hr);
+    SwDeviceClose(Stale);
+    Sleep(3000);
+    ok(IsPresent(StaleId), "%S left with the handle of the removed device of that instance ID\n", StaleId);
+
+    hr = Create(L"Stale", SWDeviceCapabilitiesSilentInstall, NULL, State, &Device);
+    ok(hr == S_OK && State->Result == S_OK, "Taking over %S returned 0x%08lx and reported 0x%08lx\n", StaleId, hr, State->Result);
+    if (SUCCEEDED(hr))
+        SwDeviceClose(Device);
+    ok(WaitGone(StaleId), "%S stayed after its handle closed\n", StaleId);
+}
+
 typedef struct _CLOSE_LATER
 {
     HSWDEVICE Device;
@@ -1526,6 +1597,7 @@ START_TEST(SwDevice)
     test_DevNodeProperty(&State);
     test_ProcessEnd();
     test_OwnerReplaced(&State);
+    test_StaleHandle(&State);
     test_ParentRemovalRace(&State);
     test_RestrictedServiceLock(&State);
     CloseHandle(State.Event);

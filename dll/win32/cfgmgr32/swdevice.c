@@ -40,6 +40,7 @@ typedef struct _SW_DEVICE
     HMODULE Module;
     HMODULE CallbackModule;
     BOOL Reopened;
+    ULONG Generation;
     LIST_ENTRY OpenEntry;
     LONG ActiveCalls;
     HANDLE Idle;
@@ -428,6 +429,25 @@ GetOwner(_In_ PCWSTR InstanceId)
     return Lifetime == SWDeviceLifetimeParentPresent ? SwOwnerReleased : SwOwnerEnded;
 }
 
+/* The number the PnP manager gave the device that has this instance ID now; a later device of the instance ID has another */
+static ULONG
+GetGeneration(_In_ PCWSTR InstanceId)
+{
+    WCHAR Path[ARRAYSIZE(L"SYSTEM\\CurrentControlSet\\Enum\\") + MAX_DEVICE_ID_LEN + ARRAYSIZE(L"\\Control")];
+    DWORD Generation = 0, Type, Size = sizeof(Generation);
+    HKEY Key;
+
+    wcscpy(Path, L"SYSTEM\\CurrentControlSet\\Enum\\");
+    wcscat(Path, InstanceId);
+    wcscat(Path, L"\\Control");
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &Key))
+        return 0;
+    if (RegQueryValueExW(Key, L"SoftwareDeviceGeneration", NULL, &Type, (BYTE *)&Generation, &Size) || Type != REG_DWORD)
+        Generation = 0;
+    RegCloseKey(Key);
+    return Generation;
+}
+
 static HANDLE SwDeviceOwnersLock, SwDeviceOwnersNamespace;
 
 /* Any process can create a global name first and hold it; only administrators can open this namespace. S-1-5-33 admits the write-restricted token of a restricted service */
@@ -527,7 +547,8 @@ ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
 
     if (Remove)
     {
-        Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId);
+        /* Windows 11 leaves a device that was created with the instance ID after the device of this handle had left */
+        Cr = CfgmgrRemoveSoftwareDevice(Device->InstanceId, Device->Generation);
         if (Cr == CR_SUCCESS)
         {
             ForgetOwner(Device->InstanceId);
@@ -535,14 +556,19 @@ ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
         else
         {
             /* No owner and the lifetime of a handle: the next creation removes the node that is left */
-            WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
+            if (Cr != CR_NO_SUCH_DEVINST)
+                WARN("Removing %s failed (CR %lu)\n", debugstr_w(Device->InstanceId), Cr);
             RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeHandle);
         }
     }
-    else
+    else if (GetGeneration(Device->InstanceId) == Device->Generation)
     {
         CfgmgrWatchSoftwareDevice(Device->InstanceId, 0);
         RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeParentPresent);
+    }
+    else
+    {
+        RecordOwner(Device->InstanceId, 0, SWDeviceLifetimeHandle);
     }
     if (Lock)
         UnlockSwDeviceOwners(Lock);
@@ -561,6 +587,13 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
     if (!Lock)
         return HRESULT_FROM_WIN32(GetLastError());
 
+    /* The instance ID belongs to an open handle also while its device is away with its parent */
+    if (GetOwner(Device->InstanceId) == SwOwnerInUse)
+    {
+        UnlockSwDeviceOwners(Lock);
+        return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
+    }
+
     Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
                             CM_CREATE_DEVNODE_NORMAL | CM_CREATE_DEVNODE_DO_NOT_INSTALL);
     if (Cr == CR_ALREADY_SUCH_DEVINST)
@@ -573,7 +606,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 break;
 
             case SwOwnerEnded:
-                if (CfgmgrRemoveSoftwareDevice(Device->InstanceId) == CR_SUCCESS)
+                if (CfgmgrRemoveSoftwareDevice(Device->InstanceId, 0) == CR_SUCCESS)
                 {
                     TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
                     Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
@@ -589,6 +622,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
     {
         EnterCriticalSection(&Device->LifetimeLock);
         Device->DevInst = DevInst;
+        Device->Generation = GetGeneration(Device->InstanceId);
         Lifetime = Device->Lifetime;
         hr = RecordOwner(Device->InstanceId, GetCurrentProcessId(), Lifetime);
         if (SUCCEEDED(hr))
@@ -835,6 +869,8 @@ SwDeviceCreate(
     _Out_ PHSWDEVICE phSwDevice)
 {
     PSW_DEVICE Device;
+    HANDLE Lock;
+    BOOL InUse;
     HRESULT hr;
 
     TRACE("%s %s %p %lu %p %p %p %p\n", debugstr_w(pszEnumeratorName), debugstr_w(pszParentDeviceInstance),
@@ -864,6 +900,17 @@ SwDeviceCreate(
     {
         FreeSwDevice(Device);
         return E_INVALIDARG;
+    }
+
+    /* Windows 11 answers at once when a handle of the instance ID is open in any process */
+    Lock = LockSwDeviceOwners();
+    InUse = Lock && GetOwner(Device->InstanceId) == SwOwnerInUse;
+    if (Lock)
+        UnlockSwDeviceOwners(Lock);
+    if (InUse)
+    {
+        FreeSwDevice(Device);
+        return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
     }
 
     Device->Idle = CreateEventW(NULL, TRUE, FALSE, NULL);
@@ -1029,7 +1076,7 @@ SwDeviceSetLifetime(
     EnterCriticalSection(&Device->LifetimeLock);
     Previous = Device->Lifetime;
 
-    if (Device->DevInst && Lifetime != Previous)
+    if (Device->DevInst && Lifetime != Previous && GetGeneration(Device->InstanceId) == Device->Generation)
     {
         hr = CrToHresult(CfgmgrWatchSoftwareDevice(Device->InstanceId,
                                                    Lifetime == SWDeviceLifetimeHandle ? GetCurrentProcessId() : 0));

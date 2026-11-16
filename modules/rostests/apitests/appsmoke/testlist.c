@@ -8,6 +8,7 @@ extern void func_d3dkmt(void);
 extern void func_dc_from_memory(void);
 extern void func_display_mode(void);
 extern void func_dll_directory(void);
+extern void func_environment(void);
 extern void func_file_dialog(void);
 extern void func_opencl(void);
 extern void func_opengl(void);
@@ -23,6 +24,7 @@ extern void func_sockets(void);
 extern void func_suite(void);
 extern void func_swap_chain(void);
 extern void func_task_dialog(void);
+extern void func_thread_start(void);
 extern void func_window_dc(void);
 extern void func_yield_fairness(void);
 
@@ -35,6 +37,7 @@ const struct test winetest_testlist[] =
     { "dc_from_memory", func_dc_from_memory },
     { "display_mode", func_display_mode },
     { "dll_directory", func_dll_directory },
+    { "environment", func_environment },
     { "file_dialog", func_file_dialog },
     { "opencl", func_opencl },
     { "opengl", func_opengl },
@@ -50,6 +53,7 @@ const struct test winetest_testlist[] =
     { "suite", func_suite },
     { "swap_chain", func_swap_chain },
     { "task_dialog", func_task_dialog },
+    { "thread_start", func_thread_start },
     { "window_dc", func_window_dc },
     { "yield_fairness", func_yield_fairness },
     { 0, 0 }

@@ -125,6 +125,10 @@ USBSTOR_ResetDeviceWorkItemRoutine(
     DPRINT("USBSTOR_ResetDeviceWorkItemRoutine\n");
 
     FDODeviceExtension = FdoDevice->DeviceExtension;
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    ASSERT(FDODeviceExtension->Common.IsFDO);
+    ASSERT(FDODeviceExtension->Flags & USBSTOR_FDO_FLAGS_DEVICE_RESETTING);
+    ASSERT(!(FDODeviceExtension->Flags & USBSTOR_FDO_FLAGS_DEVICE_GONE));
     SingleInterface = (FDODeviceExtension->ConfigurationDescriptor &&
                        FDODeviceExtension->ConfigurationDescriptor->bNumInterfaces == 1);
 
@@ -135,6 +139,10 @@ USBSTOR_ResetDeviceWorkItemRoutine(
     {
         // first perform a mass storage reset step 1 in 5.3.4 USB Mass Storage Bulk Only Specification
         Status = USBSTOR_ResetDevice(FDODeviceExtension->LowerDeviceObject, FDODeviceExtension);
+        /* A disconnected device cannot be recovered, and every further attempt
+         * only sends another request the hub answers the same way. */
+        if (Status == STATUS_DEVICE_NOT_CONNECTED)
+            break;
         if (NT_SUCCESS(Status))
         {
             // step 2 reset bulk in pipe section 5.3.4
@@ -151,7 +159,8 @@ USBSTOR_ResetDeviceWorkItemRoutine(
         }
     }
 
-    if (NT_SUCCESS(Status) || !SingleInterface)
+    if (NT_SUCCESS(Status) || !SingleInterface ||
+        Status == STATUS_DEVICE_NOT_CONNECTED)
     {
         if (NT_SUCCESS(Status) && SingleInterface)
             InterlockedExchange(&FDODeviceExtension->BotResetPending, 1);
@@ -241,6 +250,8 @@ USBSTOR_RequestTimeoutDpc(
     UNREFERENCED_PARAMETER(Dpc);
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     KeAcquireSpinLock(&FDODeviceExtension->RequestTimerLock, &OldIrql);
     Irp = FDODeviceExtension->RequestTimerIrp;

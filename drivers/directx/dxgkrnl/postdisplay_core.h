@@ -14,7 +14,8 @@ typedef enum _DXGK_POST_DISPLAY_COMPLETION_ACTION
 {
     DxgkPostDisplayCompletionNone = 0,
     DxgkPostDisplayCompletionCommit,
-    DxgkPostDisplayCompletionRollback
+    DxgkPostDisplayCompletionRollback,
+    DxgkPostDisplayCompletionDefer
 } DXGK_POST_DISPLAY_COMPLETION_ACTION;
 
 typedef struct _DXGK_POST_DISPLAY_HANDOFF_CORE
@@ -42,10 +43,55 @@ DxgkPostDisplayCoreComplete(
 {
     if (!Core->FallbackStopped)
         return DxgkPostDisplayCompletionNone;
+    if (!NT_SUCCESS(StartStatus) && !Restartable)
+        return DxgkPostDisplayCompletionDefer;
     Core->FallbackStopped = FALSE;
-    if (!NT_SUCCESS(StartStatus) && Restartable)
+    if (!NT_SUCCESS(StartStatus))
         return DxgkPostDisplayCompletionRollback;
     return DxgkPostDisplayCompletionCommit;
+}
+
+FORCEINLINE
+BOOLEAN
+DxgkPostDisplayCoreFirmwareScanout(
+    _In_ BOOLEAN DisplayOnlyDriver,
+    _In_ BOOLEAN VidPnCommitted)
+{
+    return DisplayOnlyDriver || !VidPnCommitted;
+}
+
+/* The firmware framebuffer ranges name a segment by its zero-based position, not by the segment id the other DDIs use. */
+FORCEINLINE
+USHORT
+DxgkPostDisplayCoreUefiRangeSegment(
+    _In_ ULONG SegmentId)
+{
+    ASSERT(SegmentId != 0);
+    ASSERT(SegmentId - 1 <= MAXUSHORT);
+    return (USHORT)(SegmentId - 1);
+}
+
+FORCEINLINE
+BOOLEAN
+DxgkPostDisplayCoreUefiRangeSegmentIndex(
+    _In_ USHORT DriverSegmentId,
+    _In_ ULONG SegmentCount,
+    _Out_ PULONG SegmentIndex)
+{
+    *SegmentIndex = 0;
+    if (DriverSegmentId >= SegmentCount)
+        return FALSE;
+    *SegmentIndex = DriverSegmentId;
+    return TRUE;
+}
+
+FORCEINLINE
+BOOLEAN
+DxgkPostDisplayCoreUefiUnblockDeferred(
+    _In_ KIRQL Irql)
+{
+    ASSERT(Irql <= DISPATCH_LEVEL);
+    return Irql > APC_LEVEL;
 }
 
 #endif /* _DXGK_POSTDISPLAY_CORE_H_ */

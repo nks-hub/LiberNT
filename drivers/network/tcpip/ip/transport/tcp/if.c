@@ -97,6 +97,36 @@ TCPLoopbackOutput6(struct netif *netif, struct pbuf *p, const ip6_addr_t *dest)
     return ERR_RTE;
 }
 
+static
+err_t
+TCPRawIp6Output(struct netif *netif, struct pbuf *p, const ip6_addr_t *dest)
+{
+    PIP_INTERFACE IF = netif->state;
+    PNDIS_PACKET NdisPacket;
+    NDIS_STATUS NdisStatus;
+    PCHAR Data;
+    UINT Size;
+
+    ASSERT(IF->LinkType == IP_LINK_RAW_IP);
+
+    NdisStatus = AllocatePacketWithBuffer(&NdisPacket, NULL, p->tot_len);
+    if (NdisStatus != NDIS_STATUS_SUCCESS)
+        return ERR_MEM;
+
+    GetDataPtr(NdisPacket, 0, &Data, &Size);
+    if (pbuf_copy_partial(p, Data, p->tot_len, 0) != p->tot_len)
+    {
+        FreeNdisPacket(NdisPacket);
+        return ERR_BUF;
+    }
+
+    PC(NdisPacket)->DLComplete = TCPLinkOutputComplete;
+
+    (*IF->Transmit)(IF->Context, NdisPacket, 0, NULL, LAN_PROTO_IPv6);
+
+    return ERR_OK;
+}
+
 err_t
 TCPSendDataCallback(struct netif *netif, struct pbuf *p, const ip4_addr_t *dest)
 {
@@ -206,16 +236,25 @@ TCPInterfaceInit(struct netif *netif)
     netif->output = TCPSendDataCallback;
     netif->mtu = IF->MTU;
 
-    if (IF->AddressLength == ETH_HWADDR_LEN)
+    switch (IF->LinkType)
     {
-        netif->output_ip6 = TCPEthIp6Output;
-        netif->linkoutput = TCPLinkOutput;
-        netif->mld_mac_filter = TCPMldMacFilter;
-        netif->flags |= NETIF_FLAG_MLD6;
-    }
-    else
-    {
-        netif->output_ip6 = TCPLoopbackOutput6;
+        case IP_LINK_ETHERNET:
+            ASSERT(IF->AddressLength == ETH_HWADDR_LEN);
+            netif->output_ip6 = TCPEthIp6Output;
+            netif->linkoutput = TCPLinkOutput;
+            netif->mld_mac_filter = TCPMldMacFilter;
+            netif->flags |= NETIF_FLAG_MLD6;
+            break;
+
+        case IP_LINK_RAW_IP:
+            ASSERT(IF->AddressLength == 0);
+            netif->output_ip6 = TCPRawIp6Output;
+            break;
+
+        default:
+            ASSERT(IF->LinkType == IP_LINK_LOOPBACK);
+            netif->output_ip6 = TCPLoopbackOutput6;
+            break;
     }
 
     netif->name[0] = 'e';
@@ -253,7 +292,7 @@ TCPRegisterInterface(PIP_INTERFACE IF)
     if (!Netif)
         return;
 
-    if (IF->AddressLength == ETH_HWADDR_LEN)
+    if (IF->LinkType == IP_LINK_ETHERNET)
     {
         ip6_addr_t AllNodes;
 
@@ -262,7 +301,7 @@ TCPRegisterInterface(PIP_INTERFACE IF)
         LibIP6CreateLinkLocal(Netif);
         netif_set_ip6_autoconfig_enabled(Netif, 1);
     }
-    else
+    else if (IF->LinkType == IP_LINK_LOOPBACK)
     {
         ip6_addr_t LoopbackAddress;
         s8_t Index;

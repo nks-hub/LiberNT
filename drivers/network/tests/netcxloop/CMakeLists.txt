@@ -18,4 +18,7 @@ target_include_directories(wifiloop PRIVATE ${REACTOS_SOURCE_DIR}/sdk/include/dd
 target_compile_definitions(wifiloop PRIVATE NETCXLOOP_WIFI WIFI_VERSION_MAJOR=1 WIFI_VERSION_MINOR=2)
 target_link_libraries(wifiloop wificxstub)
 
+add_netcxloop(netcxloopip 5)
+target_compile_definitions(netcxloopip PRIVATE NETCXLOOP_RAW_IP)
+
 add_subdirectory(test)

@@ -182,6 +182,8 @@ typedef struct _IP_INTERFACE {
     UINT  AddressLength;          /* Length of address in bytes */
     IP_LINK_TYPE LinkType;
     UINT  Index;                  /* Index of adapter (used to add ip addr) */
+    UINT  NdisIfIndex;
+    ULONG IfType;
     LL_TRANSMIT_ROUTINE Transmit; /* Pointer to transmit function */
     PVOID TCPContext;             /* TCP Content for this interface */
     SEND_RECV_STATS Stats;        /* Send/Receive statistics */

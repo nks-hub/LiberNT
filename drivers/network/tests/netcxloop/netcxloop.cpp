@@ -24,6 +24,8 @@
 
 #ifdef NETCXLOOP_WIFI
 static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x57 };
+#elif defined(NETCXLOOP_NO_RECEIVE_FILTER)
+static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x4E };
 #else
 static const UCHAR LoopAdapterAddress[6] = { 0x02, 0x00, 0x4C, 0x4F, 0x4F, 0x50 };
 #endif
@@ -80,7 +82,9 @@ static EVT_WDF_DRIVER_DEVICE_ADD LoopDeviceAdd;
 static EVT_WDF_DRIVER_UNLOAD LoopDriverUnload;
 static EVT_NET_ADAPTER_CREATE_TXQUEUE LoopCreateTxQueue;
 static EVT_NET_ADAPTER_CREATE_RXQUEUE LoopCreateRxQueue;
+#ifndef NETCXLOOP_NO_RECEIVE_FILTER
 static EVT_NET_ADAPTER_SET_RECEIVE_FILTER LoopSetReceiveFilter;
+#endif
 static EVT_PACKET_QUEUE_ADVANCE LoopTxAdvance;
 static EVT_PACKET_QUEUE_SET_NOTIFICATION_ENABLED LoopTxSetNotificationEnabled;
 static EVT_PACKET_QUEUE_CANCEL LoopTxCancel;
@@ -543,6 +547,7 @@ LoopCreateRxQueue(
     return Status;
 }
 
+#ifndef NETCXLOOP_NO_RECEIVE_FILTER
 static
 void
 LoopSetReceiveFilter(
@@ -552,6 +557,7 @@ LoopSetReceiveFilter(
     UNREFERENCED_PARAMETER(NetAdapter);
     UNREFERENCED_PARAMETER(ReceiveFilter);
 }
+#endif
 
 static
 NTSTATUS
@@ -563,7 +569,9 @@ LoopStartAdapter(
     NET_ADAPTER_LINK_LAYER_ADDRESS Address;
     NET_ADAPTER_TX_CAPABILITIES TxCapabilities;
     NET_ADAPTER_RX_CAPABILITIES RxCapabilities;
+#ifndef NETCXLOOP_NO_RECEIVE_FILTER
     NET_ADAPTER_RECEIVE_FILTER_CAPABILITIES ReceiveFilter;
+#endif
     NET_ADAPTER_LINK_STATE LinkState;
 
     KeInitializeSpinLock(&LoopGetAdapter(NetAdapter)->Lock);
@@ -583,6 +591,7 @@ LoopStartAdapter(
     NET_ADAPTER_RX_CAPABILITIES_INIT_SYSTEM_MANAGED(&RxCapabilities, LOOP_MAX_FRAME, 1);
     NetAdapterSetDataPathCapabilities(NetAdapter, &TxCapabilities, &RxCapabilities);
 
+#ifndef NETCXLOOP_NO_RECEIVE_FILTER
     NET_ADAPTER_RECEIVE_FILTER_CAPABILITIES_INIT(&ReceiveFilter, LoopSetReceiveFilter);
     ReceiveFilter.SupportedPacketFilters = (NET_PACKET_FILTER_FLAGS)(NetPacketFilterFlagDirected |
                                                                      NetPacketFilterFlagMulticast |
@@ -591,6 +600,7 @@ LoopStartAdapter(
                                                                      NetPacketFilterFlagPromiscuous);
     ReceiveFilter.MaximumMulticastAddresses = 32;
     NetAdapterSetReceiveFilterCapabilities(NetAdapter, &ReceiveFilter);
+#endif
 
     NET_ADAPTER_LINK_STATE_INIT(&LinkState,
                                 LOOP_LINK_SPEED,

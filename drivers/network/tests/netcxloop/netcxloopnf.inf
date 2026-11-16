@@ -1,0 +1,73 @@
+; PROJECT:     LiberNT network tests
+; LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+; PURPOSE:     Installs the NetAdapterCx test adapter that reports no receive filter capabilities
+; COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif193.001@gmail.com>
+
+[Version]
+Signature = "$Windows NT$"
+Class = Net
+ClassGUID = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider = %LiberNT%
+DriverVer = 10/29/2026,1.0.0.0
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+netcxloopnf.sys = 1,,
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%LiberNT% = LiberNT,NTamd64,NTarm64
+
+[LiberNT.NTamd64]
+%NetCxLoopNf.DeviceDesc% = NetCxLoopNf_Device, ROOT\NETCXLOOPNF
+
+[LiberNT.NTarm64]
+%NetCxLoopNf.DeviceDesc% = NetCxLoopNf_Device, ROOT\NETCXLOOPNF
+
+[NetCxLoopNf_Device.NT]
+AddReg = NetCxLoopNf_AddReg
+CopyFiles = NetCxLoopNf_CopyFiles
+Characteristics = 0x1
+*IfType = 6
+*MediaType = 0
+*PhysicalMediaType = 14
+*IfConnectorPresent = 0
+*ConnectionType = 1
+*DirectionType = 0
+*AccessType = 2
+*HardwareLoopback = 0
+
+[NetCxLoopNf_CopyFiles]
+netcxloopnf.sys
+
+[NetCxLoopNf_AddReg]
+HKR, Ndi, Service, 0, "NetCxLoopNf"
+HKR, Ndi\Interfaces, UpperRange, 0, "ndis5"
+HKR, Ndi\Interfaces, LowerRange, 0, "ethernet"
+
+[NetCxLoopNf_Device.NT.Services]
+AddService = NetCxLoopNf, 0x00000002, NetCxLoopNf_Service
+
+[NetCxLoopNf_Service]
+DisplayName = %NetCxLoopNf.ServiceDesc%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %12%\netcxloopnf.sys
+
+[NetCxLoopNf_Device.NT.Wdf]
+KmdfService = NetCxLoopNf, NetCxLoopNf_WdfSection
+
+[NetCxLoopNf_WdfSection]
+KmdfLibraryVersion = 1.33
+
+[Strings]
+LiberNT = "LiberNT Project"
+DiskName = "LiberNT NetAdapterCx test disk"
+NetCxLoopNf.DeviceDesc = "LiberNT NetAdapterCx Test Adapter Without Receive Filter"
+NetCxLoopNf.ServiceDesc = "LiberNT NetAdapterCx Test Adapter Without Receive Filter Service"

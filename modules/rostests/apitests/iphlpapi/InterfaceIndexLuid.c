@@ -1,0 +1,177 @@
+/*
+ * PROJECT:     LiberNT API tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Tests that every interface has one index and one LUID that convert into each other
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <apitest.h>
+
+#define WIN32_NO_STATUS
+#include <winsock2.h>
+#include <ws2ipdef.h>
+#include <iphlpapi.h>
+#include <netioapi.h>
+#include <cfgmgr32.h>
+
+static VOID
+CheckIdentity(NET_IFINDEX Index, NET_LUID Luid)
+{
+    MIB_IF_ROW2 Row;
+    NET_LUID FoundLuid;
+    NET_IFINDEX FoundIndex = 0;
+    DWORD Error;
+
+    FoundLuid.Value = 0;
+    Error = ConvertInterfaceIndexToLuid(Index, &FoundLuid);
+    ok(Error == NO_ERROR, "Index %lu: ConvertInterfaceIndexToLuid returned %lu\n", Index, Error);
+    ok(FoundLuid.Value == Luid.Value, "Index %lu: LUID %I64x, expected %I64x\n", Index, FoundLuid.Value, Luid.Value);
+
+    Error = ConvertInterfaceLuidToIndex(&Luid, &FoundIndex);
+    ok(Error == NO_ERROR, "LUID %I64x: ConvertInterfaceLuidToIndex returned %lu\n", Luid.Value, Error);
+    ok(FoundIndex == Index, "LUID %I64x: index %lu, expected %lu\n", Luid.Value, FoundIndex, Index);
+
+    ZeroMemory(&Row, sizeof(Row));
+    Row.InterfaceIndex = Index;
+    Error = GetIfEntry2(&Row);
+    ok(Error == NO_ERROR, "Index %lu: GetIfEntry2 returned %lu\n", Index, Error);
+    ok(Row.InterfaceLuid.Value == Luid.Value, "Index %lu: GetIfEntry2 LUID %I64x, expected %I64x\n", Index, Row.InterfaceLuid.Value, Luid.Value);
+
+    ZeroMemory(&Row, sizeof(Row));
+    Row.InterfaceLuid = Luid;
+    Error = GetIfEntry2(&Row);
+    ok(Error == NO_ERROR, "LUID %I64x: GetIfEntry2 returned %lu\n", Luid.Value, Error);
+    ok(Row.InterfaceIndex == Index, "LUID %I64x: GetIfEntry2 index %lu, expected %lu\n", Luid.Value, Row.InterfaceIndex, Index);
+}
+
+static VOID
+CheckDriverKeys(PMIB_IF_TABLE2 Table)
+{
+    static const CHAR ClassPath[] = "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}";
+    HKEY ClassKey, DriverKey;
+    CHAR Name[64], InstanceId[64], RowId[64], DeviceId[MAX_DEVICE_ID_LEN];
+    DWORD KeyIndex, Size, Type, LuidIndex, IfType;
+    BOOL HasIdentity, HasType, Started;
+    ULONG i, Matches, Status, Problem;
+    DEVINST DevInst;
+    LONG Error;
+
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, ClassPath, 0, KEY_READ, &ClassKey) != ERROR_SUCCESS)
+    {
+        skip("Cannot open the network adapter class key\n");
+        return;
+    }
+
+    for (KeyIndex = 0; ; KeyIndex++)
+    {
+        Size = sizeof(Name);
+        Error = RegEnumKeyExA(ClassKey, KeyIndex, Name, &Size, NULL, NULL, NULL, NULL);
+        if (Error == ERROR_NO_MORE_ITEMS)
+            break;
+        if (Error != ERROR_SUCCESS || RegOpenKeyExA(ClassKey, Name, 0, KEY_QUERY_VALUE, &DriverKey) != ERROR_SUCCESS)
+            continue;
+
+        ZeroMemory(InstanceId, sizeof(InstanceId));
+        Size = sizeof(InstanceId) - 1;
+        HasIdentity = RegQueryValueExA(DriverKey, "NetCfgInstanceId", NULL, &Type, (BYTE *)InstanceId, &Size) == ERROR_SUCCESS &&
+                      Type == REG_SZ;
+        Size = sizeof(LuidIndex);
+        HasIdentity = HasIdentity &&
+                      RegQueryValueExA(DriverKey, "NetLuidIndex", NULL, &Type, (BYTE *)&LuidIndex, &Size) == ERROR_SUCCESS &&
+                      Type == REG_DWORD;
+        Size = sizeof(IfType);
+        HasType = RegQueryValueExA(DriverKey, "*IfType", NULL, &Type, (BYTE *)&IfType, &Size) == ERROR_SUCCESS && Type == REG_DWORD;
+        ZeroMemory(DeviceId, sizeof(DeviceId));
+        Size = sizeof(DeviceId) - 1;
+        Started = RegQueryValueExA(DriverKey, "DeviceInstanceID", NULL, &Type, (BYTE *)DeviceId, &Size) == ERROR_SUCCESS &&
+                  Type == REG_SZ &&
+                  CM_Locate_DevNodeA(&DevInst, DeviceId, CM_LOCATE_DEVNODE_NORMAL) == CR_SUCCESS &&
+                  CM_Get_DevNode_Status(&Status, &Problem, DevInst, 0) == CR_SUCCESS &&
+                  (Status & DN_STARTED);
+        RegCloseKey(DriverKey);
+        if (!HasIdentity)
+            continue;
+
+        Matches = 0;
+        for (i = 0; i < Table->NumEntries; i++)
+        {
+            const GUID *Guid = &Table->Table[i].InterfaceGuid;
+            NET_LUID Luid = Table->Table[i].InterfaceLuid;
+
+            sprintf(RowId, "{%08lX-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}", Guid->Data1, Guid->Data2, Guid->Data3,
+                    Guid->Data4[0], Guid->Data4[1], Guid->Data4[2], Guid->Data4[3],
+                    Guid->Data4[4], Guid->Data4[5], Guid->Data4[6], Guid->Data4[7]);
+            if (lstrcmpiA(RowId, InstanceId) != 0)
+                continue;
+
+            Matches++;
+            ok(Luid.Info.NetLuidIndex == LuidIndex, "Adapter %s: NetLuidIndex %lu, driver key has %lu\n",
+               InstanceId, (ULONG)Luid.Info.NetLuidIndex, LuidIndex);
+            ok(!HasType || Luid.Info.IfType == IfType, "Adapter %s: IfType %lu, driver key has %lu\n",
+               InstanceId, (ULONG)Luid.Info.IfType, IfType);
+        }
+        ok(Matches == 1 || (Matches == 0 && !Started), "Adapter %s (%s): %lu interface rows, started %d\n",
+           InstanceId, DeviceId, Matches, Started);
+    }
+    RegCloseKey(ClassKey);
+}
+
+START_TEST(InterfaceIndexLuid)
+{
+    PMIB_IF_TABLE2 Table = NULL;
+    PIP_ADAPTER_ADDRESSES Adapters;
+    PIP_ADAPTER_ADDRESSES Adapter;
+    ULONG Size = 0;
+    ULONG i, j;
+    DWORD Error;
+
+    Error = GetIfTable2(&Table);
+    ok(Error == NO_ERROR, "GetIfTable2 returned %lu\n", Error);
+    if (Error != NO_ERROR)
+        return;
+
+    ok(Table->NumEntries != 0, "GetIfTable2 returned no interface\n");
+    for (i = 0; i < Table->NumEntries; i++)
+    {
+        ok(Table->Table[i].InterfaceIndex != 0, "Row %lu has index 0\n", i);
+        CheckIdentity(Table->Table[i].InterfaceIndex, Table->Table[i].InterfaceLuid);
+
+        for (j = 0; j < i; j++)
+        {
+            ok(Table->Table[j].InterfaceIndex != Table->Table[i].InterfaceIndex,
+               "Rows %lu and %lu share index %lu\n", j, i, Table->Table[i].InterfaceIndex);
+            ok(Table->Table[j].InterfaceLuid.Value != Table->Table[i].InterfaceLuid.Value,
+               "Rows %lu and %lu share LUID %I64x\n", j, i, Table->Table[i].InterfaceLuid.Value);
+        }
+    }
+    CheckDriverKeys(Table);
+    FreeMibTable(Table);
+
+    Error = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_ALL_INTERFACES, NULL, NULL, &Size);
+    ok(Error == ERROR_BUFFER_OVERFLOW, "GetAdaptersAddresses returned %lu\n", Error);
+    if (Error != ERROR_BUFFER_OVERFLOW)
+        return;
+
+    Adapters = HeapAlloc(GetProcessHeap(), 0, Size);
+    if (Adapters == NULL)
+    {
+        skip("Out of memory\n");
+        return;
+    }
+
+    Error = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_INCLUDE_ALL_INTERFACES, NULL, Adapters, &Size);
+    ok(Error == NO_ERROR, "GetAdaptersAddresses returned %lu\n", Error);
+    if (Error == NO_ERROR)
+    {
+        for (Adapter = Adapters; Adapter != NULL; Adapter = Adapter->Next)
+        {
+            NET_IFINDEX Index = Adapter->IfIndex ? Adapter->IfIndex : Adapter->Ipv6IfIndex;
+
+            ok(Index != 0, "Adapter %s has no index\n", Adapter->AdapterName);
+            ok(Adapter->Ipv6IfIndex == 0 || Adapter->Ipv6IfIndex == Index,
+               "Adapter %s: IPv6 index %lu, IPv4 index %lu\n", Adapter->AdapterName, Adapter->Ipv6IfIndex, Index);
+            CheckIdentity(Index, Adapter->Luid);
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, Adapters);
+}

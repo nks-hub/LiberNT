@@ -13,6 +13,8 @@
 #include <debug.h>
 
 #define LX_MAGIC_NTFS       0x5346544EULL
+#define LX_MAGIC_EXT        0x0000EF53ULL
+#define LX_MAGIC_BTRFS      0x9123683EULL
 #define LX_MAGIC_PROC       0x00009FA0ULL
 #define LX_MAGIC_SYSFS      0x62656572ULL
 #define LX_MAGIC_TMPFS      0x01021994ULL
@@ -197,7 +199,7 @@ LxPathJoin(
 
     if (BaseLength + 1 + NameLength >= LX_PATH_MAX)
         return NULL;
-    Result = LxAlloc(BaseLength + NameLength + 2);
+    Result = LxAllocString(BaseLength + NameLength + 2);
     if (Result == NULL)
         return NULL;
     RtlCopyMemory(Result, Base, BaseLength);
@@ -1188,6 +1190,27 @@ LxMountTargetLength(
     return (strcmp(Mount->Target, "/") == 0) ? 0 : strlen(Mount->Target);
 }
 
+/* Whether Path names Prefix or something below it; one pass over the common part, with the prefix's length */
+static
+BOOLEAN
+LxPathBelow(
+    _In_ PCSTR Path,
+    _In_ PCSTR Prefix,
+    _Out_ PSIZE_T Length)
+{
+    SIZE_T Index = 0;
+
+    *Length = 0;
+    while (Prefix[Index] != '\0')
+    {
+        if (Path[Index] != Prefix[Index])
+            return FALSE;
+        Index++;
+    }
+    *Length = Index;
+    return (Path[Index] == '\0') || (Path[Index] == '/');
+}
+
 static
 BOOLEAN
 LxMountCovered(
@@ -1195,25 +1218,59 @@ LxMountCovered(
     _In_ PLX_MOUNT Mount)
 {
     PLX_MOUNT Parent = Mount->Parent;
-    SIZE_T Length = LxMountTargetLength(Mount), ParentLength;
+    SIZE_T Length, ParentLength;
     PLIST_ENTRY Entry;
 
     if (Parent == NULL)
         return FALSE;
+    Length = LxMountTargetLength(Mount);
     ParentLength = LxMountTargetLength(Parent);
     for (Entry = Ns->Mnt.Mounts.Flink; Entry != &Ns->Mnt.Mounts; Entry = Entry->Flink)
     {
         PLX_MOUNT Other = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
-        SIZE_T OtherLength = LxMountTargetLength(Other);
+        SIZE_T OtherLength = 0;
 
-        if ((Other == Mount) || Other->Detached || (OtherLength < ParentLength) || (OtherLength > Length))
+        if ((Other == Mount) || Other->Detached)
             continue;
-        if ((OtherLength != 0) &&
-            ((strncmp(Mount->Target, Other->Target, OtherLength) != 0) ||
-             ((Mount->Target[OtherLength] != '\0') && (Mount->Target[OtherLength] != '/'))))
+        if (((Other->Target[0] != '/') || (Other->Target[1] != '\0')) &&
+            !LxPathBelow(Mount->Target, Other->Target, &OtherLength))
         {
             continue;
         }
+        if ((OtherLength < ParentLength) || (OtherLength > Length))
+            continue;
+        if (LxMountIsBelow(Other, Parent) && !LxMountIsBelow(Mount, Other))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+#define LX_MOUNT_NESTING 16
+
+/* LxMountCovered for a mount whose target leads to a path, given every mount whose target does: only those can
+   cover it, because a covering mount's target leads to the covered one's */
+static
+BOOLEAN
+LxMountCoveredAmong(
+    _In_ PLX_MOUNT Mount,
+    _In_ SIZE_T Length,
+    _In_reads_(Count) PLX_MOUNT *Leading,
+    _In_reads_(Count) const SIZE_T *LeadingLength,
+    _In_ ULONG Count)
+{
+    PLX_MOUNT Parent = Mount->Parent;
+    SIZE_T ParentLength;
+    ULONG Index;
+
+    if (Parent == NULL)
+        return FALSE;
+    ParentLength = LxMountTargetLength(Parent);
+    for (Index = 0; Index < Count; Index++)
+    {
+        PLX_MOUNT Other = Leading[Index];
+
+        if ((Other == Mount) || Other->Detached || (LeadingLength[Index] < ParentLength) || (LeadingLength[Index] > Length))
+            continue;
         if (LxMountIsBelow(Other, Parent) && !LxMountIsBelow(Mount, Other))
             return TRUE;
     }
@@ -1227,32 +1284,107 @@ LxMountFindLocked(
     _In_ PCSTR Path,
     _Out_opt_ PCSTR *Relative)
 {
+    PLX_MOUNT Leading[LX_MOUNT_NESTING], Aliased[LX_MOUNT_NESTING];
+    SIZE_T LeadingLength[LX_MOUNT_NESTING];
+    ULONG Count = 0, AliasCount = 0;
+    BOOLEAN Complete = TRUE;
     PLIST_ENTRY Entry;
     PLX_MOUNT Best = NULL;
     SIZE_T BestLength = 0;
 
-    for (Entry = Ns->Mnt.Mounts.Flink; Entry != &Ns->Mnt.Mounts; Entry = Entry->Flink)
+    /* One pass picks out the few mounts the path can belong to; most differ from it within two characters */
+    for (Entry = Ns->Mnt.Mounts.Flink; Complete && (Entry != &Ns->Mnt.Mounts); Entry = Entry->Flink)
     {
         PLX_MOUNT Mount = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
-        SIZE_T Length = strlen(Mount->Target);
-        BOOLEAN Match;
+        BOOLEAN IsRoot = (Mount->Target[0] == '/') && (Mount->Target[1] == '\0');
+        SIZE_T Length = 0;
 
-        if (strcmp(Mount->Target, "/") == 0)
-            Match = TRUE;
-        else
-            Match = (strncmp(Path, Mount->Target, Length) == 0) && ((Path[Length] == '\0') || (Path[Length] == '/'));
-        if (Match && (Length != 0) && (Length >= BestLength) && LxMountCovered(Ns, Mount))
-            Match = FALSE;
-        if (!Match && (Mount->Alias != NULL))
+        if (IsRoot ||
+            (((Mount->Target[0] == '\0') ||
+              ((Mount->Target[0] == Path[0]) && ((Mount->Target[1] == '\0') || (Mount->Target[1] == Path[1])))) &&
+             LxPathBelow(Path, Mount->Target, &Length)))
         {
-            Length = strlen(Mount->Alias);
-            Match = (strncmp(Path, Mount->Alias, Length) == 0) && ((Path[Length] == '\0') || (Path[Length] == '/'));
+            if (Count == LX_MOUNT_NESTING)
+            {
+                Complete = FALSE;
+            }
+            else
+            {
+                Leading[Count] = Mount;
+                LeadingLength[Count] = Length;
+                Count++;
+            }
         }
-
-        if (Match && ((Best == NULL) || (Length >= BestLength)))
+        else if (Mount->Alias != NULL)
         {
-            Best = Mount;
-            BestLength = (strcmp(Mount->Target, "/") == 0) ? 0 : Length;
+            if (AliasCount == LX_MOUNT_NESTING)
+                Complete = FALSE;
+            else
+                Aliased[AliasCount++] = Mount;
+        }
+    }
+
+    if (Complete)
+    {
+        ULONG Lead = 0, Alias = 0;
+
+        /* The choice follows the order of the mount list: a later mount wins a tie */
+        for (Entry = Ns->Mnt.Mounts.Flink; (Lead < Count) || (Alias < AliasCount); Entry = Entry->Flink)
+        {
+            PLX_MOUNT Mount = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
+            BOOLEAN IsRoot = FALSE, Match = FALSE;
+            SIZE_T Length = 0;
+
+            ASSERT(Entry != &Ns->Mnt.Mounts);
+            if ((Lead < Count) && (Leading[Lead] == Mount))
+            {
+                IsRoot = (Mount->Target[0] == '/') && (Mount->Target[1] == '\0');
+                Length = IsRoot ? 1 : LeadingLength[Lead];
+                Match = !((Length != 0) && (Length >= BestLength) &&
+                          LxMountCoveredAmong(Mount, LeadingLength[Lead], Leading, LeadingLength, Count));
+                Lead++;
+                if (!Match && (Mount->Alias != NULL))
+                    Match = LxPathBelow(Path, Mount->Alias, &Length);
+            }
+            else if ((Alias < AliasCount) && (Aliased[Alias] == Mount))
+            {
+                Match = LxPathBelow(Path, Mount->Alias, &Length);
+                Alias++;
+            }
+            else
+            {
+                continue;
+            }
+            if (Match && ((Best == NULL) || (Length >= BestLength)))
+            {
+                Best = Mount;
+                BestLength = IsRoot ? 0 : Length;
+            }
+        }
+    }
+    else
+    {
+        for (Entry = Ns->Mnt.Mounts.Flink; Entry != &Ns->Mnt.Mounts; Entry = Entry->Flink)
+        {
+            PLX_MOUNT Mount = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
+            BOOLEAN IsRoot = (Mount->Target[0] == '/') && (Mount->Target[1] == '\0');
+            SIZE_T Length = 1;
+            BOOLEAN Match;
+
+            if (IsRoot)
+                Match = TRUE;
+            else
+                Match = LxPathBelow(Path, Mount->Target, &Length);
+            if (Match && (Length != 0) && (Length >= BestLength) && LxMountCovered(Ns, Mount))
+                Match = FALSE;
+            if (!Match && (Mount->Alias != NULL))
+                Match = LxPathBelow(Path, Mount->Alias, &Length);
+
+            if (Match && ((Best == NULL) || (Length >= BestLength)))
+            {
+                Best = Mount;
+                BestLength = IsRoot ? 0 : Length;
+            }
         }
     }
 
@@ -1304,6 +1436,89 @@ LxMountInheritNamespaces(
     }
 }
 
+/* Mounts a volume of the host by its drive: the source is "X:" or "X:\\directory", with either slash */
+static
+LONG
+LxInstanceMountDrive(
+    _In_ PLX_NS Ns,
+    _In_ PCSTR Target,
+    _In_ PCSTR Source,
+    _In_ PCSTR FsType,
+    _In_ ULONG Flags,
+    _Out_ PLX_MOUNT *Mount)
+{
+    static const WCHAR Prefix[] = L"\\??\\";
+    UCHAR Buffer[sizeof(FILE_FS_ATTRIBUTE_INFORMATION) + 32 * sizeof(WCHAR)];
+    PFILE_FS_ATTRIBUTE_INFORMATION Attribute = (PFILE_FS_ATTRIBUTE_INFORMATION)Buffer;
+    ULONG SourceLength = (ULONG)strlen(Source);
+    ULONG64 Magic = LX_MAGIC_NTFS;
+    UNICODE_STRING NtRoot, Open;
+    IO_STATUS_BLOCK Iosb;
+    ULONG Needed = 0, Written = 0, Index;
+    HANDLE Handle;
+    NTSTATUS Status;
+    LONG Error;
+
+    if ((SourceLength < 2) || (Source[1] != ':') ||
+        !(((Source[0] >= 'A') && (Source[0] <= 'Z')) || ((Source[0] >= 'a') && (Source[0] <= 'z'))))
+    {
+        return -LX_ENODEV;
+    }
+    while ((SourceLength > 2) && ((Source[SourceLength - 1] == '/') || (Source[SourceLength - 1] == '\\')))
+        SourceLength--;
+
+    Status = RtlUTF8ToUnicodeN(NULL, 0, &Needed, Source, SourceLength);
+    if (!NT_SUCCESS(Status) && (Status != STATUS_SOME_NOT_MAPPED))
+        return -LX_EINVAL;
+    if (sizeof(Prefix) + Needed > MAXUSHORT)
+        return -LX_ENAMETOOLONG;
+
+    NtRoot.MaximumLength = (USHORT)(sizeof(Prefix) + Needed);
+    NtRoot.Buffer = LxAllocPaged(NtRoot.MaximumLength);
+    if (NtRoot.Buffer == NULL)
+        return -LX_ENOMEM;
+    RtlCopyMemory(NtRoot.Buffer, Prefix, sizeof(Prefix) - sizeof(WCHAR));
+    Status = RtlUTF8ToUnicodeN((PWCHAR)((PUCHAR)NtRoot.Buffer + sizeof(Prefix) - sizeof(WCHAR)), Needed, &Written, Source,
+                               SourceLength);
+    if (!NT_SUCCESS(Status) && (Status != STATUS_SOME_NOT_MAPPED))
+    {
+        LxFreePaged(NtRoot.Buffer);
+        return -LX_EINVAL;
+    }
+    NtRoot.Length = (USHORT)(sizeof(Prefix) - sizeof(WCHAR) + Written);
+    for (Index = 0; Index < NtRoot.Length / sizeof(WCHAR); Index++)
+    {
+        if (NtRoot.Buffer[Index] == L'/')
+            NtRoot.Buffer[Index] = L'\\';
+    }
+
+    /* A bare drive names the device; its root directory takes a separator */
+    Open = NtRoot;
+    if (SourceLength == 2)
+        Open.Length += sizeof(WCHAR);
+    NtRoot.Buffer[NtRoot.Length / sizeof(WCHAR)] = L'\\';
+    Error = LxNtOpenHandle(&Open, FILE_READ_ATTRIBUTES, FILE_OPEN, FILE_DIRECTORY_FILE, 0, &Handle);
+    if (Error != 0)
+    {
+        LxFreePaged(NtRoot.Buffer);
+        return (Error == -LX_ENOENT) ? -LX_ENODEV : Error;
+    }
+
+    Status = ZwQueryVolumeInformationFile(Handle, &Iosb, Attribute, sizeof(Buffer), FileFsAttributeInformation);
+    ZwClose(Handle);
+    if (NT_SUCCESS(Status) && (Attribute->FileSystemNameLength >= 3 * sizeof(WCHAR)))
+    {
+        if (_wcsnicmp(Attribute->FileSystemName, L"ext", 3) == 0)
+            Magic = LX_MAGIC_EXT;
+        else if ((Attribute->FileSystemNameLength >= 5 * sizeof(WCHAR)) && (_wcsnicmp(Attribute->FileSystemName, L"btrfs", 5) == 0))
+            Magic = LX_MAGIC_BTRFS;
+    }
+
+    Error = LxInstanceMountNt(Ns, Target, Source, FsType, Flags, &NtRoot, Magic, Mount);
+    LxFreePaged(NtRoot.Buffer);
+    return Error;
+}
+
 LONG
 LxMountAdd(
     _In_ PLX_PROCESS Process,
@@ -1313,6 +1528,7 @@ LxMountAdd(
     _In_ ULONG Flags,
     _In_opt_ PCSTR Data)
 {
+    PLX_CRED Cred = LxProcessCred(Process);
     PLX_NS Ns = LxProcessNs(Process, LxNsMnt);
     PCSTR Relative;
     PLX_MOUNT Existing, Mount = NULL;
@@ -1337,8 +1553,8 @@ LxMountAdd(
 
         RtlZeroMemory(&Options, sizeof(Options));
         Options.Mode = 01777;
-        Options.Uid = Process->Fsuid;
-        Options.Gid = Process->Fsgid;
+        Options.Uid = Cred->Fsuid;
+        Options.Gid = Cred->Fsgid;
         Error = Tmpfs ? LxTmpfsParseOptions(Process, Data, &Options) : 0;
         if (Error == 0)
             Error = LxInstanceTmpfs(Ns, Target, FsType, Flags, Options.Mode, &Mount);
@@ -1362,6 +1578,9 @@ LxMountAdd(
         Error = LxInstanceMountSynthetic(Ns, Target, Source, "mqueue", Flags, LxFsMqueue, LX_MAGIC_MQUEUE, &Mount);
     else if (strcmp(FsType, "squashfs") == 0)
         Error = LxInstanceSquashfs(Process, Ns, Target, Source, Flags, &Mount);
+    else if ((strcmp(FsType, "drvfs") == 0) || (strcmp(FsType, "ext4") == 0) || (strcmp(FsType, "ext3") == 0) ||
+             (strcmp(FsType, "ext2") == 0) || (strcmp(FsType, "btrfs") == 0) || (strcmp(FsType, "ntfs") == 0))
+        Error = LxInstanceMountDrive(Ns, Target, Source, FsType, Flags, &Mount);
     else
         return -LX_ENODEV;
     if (Error == 0)
@@ -3080,7 +3299,7 @@ LxLookupWalk(
         return -LX_ENOMEM;
     }
 
-    Normalized = LxAlloc(LX_PATH_MAX);
+    Normalized = LxAllocString(LX_PATH_MAX);
     if ((Normalized != NULL) && (Flags & (LX_LOOKUP_BENEATH | LX_LOOKUP_IN_ROOT)))
     {
         Root = LxStrDup(Current);
@@ -3426,6 +3645,7 @@ LxLookupWalk(
 #define LX_VCACHE_STAT      2
 #define LX_VCACHE_FILEID    3
 #define LX_VCACHE_SEARCH    4
+#define LX_VCACHE_SEARCH_FOLLOW 5
 
 typedef struct _LX_VCACHE_ENTRY
 {
@@ -3691,7 +3911,7 @@ LxLookupCacheKey(
     }
     if (Joined == NULL)
         return NULL;
-    Key = LxAlloc(LX_PATH_MAX);
+    Key = LxAllocString(LX_PATH_MAX);
     if ((Key != NULL) && (LxPathNormalize(Joined, Key) != 0))
     {
         LxFree(Key);
@@ -3706,29 +3926,31 @@ PSTR
 LxLookupSearchKey(
     _In_ PLX_PROCESS Process,
     _In_ PCSTR Dir,
-    _In_ PCSTR Path)
+    _In_ PCSTR Path,
+    _In_ BOOLEAN WholePath)
 {
+    PLX_CRED Cred = LxProcessCred(Process);
     static const CHAR Digits[] = "0123456789abcdef";
-    ULONG64 Values[7 + RTL_NUMBER_OF(Process->Groups)];
+    ULONG64 Values[7 + RTL_NUMBER_OF(Cred->Groups)];
     SIZE_T DirLength = strlen(Dir), PathLength = strlen(Path), Size, Used;
     ULONG Count = 0, Index;
     PSTR Key;
 
-    while ((PathLength > 0) && (Path[PathLength - 1] == '/'))
+    while (!WholePath && (PathLength > 0) && (Path[PathLength - 1] == '/'))
         PathLength--;
-    while ((PathLength > 0) && (Path[PathLength - 1] != '/'))
+    while (!WholePath && (PathLength > 0) && (Path[PathLength - 1] != '/'))
         PathLength--;
     Values[Count++] = DirLength;
     Values[Count++] = PathLength;
-    Values[Count++] = Process->Fsuid;
-    Values[Count++] = Process->Fsgid;
-    Values[Count++] = Process->CapEffective;
+    Values[Count++] = Cred->Fsuid;
+    Values[Count++] = Cred->Fsgid;
+    Values[Count++] = Cred->CapEffective;
     Values[Count++] = (ULONG64)(ULONG_PTR)LxCredUserNs(Process);
-    Values[Count++] = Process->GroupCount;
-    for (Index = 0; (Index < Process->GroupCount) && (Index < RTL_NUMBER_OF(Process->Groups)); Index++)
-        Values[Count++] = Process->Groups[Index];
+    Values[Count++] = Cred->GroupCount;
+    for (Index = 0; (Index < Cred->GroupCount) && (Index < RTL_NUMBER_OF(Cred->Groups)); Index++)
+        Values[Count++] = Cred->Groups[Index];
     Size = (Count * 17) + DirLength + PathLength + 3;
-    Key = LxAlloc(Size);
+    Key = LxAllocString(Size);
     if (Key == NULL)
         return NULL;
     Used = 0;
@@ -3753,15 +3975,66 @@ LxLookupSearchKey(
 
 static
 LONG
+LxLookupSearchNode(
+    _In_ PLX_PROCESS Process,
+    _In_ PCSTR Path,
+    _In_ BOOLEAN Search,
+    _Out_ PBOOLEAN Found,
+    _Out_ PSTR *LinkTarget)
+{
+    PSTR Copy = LxStrDup(Path);
+    LX_NODE Node;
+    LX_STAT Stat;
+    LONG Error = 0;
+
+    *Found = FALSE;
+    *LinkTarget = NULL;
+    if (Copy == NULL)
+        return -LX_ENOMEM;
+    RtlZeroMemory(&Node, sizeof(Node));
+    if (LxLookupFinish(Process, &Node, Copy, TRUE, LX_S_IFDIR, NULL) != 0)
+        return 0;
+    if ((Node.Mount != NULL) && (LxVfsStatNode(Process, &Node, &Stat) == 0))
+    {
+        BOOLEAN Walkable = (Node.Mount->Kind == LxFsNt) || (Node.Mount->Kind == LxFsTmpfs);
+
+        if ((Stat.Mode & LX_S_IFMT) == LX_S_IFDIR)
+        {
+            if (Search)
+                Error = LxPermission(Process, Stat.Mode, Stat.Uid, Stat.Gid, LX_MAY_EXEC);
+            *Found = Search && Walkable;
+        }
+        else if (Walkable && ((Stat.Mode & LX_S_IFMT) == LX_S_IFLNK))
+        {
+            Node.Type = LX_S_IFLNK;
+            *Found = (LxVfsReadlink(Process, &Node, LinkTarget) == 0) && (*LinkTarget)[0] != '\0';
+            if (!*Found)
+            {
+                LxFree(*LinkTarget);
+                *LinkTarget = NULL;
+            }
+        }
+    }
+    LxNodeFree(&Node);
+    return Error;
+}
+
+static
+LONG
 LxLookupMaySearch(
     _In_ PLX_PROCESS Process,
     _In_ LONG DirFd,
-    _In_ PCSTR Path)
+    _In_ PCSTR Path,
+    _In_ ULONG Flags)
 {
     PCSTR Cursor = Path;
-    PSTR Dir, Root, Key = NULL, Start = NULL;
+    PSTR Dir, Root, Key = NULL, Start = NULL, Rest = NULL;
     BOOLEAN Checked = FALSE, Complete = TRUE;
-    ULONG Fsuid = Process->Fsuid;
+    ULONG Links = 0;
+    SIZE_T PathLength = strlen(Path);
+    BOOLEAN Follow = (Flags & LX_LOOKUP_FOLLOW) || ((PathLength != 0) && (Path[PathLength - 1] == '/'));
+    ULONG Kind = Follow ? LX_VCACHE_SEARCH_FOLLOW : LX_VCACHE_SEARCH;
+    ULONG Fsuid = LxProcessCred(Process)->Fsuid;
     LONG64 Generation = LxVcacheGeneration, ModeGeneration = LxVcacheModeGeneration;
     PLX_NS Owner = LxProcessNs(Process, LxNsMnt);
     ULONG Hash = 0;
@@ -3806,16 +4079,16 @@ LxLookupMaySearch(
         return 0;
     }
     if ((Owner != NULL) && (strstr(Path, "..") == NULL))
-        Key = LxLookupSearchKey(Process, Dir, Path);
+        Key = LxLookupSearchKey(Process, Dir, Path, Follow);
     if (Key != NULL)
     {
         LONG64 Now = (LONG64)KeQueryInterruptTime();
         PLX_VCACHE_ENTRY Entry;
         BOOLEAN Hit = FALSE;
 
-        Hash = LxVcacheHash(Owner, LX_VCACHE_SEARCH, Key);
+        Hash = LxVcacheHash(Owner, Kind, Key);
         ExAcquireFastMutex(&LxVcacheLock);
-        Entry = LxVcacheFind(Owner, LX_VCACHE_SEARCH, Fsuid, Key, Hash);
+        Entry = LxVcacheFind(Owner, Kind, Fsuid, Key, Hash);
         if ((Entry != NULL) && (Entry->Generation == Generation) && (Entry->ModeGeneration == ModeGeneration) &&
             (Now - Entry->Time < LX_VCACHE_STAT_TTL))
         {
@@ -3839,14 +4112,13 @@ LxLookupMaySearch(
         }
     }
 
-    /* FIXME: directories reached through symbolic links are not checked */
     for (;;)
     {
         CHAR Name[256];
         PCSTR Component;
         SIZE_T Length;
-        BOOLEAN Found;
-        PSTR Next;
+        BOOLEAN Found, Final;
+        PSTR Next, Target = NULL;
 
         while (*Cursor == '/')
             Cursor++;
@@ -3858,36 +4130,70 @@ LxLookupMaySearch(
         Length = (SIZE_T)(Cursor - Component);
         if (!Checked)
         {
-            PSTR Copy = LxStrDup(Dir);
-            LX_NODE Node;
-            LX_STAT Stat;
-
-            if (Copy == NULL)
-            {
-                Error = -LX_ENOMEM;
-                break;
-            }
-            RtlZeroMemory(&Node, sizeof(Node));
-            Found = FALSE;
-            if (LxLookupFinish(Process, &Node, Copy, TRUE, LX_S_IFDIR, NULL) == 0)
-            {
-                if ((Node.Mount != NULL) && (LxVfsStatNode(Process, &Node, &Stat) == 0) &&
-                    ((Stat.Mode & LX_S_IFMT) == LX_S_IFDIR))
-                {
-                    Error = LxPermission(Process, Stat.Mode, Stat.Uid, Stat.Gid, LX_MAY_EXEC);
-                    Found = (Node.Mount->Kind == LxFsNt) || (Node.Mount->Kind == LxFsTmpfs);
-                }
-                LxNodeFree(&Node);
-            }
+            Error = LxLookupSearchNode(Process, Dir, TRUE, &Found, &Target);
             if (!Found)
                 Complete = FALSE;
             if (Error != 0)
                 break;
             Checked = TRUE;
         }
-        while (*Cursor == '/')
+        while ((Target == NULL) && (*Cursor == '/'))
             Cursor++;
-        if (*Cursor == '\0')
+        Final = (Target == NULL) && (*Cursor == '\0');
+        if (Final && Follow && (Length < sizeof(Name)) &&
+            !((Length == 1) && (Component[0] == '.')) && !((Length == 2) && (Component[0] == '.') && (Component[1] == '.')))
+        {
+            RtlCopyMemory(Name, Component, Length);
+            Name[Length] = '\0';
+            Next = LxPathJoin(Dir, Name);
+            if (Next != NULL)
+            {
+                Error = LxLookupSearchNode(Process, Next, FALSE, &Found, &Target);
+                LxFree(Next);
+                if (Error != 0)
+                    break;
+            }
+            if (Target != NULL)
+                Component = Cursor;
+        }
+        if (Target != NULL)
+        {
+            Next = NULL;
+            if (++Links <= LX_MAX_SYMLINKS)
+                Next = (*Component != '\0') ? LxPathJoin(Target, Component) : LxStrDup(Target);
+            if (Next == NULL)
+            {
+                LxFree(Target);
+                Complete = FALSE;
+                break;
+            }
+            if (Target[0] == '/')
+            {
+                LxFree(Dir);
+                Dir = LxStrDup(Root);
+                Checked = FALSE;
+            }
+            else if (!Final)
+            {
+                PSTR Slash = strrchr(Dir, '/');
+
+                if ((Slash != NULL) && (Slash != Dir))
+                    *Slash = '\0';
+                else
+                    Dir[1] = '\0';
+            }
+            LxFree(Target);
+            LxFree(Rest);
+            Rest = Next;
+            Cursor = Rest;
+            if (Dir == NULL)
+            {
+                Error = -LX_ENOMEM;
+                break;
+            }
+            continue;
+        }
+        if (Final)
             break;
         if (Length >= sizeof(Name))
         {
@@ -3923,7 +4229,7 @@ LxLookupMaySearch(
     }
     if ((Key != NULL) && (Error == 0) && Complete)
     {
-        PSTR Check = LxLookupSearchKey(Process, Start, Path);
+        PSTR Check = LxLookupSearchKey(Process, Start, Path, Follow);
         PLX_VCACHE_ENTRY Entry = ((Check != NULL) && (strcmp(Check, Key) == 0)) ? LxAlloc(sizeof(*Entry)) : NULL;
 
         LxFree(Check);
@@ -3931,7 +4237,7 @@ LxLookupMaySearch(
         {
             Entry->Instance = Process->Instance;
             Entry->Owner = Owner;
-            Entry->Kind = LX_VCACHE_SEARCH;
+            Entry->Kind = Kind;
             Entry->Flags = Fsuid;
             Entry->Hash = Hash;
             Entry->Generation = Generation;
@@ -3944,6 +4250,7 @@ LxLookupMaySearch(
     }
     LxFree(Start);
     LxFree(Key);
+    LxFree(Rest);
     LxFree(Dir);
     LxFree(Root);
     return Error;
@@ -3970,7 +4277,7 @@ LxLookupIn(
 
     if ((Length > 1) && (Path[Length - 1] == '/'))
         KeyFlags |= 0x80000000;
-    Error = LxLookupMaySearch(Process, DirFd, Path);
+    Error = LxLookupMaySearch(Process, DirFd, Path, Flags);
     if (Error != 0)
     {
         RtlZeroMemory(Node, sizeof(*Node));
@@ -4170,8 +4477,12 @@ LxVfsOpenTmpfs(
                 break;
 
             case LX_S_IFDIR:
-                if ((Flags & LX_O_ACCMODE) != LX_O_RDONLY)
+                if (!(Flags & LX_O_PATH) &&
+                    (((Flags & LX_O_ACCMODE) != LX_O_RDONLY) || (Flags & LX_O_TRUNC) ||
+                     ((Flags & (LX_O_CREAT | LX_O_DIRECTORY)) == LX_O_CREAT)))
+                {
                     Error = -LX_EISDIR;
+                }
                 break;
 
             case LX_S_IFCHR:
@@ -4211,7 +4522,7 @@ LxVfsOpenTmpfs(
                     Error = -LX_ENOTDIR;
                 break;
         }
-        if ((Error == 0) && (Flags & LX_O_TRUNC) && ((Flags & LX_O_ACCMODE) != LX_O_RDONLY) && (Type == LX_S_IFREG))
+        if ((Error == 0) && (Flags & LX_O_TRUNC) && (Type == LX_S_IFREG))
             Error = LxTmpfsInodeTruncate(Inode, 0);
     }
     else if ((Flags & LX_O_DIRECTORY) && (Type != LX_S_IFDIR))
@@ -4291,8 +4602,12 @@ LxVfsOpenNode(
                 break;
 
             case LX_S_IFDIR:
-                if ((Flags & LX_O_ACCMODE) != LX_O_RDONLY)
+                if (!(Flags & LX_O_PATH) &&
+                    (((Flags & LX_O_ACCMODE) != LX_O_RDONLY) || (Flags & LX_O_TRUNC) ||
+                     ((Flags & (LX_O_CREAT | LX_O_DIRECTORY)) == LX_O_CREAT)))
+                {
                     return -LX_EISDIR;
+                }
                 break;
 
             case LX_S_IFCHR:
@@ -4380,8 +4695,11 @@ LxVfsOpenNode(
 
     if (!Node->Exists)
         Disposition = FILE_CREATE;
-    else if ((Flags & LX_O_TRUNC) && ((Flags & LX_O_ACCMODE) != LX_O_RDONLY) && (Node->Type == LX_S_IFREG))
+    else if ((Flags & LX_O_TRUNC) && (Node->Type == LX_S_IFREG))
+    {
         Disposition = FILE_OVERWRITE;
+        Access |= FILE_WRITE_DATA;
+    }
     else
         Disposition = FILE_OPEN;
 
@@ -4629,7 +4947,7 @@ LxVfsReopen(
             (*File)->Memfd = Source->Memfd;
             (*File)->Mode = Source->Mode;
         }
-        if ((Flags & LX_O_TRUNC) && (Access != LX_O_RDONLY) && ((*File)->Type == LX_S_IFREG))
+        if ((Flags & LX_O_TRUNC) && ((*File)->Type == LX_S_IFREG))
             Error = LxTmpfsInodeTruncate(Inode, 0);
         if (((*File)->Path == NULL) || (Error != 0))
         {
@@ -4820,6 +5138,7 @@ LxVfsMayDelete(
     _In_ PLX_PROCESS Process,
     _In_ PLX_NODE Node)
 {
+    PLX_CRED Cred = LxProcessCred(Process);
     LX_STAT Parent, Stat;
     LONG Error;
 
@@ -4833,7 +5152,7 @@ LxVfsMayDelete(
         return Error;
     if (!LxIdsMapped(Process, Stat.Uid, Stat.Gid))
         return -LX_EPERM;
-    if ((Parent.Mode & LX_S_ISVTX) && (Stat.Uid != Process->Fsuid) && (Parent.Uid != Process->Fsuid) &&
+    if ((Parent.Mode & LX_S_ISVTX) && (Stat.Uid != Cred->Fsuid) && (Parent.Uid != Cred->Fsuid) &&
         !LxCapableWrtIds(Process, Stat.Uid, Stat.Gid, LX_CAP_FOWNER))
     {
         return -LX_EPERM;
@@ -4850,10 +5169,11 @@ LxVfsNewOwner(
     _Out_ PULONG Uid,
     _Out_ PULONG Gid)
 {
+    PLX_CRED Cred = LxProcessCred(Process);
     LX_STAT Parent;
 
-    *Uid = Process->Fsuid;
-    *Gid = Process->Fsgid;
+    *Uid = Cred->Fsuid;
+    *Gid = Cred->Fsgid;
     if ((LxVfsParentPermission(Process, Path, 0, &Parent) != 0) || !(Parent.Mode & LX_S_ISGID))
         return;
     *Gid = Parent.Gid;
@@ -5323,12 +5643,13 @@ LxApplyAttributes(
     _Inout_ PULONG OldUid,
     _Inout_ PULONG OldGid)
 {
-    if ((Uid != MAXULONG) && !((Process->Fsuid == *OldUid) && (Uid == *OldUid)) &&
+    PLX_CRED Cred = LxProcessCred(Process);
+    if ((Uid != MAXULONG) && !((Cred->Fsuid == *OldUid) && (Uid == *OldUid)) &&
         !LxCapableWrtIds(Process, *OldUid, *OldGid, LX_CAP_CHOWN))
     {
         return -LX_EPERM;
     }
-    if ((Gid != MAXULONG) && !((Process->Fsuid == *OldUid) && ((Gid == *OldGid) || LxInGroup(Process, Gid))) &&
+    if ((Gid != MAXULONG) && !((Cred->Fsuid == *OldUid) && ((Gid == *OldGid) || LxInGroup(Process, Gid))) &&
         !LxCapableWrtIds(Process, *OldUid, *OldGid, LX_CAP_CHOWN))
     {
         return -LX_EPERM;

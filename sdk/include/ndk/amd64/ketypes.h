@@ -20,6 +20,18 @@ Author:
 #ifndef _AMD64_KETYPES_H
 #define _AMD64_KETYPES_H
 
+#define PROCESSOR_POWER_STATE_LEGACY_AREA_SIZE 0x1C8
+#include <potypes.h>
+#ifndef NTOS_MODE_USER
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, ArchitecturalEfficiencyClass) == 0x1C8);
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, PerformanceSchedulingClass) == 0x1C9);
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, EfficiencySchedulingClass) == 0x1CA);
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, Reserved) == 0x1CB);
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, Parked) == 0x1CC);
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, SoftParked) == 0x1CD);
+C_ASSERT(FIELD_OFFSET(PROCESSOR_POWER_STATE, LongPriorQosPeriod) == 0x1CE);
+#endif
+
 //
 // Dependencies
 //
@@ -775,7 +787,7 @@ typedef struct _KPRCB
     UCHAR PrcbPad2[12];
 #endif
     UINT64 TargetSet;
-    ULONG IpiFrozen;
+    volatile ULONG IpiFrozen;
     UCHAR PrcbPad3[116];
     REQUEST_MAILBOX RequestMailbox[64];
     UINT64 SenderSummary;
@@ -975,7 +987,7 @@ typedef struct _KPRCB
      * Windows dump readers obtain the saved processor context through
      * the OffsetPrcbContext member of KDDEBUGGER_DATA64.
      */
-    PCONTEXT CrashDumpContext;
+    PCONTEXT Context;
 #endif
 } KPRCB, *PKPRCB;
 

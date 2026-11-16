@@ -29,11 +29,18 @@ CcFlushCache(
 
         if (NT_SUCCESS(Status))
         {
+            ULONG64 FileSize = NtMap->Map.FileSize;
             ULONG64 SegmentBytes = (Bytes == (ULONG64)-1)
                                        ? (ULONG64)MI_ATOMIC_READ64(&NtMap->Control->Segment->SizeInBytes) - Offset
                                        : Bytes;
 
-            Status = MiSegmentFlush(NtMap->Control->Segment, Offset, SegmentBytes);
+            if (Offset < FileSize)
+            {
+                if (SegmentBytes > FileSize - Offset)
+                    SegmentBytes = FileSize - Offset;
+
+                Status = MiSegmentFlush(NtMap->Control->Segment, Offset, SegmentBytes);
+            }
         }
 
         CcNtDereferenceMap(NtMap);
@@ -73,6 +80,15 @@ CcPurgeCacheSection(
     ULONG64 Bytes = (FileOffset != NULL && Length != 0) ? Length : 0;
     BOOLEAN Purged = TRUE;
 
+    if (Bytes != 0)
+    {
+        ULONG64 End = ROUND_UP(Offset + Bytes, (ULONG64)PAGE_SIZE);
+
+        Offset &= ~(ULONG64)(PAGE_SIZE - 1);
+        Bytes = End - Offset;
+        CC_ASSERT(Bytes != 0 && (Bytes & (PAGE_SIZE - 1)) == 0);
+    }
+
     if (NtMap != NULL)
     {
         ULONG64 End = (Bytes == 0) ? (ULONG64)-1 : Offset + Bytes;
@@ -103,6 +119,9 @@ CcPurgeCacheSection(
                 MiDereferenceControlArea(Control);
         }
     }
+
+    if (Purged && FileOffset == NULL && !MmFlushImageSection(SectionObjectPointer, MmFlushForWrite))
+        Purged = FALSE;
 
     return Purged;
 }

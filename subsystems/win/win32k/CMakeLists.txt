@@ -11,12 +11,10 @@ if(USE_DIBLIB)
 endif()
 
 add_subdirectory(gdi/gdi32)
-add_subdirectory(gdi/gdi32_vista)
 add_subdirectory(printing)
 add_subdirectory(reactx)
 add_subdirectory(user/imm32)
 add_subdirectory(user/user32)
-add_subdirectory(user/user32_vista)
 add_subdirectory(user/winsrv)
 add_subdirectory(win32u)
 
@@ -135,6 +133,7 @@ list(APPEND SOURCE
     user/ntuser/defwnd.c
     user/ntuser/desktop.c
     user/ntuser/display.c
+    user/ntuser/dpi.c
     user/ntuser/draw.c
     user/ntuser/event.c
     user/ntuser/focus.c
@@ -145,6 +144,7 @@ list(APPEND SOURCE
     user/ntuser/hotkey.c
     user/ntuser/ime.c
     user/ntuser/input.c
+    user/ntuser/inputhold.c
     user/ntuser/job.c
     user/ntuser/keyboard.c
     user/ntuser/kbdlayout.c
@@ -265,6 +265,7 @@ add_library(win32k MODULE
     win32k.rc
     ${CMAKE_CURRENT_BINARY_DIR}/win32k.def)
 
+add_dependencies(win32k buildstamp)
 set_module_type(win32k kernelmodedriver)
 if((ARCH STREQUAL "amd64" OR ARCH STREQUAL "arm64") AND CMAKE_C_COMPILER_ID STREQUAL "Clang" AND NOT USE_DUMMY_PSEH)
     foreach(_win32k_src ${SOURCE} gdi/ntgdi/brush.cpp)

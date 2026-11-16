@@ -24,6 +24,7 @@ extern void func_CShellLink(void);
 extern void func_CUserNotification(void);
 extern void func_DragDrop(void);
 extern void func_ExtractIconEx(void);
+extern void func_FileTypeName(void);
 extern void func_FindExecutable(void);
 extern void func_GetDisplayNameOf(void);
 extern void func_GUIDFromString(void);
@@ -45,6 +46,7 @@ extern void func_ProgramFilesDir(void);
 extern void func_SHGetFolderPathToken(void);
 extern void func_PIDL(void);
 extern void func_RealShellExecuteEx(void);
+extern void func_RegItemDisplayName(void);
 extern void func_RegItemParse(void);
 extern void func_SHAppBarMessage(void);
 extern void func_SHChangeNotify(void);
@@ -58,6 +60,7 @@ extern void func_She(void);
 extern void func_ShellExec_RunDLL(void);
 extern void func_ShellExecCmdLine(void);
 extern void func_ShellExecuteEx(void);
+extern void func_ShellExecuteSlash(void);
 extern void func_ShellExecuteLink(void);
 extern void func_ShellExecuteW(void);
 extern void func_ShellHook(void);
@@ -86,6 +89,7 @@ extern void func_Thumbnails(void);
 extern void func_ShellItemProperties(void);
 extern void func_SearchFolder(void);
 extern void func_RecentDocs(void);
+extern void func_RunFileDlg(void);
 extern void func_PreviewHandler(void);
 
 const struct test winetest_testlist[] =
@@ -95,6 +99,7 @@ const struct test winetest_testlist[] =
     { "ShellItemProperties", func_ShellItemProperties },
     { "SearchFolder", func_SearchFolder },
     { "RecentDocs", func_RecentDocs },
+    { "RunFileDlg", func_RunFileDlg },
     { "PreviewHandler", func_PreviewHandler },
     { "WindowPropertyStore", func_WindowPropertyStore },
     { "StartMenuPin", func_StartMenuPin },
@@ -119,6 +124,7 @@ const struct test winetest_testlist[] =
     //{ "CUserNotification", func_CUserNotification }, // Test is broken on Win 2003
     { "DragDrop", func_DragDrop },
     { "ExtractIconEx", func_ExtractIconEx },
+    { "FileTypeName", func_FileTypeName },
     { "FindExecutable", func_FindExecutable },
     { "GetDisplayNameOf", func_GetDisplayNameOf },
     { "GUIDFromString", func_GUIDFromString },
@@ -140,6 +146,7 @@ const struct test winetest_testlist[] =
     { "SHGetFolderPathToken", func_SHGetFolderPathToken },
     { "PIDL", func_PIDL },
     { "RealShellExecuteEx", func_RealShellExecuteEx },
+    { "RegItemDisplayName", func_RegItemDisplayName },
     { "RegItemParse", func_RegItemParse },
     { "SHAppBarMessage", func_SHAppBarMessage },
     { "SHChangeNotify", func_SHChangeNotify },
@@ -153,6 +160,7 @@ const struct test winetest_testlist[] =
     //{ "ShellExec_RunDLL", func_ShellExec_RunDLL }, Broke on Windows
     //{ "ShellExecCmdLine", func_ShellExecCmdLine }, Broke on Windows
     { "ShellExecuteEx", func_ShellExecuteEx }, // Mostly broken on Windows, only simple tests enabled
+    { "ShellExecuteSlash", func_ShellExecuteSlash },
     { "ShellExecuteLink", func_ShellExecuteLink },
     //{ "ShellExecuteW", func_ShellExecuteW }, Broke on Windows
     { "ShellHook", func_ShellHook },

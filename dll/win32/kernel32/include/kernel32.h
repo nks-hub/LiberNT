@@ -42,11 +42,7 @@ BasepApplyThreadAttributeList(
     _In_opt_ LPPROC_THREAD_ATTRIBUTE_LIST AttributeList,
     _In_ HANDLE ThreadHandle);
 
-#if DBG
 #define DEBUG_CHANNEL(ch) static ULONG gDebugChannel = ch;
-#else
-#define DEBUG_CHANNEL(ch)
-#endif
 
 #define TRACE(fmt, ...)         TRACE__(gDebugChannel, fmt, ##__VA_ARGS__)
 #define WARN(fmt, ...)          WARN__(gDebugChannel, fmt, ##__VA_ARGS__)
@@ -260,6 +256,11 @@ BasepArchUnwindFrame(
     _Out_ PULONG_PTR ReturnAddress);
 
 VOID
+WINAPI
+BasepRunApplicationRecovery(
+    _In_ NTSTATUS ExitStatus);
+
+VOID
 NTAPI
 BasepFreeActivationContextActivationBlock(
     IN PBASEP_ACTCTX_BLOCK ActivationBlock
@@ -462,6 +463,19 @@ BasepPostEmulatorWork(
     _In_ ULONG ArgumentCount,
     _In_ ULONG Argument0,
     _In_ ULONG Argument1);
+
+NTSTATUS
+WINAPI
+BasepSuspendWow64Thread(
+    _In_ HANDLE Thread,
+    _Out_ PULONG PreviousSuspendCount);
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlWow64SuspendThread(
+    _In_ HANDLE ThreadHandle,
+    _Out_ PULONG PreviousSuspendCount);
 
 VOID
 NTAPI

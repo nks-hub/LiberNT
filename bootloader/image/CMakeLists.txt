@@ -7,8 +7,11 @@
 
 set(BOOTLOADER_TIMEOUT 3 CACHE STRING "Seconds the boot menu waits before starting the default entry")
 option(BOOTLOADER_DISPLAY_MENU "Show the boot menu even with a single entry" ON)
-option(BOOTLOADER_KERNEL_DEBUG "Start the kernel with debug output on serial, screen and log file, and verbose loading; debug builds always keep the serial port" ON)
+option(BOOTLOADER_KERNEL_DEBUG "Start the boot manager, the OS loader and the kernel with debug output on serial, screen and log file, and verbose loading; debug builds always keep the serial port" ${DBG})
 set(BOOTLOADER_LOAD_OPTIONS "KDWATCHDOG=0" CACHE STRING "Extra kernel load options of the default entry")
+# A medium the system cannot write to, such as a RAM disk on a machine with no
+# storage driver, keeps no log file; those boards ask for the screen instead.
+set(BOOTLOADER_DEBUG_PORT "FILE" CACHE STRING "Where the kernel debugger writes: FILE, SCREEN, NET or COMn")
 if(BOOTLOADER_KERNEL STREQUAL "ntkrnlmp.exe")
     set(BOOTLOADER_KERNEL "ntoskrnl.exe" CACHE STRING "Kernel image of the default entry" FORCE)
 endif()
@@ -104,9 +107,11 @@ else()
 endif()
 
 if(BOOTLOADER_KERNEL_DEBUG)
+    set(BCD_BOOT_DEBUG 01)
     set(BCD_SOS 01)
-    set(BOOTLOADER_DEBUG_LOAD_OPTIONS " DEBUGPORT=FILE")
+    set(BOOTLOADER_DEBUG_LOAD_OPTIONS " DEBUGPORT=${BOOTLOADER_DEBUG_PORT}")
 else()
+    set(BCD_BOOT_DEBUG 00)
     set(BCD_SOS 00)
     set(BOOTLOADER_DEBUG_LOAD_OPTIONS "")
 endif()
@@ -176,6 +181,8 @@ set(BCD_WINPE_ELEMENT
 
 function(bootloader_media _target _directory _image)
     bootloader_bcd_store(${_directory})
+    string(UUID _disk NAMESPACE ${BOOTLOADER_ID_NAMESPACE} NAME "LiberNT ${_target}" TYPE SHA1)
+    string(SUBSTRING "${_disk}" 0 8 _signature)
 
     add_custom_target(${_target}
         COMMAND native-fatten ${_directory}/efisys.bin
@@ -205,7 +212,8 @@ function(bootloader_media _target _directory _image)
             -hide boot.catalog
             -duplicates-once -no-cache-inodes -graft-points
             -path-list ${_directory}/files.lst
-        DEPENDS native-fatten native-mkisofs native-wimage bootmgfw winload ${_directory}/BCD
+        COMMAND native-mkdiskimg -cd ${_image} -signature ${_signature}
+        DEPENDS native-fatten native-mkisofs native-mkdiskimg native-wimage bootmgfw winload ${_directory}/BCD
         VERBATIM)
 
     add_dependencies(${_target} livecd_hives livecd_files)
@@ -381,6 +389,7 @@ set(BCD_LOADER_DEVICE "${BCD_BOOT_DEVICE}")
 set(BCD_LOADER_PATH "\\Windows\\system32\\${BOOTLOADER_OS_LOADER}")
 set(BCD_LOAD_OPTIONS "${BOOTLOADER_LOAD_OPTIONS}")
 set(BCD_WINPE_ELEMENT "")
+set(BCD_BOOT_DEBUG 00)
 set(BCD_SOS 00)
 set(BCD_DEBUG 00)
 set(BCD_DEFAULT_ENTRY "${BCD_OS_ENTRY}")

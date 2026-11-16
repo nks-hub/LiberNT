@@ -400,15 +400,86 @@ BOOL NLS_IsUnicodeOnlyLcid(LCID lcid)
 #define IsDateFmtChar(p)   (p == 'd'||p == 'M'||p == 'y'||p == 'g')
 #define IsTimeFmtChar(p)   (p == 'H'||p == 'h'||p == 'm'||p == 's'||p == 't')
 
-/* Only the following flags can be given if a date/time format is specified */
-#ifdef __REACTOS__
-#define DATE_FORMAT_FLAGS (DATE_DATEVARSONLY | DATE_USE_ALT_CALENDAR)
-#else
-#define DATE_FORMAT_FLAGS (DATE_DATEVARSONLY)
-#endif
-#define TIME_FORMAT_FLAGS (TIME_TIMEVARSONLY|TIME_FORCE24HOURFORMAT| \
-                           TIME_NOMINUTESORSECONDS|TIME_NOSECONDS| \
-                           TIME_NOTIMEMARKER)
+#define DATE_READING_FLAGS (DATE_LTRREADING | DATE_RTLREADING | DATE_AUTOLAYOUT)
+#define DATE_KIND_FLAGS    (DATE_SHORTDATE | DATE_LONGDATE | DATE_YEARMONTH)
+#define DATE_PUBLIC_FLAGS  (DATE_KIND_FLAGS | DATE_USE_ALT_CALENDAR | DATE_READING_FLAGS | \
+                            LOCALE_USE_CP_ACP | LOCALE_NOUSEROVERRIDE)
+#define TIME_PUBLIC_FLAGS  (TIME_NOMINUTESORSECONDS | TIME_NOSECONDS | TIME_NOTIMEMARKER | \
+                            TIME_FORCE24HOURFORMAT | LOCALE_USE_CP_ACP | LOCALE_NOUSEROVERRIDE)
+
+static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags, DWORD dwKind,
+                                  const SYSTEMTIME* lpTime, LPCWSTR lpFormat,
+                                  LPWSTR lpStr, INT cchOut);
+
+/* The caller's flags, checked before the internal DATE_DATEVARSONLY or TIME_TIMEVARSONLY kind is added */
+static BOOL NLS_IsValidDateTimeFlags(DWORD dwFlags, DWORD dwKind, BOOL bFormat)
+{
+  DWORD dwReading = dwFlags & DATE_READING_FLAGS;
+  DWORD dwDateKind = dwFlags & DATE_KIND_FLAGS;
+
+  ASSERT(dwKind == DATE_DATEVARSONLY || dwKind == TIME_TIMEVARSONLY);
+
+  if (bFormat && (dwFlags & LOCALE_NOUSEROVERRIDE))
+    return FALSE;
+  if (dwKind == TIME_TIMEVARSONLY)
+    return !(dwFlags & ~TIME_PUBLIC_FLAGS);
+  if (dwFlags & ~DATE_PUBLIC_FLAGS)
+    return FALSE;
+  if ((dwReading & (dwReading - 1)) || (dwDateKind & (dwDateKind - 1)))
+    return FALSE;
+  return !(bFormat && dwDateKind);
+}
+
+static BOOL NLS_ContainsRtlText(LPCWSTR lpStr)
+{
+  for (; *lpStr; lpStr++)
+  {
+    if ((*lpStr >= 0x0590 && *lpStr <= 0x08FF) ||
+        (*lpStr >= 0xFB1D && *lpStr <= 0xFDFF) ||
+        (*lpStr >= 0xFE70 && *lpStr <= 0xFEFE))
+      return TRUE;
+  }
+  return FALSE;
+}
+
+/* The reading flag DATE_AUTOLAYOUT stands for, 0 with the last error set on failure */
+static DWORD NLS_GetAutoLayoutReading(LCID lcid, DWORD dwFlags, const SYSTEMTIME* lpTime, LPCWSTR lpFormat)
+{
+  DWORD dwLayout = 0;
+  LPWSTR lpPlain;
+  INT cchPlain;
+  BOOL bRtlText;
+
+  ASSERT(dwFlags & DATE_AUTOLAYOUT);
+
+  lcid = ConvertDefaultLocale(lcid);
+  if (!GetLocaleInfoW(lcid, LOCALE_IREADINGLAYOUT | LOCALE_RETURN_NUMBER,
+                      (LPWSTR)&dwLayout, sizeof(dwLayout) / sizeof(WCHAR)) || dwLayout != 1)
+    return DATE_LTRREADING;
+  if (PRIMARYLANGID(LANGIDFROMLCID(lcid)) != LANG_HEBREW)
+    return DATE_RTLREADING;
+
+  /* Windows 11 marks a Hebrew date right-to-left only when it shows Hebrew text */
+  dwFlags &= ~DATE_READING_FLAGS;
+  cchPlain = NLS_GetDateTimeFormatW(lcid, dwFlags, DATE_DATEVARSONLY, lpTime, lpFormat, NULL, 0);
+  if (!cchPlain)
+    return 0;
+  lpPlain = HeapAlloc(GetProcessHeap(), 0, cchPlain * sizeof(WCHAR));
+  if (!lpPlain)
+  {
+    SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+    return 0;
+  }
+  if (NLS_GetDateTimeFormatW(lcid, dwFlags, DATE_DATEVARSONLY, lpTime, lpFormat, lpPlain, cchPlain) != cchPlain)
+  {
+    HeapFree(GetProcessHeap(), 0, lpPlain);
+    return 0;
+  }
+  ASSERT(lpPlain[cchPlain - 1] == '\0');
+  bRtlText = NLS_ContainsRtlText(lpPlain);
+  HeapFree(GetProcessHeap(), 0, lpPlain);
+  return bRtlText ? DATE_RTLREADING : DATE_LTRREADING;
+}
 
 /******************************************************************************
  * NLS_GetDateTimeFormatW <internal>
@@ -417,9 +488,9 @@ BOOL NLS_IsUnicodeOnlyLcid(LCID lcid)
  *
  * FIXME
  * DATE_USE_ALT_CALENDAR           - Requires GetCalendarInfo to work first.
- * DATE_LTRREADING/DATE_RTLREADING - Not yet implemented.
  */
-static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags,
+/* TODO: serve GetDateFormat and GetTimeFormat from kernelbase as Windows 11 does, once its get_date_format handles DATE_USE_ALT_CALENDAR and Japanese era years */
+static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags, DWORD dwKind,
                                   const SYSTEMTIME* lpTime, LPCWSTR lpFormat,
                                   LPWSTR lpStr, INT cchOut)
 {
@@ -429,42 +500,31 @@ static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags,
   INT lastFormatPos = 0;
   BOOL bSkipping = FALSE; /* Skipping text around marker? */
   BOOL d_dd_formatted = FALSE; /* previous formatted part was for d or dd */
+  WCHAR wcMark = 0; /* reading-order mark before each date field and quoted literal */
+  DWORD dwReading;
+
+  ASSERT(dwKind == DATE_DATEVARSONLY || dwKind == TIME_TIMEVARSONLY);
 
   /* Verify our arguments */
   if ((cchOut && !lpStr) || !(node = NLS_GetFormats(lcid, dwFlags)))
     goto invalid_parameter;
 
-  if (dwFlags & ~(DATE_DATEVARSONLY|TIME_TIMEVARSONLY))
+  if (!NLS_IsValidDateTimeFlags(dwFlags, dwKind, lpFormat != NULL))
+    goto invalid_flags;
+
+  if (dwFlags & DATE_AUTOLAYOUT)
   {
-    if (lpFormat &&
-        ((dwFlags & DATE_DATEVARSONLY && dwFlags & ~DATE_FORMAT_FLAGS) ||
-         (dwFlags & TIME_TIMEVARSONLY && dwFlags & ~TIME_FORMAT_FLAGS)))
-    {
-      goto invalid_flags;
-    }
-
-    if (dwFlags & DATE_DATEVARSONLY)
-    {
-      if ((dwFlags & (DATE_LTRREADING|DATE_RTLREADING)) == (DATE_LTRREADING|DATE_RTLREADING))
-        goto invalid_flags;
-      else if (dwFlags & (DATE_LTRREADING|DATE_RTLREADING))
-        FIXME("Unsupported flags: DATE_LTRREADING/DATE_RTLREADING\n");
-
-      switch (dwFlags & (DATE_SHORTDATE|DATE_LONGDATE|DATE_YEARMONTH))
-      {
-      case 0:
-        break;
-      case DATE_SHORTDATE:
-      case DATE_LONGDATE:
-      case DATE_YEARMONTH:
-        if (lpFormat)
-          goto invalid_flags;
-        break;
-      default:
-        goto invalid_flags;
-      }
-    }
+    ASSERT(dwKind == DATE_DATEVARSONLY);
+    dwReading = NLS_GetAutoLayoutReading(lcid, dwFlags, lpTime, lpFormat);
+    if (!dwReading)
+      return 0;
+    dwFlags = (dwFlags & ~DATE_AUTOLAYOUT) | dwReading;
   }
+  if (dwKind == DATE_DATEVARSONLY && (dwFlags & DATE_LTRREADING))
+    wcMark = 0x200E;
+  else if (dwKind == DATE_DATEVARSONLY && (dwFlags & DATE_RTLREADING))
+    wcMark = 0x200F;
+  dwFlags |= dwKind;
 
   if (!lpFormat)
   {
@@ -519,6 +579,16 @@ static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags,
   {
     if (IsLiteralMarker(*lpFormat))
     {
+      if (wcMark)
+      {
+        if (!cchOut)
+          cchWritten++;
+        else if (cchWritten >= cchOut)
+          goto overrun;
+        else
+          lpStr[cchWritten++] = wcMark;
+      }
+
       /* Start of a literal string */
       lpFormat++;
 
@@ -553,6 +623,16 @@ static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags,
       int   count = 0, dwLen;
 
       bSkipping = FALSE;
+
+      if (wcMark)
+      {
+        if (!cchOut)
+          cchWritten++;
+        else if (cchWritten >= cchOut)
+          goto overrun;
+        else
+          lpStr[cchWritten++] = wcMark;
+      }
 
       fmtChar = *lpFormat;
       while (*lpFormat == fmtChar)
@@ -735,6 +815,7 @@ static INT NLS_GetDateTimeFormatW(LCID lcid, DWORD dwFlags,
         break;
 
       case 'm':
+        /* FIXME: dropped minute, second and marker fields remove separators differently from Windows 11 when the format quotes text */
         if (dwFlags & TIME_NOMINUTESORSECONDS)
         {
           cchWritten = lastFormatPos; /* Skip */
@@ -848,7 +929,7 @@ invalid_flags:
  *
  * ASCII wrapper for GetDateFormatA/GetTimeFormatA.
  */
-static INT NLS_GetDateTimeFormatA(LCID lcid, DWORD dwFlags,
+static INT NLS_GetDateTimeFormatA(LCID lcid, DWORD dwFlags, DWORD dwKind,
                                   const SYSTEMTIME* lpTime,
                                   LPCSTR lpFormat, LPSTR lpStr, INT cchOut)
 {
@@ -883,10 +964,17 @@ static INT NLS_GetDateTimeFormatA(LCID lcid, DWORD dwFlags,
     return 0;
   }
 
+  /* An ANSI string cannot carry the explicit reading-order marks */
+  if (dwKind == DATE_DATEVARSONLY && (dwFlags & (DATE_LTRREADING | DATE_RTLREADING)))
+  {
+    SetLastError(ERROR_INVALID_FLAGS);
+    return 0;
+  }
+
   if (lpFormat)
     MultiByteToWideChar(cp, 0, lpFormat, -1, szFormat, ARRAY_SIZE(szFormat));
 
-  iRet = NLS_GetDateTimeFormatW(lcid, dwFlags, lpTime, lpFormat ? szFormat : NULL,
+  iRet = NLS_GetDateTimeFormatW(lcid, dwFlags, dwKind, lpTime, lpFormat ? szFormat : NULL,
                                 szOut, ARRAY_SIZE(szOut));
   if (iRet)
     iRet = WideCharToMultiByte(cp, 0, szOut, -1, lpStr, cchOut, 0, 0);
@@ -942,11 +1030,10 @@ INT WINAPI GetDateFormatA( LCID lcid, DWORD dwFlags, const SYSTEMTIME* lpTime,
   TRACE("(0x%04x,0x%08x,%p,%s,%p,%d)\n",lcid, dwFlags, lpTime,
         debugstr_a(lpFormat), lpDateStr, cchOut);
 
-  return NLS_GetDateTimeFormatA(lcid, dwFlags | DATE_DATEVARSONLY, lpTime,
+  return NLS_GetDateTimeFormatA(lcid, dwFlags, DATE_DATEVARSONLY, lpTime,
                                 lpFormat, lpDateStr, cchOut);
 }
 
-#if _WIN32_WINNT >= 0x600
 /******************************************************************************
  * GetDateFormatEx [KERNEL32.@]
  *
@@ -983,10 +1070,9 @@ INT WINAPI GetDateFormatEx(LPCWSTR localename, DWORD flags,
   }
 
   return NLS_GetDateTimeFormatW(LocaleNameToLCID(localename, 0),
-                                flags | DATE_DATEVARSONLY, date, format,
+                                flags, DATE_DATEVARSONLY, date, format,
                                 outbuf, bufsize);
 }
-#endif /* _WIN32_WINNT >= 0x600 */
 
 /******************************************************************************
  * GetDateFormatW	[KERNEL32.@]
@@ -999,7 +1085,7 @@ INT WINAPI GetDateFormatW(LCID lcid, DWORD dwFlags, const SYSTEMTIME* lpTime,
   TRACE("(0x%04x,0x%08x,%p,%s,%p,%d)\n", lcid, dwFlags, lpTime,
         debugstr_w(lpFormat), lpDateStr, cchOut);
 
-  return NLS_GetDateTimeFormatW(lcid, dwFlags|DATE_DATEVARSONLY, lpTime,
+  return NLS_GetDateTimeFormatW(lcid, dwFlags, DATE_DATEVARSONLY, lpTime,
                                 lpFormat, lpDateStr, cchOut);
 }
 
@@ -1050,11 +1136,10 @@ INT WINAPI GetTimeFormatA(LCID lcid, DWORD dwFlags, const SYSTEMTIME* lpTime,
   TRACE("(0x%04x,0x%08x,%p,%s,%p,%d)\n",lcid, dwFlags, lpTime,
         debugstr_a(lpFormat), lpTimeStr, cchOut);
 
-  return NLS_GetDateTimeFormatA(lcid, dwFlags|TIME_TIMEVARSONLY, lpTime,
+  return NLS_GetDateTimeFormatA(lcid, dwFlags, TIME_TIMEVARSONLY, lpTime,
                                 lpFormat, lpTimeStr, cchOut);
 }
 
-#if _WIN32_WINNT >= 0x600
 /******************************************************************************
  * GetTimeFormatEx [KERNEL32.@]
  *
@@ -1083,10 +1168,9 @@ INT WINAPI GetTimeFormatEx(LPCWSTR localename, DWORD flags,
         debugstr_w(format), outbuf, bufsize);
 
   return NLS_GetDateTimeFormatW(LocaleNameToLCID(localename, 0),
-                                flags | TIME_TIMEVARSONLY, time, format,
+                                flags, TIME_TIMEVARSONLY, time, format,
                                 outbuf, bufsize);
 }
-#endif /* _WIN32_WINNT >= 0x600 */
 
 /******************************************************************************
  *		GetTimeFormatW	[KERNEL32.@]
@@ -1099,7 +1183,7 @@ INT WINAPI GetTimeFormatW(LCID lcid, DWORD dwFlags, const SYSTEMTIME* lpTime,
   TRACE("(0x%04x,0x%08x,%p,%s,%p,%d)\n",lcid, dwFlags, lpTime,
         debugstr_w(lpFormat), lpTimeStr, cchOut);
 
-  return NLS_GetDateTimeFormatW(lcid, dwFlags|TIME_TIMEVARSONLY, lpTime,
+  return NLS_GetDateTimeFormatW(lcid, dwFlags, TIME_TIMEVARSONLY, lpTime,
                                 lpFormat, lpTimeStr, cchOut);
 }
 
@@ -1385,7 +1469,6 @@ INT WINAPI GetNumberFormatW(LCID lcid, DWORD dwFlags,
     return NLS_ReturnFormatted(num, lpNumberStr, cchOut);
 }
 
-#if _WIN32_WINNT >= 0x600
 /**************************************************************************
  *              GetNumberFormatEx	(KERNEL32.@)
  */
@@ -1404,7 +1487,6 @@ INT WINAPI GetNumberFormatEx(LPCWSTR name, DWORD flags,
 
   return GetNumberFormatW(lcid, flags, value, format, number, numout);
 }
-#endif /* _WIN32_WINNT >= 0x600 */
 
 /* Formatting states for Currencies. We use flags to avoid code duplication. */
 #define CF_PARENS       0x1  /* Parentheses      */
@@ -1579,7 +1661,6 @@ INT WINAPI GetCurrencyFormatW(LCID lcid, DWORD dwFlags,
     return NLS_ReturnFormatted(num, lpCurrencyStr, cchOut);
 }
 
-#if _WIN32_WINNT >= 0x600
 /***********************************************************************
  *            GetCurrencyFormatEx (KERNEL32.@)
  */
@@ -1591,88 +1672,12 @@ int WINAPI GetCurrencyFormatEx(LPCWSTR localename, DWORD flags, LPCWSTR value,
 
     return GetCurrencyFormatW( LocaleNameToLCID(localename, 0), flags, value, format, str, len);
 }
-#endif
 
 
 /* FIXME: Everything below here needs to move somewhere else along with the
  *        other EnumXXX functions, when a method for storing resources for
  *        alternate calendars is determined.
  */
-
-/* Types for Enum* internals are declared in lcformat_private.h */
-
-/******************************************************************************
- * NLS_EnumDateFormats <internal>
- * Enumerates date formats for a specified locale.
- *
- * PARAMS
- *    ctxt [I] enumeration context, see 'struct enumdateformats_context'
- *
- * RETURNS
- *    Success: TRUE.
- *    Failure: FALSE. Use GetLastError() to determine the cause.
- */
-BOOL NLS_EnumDateFormats(const struct enumdateformats_context *ctxt)
-{
-    WCHAR bufW[256];
-    char bufA[256];
-    LCTYPE lctype;
-    CALID cal_id;
-    INT ret;
-
-    if (!ctxt->u.callback)
-    {
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
-    }
-
-    if (!GetLocaleInfoW(ctxt->lcid, LOCALE_ICALENDARTYPE|LOCALE_RETURN_NUMBER, (LPWSTR)&cal_id, sizeof(cal_id)/sizeof(WCHAR)))
-        return FALSE;
-
-    switch (ctxt->flags & ~LOCALE_USE_CP_ACP)
-    {
-    case 0:
-    case DATE_SHORTDATE:
-        lctype = LOCALE_SSHORTDATE;
-        break;
-    case DATE_LONGDATE:
-        lctype = LOCALE_SLONGDATE;
-        break;
-    case DATE_YEARMONTH:
-        lctype = LOCALE_SYEARMONTH;
-        break;
-    default:
-        FIXME("Unknown date format (0x%08x)\n", ctxt->flags);
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
-    }
-
-    lctype |= ctxt->flags & LOCALE_USE_CP_ACP;
-    if (ctxt->unicode)
-        ret = GetLocaleInfoW(ctxt->lcid, lctype, bufW, ARRAY_SIZE(bufW));
-    else
-        ret = GetLocaleInfoA(ctxt->lcid, lctype, bufA, ARRAY_SIZE(bufA));
-
-    if (ret)
-    {
-        switch (ctxt->type)
-        {
-        case CALLBACK_ENUMPROC:
-            ctxt->u.callback(ctxt->unicode ? bufW : (WCHAR*)bufA);
-            break;
-        case CALLBACK_ENUMPROCEX:
-            ctxt->u.callbackex(ctxt->unicode ? bufW : (WCHAR*)bufA, cal_id);
-            break;
-        case CALLBACK_ENUMPROCEXEX:
-            ctxt->u.callbackexex(bufW, cal_id, ctxt->lParam);
-            break;
-        default:
-            ;
-        }
-    }
-
-    return TRUE;
-}
 
 /**************************************************************************
  *              EnumDateFormatsExA    (KERNEL32.@)
@@ -1682,159 +1687,45 @@ BOOL NLS_EnumDateFormats(const struct enumdateformats_context *ctxt)
  */
 BOOL WINAPI EnumDateFormatsExA(DATEFMT_ENUMPROCEXA proc, LCID lcid, DWORD flags)
 {
-    struct enumdateformats_context ctxt;
-
-    ctxt.type = CALLBACK_ENUMPROCEX;
-    ctxt.u.callbackex = (DATEFMT_ENUMPROCEXW)proc;
-    ctxt.lcid = lcid;
-    ctxt.flags = flags;
-    ctxt.unicode = FALSE;
-
-    return NLS_EnumDateFormats(&ctxt);
+    return Internal_EnumDateFormats((DATEFMT_ENUMPROCW)proc, NlsValidateLocale(&lcid, 0),
+                                    flags, FALSE, TRUE, FALSE, 0);
 }
 
-/**************************************************************************
- *              EnumDateFormatsExW    (KERNEL32.@)
- */
-BOOL WINAPI EnumDateFormatsExW(DATEFMT_ENUMPROCEXW proc, LCID lcid, DWORD flags)
+#ifdef __REACTOS__
+static NTSTATUS NLS_CreateTwoDigitYearMaxKey(PHANDLE KeyHandle)
 {
-    struct enumdateformats_context ctxt;
+    static const PCWSTR KeyNames[] = { L"Control Panel", L"International", L"Calendars", L"TwoDigitYearMax" };
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    UNICODE_STRING KeyName;
+    HANDLE ParentKey, Key;
+    NTSTATUS Status;
+    ULONG i;
 
-    ctxt.type = CALLBACK_ENUMPROCEX;
-    ctxt.u.callbackex = proc;
-    ctxt.lcid = lcid;
-    ctxt.flags = flags;
-    ctxt.unicode = TRUE;
+    Status = RtlOpenCurrentUser(KEY_CREATE_SUB_KEY, &ParentKey);
+    if (!NT_SUCCESS(Status))
+        return Status;
 
-    return NLS_EnumDateFormats(&ctxt);
-}
-
-/**************************************************************************
- *              EnumDateFormatsW	(KERNEL32.@)
- */
-BOOL WINAPI EnumDateFormatsW(DATEFMT_ENUMPROCW proc, LCID lcid, DWORD flags)
-{
-    struct enumdateformats_context ctxt;
-
-    ctxt.type = CALLBACK_ENUMPROC;
-    ctxt.u.callback = proc;
-    ctxt.lcid = lcid;
-    ctxt.flags = flags;
-    ctxt.unicode = TRUE;
-
-    return NLS_EnumDateFormats(&ctxt);
-}
-
-#if _WIN32_WINNT >= 0x600
-/**************************************************************************
- *              EnumDateFormatsExEx	(KERNEL32.@)
- */
-BOOL WINAPI EnumDateFormatsExEx(DATEFMT_ENUMPROCEXEX proc, const WCHAR *locale, DWORD flags, LPARAM lParam)
-{
-    struct enumdateformats_context ctxt;
-
-    ctxt.type = CALLBACK_ENUMPROCEXEX;
-    ctxt.u.callbackexex = proc;
-    ctxt.lcid = LocaleNameToLCID(locale, 0);
-    if (!ctxt.lcid)
+    for (i = 0; i < ARRAY_SIZE(KeyNames); i++)
     {
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
-    }
-    ctxt.flags = flags;
-    ctxt.lParam = lParam;
-    ctxt.unicode = TRUE;
-
-    return NLS_EnumDateFormats(&ctxt);
-}
-#endif /* _WIN32_WINNT >= 0x600 */
-
-BOOL NLS_EnumTimeFormats(struct enumtimeformats_context *ctxt)
-{
-    WCHAR bufW[256];
-    char bufA[256];
-    LCTYPE lctype;
-    INT ret;
-
-    if (!ctxt->u.callback)
-    {
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
+        RtlInitUnicodeString(&KeyName, KeyNames[i]);
+        InitializeObjectAttributes(&ObjectAttributes, &KeyName, OBJ_CASE_INSENSITIVE, ParentKey, NULL);
+        Status = NtCreateKey(&Key,
+                             (i + 1 < ARRAY_SIZE(KeyNames)) ? KEY_CREATE_SUB_KEY : KEY_SET_VALUE,
+                             &ObjectAttributes,
+                             0,
+                             NULL,
+                             REG_OPTION_NON_VOLATILE,
+                             NULL);
+        NtClose(ParentKey);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        ParentKey = Key;
     }
 
-    switch (ctxt->flags & ~LOCALE_USE_CP_ACP)
-    {
-    case 0:
-        lctype = LOCALE_STIMEFORMAT;
-        break;
-    case TIME_NOSECONDS:
-        lctype = LOCALE_SSHORTTIME;
-        break;
-    default:
-        FIXME("Unknown time format (%d)\n", ctxt->flags);
-        SetLastError(ERROR_INVALID_PARAMETER);
-        return FALSE;
-    }
-
-    lctype |= ctxt->flags & LOCALE_USE_CP_ACP;
-    if (ctxt->unicode)
-        ret = GetLocaleInfoW(ctxt->lcid, lctype, bufW, ARRAY_SIZE(bufW));
-    else
-        ret = GetLocaleInfoA(ctxt->lcid, lctype, bufA, ARRAY_SIZE(bufA));
-
-    if (ret)
-    {
-        switch (ctxt->type)
-        {
-        case CALLBACK_ENUMPROC:
-            ctxt->u.callback(ctxt->unicode ? bufW : (WCHAR*)bufA);
-            break;
-        case CALLBACK_ENUMPROCEX:
-            ctxt->u.callbackex(bufW, ctxt->lParam);
-            break;
-        default:
-            ;
-        }
-    }
-
-    return TRUE;
+    *KeyHandle = ParentKey;
+    return STATUS_SUCCESS;
 }
-
-/**************************************************************************
- *              EnumTimeFormatsW	(KERNEL32.@)
- */
-BOOL WINAPI EnumTimeFormatsW(TIMEFMT_ENUMPROCW proc, LCID lcid, DWORD flags)
-{
-    struct enumtimeformats_context ctxt;
-
-    ctxt.type = CALLBACK_ENUMPROC;
-    ctxt.u.callback = proc;
-    ctxt.lcid = lcid;
-    ctxt.flags = flags;
-    ctxt.unicode = TRUE;
-
-    return NLS_EnumTimeFormats(&ctxt);
-}
-
-#if _WIN32_WINNT >= 0x600
-/**************************************************************************
- *              EnumTimeFormatsEx	(KERNEL32.@)
- */
-BOOL WINAPI EnumTimeFormatsEx(TIMEFMT_ENUMPROCEX proc, const WCHAR *locale, DWORD flags, LPARAM lParam)
-{
-    struct enumtimeformats_context ctxt;
-
-    ctxt.type = CALLBACK_ENUMPROCEX;
-    ctxt.u.callbackex = proc;
-    ctxt.lcid = LocaleNameToLCID(locale, 0);
-    ctxt.flags = flags;
-    ctxt.lParam = lParam;
-    ctxt.unicode = TRUE;
-
-    return NLS_EnumTimeFormats(&ctxt);
-}
-#endif /* _WIN32_WINNT >= 0x600 */
-
+#endif
 
 /*********************************************************************
  *	SetCalendarInfoW				(KERNEL32.@)
@@ -1843,7 +1734,62 @@ BOOL WINAPI EnumTimeFormatsEx(TIMEFMT_ENUMPROCEX proc, const WCHAR *locale, DWOR
  */
 int WINAPI	SetCalendarInfoW(LCID Locale, CALID Calendar, CALTYPE CalType, LPCWSTR lpCalData)
 {
+#ifdef __REACTOS__
+    WCHAR ValueNameBuffer[11];
+    WCHAR DataBuffer[11];
+    UNICODE_STRING ValueName;
+    UNICODE_STRING Data;
+    HANDLE Key;
+    NTSTATUS Status;
+    ULONG Value = 0;
+    SIZE_T i;
+
+    if ((CalType & ~CAL_USE_CP_ACP) != CAL_ITWODIGITYEARMAX)
+    {
+        SetLastError(ERROR_INVALID_FLAGS);
+        return 0;
+    }
+
+    if (!lpCalData || !lpCalData[0] ||
+        !GetCalendarInfoW(Locale, Calendar, CAL_ITWODIGITYEARMAX, NULL, 0, NULL))
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+
+    for (i = 0; lpCalData[i]; i++)
+    {
+        if (lpCalData[i] < L'0' || lpCalData[i] > L'9' ||
+            Value > (MAXULONG - (ULONG)(lpCalData[i] - L'0')) / 10)
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        Value = Value * 10 + (ULONG)(lpCalData[i] - L'0');
+    }
+
+    RtlInitEmptyUnicodeString(&ValueName, ValueNameBuffer, sizeof(ValueNameBuffer));
+    RtlInitEmptyUnicodeString(&Data, DataBuffer, sizeof(DataBuffer));
+    Status = RtlIntegerToUnicodeString(Calendar, 10, &ValueName);
+    if (NT_SUCCESS(Status))
+        Status = RtlIntegerToUnicodeString(Value, 10, &Data);
+    if (NT_SUCCESS(Status))
+        Status = NLS_CreateTwoDigitYearMaxKey(&Key);
+    if (NT_SUCCESS(Status))
+    {
+        Status = NtSetValueKey(Key, &ValueName, 0, REG_SZ, DataBuffer, Data.Length + sizeof(WCHAR));
+        NtClose(Key);
+    }
+    if (!NT_SUCCESS(Status))
+    {
+        SetLastError(ERROR_INTERNAL_ERROR);
+        return 0;
+    }
+
+    return TRUE;
+#else
     FIXME("(%08x,%08x,%08x,%s): stub\n",
 	  Locale, Calendar, CalType, debugstr_w(lpCalData));
     return 0;
+#endif
 }

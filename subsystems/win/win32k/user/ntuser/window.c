@@ -1193,8 +1193,8 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
         }
         else
         {
-            if (WndInsertAfter->spwndNext &&
-                (WndInsertAfter->spwndNext->ExStyle & WS_EX_TOPMOST))
+            if (Wnd->spwndNext &&
+                (Wnd->spwndNext->ExStyle & WS_EX_TOPMOST))
             {
                 Wnd->ExStyle |= WS_EX_TOPMOST;
             }
@@ -1316,6 +1316,15 @@ co_IntSetParent(PWND Wnd, PWND WndNewParent)
       pWndExam = pWndExam->spwndParent;
    }
 
+   if (WndNewParent && !UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent) &&
+       WndNewParent->DpiHostingBehavior != DPI_HOSTING_BEHAVIOR_MIXED &&
+       Wnd->head.pti->ppi == WndNewParent->head.pti->ppi &&
+       NTUSER_DPI_CONTEXT_GET_AWARENESS(Wnd->DpiContext) != NTUSER_DPI_CONTEXT_GET_AWARENESS(WndNewParent->DpiContext))
+   {
+      EngSetLastError(ERROR_INVALID_STATE);
+      return NULL;
+   }
+
    /*
     * Windows hides the window first, then shows it again
     * including the WM_SHOWWINDOW messages and all
@@ -1344,7 +1353,8 @@ co_IntSetParent(PWND Wnd, PWND WndNewParent)
 
    /* Set the new parent */
    WndSetParent(Wnd, WndNewParent);
-   if (WndNewParent && !UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent))
+   if (WndNewParent && !UserIsDesktopWindow(WndNewParent) && !UserIsMessageWindow(WndNewParent) &&
+       WndNewParent->DpiHostingBehavior != DPI_HOSTING_BEHAVIOR_MIXED)
       Wnd->DpiContext = WndNewParent->DpiContext;
 
    if (Wnd->style & WS_CHILD &&
@@ -1622,25 +1632,28 @@ VOID FASTCALL IntFreeHwndList(PWINDOWLIST pwlTarget)
 }
 
 static VOID FASTCALL
-IntRemoveImeWindowsFromList(PWINDOWLIST pwl)
+IntMoveImeWindowsToEnd(PWINDOWLIST pwl)
 {
-    HWND *phwnd;
+    HWND *phwnd, *phwndEnd = pwl->phwndLast;
+    HWND hwnd;
 
-    for (phwnd = pwl->ahwnd; phwnd < pwl->phwndLast;)
+    for (phwnd = pwl->ahwnd; phwnd < phwndEnd;)
     {
         PWND Window = ValidateHwndNoErr(*phwnd);
 
-        if (!Window ||
+        if (!Window || !Window->spwndParent || !UserIsDesktopWindow(Window->spwndParent) ||
             (Window->fnid != FNID_IME && !IS_WND_IMELIKE(Window)))
         {
             ++phwnd;
             continue;
         }
 
+        hwnd = *phwnd;
         RtlMoveMemory(phwnd,
                       phwnd + 1,
-                      (SIZE_T)(pwl->phwndLast - phwnd) * sizeof(*phwnd));
-        --pwl->phwndLast;
+                      (SIZE_T)(pwl->phwndLast - phwnd - 1) * sizeof(*phwnd));
+        pwl->phwndLast[-1] = hwnd;
+        --phwndEnd;
     }
 }
 
@@ -1676,7 +1689,6 @@ NtUserBuildHwndList(
    PTHREADINFO pti = NULL;
    PWINDOWLIST pwl = NULL, pwlMessage = NULL;
    PWND Parent = NULL, Start = NULL;
-   BOOLEAN TopLevelThreadQuery = FALSE;
    ULONG Count, MessageCount = 0, Required;
    HWND Terminator = HWND_TERMINATOR;
 
@@ -1684,7 +1696,7 @@ NtUserBuildHwndList(
        return STATUS_INVALID_PARAMETER;
 
    UserEnterShared();
-   UserDomainLockExclusive(DLT_DESKTOP);
+   BOOLEAN bDom0 = UserDomainLockExclusive(DLT_DESKTOP);
 
    if (dwThreadId)
    {
@@ -1785,8 +1797,6 @@ NtUserBuildHwndList(
             goto Quit;
          }
       }
-
-      TopLevelThreadQuery = (pti != NULL);
    }
    else
    {
@@ -1828,15 +1838,9 @@ NtUserBuildHwndList(
       }
    }
 
-   /* Per-thread IME, IME UI, and their STA helper windows are implementation details. */
-   if (TopLevelThreadQuery)
-   {
-      IntRemoveImeWindowsFromList(pwl);
-      if (pwlMessage)
-      {
-         IntRemoveImeWindowsFromList(pwlMessage);
-      }
-   }
+   IntMoveImeWindowsToEnd(pwl);
+   if (pwlMessage)
+      IntMoveImeWindowsToEnd(pwlMessage);
 
    Count = (ULONG)(pwl->phwndLast - pwl->ahwnd);
    if (pwlMessage)
@@ -1897,7 +1901,7 @@ Quit:
    if (Thread)
       ObDereferenceObject(Thread);
    SetLastNtError(Status);
-   UserDomainUnlockExclusive(DLT_DESKTOP);
+   UserDomainUnlockExclusive(DLT_DESKTOP, bDom0);
    UserLeave();
    return Status;
 }
@@ -1923,6 +1927,30 @@ static void IntSendParentNotify( PWND pWindow, UINT msg )
     }
 }
 
+static LONG
+IntDefaultHeightMargin(BOOL Virtual)
+{
+    static const struct
+    {
+        UINT Dpi;
+        LONG System;
+        LONG Unaware;
+    } Measured[] =
+    {
+        { 96, 21, 21 }, { 144, 29, 29 }, { 168, 34, 34 }, { 192, 37, 37 }, { 216, 42, 43 }, { 240, 46, 46 },
+        { 288, 54, 54 },
+    };
+    UINT Dpi = UserGetSystemDpi(), Index;
+
+    /* FIXME: the Windows 11 rule behind these measured default height margins is not known */
+    for (Index = 0; Index < RTL_NUMBER_OF(Measured); Index++)
+    {
+        if (Measured[Index].Dpi == Dpi)
+            return Virtual ? Measured[Index].Unaware : Measured[Index].System;
+    }
+    return gpsi->aiSysMet[SM_CYSMICON] + 5;
+}
+
 void FASTCALL
 IntFixWindowCoordinates(CREATESTRUCTW* Cs, PWND ParentWindow, DWORD* dwShowMode)
 {
@@ -1932,8 +1960,10 @@ IntFixWindowCoordinates(CREATESTRUCTW* Cs, PWND ParentWindow, DWORD* dwShowMode)
     if(!(Cs->style & (WS_POPUP | WS_CHILD)))
    {
       PMONITOR pMonitor = NULL;
-      PRTL_USER_PROCESS_PARAMETERS ProcessParams;
       PPROCESSINFO ppi = PsGetCurrentProcessWin32Process();
+      RECT Work, Screen;
+      LONG Step;
+      BOOL Virtual, DefaultX, DefaultCx, Cascade = FALSE;
 
       if (ppi && ppi->hMonitor)
          pMonitor = UserGetMonitorObject(ppi->hMonitor);
@@ -1949,44 +1979,58 @@ IntFixWindowCoordinates(CREATESTRUCTW* Cs, PWND ParentWindow, DWORD* dwShowMode)
           return;
       }
 
-      ProcessParams = PsGetCurrentProcess()->Peb->ProcessParameters;
+      Virtual = UserDpiIsVirtualCaller();
+      Work = pMonitor->rcWork;
+      Screen = pMonitor->rcMonitor;
+      if (Virtual)
+      {
+          UserDpiRectToLogical(&Work);
+          UserDpiRectToLogical(&Screen);
+      }
+      Step = UserGetCallerUnfoldedSystemMetrics(SM_CYSIZE) + UserGetCallerUnfoldedSystemMetrics(SM_CYFRAME);
+      DefaultX = IS_DEFAULT(Cs->x);
+      DefaultCx = IS_DEFAULT(Cs->cx);
 
-      if (IS_DEFAULT(Cs->x))
+      if (DefaultX)
       {
           if (!IS_DEFAULT(Cs->y)) *dwShowMode = Cs->y;
 
-          if(ProcessParams->WindowFlags & STARTF_USEPOSITION)
+          if (ppi && (ppi->usi.dwFlags & STARTF_USEPOSITION))
           {
-              Cs->x = ProcessParams->StartingX;
-              Cs->y = ProcessParams->StartingY;
+              Cs->x = ppi->usi.dwX;
+              Cs->y = ppi->usi.dwY;
+              ppi->usi.dwFlags &= ~STARTF_USEPOSITION;
           }
           else
           {
-               Cs->x = pMonitor->cWndStack * (UserGetSystemMetrics(SM_CXSIZE) + UserGetSystemMetrics(SM_CXFRAME));
-               Cs->y = pMonitor->cWndStack * (UserGetSystemMetrics(SM_CYSIZE) + UserGetSystemMetrics(SM_CYFRAME));
-               if (Cs->x > ((pMonitor->rcWork.right - pMonitor->rcWork.left) / 4) ||
-                   Cs->y > ((pMonitor->rcWork.bottom - pMonitor->rcWork.top) / 4))
+               pMonitor->cWndStack++;
+               Cs->x = Cs->y = pMonitor->cWndStack * Step;
+               if (Cs->x + 2 * Step > ((Work.right - Work.left) / 4) ||
+                   Cs->y > ((Work.bottom - Work.top) / 4))
                {
-                  /* reset counter and position */
-                  Cs->x = 0;
-                  Cs->y = 0;
+                  Cs->x = Cs->y = Step;
                   pMonitor->cWndStack = 0;
                }
-               pMonitor->cWndStack++;
+               Cascade = TRUE;
           }
       }
 
-      if (IS_DEFAULT(Cs->cx))
+      if (DefaultCx)
       {
-          if (ProcessParams->WindowFlags & STARTF_USEPOSITION)
+          if (ppi && (ppi->usi.dwFlags & STARTF_USESIZE))
           {
-              Cs->cx = ProcessParams->CountX;
-              Cs->cy = ProcessParams->CountY;
+              Cs->cx = ppi->usi.dwXSize;
+              Cs->cy = ppi->usi.dwYSize;
+              ppi->usi.dwFlags &= ~STARTF_USESIZE;
           }
           else
           {
-              Cs->cx = (pMonitor->rcWork.right - pMonitor->rcWork.left) * 3 / 4;
-              Cs->cy = (pMonitor->rcWork.bottom - pMonitor->rcWork.top) * 3 / 4;
+              LONG Width = pMonitor->rcMonitor.right - pMonitor->rcMonitor.left;
+
+              Cs->cx = Width - Width / 4;
+              if (Virtual)
+                  Cs->cx = UserDpiToLogical(Cs->cx);
+              Cs->cy = (Work.bottom - Work.top) - (Work.bottom - Work.top) / 4 - IntDefaultHeightMargin(Virtual);
           }
       }
       /* neither x nor cx are default. Check the y values .
@@ -1996,7 +2040,35 @@ IntFixWindowCoordinates(CREATESTRUCTW* Cs, PWND ParentWindow, DWORD* dwShowMode)
       else if (IS_DEFAULT(Cs->cy))
       {
           TRACE("Strange use of CW_USEDEFAULT in nHeight\n");
-          Cs->cy = (pMonitor->rcWork.bottom - pMonitor->rcWork.top) * 3 / 4;
+          Cs->cy = (Work.bottom - Work.top) * 3 / 4;
+          DefaultCx = TRUE;
+          Cs->cx = Virtual ? UserDpiToLogical(Cs->x + Cs->cx) - UserDpiToLogical(Cs->x) : Cs->cx;
+      }
+
+      if (Cascade)
+      {
+          LONG Cx = (Virtual && !DefaultCx) ? UserDpiToLogical(Cs->cx) : Cs->cx;
+          LONG Cy = (Virtual && !DefaultCx) ? UserDpiToLogical(Cs->cy) : Cs->cy;
+
+          Cs->x = max(min(Cs->x, Screen.right - Cx), Screen.left);
+          Cs->y = max(min(Cs->y, Screen.bottom - Cy), Screen.top);
+      }
+
+      if (Virtual && (DefaultX || DefaultCx))
+      {
+          LONG Left = DefaultX ? Cs->x : UserDpiToLogical(Cs->x);
+          LONG Top = DefaultX ? Cs->y : UserDpiToLogical(Cs->y);
+
+          if (DefaultCx)
+          {
+              Cs->cx = UserDpiToPhysical(Left + Cs->cx) - UserDpiToPhysical(Left);
+              Cs->cy = UserDpiToPhysical(Top + Cs->cy) - UserDpiToPhysical(Top);
+          }
+          if (DefaultX)
+          {
+              Cs->x = UserDpiToPhysical(Left);
+              Cs->y = UserDpiToPhysical(Top);
+          }
       }
    }
    else
@@ -2097,7 +2169,7 @@ PWND FASTCALL IntCreateWindow(CREATESTRUCTW* Cs,
    WndSetParent(pWnd, ParentWindow);
    WndSetOwner(pWnd, OwnerWindow);
    pWnd->fnid = 0;
-   if (pdeskCreated)
+   if (pdeskCreated || Class->atomClassName == gpsi->atomSysClass[ICLS_MENU])
       pWnd->DpiContext = NTUSER_DPI_PER_MONITOR_AWARE;
    else if (ParentWindow && !UserIsDesktopWindow(ParentWindow) && !UserIsMessageWindow(ParentWindow) &&
             ParentWindow->DpiHostingBehavior != DPI_HOSTING_BEHAVIOR_MIXED)
@@ -2358,15 +2430,14 @@ Error:
    return NULL;
 }
 
-/* An IME-like window is created directly below the first owner that is not IME-like. */
-/* FIXME: an IME UI window created after its owner was shown lands below the default IME window on Windows */
+/* The default IME window is created directly below the first owner that is not IME-like. */
 static HWND FASTCALL
 IntImeLikeInsertAfter(PWND Window, HWND hwndInsertAfter)
 {
    PWND Owner = Window->spwndOwner;
    UINT Depth = 0;
 
-   if (hwndInsertAfter != HWND_TOP || !IS_WND_IMELIKE(Window))
+   if (hwndInsertAfter != HWND_TOP || Window->pcls->atomClassName != gpsi->atomSysClass[ICLS_IME])
       return hwndInsertAfter;
    while (Owner && IS_WND_IMELIKE(Owner) && Depth++ < 64)
       Owner = Owner->spwndOwner;
@@ -2396,6 +2467,9 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
    SIZE Size;
    POINT MaxSize, MaxPos, MinTrack, MaxTrack, Position;
    CBT_CREATEWNDW * pCbtCreate;
+   USER_DPI_MESSAGE CbtConv;
+   CREATESTRUCTW CbtLogical;
+   BOOL VirtualCbt;
    LRESULT Result;
    USER_REFERENCE_ENTRY ParentRef, Ref;
    PTHREADINFO pti;
@@ -2563,6 +2637,21 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
 
       pCbtCreate->lpcs = pCsw;
       pCbtCreate->hwndInsertAfter = hwndInsertAfter;
+      VirtualCbt = UserDpiIsVirtualWindow(Window);
+      if (VirtualCbt)
+      {
+         WPARAM wParamCbt = 0;
+         LPARAM lParamCbt = (LPARAM)pCsw;
+
+         if (UserDpiBeginMessage(Window, WM_NCCREATE, &wParamCbt, &lParamCbt, &CbtConv, TRUE))
+         {
+            pCsw->x = CbtConv.Data.Create.x;
+            pCsw->y = CbtConv.Data.Create.y;
+            pCsw->cx = CbtConv.Data.Create.cx;
+            pCsw->cy = CbtConv.Data.Create.cy;
+         }
+         CbtLogical = *pCsw;
+      }
 
       //// Call the WH_CBT hook ////
       Result = co_HOOK_CallHooks(WH_CBT, HCBT_CREATEWND, (WPARAM) hWnd, (LPARAM) pCbtCreate);
@@ -2572,10 +2661,23 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
          goto cleanup;
       }
       // Write back changes.
-      Cs->cx = pCsw->cx;
-      Cs->cy = pCsw->cy;
-      Cs->x = pCsw->x;
-      Cs->y = pCsw->y;
+      if (!VirtualCbt)
+      {
+         Cs->cx = pCsw->cx;
+         Cs->cy = pCsw->cy;
+         Cs->x = pCsw->x;
+         Cs->y = pCsw->y;
+      }
+      else if (pCsw->x != CbtLogical.x || pCsw->y != CbtLogical.y ||
+               pCsw->cx != CbtLogical.cx || pCsw->cy != CbtLogical.cy)
+      {
+         CbtLogical = *pCsw;
+         UserDpiCreateStructToPhysical(&CbtLogical);
+         Cs->cx = CbtLogical.cx;
+         Cs->cy = CbtLogical.cy;
+         Cs->x = CbtLogical.x;
+         Cs->y = CbtLogical.y;
+      }
       hwndInsertAfter = pCbtCreate->hwndInsertAfter;
    }
 
@@ -2676,7 +2778,7 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
    }
 
    /* Send the NCCREATE message */
-   Result = co_IntSendMessage(UserHMGetHandle(Window), WM_NCCREATE, 0, (LPARAM) Cs);
+   Result = co_IntSendSystemMessage(UserHMGetHandle(Window), WM_NCCREATE, 0, (LPARAM) Cs);
    if (!Result)
    {
       ERR("co_UserCreateWindowEx(%wZ): NCCREATE message failed\n", ClassName);
@@ -2736,7 +2838,7 @@ co_UserCreateWindowEx(CREATESTRUCTW* Cs,
    }
 
    /* Send the WM_CREATE message. */
-   Result = co_IntSendMessage(UserHMGetHandle(Window), WM_CREATE, 0, (LPARAM) Cs);
+   Result = co_IntSendSystemMessage(UserHMGetHandle(Window), WM_CREATE, 0, (LPARAM) Cs);
    if (Result == (LRESULT)-1)
    {
       ERR("co_UserCreateWindowEx(%wZ): WM_CREATE message failed\n", ClassName);
@@ -3058,6 +3160,8 @@ NtUserCreateWindowEx(
     UserEnterExclusive();
 
     /* Call the internal function */
+    if (UserDpiIsVirtualCaller())
+        UserDpiCreateStructToPhysical(&Cs);
     pwnd = co_UserCreateWindowEx(&Cs, &ustrClsVersion, plstrWindowName, acbiBuffer, dwFlags, &ustrClassName);
 
     if(!pwnd)

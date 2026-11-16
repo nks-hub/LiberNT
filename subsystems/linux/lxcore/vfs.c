@@ -13,6 +13,8 @@
 #include <debug.h>
 
 #define LX_MAGIC_NTFS       0x5346544EULL
+#define LX_MAGIC_EXT        0x0000EF53ULL
+#define LX_MAGIC_BTRFS      0x9123683EULL
 #define LX_MAGIC_PROC       0x00009FA0ULL
 #define LX_MAGIC_SYSFS      0x62656572ULL
 #define LX_MAGIC_TMPFS      0x01021994ULL
@@ -197,7 +199,7 @@ LxPathJoin(
 
     if (BaseLength + 1 + NameLength >= LX_PATH_MAX)
         return NULL;
-    Result = LxAlloc(BaseLength + NameLength + 2);
+    Result = LxAllocString(BaseLength + NameLength + 2);
     if (Result == NULL)
         return NULL;
     RtlCopyMemory(Result, Base, BaseLength);
@@ -1188,6 +1190,27 @@ LxMountTargetLength(
     return (strcmp(Mount->Target, "/") == 0) ? 0 : strlen(Mount->Target);
 }
 
+/* Whether Path names Prefix or something below it; one pass over the common part, with the prefix's length */
+static
+BOOLEAN
+LxPathBelow(
+    _In_ PCSTR Path,
+    _In_ PCSTR Prefix,
+    _Out_ PSIZE_T Length)
+{
+    SIZE_T Index = 0;
+
+    *Length = 0;
+    while (Prefix[Index] != '\0')
+    {
+        if (Path[Index] != Prefix[Index])
+            return FALSE;
+        Index++;
+    }
+    *Length = Index;
+    return (Path[Index] == '\0') || (Path[Index] == '/');
+}
+
 static
 BOOLEAN
 LxMountCovered(
@@ -1195,25 +1218,59 @@ LxMountCovered(
     _In_ PLX_MOUNT Mount)
 {
     PLX_MOUNT Parent = Mount->Parent;
-    SIZE_T Length = LxMountTargetLength(Mount), ParentLength;
+    SIZE_T Length, ParentLength;
     PLIST_ENTRY Entry;
 
     if (Parent == NULL)
         return FALSE;
+    Length = LxMountTargetLength(Mount);
     ParentLength = LxMountTargetLength(Parent);
     for (Entry = Ns->Mnt.Mounts.Flink; Entry != &Ns->Mnt.Mounts; Entry = Entry->Flink)
     {
         PLX_MOUNT Other = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
-        SIZE_T OtherLength = LxMountTargetLength(Other);
+        SIZE_T OtherLength = 0;
 
-        if ((Other == Mount) || Other->Detached || (OtherLength < ParentLength) || (OtherLength > Length))
+        if ((Other == Mount) || Other->Detached)
             continue;
-        if ((OtherLength != 0) &&
-            ((strncmp(Mount->Target, Other->Target, OtherLength) != 0) ||
-             ((Mount->Target[OtherLength] != '\0') && (Mount->Target[OtherLength] != '/'))))
+        if (((Other->Target[0] != '/') || (Other->Target[1] != '\0')) &&
+            !LxPathBelow(Mount->Target, Other->Target, &OtherLength))
         {
             continue;
         }
+        if ((OtherLength < ParentLength) || (OtherLength > Length))
+            continue;
+        if (LxMountIsBelow(Other, Parent) && !LxMountIsBelow(Mount, Other))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+#define LX_MOUNT_NESTING 16
+
+/* LxMountCovered for a mount whose target leads to a path, given every mount whose target does: only those can
+   cover it, because a covering mount's target leads to the covered one's */
+static
+BOOLEAN
+LxMountCoveredAmong(
+    _In_ PLX_MOUNT Mount,
+    _In_ SIZE_T Length,
+    _In_reads_(Count) PLX_MOUNT *Leading,
+    _In_reads_(Count) const SIZE_T *LeadingLength,
+    _In_ ULONG Count)
+{
+    PLX_MOUNT Parent = Mount->Parent;
+    SIZE_T ParentLength;
+    ULONG Index;
+
+    if (Parent == NULL)
+        return FALSE;
+    ParentLength = LxMountTargetLength(Parent);
+    for (Index = 0; Index < Count; Index++)
+    {
+        PLX_MOUNT Other = Leading[Index];
+
+        if ((Other == Mount) || Other->Detached || (LeadingLength[Index] < ParentLength) || (LeadingLength[Index] > Length))
+            continue;
         if (LxMountIsBelow(Other, Parent) && !LxMountIsBelow(Mount, Other))
             return TRUE;
     }
@@ -1227,32 +1284,107 @@ LxMountFindLocked(
     _In_ PCSTR Path,
     _Out_opt_ PCSTR *Relative)
 {
+    PLX_MOUNT Leading[LX_MOUNT_NESTING], Aliased[LX_MOUNT_NESTING];
+    SIZE_T LeadingLength[LX_MOUNT_NESTING];
+    ULONG Count = 0, AliasCount = 0;
+    BOOLEAN Complete = TRUE;
     PLIST_ENTRY Entry;
     PLX_MOUNT Best = NULL;
     SIZE_T BestLength = 0;
 
-    for (Entry = Ns->Mnt.Mounts.Flink; Entry != &Ns->Mnt.Mounts; Entry = Entry->Flink)
+    /* One pass picks out the few mounts the path can belong to; most differ from it within two characters */
+    for (Entry = Ns->Mnt.Mounts.Flink; Complete && (Entry != &Ns->Mnt.Mounts); Entry = Entry->Flink)
     {
         PLX_MOUNT Mount = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
-        SIZE_T Length = strlen(Mount->Target);
-        BOOLEAN Match;
+        BOOLEAN IsRoot = (Mount->Target[0] == '/') && (Mount->Target[1] == '\0');
+        SIZE_T Length = 0;
 
-        if (strcmp(Mount->Target, "/") == 0)
-            Match = TRUE;
-        else
-            Match = (strncmp(Path, Mount->Target, Length) == 0) && ((Path[Length] == '\0') || (Path[Length] == '/'));
-        if (Match && (Length != 0) && (Length >= BestLength) && LxMountCovered(Ns, Mount))
-            Match = FALSE;
-        if (!Match && (Mount->Alias != NULL))
+        if (IsRoot ||
+            (((Mount->Target[0] == '\0') ||
+              ((Mount->Target[0] == Path[0]) && ((Mount->Target[1] == '\0') || (Mount->Target[1] == Path[1])))) &&
+             LxPathBelow(Path, Mount->Target, &Length)))
         {
-            Length = strlen(Mount->Alias);
-            Match = (strncmp(Path, Mount->Alias, Length) == 0) && ((Path[Length] == '\0') || (Path[Length] == '/'));
+            if (Count == LX_MOUNT_NESTING)
+            {
+                Complete = FALSE;
+            }
+            else
+            {
+                Leading[Count] = Mount;
+                LeadingLength[Count] = Length;
+                Count++;
+            }
         }
-
-        if (Match && ((Best == NULL) || (Length >= BestLength)))
+        else if (Mount->Alias != NULL)
         {
-            Best = Mount;
-            BestLength = (strcmp(Mount->Target, "/") == 0) ? 0 : Length;
+            if (AliasCount == LX_MOUNT_NESTING)
+                Complete = FALSE;
+            else
+                Aliased[AliasCount++] = Mount;
+        }
+    }
+
+    if (Complete)
+    {
+        ULONG Lead = 0, Alias = 0;
+
+        /* The choice follows the order of the mount list: a later mount wins a tie */
+        for (Entry = Ns->Mnt.Mounts.Flink; (Lead < Count) || (Alias < AliasCount); Entry = Entry->Flink)
+        {
+            PLX_MOUNT Mount = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
+            BOOLEAN IsRoot = FALSE, Match = FALSE;
+            SIZE_T Length = 0;
+
+            ASSERT(Entry != &Ns->Mnt.Mounts);
+            if ((Lead < Count) && (Leading[Lead] == Mount))
+            {
+                IsRoot = (Mount->Target[0] == '/') && (Mount->Target[1] == '\0');
+                Length = IsRoot ? 1 : LeadingLength[Lead];
+                Match = !((Length != 0) && (Length >= BestLength) &&
+                          LxMountCoveredAmong(Mount, LeadingLength[Lead], Leading, LeadingLength, Count));
+                Lead++;
+                if (!Match && (Mount->Alias != NULL))
+                    Match = LxPathBelow(Path, Mount->Alias, &Length);
+            }
+            else if ((Alias < AliasCount) && (Aliased[Alias] == Mount))
+            {
+                Match = LxPathBelow(Path, Mount->Alias, &Length);
+                Alias++;
+            }
+            else
+            {
+                continue;
+            }
+            if (Match && ((Best == NULL) || (Length >= BestLength)))
+            {
+                Best = Mount;
+                BestLength = IsRoot ? 0 : Length;
+            }
+        }
+    }
+    else
+    {
+        for (Entry = Ns->Mnt.Mounts.Flink; Entry != &Ns->Mnt.Mounts; Entry = Entry->Flink)
+        {
+            PLX_MOUNT Mount = CONTAINING_RECORD(Entry, LX_MOUNT, Link);
+            BOOLEAN IsRoot = (Mount->Target[0] == '/') && (Mount->Target[1] == '\0');
+            SIZE_T Length = 1;
+            BOOLEAN Match;
+
+            if (IsRoot)
+                Match = TRUE;
+            else
+                Match = LxPathBelow(Path, Mount->Target, &Length);
+            if (Match && (Length != 0) && (Length >= BestLength) && LxMountCovered(Ns, Mount))
+                Match = FALSE;
+            if (!Match && (Mount->Alias != NULL))
+                Match = LxPathBelow(Path, Mount->Alias, &Length);
+
+            if (Match && ((Best == NULL) || (Length >= BestLength)))
+            {
+                Best = Mount;
+                BestLength = IsRoot ? 0 : Length;
+            }
         }
     }
 
@@ -1302,6 +1434,89 @@ LxMountInheritNamespaces(
         LxNsReference(Mount->NsFile);
         InterlockedIncrement(&Mount->NsFile->PassiveRefs);
     }
+}
+
+/* Mounts a volume of the host by its drive: the source is "X:" or "X:\\directory", with either slash */
+static
+LONG
+LxInstanceMountDrive(
+    _In_ PLX_NS Ns,
+    _In_ PCSTR Target,
+    _In_ PCSTR Source,
+    _In_ PCSTR FsType,
+    _In_ ULONG Flags,
+    _Out_ PLX_MOUNT *Mount)
+{
+    static const WCHAR Prefix[] = L"\\??\\";
+    UCHAR Buffer[sizeof(FILE_FS_ATTRIBUTE_INFORMATION) + 32 * sizeof(WCHAR)];
+    PFILE_FS_ATTRIBUTE_INFORMATION Attribute = (PFILE_FS_ATTRIBUTE_INFORMATION)Buffer;
+    ULONG SourceLength = (ULONG)strlen(Source);
+    ULONG64 Magic = LX_MAGIC_NTFS;
+    UNICODE_STRING NtRoot, Open;
+    IO_STATUS_BLOCK Iosb;
+    ULONG Needed = 0, Written = 0, Index;
+    HANDLE Handle;
+    NTSTATUS Status;
+    LONG Error;
+
+    if ((SourceLength < 2) || (Source[1] != ':') ||
+        !(((Source[0] >= 'A') && (Source[0] <= 'Z')) || ((Source[0] >= 'a') && (Source[0] <= 'z'))))
+    {
+        return -LX_ENODEV;
+    }
+    while ((SourceLength > 2) && ((Source[SourceLength - 1] == '/') || (Source[SourceLength - 1] == '\\')))
+        SourceLength--;
+
+    Status = RtlUTF8ToUnicodeN(NULL, 0, &Needed, Source, SourceLength);
+    if (!NT_SUCCESS(Status) && (Status != STATUS_SOME_NOT_MAPPED))
+        return -LX_EINVAL;
+    if (sizeof(Prefix) + Needed > MAXUSHORT)
+        return -LX_ENAMETOOLONG;
+
+    NtRoot.MaximumLength = (USHORT)(sizeof(Prefix) + Needed);
+    NtRoot.Buffer = LxAllocPaged(NtRoot.MaximumLength);
+    if (NtRoot.Buffer == NULL)
+        return -LX_ENOMEM;
+    RtlCopyMemory(NtRoot.Buffer, Prefix, sizeof(Prefix) - sizeof(WCHAR));
+    Status = RtlUTF8ToUnicodeN((PWCHAR)((PUCHAR)NtRoot.Buffer + sizeof(Prefix) - sizeof(WCHAR)), Needed, &Written, Source,
+                               SourceLength);
+    if (!NT_SUCCESS(Status) && (Status != STATUS_SOME_NOT_MAPPED))
+    {
+        LxFreePaged(NtRoot.Buffer);
+        return -LX_EINVAL;
+    }
+    NtRoot.Length = (USHORT)(sizeof(Prefix) - sizeof(WCHAR) + Written);
+    for (Index = 0; Index < NtRoot.Length / sizeof(WCHAR); Index++)
+    {
+        if (NtRoot.Buffer[Index] == L'/')
+            NtRoot.Buffer[Index] = L'\\';
+    }
+
+    /* A bare drive names the device; its root directory takes a separator */
+    Open = NtRoot;
+    if (SourceLength == 2)
+        Open.Length += sizeof(WCHAR);
+    NtRoot.Buffer[NtRoot.Length / sizeof(WCHAR)] = L'\\';
+    Error = LxNtOpenHandle(&Open, FILE_READ_ATTRIBUTES, FILE_OPEN, FILE_DIRECTORY_FILE, 0, &Handle);
+    if (Error != 0)
+    {
+        LxFreePaged(NtRoot.Buffer);
+        return (Error == -LX_ENOENT) ? -LX_ENODEV : Error;
+    }
+
+    Status = ZwQueryVolumeInformationFile(Handle, &Iosb, Attribute, sizeof(Buffer), FileFsAttributeInformation);
+    ZwClose(Handle);
+    if (NT_SUCCESS(Status) && (Attribute->FileSystemNameLength >= 3 * sizeof(WCHAR)))
+    {
+        if (_wcsnicmp(Attribute->FileSystemName, L"ext", 3) == 0)
+            Magic = LX_MAGIC_EXT;
+        else if ((Attribute->FileSystemNameLength >= 5 * sizeof(WCHAR)) && (_wcsnicmp(Attribute->FileSystemName, L"btrfs", 5) == 0))
+            Magic = LX_MAGIC_BTRFS;
+    }
+
+    Error = LxInstanceMountNt(Ns, Target, Source, FsType, Flags, &NtRoot, Magic, Mount);
+    LxFreePaged(NtRoot.Buffer);
+    return Error;
 }
 
 LONG
@@ -1363,6 +1578,9 @@ LxMountAdd(
         Error = LxInstanceMountSynthetic(Ns, Target, Source, "mqueue", Flags, LxFsMqueue, LX_MAGIC_MQUEUE, &Mount);
     else if (strcmp(FsType, "squashfs") == 0)
         Error = LxInstanceSquashfs(Process, Ns, Target, Source, Flags, &Mount);
+    else if ((strcmp(FsType, "drvfs") == 0) || (strcmp(FsType, "ext4") == 0) || (strcmp(FsType, "ext3") == 0) ||
+             (strcmp(FsType, "ext2") == 0) || (strcmp(FsType, "btrfs") == 0) || (strcmp(FsType, "ntfs") == 0))
+        Error = LxInstanceMountDrive(Ns, Target, Source, FsType, Flags, &Mount);
     else
         return -LX_ENODEV;
     if (Error == 0)
@@ -3081,7 +3299,7 @@ LxLookupWalk(
         return -LX_ENOMEM;
     }
 
-    Normalized = LxAlloc(LX_PATH_MAX);
+    Normalized = LxAllocString(LX_PATH_MAX);
     if ((Normalized != NULL) && (Flags & (LX_LOOKUP_BENEATH | LX_LOOKUP_IN_ROOT)))
     {
         Root = LxStrDup(Current);
@@ -3693,7 +3911,7 @@ LxLookupCacheKey(
     }
     if (Joined == NULL)
         return NULL;
-    Key = LxAlloc(LX_PATH_MAX);
+    Key = LxAllocString(LX_PATH_MAX);
     if ((Key != NULL) && (LxPathNormalize(Joined, Key) != 0))
     {
         LxFree(Key);
@@ -3732,7 +3950,7 @@ LxLookupSearchKey(
     for (Index = 0; (Index < Cred->GroupCount) && (Index < RTL_NUMBER_OF(Cred->Groups)); Index++)
         Values[Count++] = Cred->Groups[Index];
     Size = (Count * 17) + DirLength + PathLength + 3;
-    Key = LxAlloc(Size);
+    Key = LxAllocString(Size);
     if (Key == NULL)
         return NULL;
     Used = 0;
@@ -4259,8 +4477,12 @@ LxVfsOpenTmpfs(
                 break;
 
             case LX_S_IFDIR:
-                if ((Flags & LX_O_ACCMODE) != LX_O_RDONLY)
+                if (!(Flags & LX_O_PATH) &&
+                    (((Flags & LX_O_ACCMODE) != LX_O_RDONLY) || (Flags & LX_O_TRUNC) ||
+                     ((Flags & (LX_O_CREAT | LX_O_DIRECTORY)) == LX_O_CREAT)))
+                {
                     Error = -LX_EISDIR;
+                }
                 break;
 
             case LX_S_IFCHR:
@@ -4300,7 +4522,7 @@ LxVfsOpenTmpfs(
                     Error = -LX_ENOTDIR;
                 break;
         }
-        if ((Error == 0) && (Flags & LX_O_TRUNC) && ((Flags & LX_O_ACCMODE) != LX_O_RDONLY) && (Type == LX_S_IFREG))
+        if ((Error == 0) && (Flags & LX_O_TRUNC) && (Type == LX_S_IFREG))
             Error = LxTmpfsInodeTruncate(Inode, 0);
     }
     else if ((Flags & LX_O_DIRECTORY) && (Type != LX_S_IFDIR))
@@ -4380,8 +4602,12 @@ LxVfsOpenNode(
                 break;
 
             case LX_S_IFDIR:
-                if ((Flags & LX_O_ACCMODE) != LX_O_RDONLY)
+                if (!(Flags & LX_O_PATH) &&
+                    (((Flags & LX_O_ACCMODE) != LX_O_RDONLY) || (Flags & LX_O_TRUNC) ||
+                     ((Flags & (LX_O_CREAT | LX_O_DIRECTORY)) == LX_O_CREAT)))
+                {
                     return -LX_EISDIR;
+                }
                 break;
 
             case LX_S_IFCHR:
@@ -4469,8 +4695,11 @@ LxVfsOpenNode(
 
     if (!Node->Exists)
         Disposition = FILE_CREATE;
-    else if ((Flags & LX_O_TRUNC) && ((Flags & LX_O_ACCMODE) != LX_O_RDONLY) && (Node->Type == LX_S_IFREG))
+    else if ((Flags & LX_O_TRUNC) && (Node->Type == LX_S_IFREG))
+    {
         Disposition = FILE_OVERWRITE;
+        Access |= FILE_WRITE_DATA;
+    }
     else
         Disposition = FILE_OPEN;
 
@@ -4718,7 +4947,7 @@ LxVfsReopen(
             (*File)->Memfd = Source->Memfd;
             (*File)->Mode = Source->Mode;
         }
-        if ((Flags & LX_O_TRUNC) && (Access != LX_O_RDONLY) && ((*File)->Type == LX_S_IFREG))
+        if ((Flags & LX_O_TRUNC) && ((*File)->Type == LX_S_IFREG))
             Error = LxTmpfsInodeTruncate(Inode, 0);
         if (((*File)->Path == NULL) || (Error != 0))
         {

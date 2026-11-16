@@ -76,6 +76,9 @@ LxPicoSystemCall(
         Call.Thread->RestartArgument = Call.Args[0];
         Result = -LX_EINTR;
     }
+    /* A call that waited under a temporary signal mask takes a signal that mask let through only when it was interrupted */
+    if (Call.Thread->Suspended && (Result != -LX_EINTR))
+        LxSignalRestoreWaitMask(Call.Thread);
     if (Result != LX_SYSCALL_NO_RESULT)
         LxArchSetSyscallResult(TrapFrame, Raw);
     if ((Call.Thread->PtraceWork & LX_PTW_SYSCALL) && !Call.Thread->VforkExited)
@@ -105,6 +108,7 @@ LxPicoSystemCall(
     }
     LxArchApplySpeculation(LxThreadOf(PsGetCurrentThread()), TrapFrame);
     Base->InKernel--;
+    LxSignalRecheck(Base, LxThreadOf(PsGetCurrentThread()));
 }
 
 static
@@ -195,6 +199,8 @@ LxPicoDispatchException(
     if (Handled)
         LxArchApplySpeculation(LxThreadOf(PsGetCurrentThread()), TrapFrame);
     Base->InKernel--;
+    if (Handled)
+        LxSignalRecheck(Base, Thread);
     return Handled;
 }
 
@@ -248,7 +254,7 @@ LxPicoThreadStart(
     LxArchSetThreadPointer(TrapFrame, Thread->Tls);
     if (Thread->SetChildTid != 0)
         LxCopyToUser(Thread->SetChildTid, &Thread->Tid, sizeof(Thread->Tid));
-    if (Thread->JobctlStop || (Thread->Ptrace != NULL))
+    if (Thread->JobctlStop || (Thread->Ptrace != NULL) || LxSignalPending(Thread))
         LxSignalCheckPending(Thread, TrapFrame, ExceptionFrame);
     LxArchApplySpeculation(Thread, TrapFrame);
 }
@@ -1249,6 +1255,7 @@ DriverEntry(
     LxHugeInitialize();
     LxTmpfsInitialize();
     LxFlockInitialize();
+    LxInetInitialize();
     InitializeListHead(&LxInstanceList);
     ExInitializeFastMutex(&LxInstanceListLock);
     LxKlogInitialize();

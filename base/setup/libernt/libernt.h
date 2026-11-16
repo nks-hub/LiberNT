@@ -113,6 +113,8 @@ typedef struct _SETUPDATA
     BOOL bUpgradeOnly;
     BOOL bAlongside;
     BOOL bWindowsFirst;
+    BOOL bPrepared;
+    BOOL bWindowsHost;
     WCHAR WindowsName[32];
 
     /* txtsetup.sif data */
@@ -209,6 +211,12 @@ PVOL_CREATE_INFO
 FindVolumeFormatPlan(
     _In_ PVOLENTRY Volume);
 
+BOOLEAN
+PlanVolumeFormat(
+    _In_ PVOLENTRY Volume,
+    _In_ PCWSTR FileSystem,
+    _In_opt_ PCWSTR Label);
+
 VOID
 FormatDiskSize(
     _In_ ULONGLONG Bytes,
@@ -256,6 +264,42 @@ BOOLEAN
 IsWindowsHibernated(
     _In_ PCWSTR DeviceName);
 
+HBITMAP
+CreateAlphaLogo(
+    _In_ HINSTANCE hInstance,
+    _Out_ PSIZE Size);
+
+VOID
+DrawLogo(
+    _In_ LPDRAWITEMSTRUCT DrawItem,
+    _In_ HBITMAP hLogo,
+    _In_ PSIZE Size);
+
+BOOLEAN
+PlanPreparedInstall(
+    _Inout_ PSETUPDATA pSetupData);
+
+VOID
+PaintSplitChannel(
+    _In_ HWND hTrack,
+    _In_ HDC hdc,
+    _In_ const RECT *Channel);
+
+BOOL
+ReadInventoryVersion(
+    _In_ PCWSTR Path,
+    _Out_writes_(cchVersion) PWSTR Version,
+    _In_ SIZE_T cchVersion);
+
+BOOL
+GetKernelMachine(
+    _In_ PCWSTR Path,
+    _Out_ PWORD Machine);
+
+BOOL
+IsLiberNtKernel(
+    _In_ PCWSTR Path);
+
 ULONG
 FindUpgradeTargets(
     _In_ PSETUPDATA pSetupData);
@@ -266,8 +310,15 @@ SelectUnattendedUpgrade(
 
 VOID
 DescribeUpgrade(
+    _Inout_ PSETUPDATA pSetupData,
     _Out_writes_(cchText) PWSTR Text,
     _In_ SIZE_T cchText);
+
+VOID
+UpdateBootChoice(
+    _In_ HWND hwndDlg,
+    _In_ PCWSTR WindowsName,
+    _In_ BOOL Show);
 
 INT_PTR
 CALLBACK
@@ -415,6 +466,57 @@ LoadPrintfW(
     _In_ SIZE_T cchText,
     _In_ UINT uID,
     ...);
+
+/* filesec.c */
+typedef struct _FILESEC_POLICY FILESEC_POLICY, *PFILESEC_POLICY;
+
+typedef struct _FILESEC_ITEM
+{
+    PCWSTR Path;
+    BOOLEAN Directory;
+} FILESEC_ITEM, *PFILESEC_ITEM;
+
+DWORD
+FileSecurityLoadPolicy(
+    _Out_ PFILESEC_POLICY *Policy);
+
+VOID
+FileSecurityFreePolicy(
+    _In_opt_ PFILESEC_POLICY Policy);
+
+PSECURITY_DESCRIPTOR
+FileSecurityFindDescriptor(
+    _In_ PFILESEC_POLICY Policy,
+    _In_ PCWSTR Path,
+    _In_ BOOLEAN Directory);
+
+NTSTATUS
+FileSecurityApply(
+    _In_ PFILESEC_POLICY Policy,
+    _In_ PCWSTR VolumeRoot,
+    _In_ PCWSTR InstallationDirectory,
+    _In_ BOOLEAN WholeVolume);
+
+NTSTATUS
+InstallApplyFileSecurity(
+    _In_ PCWSTR VolumeRoot,
+    _In_ PCWSTR InstallationDirectory,
+    _In_ BOOLEAN WholeVolume);
+
+NTSTATUS
+FileSecurityApplyItems(
+    _In_ PFILESEC_POLICY Policy,
+    _In_ PCWSTR VolumeRoot,
+    _In_ PCWSTR InstallationDirectory,
+    _In_ ULONG Count,
+    _In_reads_(Count) const FILESEC_ITEM *Items);
+
+NTSTATUS
+InstallApplyFileSecurityToItems(
+    _In_ PCWSTR VolumeRoot,
+    _In_ PCWSTR InstallationDirectory,
+    _In_ ULONG Count,
+    _In_reads_(Count) const FILESEC_ITEM *Items);
 
 INT
 SetupMessage(

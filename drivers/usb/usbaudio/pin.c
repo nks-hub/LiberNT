@@ -808,10 +808,8 @@ USBAudioSelectAudioStreamingInterface(
             }
             else
             {
-                StreamingInterfaceDescriptor = (PUSB_AUDIO_STREAMING_INTERFACE_DESCRIPTOR)USBD_ParseDescriptors(ConfigurationDescriptor, ConfigurationDescriptor->wTotalLength, InterfaceDescriptor, USB_AUDIO_CONTROL_TERMINAL_DESCRIPTOR_TYPE);
+                StreamingInterfaceDescriptor = UsbAudioFindPcmStreamingGeneral(ConfigurationDescriptor, InterfaceDescriptor);
                 if (StreamingInterfaceDescriptor != NULL &&
-                    StreamingInterfaceDescriptor->bDescriptorSubtype == 0x01 &&
-                    StreamingInterfaceDescriptor->wFormatTag == WAVE_FORMAT_PCM &&
                     StreamingInterfaceDescriptor->bTerminalLink == TerminalDescriptor->bTerminalID)
                 {
                     FormatDescriptor = UsbAudioFindFormatTypeDescriptor(ConfigurationDescriptor,
@@ -2630,7 +2628,8 @@ PinCaptureProcess(
             }
             else
             {
-                /* resume work on this irp */
+                /* resume work on this irp; the loop is entered holding the list lock */
+                KeAcquireSpinLock(&PinContext->IrpListLock, &OldLevel);
                 continue;
             }
         }

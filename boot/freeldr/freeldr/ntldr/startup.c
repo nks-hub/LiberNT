@@ -6,6 +6,7 @@
  */
 
 #include <freeldr.h>
+#include <debug.h>
 #include "ntldropts.h"
 
 enum SAFEBOOT_MODE BootOptionChoice = NO_OPTION;
@@ -23,8 +24,9 @@ static const struct
 } StartupProfiles[] =
 {
     {"Boot normally", NULL, NULL},
-    {"Boot with debugging", "DEBUG DEBUGPORT=NET DEBUGPORT=SCREEN", "/NODEBUG/DEBUGPORT=NET/DEBUGPORT=SCREEN"},
-    {"Boot without RAM disk with debugging", "DEBUG DEBUGPORT=NET DEBUGPORT=SCREEN", "/NODEBUG/DEBUGPORT=NET/DEBUGPORT=SCREEN/RDPATH=/RDRAMSIZE=/RDIMAGEOFFSET=/RDIMAGELENGTH=", TRUE}
+    {"Boot with debugging", "DEBUG DEBUGPORT=NET DEBUGPORT=COM1 DEBUGPORT=FILE DEBUGPORT=SCREEN LOCAL_BROADCAST=1", "/NODEBUG/DEBUGPORT=NET/DEBUGPORT=COM1/DEBUGPORT=FILE/DEBUGPORT=SCREEN/LOCAL_BROADCAST="},
+    {"Boot with remote debugging", "DEBUG DEBUGPORT=NET DEBUGPORT=COM1 DEBUGPORT=SCREEN", "/NODEBUG/DEBUGPORT=NET/DEBUGPORT=COM1/DEBUGPORT=SCREEN"},
+    {"Boot without RAM disk with debugging", "DEBUG DEBUGPORT=NET DEBUGPORT=COM1 DEBUGPORT=FILE DEBUGPORT=SCREEN LOCAL_BROADCAST=1", "/NODEBUG/DEBUGPORT=NET/DEBUGPORT=COM1/DEBUGPORT=FILE/DEBUGPORT=SCREEN/LOCAL_BROADCAST=/RDPATH=/RDRAMSIZE=/RDIMAGEOFFSET=/RDIMAGELENGTH=", TRUE}
 };
 
 static PCSTR StartupModes[] =
@@ -158,6 +160,7 @@ AppendBootTimeOptions(PSTR BootOptions, SIZE_T BootOptionsSize)
         return;
     if (StartupProfile)
     {
+        DebugEnable();
         Add[0] = StartupProfiles[StartupProfile].Options;
         Remove[0] = StartupProfiles[StartupProfile].Remove;
         NtLdrUpdateOptions(BootOptions, BootOptionsSize, TRUE, Add, Remove);
@@ -174,6 +177,7 @@ AppendBootTimeOptions(PSTR BootOptions, SIZE_T BootOptionsSize)
         NtLdrAddOptions(BootOptions, BootOptionsSize, TRUE, "BASEVIDEO");
     if (BootFlags & BOOT_DEBUGGING)
     {
+        DebugEnable();
         Add[0] = "DEBUG";
         Remove[0] = "NODEBUG";
         NtLdrUpdateOptions(BootOptions, BootOptionsSize, TRUE, Add, Remove);

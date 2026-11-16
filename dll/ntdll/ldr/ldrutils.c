@@ -2060,6 +2060,7 @@ LdrpInsertMemoryTableEntry(IN PLDR_DATA_TABLE_ENTRY LdrEntry)
     /* Insert into other lists */
     InsertTailList(&PebData->InLoadOrderModuleList, &LdrEntry->InLoadOrderLinks);
     InsertTailList(&PebData->InMemoryOrderModuleList, &LdrEntry->InMemoryOrderLinks);
+    LdrpInsertImageRange(LdrEntry);
 
     RtlReleaseSRWLockExclusive(&LdrpModuleDatatableLock);
 
@@ -2071,6 +2072,7 @@ NTAPI
 LdrpRemoveMemoryTableEntry(IN PLDR_DATA_TABLE_ENTRY LdrEntry)
 {
     RtlAcquireSRWLockExclusive(&LdrpModuleDatatableLock);
+    LdrpRemoveImageRange(LdrEntry);
     RemoveEntryList(&LdrEntry->InLoadOrderLinks);
     RemoveEntryList(&LdrEntry->InMemoryOrderLinks);
     RemoveEntryList(&LdrEntry->HashLinks);
@@ -3291,7 +3293,17 @@ PVOID LdrpGetShimEngineFunction(PCSZ FunctionName)
     RtlInitAnsiString(&Function, FunctionName);
     /* Skip Dll init */
     Status = LdrpGetProcedureAddress(g_pShimEngineModule, &Function, 0, &Address, FALSE, NULL);
-    return NT_SUCCESS(Status) ? Address : NULL;
+    if (!NT_SUCCESS(Status)) return NULL;
+#if defined(_M_ARM64)
+    if (ChpeGetImageMachine(g_pShimEngineModule) == IMAGE_FILE_MACHINE_ARM64EC)
+    {
+        ULONG_PTR NativeAddress;
+
+        if (!ChpeGetArm64EcNativeFunction(g_pShimEngineModule, (ULONG_PTR)Address, &NativeAddress)) return NULL;
+        Address = (PVOID)NativeAddress;
+    }
+#endif
+    return Address;
 }
 
 VOID

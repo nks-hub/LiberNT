@@ -94,6 +94,108 @@ TestCurrentThreadAccess(VOID)
         RtlAdjustPrivilege(SE_DEBUG_PRIVILEGE, DebugEnabled, FALSE, &DebugEnabled);
 }
 
+static VOID
+TestPseudoHandleSameAccess(HANDLE Pseudo, ACCESS_MASK Expected)
+{
+    OBJECT_BASIC_INFORMATION Basic;
+    HANDLE Handle = NULL;
+    NTSTATUS Status;
+
+    Status = NtDuplicateObject(NtCurrentProcess(), Pseudo, NtCurrentProcess(),
+                               &Handle, 0, 0, DUPLICATE_SAME_ACCESS);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status)) return;
+
+    Status = NtQueryObject(Handle, ObjectBasicInformation, &Basic, sizeof(Basic), NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+        ok_hex(Basic.GrantedAccess, Expected);
+    NtClose(Handle);
+}
+
+static VOID
+ExpectDuplicate(
+    PCSTR Name,
+    HANDLE Source,
+    ACCESS_MASK Desired,
+    NTSTATUS ExpectedStatus,
+    ACCESS_MASK ExpectedGranted)
+{
+    OBJECT_BASIC_INFORMATION Basic;
+    HANDLE Handle = (HANDLE)(ULONG_PTR)0xdeadbeef;
+    NTSTATUS Status;
+
+    Status = NtDuplicateObject(NtCurrentProcess(), Source, NtCurrentProcess(),
+                               &Handle, Desired, 0, 0);
+    ok(Status == ExpectedStatus, "%s: Status = %lx, expected %lx\n",
+       Name, Status, ExpectedStatus);
+    if (!NT_SUCCESS(Status))
+    {
+        ok(Handle == NULL, "%s: Handle = %p after a failed duplicate\n", Name, Handle);
+        return;
+    }
+
+    Status = NtQueryObject(Handle, ObjectBasicInformation, &Basic, sizeof(Basic), NULL);
+    ok_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+        ok(Basic.GrantedAccess == ExpectedGranted, "%s: GrantedAccess = %lx, expected %lx\n",
+           Name, Basic.GrantedAccess, ExpectedGranted);
+    NtClose(Handle);
+}
+
+static VOID
+TestDuplicateAccessMask(VOID)
+{
+    HANDLE Mutant, Event, Named, Opened;
+
+    Mutant = CreateMutexW(NULL, TRUE, NULL);
+    ok(Mutant != NULL, "CreateMutexW failed: %lu\n", GetLastError());
+    Event = CreateEventW(NULL, FALSE, FALSE, NULL);
+    ok(Event != NULL, "CreateEventW failed: %lu\n", GetLastError());
+    if (Mutant == NULL || Event == NULL) return;
+
+    ExpectDuplicate("mutant SYNCHRONIZE|EVENT_MODIFY_STATE", Mutant,
+                    SYNCHRONIZE | EVENT_MODIFY_STATE, STATUS_SUCCESS, SYNCHRONIZE);
+    ExpectDuplicate("mutant SYNCHRONIZE|MUTANT_QUERY_STATE", Mutant,
+                    SYNCHRONIZE | MUTANT_QUERY_STATE, STATUS_SUCCESS,
+                    SYNCHRONIZE | MUTANT_QUERY_STATE);
+    ExpectDuplicate("mutant undefined bit", Mutant, 0x8000, STATUS_SUCCESS, 0);
+    ExpectDuplicate("event undefined bit", Event, 0x0004, STATUS_SUCCESS, 0);
+    ExpectDuplicate("event GENERIC_ALL", Event, GENERIC_ALL, STATUS_SUCCESS, EVENT_ALL_ACCESS);
+    ExpectDuplicate("event MAXIMUM_ALLOWED", Event, MAXIMUM_ALLOWED, STATUS_SUCCESS, 0);
+    ExpectDuplicate("event reserved bits", Event, 0x00E00000, STATUS_ACCESS_DENIED, 0);
+    ExpectDuplicate("process all bits", NtCurrentProcess(), 0xFFFFFFFF, STATUS_ACCESS_DENIED, 0);
+    ExpectDuplicate("process reserved standard bits", NtCurrentProcess(), 0x00E00000, STATUS_ACCESS_DENIED, 0);
+    ExpectDuplicate("process reserved bits 26-27", NtCurrentProcess(), 0x0C000000, STATUS_ACCESS_DENIED, 0);
+    ExpectDuplicate("process MAXIMUM_ALLOWED", NtCurrentProcess(), MAXIMUM_ALLOWED, STATUS_SUCCESS, 0);
+    ExpectDuplicate("process specific bits", NtCurrentProcess(), 0x0000FFFF, STATUS_SUCCESS, 0x0000FFFF);
+
+    NtClose(Event);
+    NtClose(Mutant);
+
+    Named = CreateEventW(NULL, FALSE, FALSE, L"NtDuplicateObject_AccessMask");
+    ok(Named != NULL, "CreateEventW failed: %lu\n", GetLastError());
+    if (Named == NULL) return;
+
+    SetLastError(0xdeadbeef);
+    Opened = OpenEventW(0x0004, FALSE, L"NtDuplicateObject_AccessMask");
+    ok(Opened == NULL, "OpenEventW succeeded for an undefined access bit\n");
+    ok(GetLastError() == ERROR_ACCESS_DENIED, "GetLastError() = %lu\n", GetLastError());
+    if (Opened != NULL) NtClose(Opened);
+
+    SetLastError(0xdeadbeef);
+    Opened = OpenEventW(EVENT_MODIFY_STATE | 0x8000, FALSE, L"NtDuplicateObject_AccessMask");
+    ok(Opened == NULL, "OpenEventW succeeded for an undefined access bit\n");
+    ok(GetLastError() == ERROR_ACCESS_DENIED, "GetLastError() = %lu\n", GetLastError());
+    if (Opened != NULL) NtClose(Opened);
+
+    Opened = OpenEventW(SYNCHRONIZE, FALSE, L"NtDuplicateObject_AccessMask");
+    ok(Opened != NULL, "OpenEventW failed: %lu\n", GetLastError());
+    if (Opened != NULL) NtClose(Opened);
+
+    NtClose(Named);
+}
+
 START_TEST(NtDuplicateObject)
 {
     NTSTATUS Status;
@@ -113,5 +215,9 @@ START_TEST(NtDuplicateObject)
     Status = NtClose(Handle);
     ok_hex(Status, STATUS_HANDLE_NOT_CLOSABLE);
 
+    TestPseudoHandleSameAccess(NtCurrentProcess(), PROCESS_ALL_ACCESS);
+    TestPseudoHandleSameAccess(NtCurrentThread(), THREAD_ALL_ACCESS);
+
     TestCurrentThreadAccess();
+    TestDuplicateAccessMask();
 }

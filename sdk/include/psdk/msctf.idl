@@ -109,6 +109,14 @@ cpp_quote("#define TF_IPP_FLAG_ACTIVE                     0x0001")
 cpp_quote("#define TF_IPP_FLAG_ENABLED                    0x0002")
 cpp_quote("#define TF_IPP_FLAG_SUBSTITUTEDBYINPUTPROCESSOR 0x0004")
 
+cpp_quote("#define TF_IPP_CAPS_DISABLEONTRANSITORY 0x00000001")
+cpp_quote("#define TF_IPP_CAPS_SECUREMODESUPPORT   0x00000002")
+cpp_quote("#define TF_IPP_CAPS_UIELEMENTENABLED    0x00000004")
+cpp_quote("#define TF_IPP_CAPS_COMLESSSUPPORT      0x00000008")
+cpp_quote("#define TF_IPP_CAPS_WOW16SUPPORT        0x00000010")
+cpp_quote("#define TF_IPP_CAPS_IMMERSIVESUPPORT    0x00010000")
+cpp_quote("#define TF_IPP_CAPS_SYSTRAYSUPPORT      0x00020000")
+
 cpp_quote("#define TF_IPSINK_FLAG_ACTIVE 0x0001")
 
 interface ITfDocumentMgr;
@@ -1755,6 +1763,31 @@ interface ITfProperty : ITfReadOnlyProperty
     HRESULT Clear(
             [in] TfEditCookie ec,
             [in] ITfRange *pRange);
+}
+
+typedef [uuid(d678c645-eb6a-45c9-b4ee-0f3e3a991348)] struct TF_PROPERTYVAL
+{
+    GUID guidId;
+    VARIANT varValue;
+} TF_PROPERTYVAL;
+
+[
+    object,
+    uuid(8ed8981b-7c10-4d7d-9fb3-ab72e9c75f72),
+    pointer_default(unique)
+]
+interface IEnumTfPropertyValue : IUnknown
+{
+    HRESULT Clone([out] IEnumTfPropertyValue **ppEnum);
+
+    HRESULT Next(
+            [in] ULONG ulCount,
+            [out, size_is(ulCount), length_is(*pcFetched)] TF_PROPERTYVAL *rgValues,
+            [out] ULONG *pcFetched);
+
+    HRESULT Reset();
+
+    HRESULT Skip([in] ULONG ulCount);
 }
 
 [

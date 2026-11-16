@@ -114,19 +114,26 @@ add_executable(ntoskrnl
 set_module_type(ntoskrnl kernel)
 target_compile_definitions(ntoskrnl PRIVATE CONFIG_SMP)
 
+# The kernel debugger prints the reports, so it stays uninstrumented.
+if(ENABLE_KERNEL_UBSAN)
+    set(_ntoskrnl_debugger_source ${NTOSKRNL_SOURCE})
+    list(FILTER _ntoskrnl_debugger_source INCLUDE REGEX "/ntos/kd")
+    set_source_files_properties(${_ntoskrnl_debugger_source} PROPERTIES COMPILE_OPTIONS "-fno-sanitize=undefined")
+endif()
+
 if(ARCH STREQUAL "arm64")
     target_link_libraries(ntoskrnl rtl_kernel_context)
 endif()
 
 source_group(TREE ${REACTOS_SOURCE_DIR}/ntos PREFIX "Source Files" FILES ${NTOSKRNL_SOURCE})
 
-target_link_libraries(ntoskrnl ntoskrnl_vista cportlib csq ${PSEH_LIB} apisets arblib cmlib ntlsalib rtl cryptlib symz libcntpr setjmp wdmguid poguid ioevent)
+target_link_libraries(ntoskrnl cportlib csq ${PSEH_LIB} apisets arblib cmlib ntlsalib rtl cryptlib symz libcntpr setjmp wdmguid poguid ioevent)
 
 if(KDBG AND (ARCH STREQUAL "i386" OR ARCH STREQUAL "amd64"))
     target_link_libraries(ntoskrnl kdb_zydis)
 endif()
 
-target_link_libraries(ntoskrnl rtl_vista ci)
+target_link_libraries(ntoskrnl ci)
 
 if(STACK_PROTECTOR)
     target_link_libraries(ntoskrnl gcc_ssp_nt)
@@ -148,16 +155,10 @@ add_custom_target(nvs_check_standalone
 add_dependencies(ntoskrnl nvs_check_standalone)
 
 if(WOW64_I386_RUNTIME AND ARCH STREQUAL "i386")
-    set_source_files_properties(ntdll.S ntdll_nt6.S PROPERTIES COMPILE_DEFINITIONS WOW64_I386_RUNTIME)
+    set_source_files_properties(ntdll.S PROPERTIES COMPILE_DEFINITIONS WOW64_I386_RUNTIME)
 endif()
 
 add_asm_files(ntdllsys_asm ntdll.S)
 add_library(ntdllsys ${ntdllsys_asm})
 set_target_properties(ntdllsys PROPERTIES LINKER_LANGUAGE "C")
 add_dependencies(ntdllsys asm)
-
-# NT6 syscalls for ntdll_vista
-add_asm_files(ntdllsys_nt6_asm ntdll_nt6.S)
-add_library(ntdllsys_nt6 ${ntdllsys_nt6_asm})
-set_target_properties(ntdllsys_nt6 PROPERTIES LINKER_LANGUAGE "C")
-add_dependencies(ntdllsys_nt6 asm)

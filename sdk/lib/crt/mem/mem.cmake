@@ -19,6 +19,7 @@ elseif(ARCH STREQUAL "amd64")
     list(APPEND LIBCNTPR_MEM_SOURCE
         mem/memchr.c
         mem/amd64/memmove_nt.c
+        mem/amd64/memset_nt.c
     )
     list(APPEND LIBCNTPR_MEM_ASM_SOURCE
         mem/amd64/memmove_asm.s
@@ -57,7 +58,7 @@ endif()
 #    ${LIBCNTPR_MEM_SOURCE}
 #)
 
-# Needed by ext2fs. Should use RtlCompareMemory instead?
+# Needed by the file system drivers. Should use RtlCompareMemory instead?
 if(ARCH STREQUAL "riscv64")
     add_library(memcmp string/riscv64/rvmemcmp.c)
 else()

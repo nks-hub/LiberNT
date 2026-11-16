@@ -22,7 +22,7 @@ typedef enum _KI_PPC_STARTUP_FAILURE
 } KI_PPC_STARTUP_FAILURE;
 
 volatile ULONG KiPpcStartupFailure;
-ULONG ProcessCount;
+PCONTEXT KiProcessorContext[MAXIMUM_PROCESSORS];
 
 C_ASSERT(sizeof(KPROCESS) <= PAGE_SIZE);
 C_ASSERT(sizeof(KTHREAD) <= PAGE_SIZE);
@@ -171,7 +171,6 @@ KiPpcSystemStartup(_Inout_ PLOADER_PARAMETER_BLOCK LoaderBlock)
     KiInitSystem();
 
     DirectoryTableBase = PpcBlock->PageTableRoot;
-    InitializeListHead(&KiProcessListHead);
     KeInitializeProcess(InitialProcess, 0, MAXULONG_PTR, &DirectoryTableBase, FALSE);
     InitialProcess->QuantumReset = MAXCHAR;
 

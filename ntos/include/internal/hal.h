@@ -1,259 +1,30 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/include/internal/hal.h
- * PURPOSE:         Internal header for the I/O HAL Functions (Fstub)
- * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
- *                  Pierre Schweitzer (pierre.schweitzer@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Kernel view of the hardware abstraction layer
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright Pierre Schweitzer <pierre.schweitzer@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #pragma once
 
-//
-// Default implementations of HAL dispatch table
-//
-VOID
-FASTCALL
-xHalExamineMBR(IN PDEVICE_OBJECT DeviceObject,
-               IN ULONG SectorSize,
-               IN ULONG MbrTypeIdentifier,
-               OUT PVOID *MbrBuffer);
-
-VOID
-FASTCALL
-xHalIoAssignDriveLetters(IN PLOADER_PARAMETER_BLOCK LoaderBlock,
-                         IN PSTRING NtDeviceName,
-                         OUT PUCHAR NtSystemPath,
-                         OUT PSTRING NtSystemPathString);
-
-NTSTATUS
-FASTCALL
-xHalIoReadPartitionTable(IN PDEVICE_OBJECT DeviceObject,
-                         IN ULONG SectorSize,
-                         IN BOOLEAN ReturnRecognizedPartitions,
-                         OUT PDRIVE_LAYOUT_INFORMATION *PartitionBuffer);
-
-NTSTATUS
-FASTCALL
-xHalIoSetPartitionInformation(IN PDEVICE_OBJECT DeviceObject,
-                              IN ULONG SectorSize,
-                              IN ULONG PartitionNumber,
-                              IN ULONG PartitionType);
-
-NTSTATUS
-FASTCALL
-xHalIoWritePartitionTable(IN PDEVICE_OBJECT DeviceObject,
-                          IN ULONG SectorSize,
-                          IN ULONG SectorsPerTrack,
-                          IN ULONG NumberOfHeads,
-                          IN PDRIVE_LAYOUT_INFORMATION PartitionBuffer);
-
-VOID
-NTAPI
-xHalHaltSystem(
-    VOID
-);
-
-VOID
-NTAPI
-xHalEndOfBoot(
-    VOID
-);
-
-VOID
-NTAPI
-xHalSetWakeEnable(
-    IN BOOLEAN Enable
-);
-
-UCHAR
-NTAPI
-xHalVectorToIDTEntry(
-    IN ULONG Vector
-);
-
-NTSTATUS
-NTAPI
-xHalGetInterruptTranslator(
-    IN INTERFACE_TYPE ParentInterfaceType,
-    IN ULONG ParentBusNumber,
-    IN INTERFACE_TYPE BridgeInterfaceType,
-    IN USHORT Size,
-    IN USHORT Version,
-    OUT PTRANSLATOR_INTERFACE Translator,
-    OUT PULONG BridgeBusNumber
-);
-
-PBUS_HANDLER
-FASTCALL
-xHalHandlerForBus(
-    IN INTERFACE_TYPE InterfaceType,
-    IN ULONG BusNumber
-);
-
-VOID
-FASTCALL
-xHalReferenceHandler(
-    IN PBUS_HANDLER BusHandler
-);
-
-NTSTATUS
-NTAPI
-xHalInitPnpDriver(
-    VOID
-);
-
-NTSTATUS
-NTAPI
-xHalInitPowerManagement(
-    IN PPM_DISPATCH_TABLE PmDriverDispatchTable,
-    OUT PPM_DISPATCH_TABLE *PmHalDispatchTable
-);
-
-NTSTATUS
-NTAPI
-xHalStartMirroring(
-    VOID
-);
-
-NTSTATUS
-NTAPI
-xHalEndMirroring(
-    IN ULONG PassNumber
-);
-
-NTSTATUS
-NTAPI
-xHalMirrorPhysicalMemory(
-    IN PHYSICAL_ADDRESS PhysicalAddress,
-    IN LARGE_INTEGER NumberOfBytes
-);
-
-NTSTATUS
-NTAPI
-xHalQueryBusSlots(
-    IN PBUS_HANDLER BusHandler,
-    IN ULONG BufferSize,
-    OUT PULONG SlotNumbers,
-    OUT PULONG ReturnedLength
-);
-
-NTSTATUS
-NTAPI
-xHalSetSystemInformation(
-    IN HAL_SET_INFORMATION_CLASS InformationClass,
-    IN ULONG BufferSize,
-    IN PVOID Buffer
-);
-
-NTSTATUS
-NTAPI
-xHalQuerySystemInformation(
-    IN HAL_QUERY_INFORMATION_CLASS InformationClass,
-    IN ULONG BufferSize,
-    IN OUT PVOID Buffer,
-    OUT PULONG ReturnedLength
-);
-
-VOID
-NTAPI
-xHalLocateHiberRanges(
-    IN PVOID MemoryMap
-);
-
-NTSTATUS
-NTAPI
-xHalRegisterBusHandler(
-    IN INTERFACE_TYPE InterfaceType,
-    IN BUS_DATA_TYPE ConfigSpace,
-    IN ULONG BusNumber,
-    IN INTERFACE_TYPE ParentInterfaceType,
-    IN ULONG ParentBusNumber,
-    IN ULONG ContextSize,
-    IN PINSTALL_BUS_HANDLER InstallCallback,
-    OUT PBUS_HANDLER *BusHandler
-);
-
 VOID
 NTAPI
 xHalSetWakeAlarm(
-    IN ULONGLONG AlartTime,
-#if (NTDDI_VERSION >= NTDDI_WIN8)
-    IN ULONGLONG DcWakeTime
-#else
-    IN PTIME_FIELDS TimeFields
-#endif
-);
+    _In_ ULONGLONG AlartTime,
+    _In_ ULONGLONG DcWakeTime);
 
-BOOLEAN
-NTAPI
-xHalTranslateBusAddress(
-    IN INTERFACE_TYPE InterfaceType,
-    IN ULONG BusNumber,
-    IN PHYSICAL_ADDRESS BusAddress,
-    IN OUT PULONG AddressSpace,
-    OUT PPHYSICAL_ADDRESS TranslatedAddress
-);
-
-NTSTATUS
-NTAPI
-xHalAllocateMapRegisters(
-    IN PADAPTER_OBJECT AdapterObject,
-    IN ULONG Unknown,
-    IN ULONG Unknown2,
-    PMAP_REGISTER_ENTRY Registers
-);
-
-NTSTATUS
-NTAPI
-xKdSetupPciDeviceForDebugging(
-    IN PVOID LoaderBlock OPTIONAL,
-    IN OUT PDEBUG_DEVICE_DESCRIPTOR PciDevice
-);
-
-NTSTATUS
-NTAPI
-xKdReleasePciDeviceForDebugging(
-    IN OUT PDEBUG_DEVICE_DESCRIPTOR PciDevice
-);
-
-PVOID
-NTAPI
-xKdGetAcpiTablePhase(
-    IN struct _LOADER_PARAMETER_BLOCK *LoaderBlock,
-    IN ULONG Signature
-);
-
-PVOID
-NTAPI
-MatchAll(
-    IN PHYSICAL_ADDRESS PhysicalAddress,
-    IN ULONG NumberPages,
-    IN BOOLEAN FlushCurrentTLB
-);
-
-VOID
-NTAPI
-xKdUnmapVirtualAddress(
-    IN PVOID VirtualAddress,
-    IN ULONG NumberPages,
-    IN BOOLEAN FlushCurrentTLB
-);
-
-
-//
-// Various offsets in the boot record
-//
 #define DISK_SIGNATURE_OFFSET           0x1B8
+
 #define PARTITION_TABLE_OFFSET          0x1BE
+
 #define BOOT_SIGNATURE_OFFSET           (0x200 - 2)
 
 #define BOOT_RECORD_SIGNATURE           0xAA55
+
 #define NUM_PARTITION_TABLE_ENTRIES     4
 
-//
-// Helper Macros
-//
 #define GET_STARTING_SECTOR(p)                  \
     ((ULONG)((p)->StartingSectorLsb0) +         \
      (ULONG)((p)->StartingSectorLsb1 << 8 ) +   \
@@ -275,9 +46,6 @@ xKdUnmapVirtualAddress(
      (p)->PartitionLengthMsb0 = ((l) >> 16) & 0xFF, \
      (p)->PartitionLengthMsb1 = ((l) >> 24) & 0xFF)
 
-//
-// Structure describing a partition
-//
 typedef struct _PARTITION_DESCRIPTOR
 {
     UCHAR ActiveFlag;
@@ -298,9 +66,6 @@ typedef struct _PARTITION_DESCRIPTOR
     UCHAR PartitionLengthMsb1;
 } PARTITION_DESCRIPTOR, *PPARTITION_DESCRIPTOR;
 
-//
-// Structure describing a boot sector
-//
 typedef struct _BOOT_SECTOR_INFO
 {
     UCHAR JumpByte[1];
@@ -315,9 +80,6 @@ typedef struct _BOOT_SECTOR_INFO
     UCHAR NumberOfHeads[2];
 } BOOT_SECTOR_INFO, *PBOOT_SECTOR_INFO;
 
-//
-// Partition Table and Disk Layout
-//
 typedef struct _PARTITION_TABLE
 {
     PARTITION_INFORMATION PartitionEntry[4];
@@ -330,9 +92,6 @@ typedef struct _DISK_LAYOUT
     PARTITION_TABLE PartitionTable[1];
 } DISK_LAYOUT, *PDISK_LAYOUT;
 
-//
-// Partition Table Entry
-//
 typedef struct _PTE
 {
     UCHAR ActiveFlag;
@@ -344,3 +103,197 @@ typedef struct _PTE
     ULONG StartingSector;
     ULONG PartitionLength;
 } PTE, *PPTE;
+
+VOID
+NTAPI
+xHalHaltSystem(VOID);
+
+NTSTATUS
+FASTCALL
+xHalIoReadPartitionTable(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG SectorSize,
+    _In_ BOOLEAN ReturnRecognizedPartitions,
+    _Out_ PDRIVE_LAYOUT_INFORMATION *PartitionBuffer);
+
+UCHAR
+NTAPI
+xHalVectorToIDTEntry(
+    _In_ ULONG Vector);
+
+VOID
+FASTCALL
+xHalIoAssignDriveLetters(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock,
+    _In_ PSTRING NtDeviceName,
+    _Out_ PUCHAR NtSystemPath,
+    _Out_ PSTRING NtSystemPathString);
+
+NTSTATUS
+NTAPI
+xHalGetInterruptTranslator(
+    _In_ INTERFACE_TYPE ParentInterfaceType,
+    _In_ ULONG ParentBusNumber,
+    _In_ INTERFACE_TYPE BridgeInterfaceType,
+    _In_ USHORT Size,
+    _In_ USHORT Version,
+    _Out_ PTRANSLATOR_INTERFACE Translator,
+    _Out_ PULONG BridgeBusNumber);
+
+NTSTATUS
+NTAPI
+xHalAllocateMapRegisters(
+    _In_ PADAPTER_OBJECT AdapterObject,
+    _In_ ULONG Unknown,
+    _In_ ULONG Unknown2,
+    PMAP_REGISTER_ENTRY Registers);
+
+NTSTATUS
+NTAPI
+xHalEndMirroring(
+    _In_ ULONG PassNumber);
+
+VOID
+NTAPI
+xHalEndOfBoot(VOID);
+
+PBUS_HANDLER
+FASTCALL
+xHalHandlerForBus(
+    _In_ INTERFACE_TYPE InterfaceType,
+    _In_ ULONG BusNumber);
+
+NTSTATUS
+NTAPI
+xHalInitPnpDriver(VOID);
+
+NTSTATUS
+NTAPI
+xHalInitPowerManagement(
+    _In_ PPM_DISPATCH_TABLE PmDriverDispatchTable,
+    _Out_ PPM_DISPATCH_TABLE *PmHalDispatchTable);
+
+VOID
+NTAPI
+xHalLocateHiberRanges(
+    _In_ PVOID MemoryMap);
+
+NTSTATUS
+NTAPI
+xHalMirrorPhysicalMemory(
+    _In_ PHYSICAL_ADDRESS PhysicalAddress,
+    _In_ LARGE_INTEGER NumberOfBytes);
+
+NTSTATUS
+NTAPI
+xHalQueryBusSlots(
+    _In_ PBUS_HANDLER BusHandler,
+    _In_ ULONG BufferSize,
+    _Out_ PULONG SlotNumbers,
+    _Out_ PULONG ReturnedLength);
+
+NTSTATUS
+NTAPI
+xHalQuerySystemInformation(
+    _In_ HAL_QUERY_INFORMATION_CLASS InformationClass,
+    _In_ ULONG BufferSize,
+    _Inout_ PVOID Buffer,
+    _Out_ PULONG ReturnedLength);
+
+VOID
+FASTCALL
+xHalReferenceHandler(
+    _In_ PBUS_HANDLER BusHandler);
+
+NTSTATUS
+NTAPI
+xHalRegisterBusHandler(
+    _In_ INTERFACE_TYPE InterfaceType,
+    _In_ BUS_DATA_TYPE ConfigSpace,
+    _In_ ULONG BusNumber,
+    _In_ INTERFACE_TYPE ParentInterfaceType,
+    _In_ ULONG ParentBusNumber,
+    _In_ ULONG ContextSize,
+    _In_ PINSTALL_BUS_HANDLER InstallCallback,
+    _Out_ PBUS_HANDLER *BusHandler);
+
+NTSTATUS
+NTAPI
+xHalSetSystemInformation(
+    _In_ HAL_SET_INFORMATION_CLASS InformationClass,
+    _In_ ULONG BufferSize,
+    _In_ PVOID Buffer);
+
+VOID
+NTAPI
+xHalSetWakeEnable(
+    _In_ BOOLEAN Enable);
+
+NTSTATUS
+NTAPI
+xHalStartMirroring(VOID);
+
+BOOLEAN
+NTAPI
+xHalTranslateBusAddress(
+    _In_ INTERFACE_TYPE InterfaceType,
+    _In_ ULONG BusNumber,
+    _In_ PHYSICAL_ADDRESS BusAddress,
+    _Inout_ PULONG AddressSpace,
+    _Out_ PPHYSICAL_ADDRESS TranslatedAddress);
+
+PVOID
+NTAPI
+xKdGetAcpiTablePhase(
+    _In_ struct _LOADER_PARAMETER_BLOCK *LoaderBlock,
+    _In_ ULONG Signature);
+
+NTSTATUS
+NTAPI
+xKdReleasePciDeviceForDebugging(
+    _Inout_ PDEBUG_DEVICE_DESCRIPTOR PciDevice);
+
+NTSTATUS
+NTAPI
+xKdSetupPciDeviceForDebugging(
+    _In_opt_ PVOID LoaderBlock,
+    _Inout_ PDEBUG_DEVICE_DESCRIPTOR PciDevice);
+
+VOID
+NTAPI
+xKdUnmapVirtualAddress(
+    _In_ PVOID VirtualAddress,
+    _In_ ULONG NumberPages,
+    _In_ BOOLEAN FlushCurrentTLB);
+
+VOID
+FASTCALL
+xHalExamineMBR(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG SectorSize,
+    _In_ ULONG MbrTypeIdentifier,
+    _Out_ PVOID *MbrBuffer);
+
+NTSTATUS
+FASTCALL
+xHalIoSetPartitionInformation(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG SectorSize,
+    _In_ ULONG PartitionNumber,
+    _In_ ULONG PartitionType);
+
+NTSTATUS
+FASTCALL
+xHalIoWritePartitionTable(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG SectorSize,
+    _In_ ULONG SectorsPerTrack,
+    _In_ ULONG NumberOfHeads,
+    _In_ PDRIVE_LAYOUT_INFORMATION PartitionBuffer);
+
+PVOID
+NTAPI
+MatchAll(
+    _In_ PHYSICAL_ADDRESS PhysicalAddress,
+    _In_ ULONG NumberPages,
+    _In_ BOOLEAN FlushCurrentTLB);

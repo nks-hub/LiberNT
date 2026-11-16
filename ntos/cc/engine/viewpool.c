@@ -251,6 +251,7 @@ CcViewReclaimShard(
             CC_ASSERT(Slot != NULL && Slot->View == View);
             Slot->View = NULL;
             Map->ViewsAttached--;
+            CC_ATOMIC_ADD64(&Cache->AttachedViews, -1);
             Map->ReclaimsInProgress++;
             *OldMap = Map;
             *OldBase = View->BaseAddress;
@@ -263,7 +264,10 @@ CcViewReclaimShard(
     }
 
     if (Claimed != NULL)
+    {
+        CC_RESOURCE_REUSE(&Claimed->IoResource);
         Claimed->ReferenceCount = 1;
+    }
 
     CC_LOCK_RELEASE(&Shard->Lock, ShardIrql);
     return Claimed;
@@ -300,6 +304,7 @@ CcViewDetachIdleShard(
             CC_ASSERT(Slot != NULL && Slot->View == View);
             Slot->View = NULL;
             Map->ViewsAttached--;
+            CC_ATOMIC_ADD64(&Cache->AttachedViews, -1);
             Map->ReclaimsInProgress++;
             *OldMap = Map;
             *OldBase = View->BaseAddress;
@@ -315,6 +320,7 @@ CcViewDetachIdleShard(
         RemoveEntryList(&Claimed->LruLink);
         Claimed->OnLru = FALSE;
         Shard->Count--;
+        CC_RESOURCE_REUSE(&Claimed->IoResource);
         Claimed->ReferenceCount = 1;
     }
 
@@ -501,6 +507,7 @@ CcViewGet(
     Fresh->FileOffset = ViewOffset;
     Slot->View = Fresh;
     Map->ViewsAttached++;
+    CC_ATOMIC_ADD64(&Cache->AttachedViews, 1);
     CC_LOCK_RELEASE(&Map->IndexLock, OldIrql);
 
     *OutView = Fresh;
@@ -609,6 +616,7 @@ CcMapDetachViews(
             Base = Candidate->BaseAddress;
             Slot->View = NULL;
             Map->ViewsAttached--;
+            CC_ATOMIC_ADD64(&Cache->AttachedViews, -1);
             Candidate->Map = NULL;
             Candidate->BaseAddress = NULL;
             if (Candidate->OnLru)

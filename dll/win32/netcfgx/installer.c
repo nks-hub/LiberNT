@@ -135,10 +135,12 @@ ReadDriverDword(
 static
 UINT
 GetConnectionNameId(
-    _In_ HKEY hDriverKey)
+    _In_ HKEY hDriverKey,
+    _In_ PCNET_INF_KEYWORDS Keywords)
 {
-    DWORD IfType = ReadDriverDword(hDriverKey, L"*IfType");
-    DWORD PhysicalMedium = ReadDriverDword(hDriverKey, L"*PhysicalMediaType");
+    DWORD IfType = Keywords->IfType ? Keywords->IfType : ReadDriverDword(hDriverKey, L"*IfType");
+    DWORD PhysicalMedium = Keywords->PhysicalMediaType ? Keywords->PhysicalMediaType
+                                                       : ReadDriverDword(hDriverKey, L"*PhysicalMediaType");
 
     if (IfType == IF_TYPE_IEEE80211 || PhysicalMedium == NdisPhysicalMediumNative802_11)
         return IDS_NET_CONNECT_WIFI;
@@ -681,11 +683,7 @@ InstallNetDevice(
     }
 
     /* Write 'Linkage' key in hardware key */
-#if _WIN32_WINNT >= 0x502
     hKey = SetupDiOpenDevRegKey(DeviceInfoSet, DeviceInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_READ | KEY_WRITE);
-#else
-    hKey = SetupDiOpenDevRegKey(DeviceInfoSet, DeviceInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, KEY_ALL_ACCESS);
-#endif
     if (hKey == INVALID_HANDLE_VALUE && GetLastError() == ERROR_FILE_NOT_FOUND)
         hKey = SetupDiCreateDevRegKeyW(DeviceInfoSet, DeviceInfoData, DICS_FLAG_GLOBAL, 0, DIREG_DRV, NULL, NULL);
     if (hKey == INVALID_HANDLE_VALUE)
@@ -781,7 +779,7 @@ InstallNetDevice(
         ERR("RegSetValueExW() failed with error 0x%lx\n", rc);
         goto cleanup;
     }
-    NameId = GetConnectionNameId(hKey);
+    NameId = GetConnectionNameId(hKey, Keywords);
     RegCloseKey(hKey);
     hKey = NULL;
 

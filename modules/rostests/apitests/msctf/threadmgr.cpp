@@ -644,17 +644,84 @@ static void TestThreadFocus(TSF_FIXTURE *pFixture)
     UnregisterClassW(wc.lpszClassName, wc.hInstance);
 }
 
+static void TestLangBarItemMgr(TSF_FIXTURE *pFixture)
+{
+    typedef HRESULT (WINAPI *FN_TF_CreateLangBarItemMgr)(ITfLangBarItemMgr **);
+    FN_TF_CreateLangBarItemMgr fn;
+    ITfLangBarItemMgr *pMgr = NULL, *pMgr2 = NULL, *pMgr3 = NULL;
+    ITfThreadMgr *pBack = NULL;
+    ULONG cItems = 0, cItems2 = 0;
+    HRESULT hr;
+
+    hr = pFixture->pThreadMgr->QueryInterface(IID_ITfLangBarItemMgr, (void **)&pMgr);
+    ok_hr(hr, S_OK);
+    if (!pMgr)
+        return;
+    fn = (FN_TF_CreateLangBarItemMgr)GetProcAddress(GetModuleHandleW(L"msctf.dll"), "TF_CreateLangBarItemMgr");
+    ok(fn != NULL, "no TF_CreateLangBarItemMgr\n");
+    if (fn)
+        ok_hr(fn(&pMgr2), S_OK);
+    hr = pFixture->pThreadMgr->QueryInterface(IID_ITfLangBarItemMgr, (void **)&pMgr3);
+    ok_hr(hr, S_OK);
+    hr = pMgr->QueryInterface(IID_ITfThreadMgr, (void **)&pBack);
+    ok_hr(hr, S_OK);
+    ok(pBack == pFixture->pThreadMgr, "got %p, thread manager %p\n", pBack, pFixture->pThreadMgr);
+    if (pBack)
+        pBack->Release();
+    ok(pMgr != pMgr2, "the thread manager returned the TF_CreateLangBarItemMgr object\n");
+    ok_hr(pMgr->GetItemNum(&cItems), S_OK);
+    if (pMgr2)
+    {
+        ok_hr(pMgr2->GetItemNum(&cItems2), S_OK);
+        ok_long(cItems, cItems2);
+        pMgr2->Release();
+    }
+    if (pMgr3)
+        pMgr3->Release();
+    pMgr->Release();
+}
+
+static void TestNestedActivate(TSF_FIXTURE *pFixture)
+{
+    ITfThreadMgrEx *pEx = NULL;
+    TfClientId tid = 0;
+
+    ok_hr(pFixture->pThreadMgr->Activate(&tid), S_OK);
+    ok_long(tid, pFixture->tid);
+    ok_hr(pFixture->pThreadMgr->Deactivate(), S_OK);
+    ok_hr(pFixture->pThreadMgr->QueryInterface(IID_ITfThreadMgrEx, (void **)&pEx), S_OK);
+    if (!pEx)
+        return;
+    tid = 0;
+    ok_hr(pEx->ActivateEx(&tid, 0), S_FALSE);
+    ok_long(tid, pFixture->tid);
+    ok_hr(pEx->Deactivate(), S_OK);
+    pEx->Release();
+}
+
 START_TEST(threadmgr)
 {
     TSF_FIXTURE fixture;
     BOOL fRegistered;
+    ITfThreadMgr *pActiveMgr = NULL;
+    TfClientId tidActive = 0;
 
     CoInitialize(NULL);
     fRegistered = TestTip_Register();
     if (!fRegistered)
         skip("Cannot register the test text service; run as administrator\n");
     else
+    {
+        g_pTip->hrAdviseKeySink = E_UNEXPECTED;
+        g_pTip->hrUnadviseKeySink = E_UNEXPECTED;
+        g_pTip->hrPreserveKey = E_UNEXPECTED;
+        g_pTip->hrUnpreserveKey = E_UNEXPECTED;
+        CoCreateInstance(CLSID_TF_ThreadMgr, NULL, CLSCTX_INPROC_SERVER, IID_ITfThreadMgr, (void **)&pActiveMgr);
+        ok(pActiveMgr != NULL, "no thread manager\n");
+        if (pActiveMgr)
+            ok_hr(pActiveMgr->Activate(&tidActive), S_OK);
         TestTip_Activate();
+    }
 
     if (Fixture_Init(&fixture, L"abc"))
     {
@@ -663,11 +730,16 @@ START_TEST(threadmgr)
             fixture.pThreadMgr->SetFocus(fixture.pDocMgr);
             TestTip_Activate();
         }
+        TestNestedActivate(&fixture);
         TestClientIdChecks(&fixture);
         TestUIElements(&fixture);
         if (fRegistered && g_pTip->tid)
         {
             ok_long(g_pTip->cActivate, 1);
+            ok_hr(g_pTip->hrAdviseKeySink, S_OK);
+            ok_hr(g_pTip->hrUnadviseKeySink, S_OK);
+            ok_hr(g_pTip->hrPreserveKey, S_OK);
+            ok_hr(g_pTip->hrUnpreserveKey, S_OK);
             TestFunctionProviders(&fixture, g_pTip->tid, CLSID_TestTip);
             TestPreservedKeys(&fixture, g_pTip->tid);
             TestTip_Deactivate();
@@ -677,8 +749,14 @@ START_TEST(threadmgr)
             skip("The test text service did not activate\n");
         }
         TestThreadFocus(&fixture);
+        TestLangBarItemMgr(&fixture);
     }
     Fixture_Done(&fixture);
+    if (pActiveMgr)
+    {
+        pActiveMgr->Deactivate();
+        pActiveMgr->Release();
+    }
     {
         ITfThreadMgrEx *pEx = NULL;
         DWORD dwFlags = 0xdead;

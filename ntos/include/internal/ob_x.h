@@ -1,283 +1,228 @@
 /*
-* PROJECT:         ReactOS Kernel
-* LICENSE:         GPL - See COPYING in the top level directory
-* FILE:            ntoskrnl/include/internal/ob_x.h
-* PURPOSE:         Internal Inlined Functions for the Object Manager
-* PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
-*/
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Object manager inline helpers: headers, locks, names, lookups
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
 
 #include "ex.h"
-
-#define OBP_LOCK_STATE_PRE_ACQUISITION_EXCLUSIVE    0xAAAA1234
-#define OBP_LOCK_STATE_PRE_ACQUISITION_SHARED       0xBBBB1234
-#define OBP_LOCK_STATE_POST_ACQUISITION_EXCLUSIVE   0xCCCC1234
-#define OBP_LOCK_STATE_POST_ACQUISITION_SHARED      0xDDDD1234
-#define OBP_LOCK_STATE_RELEASED                     0xEEEE1234
-#define OBP_LOCK_STATE_INITIALIZED                  0xFFFF1234
 
 #define OBP_NAME_LOOKASIDE_MAX_SIZE 248
 
 FORCEINLINE
 ULONG
-ObpValidateAttributes(IN ULONG Attributes,
-                      IN KPROCESSOR_MODE PreviousMode)
+ObpValidateAttributes(
+    _In_ ULONG Attributes,
+    _In_ KPROCESSOR_MODE PreviousMode)
 {
     if (PreviousMode == KernelMode)
-    {
-        /* For kernel, allow any valid attributes */
         return Attributes & OBJ_VALID_KERNEL_ATTRIBUTES;
-    }
-    else
-    {
-        /* For user, mask out kernel-only attributes */
-        return (Attributes & OBJ_VALID_ATTRIBUTES) &
-               ~(OBJ_KERNEL_HANDLE);
-    }
+
+    return Attributes & OBJ_VALID_ATTRIBUTES & ~OBJ_KERNEL_HANDLE;
+}
+
+FORCEINLINE
+UCHAR
+ObpTypeIndexMask(
+    _In_ POBJECT_HEADER ObjectHeader)
+{
+    return (UCHAR)(ObHeaderCookie ^ (UCHAR)((ULONG_PTR)ObjectHeader >> 8));
 }
 
 FORCEINLINE
 POBJECT_TYPE
-ObpGetObjectTypeFromHeader(IN POBJECT_HEADER ObjectHeader)
+ObpGetObjectTypeFromHeader(
+    _In_ POBJECT_HEADER ObjectHeader)
 {
-    UCHAR TypeIndex;
-
-    TypeIndex = ObjectHeader->TypeIndex ^
-                ObHeaderCookie ^
-                (UCHAR)((ULONG_PTR)ObjectHeader >> 8);
-    return ObTypeIndexTable[TypeIndex];
+    return ObTypeIndexTable[(UCHAR)(ObjectHeader->TypeIndex ^ ObpTypeIndexMask(ObjectHeader))];
 }
 
 FORCEINLINE
 VOID
-ObpEncodeObjectTypeIndex(IN POBJECT_HEADER ObjectHeader,
-                         IN POBJECT_TYPE ObjectType)
+ObpEncodeObjectTypeIndex(
+    _Inout_ POBJECT_HEADER ObjectHeader,
+    _In_ POBJECT_TYPE ObjectType)
 {
-    ObjectHeader->TypeIndex = ObjectType->Index ^
-                              ObHeaderCookie ^
-                              (UCHAR)((ULONG_PTR)ObjectHeader >> 8);
+    ObjectHeader->TypeIndex = (UCHAR)(ObjectType->Index ^ ObpTypeIndexMask(ObjectHeader));
+    ASSERT(ObpGetObjectTypeFromHeader(ObjectHeader) == ObjectType);
 }
 
 FORCEINLINE
 VOID
-ObpAcquireObjectLock(IN POBJECT_HEADER ObjectHeader)
+ObpGetQuotaCharges(
+    _In_ POBJECT_HEADER ObjectHeader,
+    _In_ POBJECT_TYPE ObjectType,
+    _Out_ PULONG PagedPoolCharge,
+    _Out_ PULONG NonPagedPoolCharge)
 {
-    /* Sanity check */
+    POBJECT_HEADER_QUOTA_INFO QuotaInfo = OBJECT_HEADER_TO_QUOTA_INFO(ObjectHeader);
+
+    *PagedPoolCharge = QuotaInfo ? QuotaInfo->PagedPoolCharge : ObjectType->TypeInfo.DefaultPagedPoolCharge;
+    *NonPagedPoolCharge = QuotaInfo ? QuotaInfo->NonPagedPoolCharge : ObjectType->TypeInfo.DefaultNonPagedPoolCharge;
+}
+
+FORCEINLINE
+VOID
+ObpLockPushLock(
+    _Inout_ PEX_PUSH_LOCK Lock,
+    _In_ BOOLEAN Exclusive)
+{
     ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
 
-    /* Enter a critical region and acquire the object lock */
     KeEnterCriticalRegion();
-    ExAcquirePushLockExclusive(&ObjectHeader->Lock);
+    if (Exclusive)
+        ExAcquirePushLockExclusive(Lock);
+    else
+        ExAcquirePushLockShared(Lock);
 }
 
 FORCEINLINE
 VOID
-ObpAcquireObjectLockShared(IN POBJECT_HEADER ObjectHeader)
+ObpUnlockPushLock(
+    _Inout_ PEX_PUSH_LOCK Lock)
 {
-    /* Sanity check */
-    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
-
-    /* Enter a critical region and acquire the object lock */
-    KeEnterCriticalRegion();
-    ExAcquirePushLockShared(&ObjectHeader->Lock);
-}
-
-FORCEINLINE
-VOID
-ObpReleaseObjectLock(IN POBJECT_HEADER ObjectHeader)
-{
-    /* Release the object lock and leave the critical region */
-    ExReleasePushLock(&ObjectHeader->Lock);
+    ExReleasePushLock(Lock);
     KeLeaveCriticalRegion();
 
-    /* Sanity check */
     ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+}
+
+FORCEINLINE
+VOID
+ObpAcquireObjectLock(
+    _In_ POBJECT_HEADER ObjectHeader)
+{
+    ObpLockPushLock(&ObjectHeader->Lock, TRUE);
+}
+
+FORCEINLINE
+VOID
+ObpAcquireObjectLockShared(
+    _In_ POBJECT_HEADER ObjectHeader)
+{
+    ObpLockPushLock(&ObjectHeader->Lock, FALSE);
+}
+
+FORCEINLINE
+VOID
+ObpReleaseObjectLock(
+    _In_ POBJECT_HEADER ObjectHeader)
+{
+    ObpUnlockPushLock(&ObjectHeader->Lock);
+}
+
+FORCEINLINE
+VOID
+ObpEnterObjectTypeMutex(
+    _In_ POBJECT_TYPE ObjectType)
+{
+    ObpLockPushLock(&ObjectType->TypeLock, TRUE);
+}
+
+FORCEINLINE
+VOID
+ObpLeaveObjectTypeMutex(
+    _In_ POBJECT_TYPE ObjectType)
+{
+    ObpUnlockPushLock(&ObjectType->TypeLock);
+}
+
+FORCEINLINE
+VOID
+ObpAcquireDirectoryLockShared(
+    _In_ POBJECT_DIRECTORY Directory,
+    _In_ POBP_LOOKUP_CONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ObpLockPushLock(&Directory->Lock, FALSE);
+}
+
+FORCEINLINE
+VOID
+ObpAcquireDirectoryLockExclusive(
+    _In_ POBJECT_DIRECTORY Directory,
+    _In_ POBP_LOOKUP_CONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ObpLockPushLock(&Directory->Lock, TRUE);
+}
+
+FORCEINLINE
+VOID
+ObpReleaseDirectoryLock(
+    _In_ POBJECT_DIRECTORY Directory,
+    _In_ POBP_LOOKUP_CONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(Context);
+    ExReleasePushLock(&Directory->Lock);
+    KeLeaveCriticalRegion();
 }
 
 FORCEINLINE
 POBJECT_HEADER_NAME_INFO
-ObpReferenceNameInfo(IN POBJECT_HEADER ObjectHeader)
+ObpReferenceNameInfo(
+    _In_ POBJECT_HEADER ObjectHeader)
 {
-    POBJECT_HEADER_NAME_INFO ObjectNameInfo;
-    ULONG NewValue, References;
+    POBJECT_HEADER_NAME_INFO NameInfo = OBJECT_HEADER_TO_NAME_INFO(ObjectHeader);
+    LONG Seen, Count;
 
-    /* Make sure we have name information at all */
-    ObjectNameInfo = OBJECT_HEADER_TO_NAME_INFO(ObjectHeader);
-    if (!ObjectNameInfo) return NULL;
+    if (NameInfo == NULL)
+        return NULL;
 
-    /* Get the number of references */
-    References = ObjectNameInfo->QueryReferences;
-    for (;;)
+    Count = *(volatile LONG *)&NameInfo->QueryReferences;
+    while (Count != 0)
     {
-        /* Check if the count is 0 and fail if so */
-        if (!References) return NULL;
+        Seen = InterlockedCompareExchange((PLONG)&NameInfo->QueryReferences, Count + 1, Count);
+        if (Seen == Count)
+            return NameInfo;
 
-        /* Increment the number of references */
-        NewValue = InterlockedCompareExchange((PLONG)&ObjectNameInfo->
-                                              QueryReferences,
-                                              References + 1,
-                                              References);
-        if (NewValue == References) break;
-
-        /* We failed, try again */
-        References = NewValue;
+        Count = Seen;
     }
 
-    /* Check for magic flag */
-    if (ObjectNameInfo->QueryReferences & 0x80000000)
-    {
-        /* FIXME: Unhandled*/
-        DbgPrint("OB: Unhandled path\n");
-        ASSERT(FALSE);
-    }
-
-    /* Return the name information */
-    return ObjectNameInfo;
+    return NULL;
 }
 
 FORCEINLINE
 VOID
-ObpDereferenceNameInfo(IN POBJECT_HEADER_NAME_INFO HeaderNameInfo)
+ObpDereferenceNameInfo(
+    _In_opt_ POBJECT_HEADER_NAME_INFO NameInfo)
 {
     POBJECT_DIRECTORY Directory;
 
-    /* Bail out if there's no info at all */
-    if (!HeaderNameInfo) return;
+    if (NameInfo == NULL || InterlockedDecrement((PLONG)&NameInfo->QueryReferences) != 0)
+        return;
 
-    /* Remove a query reference and check if it was the last one */
-    if (!InterlockedDecrement((PLONG)&HeaderNameInfo->QueryReferences))
+    if (NameInfo->Name.Buffer != NULL)
     {
-        /* Check if we have a name */
-        if (HeaderNameInfo->Name.Buffer)
-        {
-            /* We can get rid of the object name now */
-            ExFreePoolWithTag(HeaderNameInfo->Name.Buffer, OB_NAME_TAG);
-            RtlInitEmptyUnicodeString(&HeaderNameInfo->Name, NULL, 0);
-        }
+        ExFreePoolWithTag(NameInfo->Name.Buffer, OB_NAME_TAG);
+        RtlInitEmptyUnicodeString(&NameInfo->Name, NULL, 0);
+    }
 
-        /* Check if the object has a directory associated to it */
-        Directory = HeaderNameInfo->Directory;
-        if (Directory)
-        {
-            /* Delete the directory */
-            HeaderNameInfo->Directory = NULL;
-            ObDereferenceObjectDeferDelete(Directory);
-        }
+    Directory = NameInfo->Directory;
+    if (Directory != NULL)
+    {
+        NameInfo->Directory = NULL;
+        ObDereferenceObjectDeferDelete(Directory);
     }
 }
 
-/**
- * @brief
- * Locks a directory for shared access.
- * Used for reading members of the directory object.
- *
- * @param[in] Directory
- * The directory to lock.
- *
- * @param[in] Context
- * The lookup lock context.
- */
 FORCEINLINE
 VOID
-ObpAcquireDirectoryLockShared(IN POBJECT_DIRECTORY Directory,
-                              IN POBP_LOOKUP_CONTEXT Context)
+ObpInitializeLookupContext(
+    _Out_ POBP_LOOKUP_CONTEXT Context)
 {
-    /* Update lock flag */
-    Context->LockStateSignature = OBP_LOCK_STATE_PRE_ACQUISITION_SHARED;
-
-    /* Acquire an shared directory lock */
-    KeEnterCriticalRegion();
-    ExAcquirePushLockShared(&Directory->Lock);
-
-    /* Update lock flag */
-    Context->LockStateSignature = OBP_LOCK_STATE_POST_ACQUISITION_SHARED;
+    RtlZeroMemory(Context, sizeof(*Context));
 }
 
-/**
- * @brief
- * Locks a directory for exclusive access.
- * Used for writing/reading members of the directory object.
- *
- * @param[in] Directory
- * The directory to lock.
- *
- * @param[in] Context
- * The lookup lock context.
- */
 FORCEINLINE
 VOID
-ObpAcquireDirectoryLockExclusive(IN POBJECT_DIRECTORY Directory,
-                                 IN POBP_LOOKUP_CONTEXT Context)
+ObpAcquireLookupContextLock(
+    _Inout_ POBP_LOOKUP_CONTEXT Context,
+    _In_ POBJECT_DIRECTORY Directory)
 {
-    /* Update lock flag */
-    Context->LockStateSignature = OBP_LOCK_STATE_PRE_ACQUISITION_EXCLUSIVE;
+    ASSERT(!Context->DirectoryLocked);
 
-    /* Acquire an exclusive directory lock */
-    KeEnterCriticalRegion();
-    ExAcquirePushLockExclusive(&Directory->Lock);
-
-    /* Update lock flag */
-    Context->LockStateSignature = OBP_LOCK_STATE_POST_ACQUISITION_EXCLUSIVE;
-}
-
-/**
- * @brief
- * Unlocks a previously shared or exclusively locked directory.
- *
- * @param[in] Directory
- * The directory to unlock.
- *
- * @param[in] Context
- * The lookup lock context.
- */
-FORCEINLINE
-VOID
-ObpReleaseDirectoryLock(IN POBJECT_DIRECTORY Directory,
-                        IN POBP_LOOKUP_CONTEXT Context)
-{
-    /* Release the lock */
-    ExReleasePushLock(&Directory->Lock);
-    Context->LockStateSignature = OBP_LOCK_STATE_RELEASED;
-    KeLeaveCriticalRegion();
-}
-
-/**
- * @brief
- * Initializes a new object directory lookup context.
- * Used for lookup operations (insertions/deletions) in a directory.
- * Employed in conjunction with the directory locking functions.
- *
- * @param[in] Context
- * The new lookup context to initialize.
- */
-FORCEINLINE
-VOID
-ObpInitializeLookupContext(IN POBP_LOOKUP_CONTEXT Context)
-{
-    /* Initialize a null context */
-    Context->Object = NULL;
-    Context->Directory = NULL;
-    Context->DirectoryLocked = FALSE;
-    Context->LockStateSignature = OBP_LOCK_STATE_INITIALIZED;
-}
-
-/**
- * @brief
- * Locks an object directory lookup context for performing
- * lookup operations (insertions/deletions) in a directory.
- * The directory is locked for exclusive access.
- *
- * @param[in] Context
- * The lookup context to lock.
- *
- * @param[in] Directory
- * The directory on which the lookup context applies.
- */
-FORCEINLINE
-VOID
-ObpAcquireLookupContextLock(IN POBP_LOOKUP_CONTEXT Context,
-                            IN POBJECT_DIRECTORY Directory)
-{
-    /* Acquire an exclusive directory lock and save its lock state */
     ObpAcquireDirectoryLockExclusive(Directory, Context);
     Context->Directory = Directory;
     Context->DirectoryLocked = TRUE;
@@ -285,224 +230,138 @@ ObpAcquireLookupContextLock(IN POBP_LOOKUP_CONTEXT Context,
 
 FORCEINLINE
 VOID
-ObpReleaseLookupContextObject(IN POBP_LOOKUP_CONTEXT Context)
+ObpReleaseLookupContextObject(
+    _Inout_ POBP_LOOKUP_CONTEXT Context)
 {
-    POBJECT_HEADER ObjectHeader;
-    POBJECT_HEADER_NAME_INFO HeaderNameInfo;
+    PVOID Object = Context->Object;
 
-    /* Check if we had an object */
-    if (Context->Object)
-    {
-        /* Get the object name information */
-        ObjectHeader = OBJECT_TO_OBJECT_HEADER(Context->Object);
-        HeaderNameInfo = OBJECT_HEADER_TO_NAME_INFO(ObjectHeader);
+    if (Object == NULL)
+        return;
 
-        /* Release the name information */
-        ObpDereferenceNameInfo(HeaderNameInfo);
-
-        /* Dereference the object */
-        ObDereferenceObject(Context->Object);
-        Context->Object = NULL;
-    }
+    Context->Object = NULL;
+    ObpDereferenceNameInfo(OBJECT_HEADER_TO_NAME_INFO(OBJECT_TO_OBJECT_HEADER(Object)));
+    ObDereferenceObject(Object);
 }
 
-/**
- * @brief
- * Releases an initialized object directory lookup context.
- * Unlocks it if necessary, and dereferences the underlying object.
- *
- * @param[in] Context
- * The lookup context to release.
- */
 FORCEINLINE
 VOID
-ObpReleaseLookupContext(IN POBP_LOOKUP_CONTEXT Context)
+ObpReleaseLookupContext(
+    _Inout_ POBP_LOOKUP_CONTEXT Context)
 {
-    /* Check if we came back with the directory locked */
     if (Context->DirectoryLocked)
     {
-        /* Release the directory lock */
         ObpReleaseDirectoryLock(Context->Directory, Context);
         Context->Directory = NULL;
         Context->DirectoryLocked = FALSE;
     }
 
-    /* Clear the context */
     ObpReleaseLookupContextObject(Context);
 }
 
 FORCEINLINE
-VOID
-ObpEnterObjectTypeMutex(IN POBJECT_TYPE ObjectType)
-{
-    /* Sanity check */
-    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
-
-    /* Enter a critical region and acquire the type lock */
-    KeEnterCriticalRegion();
-    ExAcquirePushLockExclusive(&ObjectType->TypeLock);
-}
-
-FORCEINLINE
-VOID
-ObpLeaveObjectTypeMutex(IN POBJECT_TYPE ObjectType)
-{
-    /* Release the type lock and leave the critical region */
-    ExReleasePushLock(&ObjectType->TypeLock);
-    KeLeaveCriticalRegion();
-
-    /* Sanity check */
-    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
-}
-
-FORCEINLINE
-VOID
-ObpReleaseObjectCreateInformation(IN POBJECT_CREATE_INFORMATION ObjectCreateInfo)
-{
-    /* Check if we have a security descriptor */
-    if (ObjectCreateInfo->SecurityDescriptor)
-    {
-        /* Release it */
-        SeReleaseSecurityDescriptor(ObjectCreateInfo->SecurityDescriptor,
-                                    ObjectCreateInfo->ProbeMode,
-                                    TRUE);
-        ObjectCreateInfo->SecurityDescriptor = NULL;
-    }
-}
-
-FORCEINLINE
 PVOID
-ObpAllocateObjectCreateInfoBuffer(IN PP_NPAGED_LOOKASIDE_NUMBER Type)
+ObpAllocateObjectCreateInfoBuffer(
+    _In_ PP_NPAGED_LOOKASIDE_NUMBER Type)
 {
+    PGENERAL_LOOKASIDE Lists[2];
+    PKPRCB Prcb = KeGetCurrentPrcb();
     PVOID Buffer;
-    PNPAGED_LOOKASIDE_LIST List;
-    PKPRCB Prcb = KeGetCurrentPrcb();
+    ULONG Index;
 
-    /* Get the P list first */
-    List = (PNPAGED_LOOKASIDE_LIST)Prcb->PPLookasideList[Type].P;
+    Lists[0] = Prcb->PPLookasideList[Type].P;
+    Lists[1] = Prcb->PPLookasideList[Type].L;
 
-    /* Attempt allocation */
-    List->L.TotalAllocates++;
-    Buffer = (PVOID)InterlockedPopEntrySList(&List->L.ListHead);
-    if (!Buffer)
+    for (Index = 0; Index < RTL_NUMBER_OF(Lists); Index++)
     {
-        /* Let the balancer know that the P list failed */
-        List->L.AllocateMisses++;
+        Lists[Index]->TotalAllocates++;
+        Buffer = InterlockedPopEntrySList(&Lists[Index]->ListHead);
+        if (Buffer != NULL)
+            return Buffer;
 
-        /* Try the L List */
-        List = (PNPAGED_LOOKASIDE_LIST)Prcb->PPLookasideList[Type].L;
-        List->L.TotalAllocates++;
-        Buffer = (PVOID)InterlockedPopEntrySList(&List->L.ListHead);
-        if (!Buffer)
-        {
-            /* Let the balancer know the L list failed too */
-            List->L.AllocateMisses++;
-
-            /* Allocate it */
-            Buffer = List->L.Allocate(List->L.Type, List->L.Size, List->L.Tag);
-        }
+        Lists[Index]->AllocateMisses++;
     }
 
-    /* Return buffer */
-    return Buffer;
+    return Lists[1]->Allocate(Lists[1]->Type, Lists[1]->Size, Lists[1]->Tag);
 }
 
 FORCEINLINE
 VOID
-ObpFreeCapturedAttributes(IN PVOID Buffer,
-                          IN PP_NPAGED_LOOKASIDE_NUMBER Type)
+ObpFreeCapturedAttributes(
+    _In_ PVOID Buffer,
+    _In_ PP_NPAGED_LOOKASIDE_NUMBER Type)
 {
-    PNPAGED_LOOKASIDE_LIST List;
+    PGENERAL_LOOKASIDE Lists[2];
     PKPRCB Prcb = KeGetCurrentPrcb();
+    ULONG Index;
 
-    /* Use the P List */
-    List = (PNPAGED_LOOKASIDE_LIST)Prcb->PPLookasideList[Type].P;
-    List->L.TotalFrees++;
+    Lists[0] = Prcb->PPLookasideList[Type].P;
+    Lists[1] = Prcb->PPLookasideList[Type].L;
 
-    /* Check if the Free was within the Depth or not */
-    if (ExQueryDepthSList(&List->L.ListHead) >= List->L.Depth)
+    for (Index = 0; Index < RTL_NUMBER_OF(Lists); Index++)
     {
-        /* Let the balancer know */
-        List->L.FreeMisses++;
-
-        /* Use the L List */
-        List = (PNPAGED_LOOKASIDE_LIST)Prcb->PPLookasideList[Type].L;
-        List->L.TotalFrees++;
-
-        /* Check if the Free was within the Depth or not */
-        if (ExQueryDepthSList(&List->L.ListHead) >= List->L.Depth)
+        Lists[Index]->TotalFrees++;
+        if (ExQueryDepthSList(&Lists[Index]->ListHead) < Lists[Index]->Depth)
         {
-            /* All lists failed, use the pool */
-            List->L.FreeMisses++;
-            List->L.Free(Buffer);
+            InterlockedPushEntrySList(&Lists[Index]->ListHead, (PSLIST_ENTRY)Buffer);
+            return;
         }
-        else
-        {
-            /* The free was within the Depth */
-            InterlockedPushEntrySList(&List->L.ListHead,
-                                      (PSLIST_ENTRY)Buffer);
-        }
+
+        Lists[Index]->FreeMisses++;
     }
-    else
-    {
-        /* The free was within the Depth */
-        InterlockedPushEntrySList(&List->L.ListHead,
-                                  (PSLIST_ENTRY)Buffer);
-    }
+
+    Lists[1]->Free(Buffer);
 }
 
 FORCEINLINE
 VOID
-ObpFreeObjectCreateInformation(IN POBJECT_CREATE_INFORMATION ObjectCreateInfo)
+ObpReleaseObjectCreateInformation(
+    _Inout_ POBJECT_CREATE_INFORMATION ObjectCreateInfo)
 {
-    /* First release the attributes, then free them from the lookaside list */
+    if (ObjectCreateInfo->SecurityDescriptor == NULL)
+        return;
+
+    SeReleaseSecurityDescriptor(ObjectCreateInfo->SecurityDescriptor, ObjectCreateInfo->ProbeMode, TRUE);
+    ObjectCreateInfo->SecurityDescriptor = NULL;
+}
+
+FORCEINLINE
+VOID
+ObpFreeObjectCreateInformation(
+    _Inout_ POBJECT_CREATE_INFORMATION ObjectCreateInfo)
+{
     ObpReleaseObjectCreateInformation(ObjectCreateInfo);
     ObpFreeCapturedAttributes(ObjectCreateInfo, LookasideCreateInfoList);
 }
 
-#if DBG
 FORCEINLINE
 VOID
-ObpCalloutStart(IN PKIRQL CalloutIrql)
+ObpCalloutStart(
+    _Out_ PKIRQL CalloutIrql)
 {
-    /* Save the callout IRQL */
     *CalloutIrql = KeGetCurrentIrql();
 }
 
 FORCEINLINE
 VOID
-ObpCalloutEnd(IN KIRQL CalloutIrql,
-              IN PCHAR Procedure,
-              IN POBJECT_TYPE ObjectType,
-              IN PVOID Object)
+ObpCalloutEnd(
+    _In_ KIRQL CalloutIrql,
+    _In_ PCHAR Procedure,
+    _In_ POBJECT_TYPE ObjectType,
+    _In_ PVOID Object)
 {
-    /* Detect IRQL change */
-    if (CalloutIrql != KeGetCurrentIrql())
+#if DBG
+    KIRQL Irql = KeGetCurrentIrql();
+
+    if (Irql != CalloutIrql)
     {
-        /* Print error */
-        DbgPrint("OB: ObjectType: %wZ  Procedure: %s  Object: %p\n",
-                 &ObjectType->Name, Procedure, Object);
-        DbgPrint("    Returned at %x IRQL, but was called at %x IRQL\n",
-                 KeGetCurrentIrql(), CalloutIrql);
+        DbgPrint("The %s procedure of %wZ object %p returned at IRQL %u, entered at %u\n",
+                 Procedure, &ObjectType->Name, Object, Irql, CalloutIrql);
         DbgBreakPoint();
     }
-}
 #else
-FORCEINLINE
-VOID
-ObpCalloutStart(IN PKIRQL CalloutIrql)
-{
-    /* No-op */
     UNREFERENCED_PARAMETER(CalloutIrql);
-}
-
-FORCEINLINE
-VOID
-ObpCalloutEnd(IN KIRQL CalloutIrql,
-              IN PCHAR Procedure,
-              IN POBJECT_TYPE ObjectType,
-              IN PVOID Object)
-{
-    UNREFERENCED_PARAMETER(CalloutIrql);
-}
+    UNREFERENCED_PARAMETER(Procedure);
+    UNREFERENCED_PARAMETER(ObjectType);
+    UNREFERENCED_PARAMETER(Object);
 #endif
+}

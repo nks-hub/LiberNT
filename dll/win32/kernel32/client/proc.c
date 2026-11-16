@@ -11,7 +11,6 @@
 /* INCLUDES ****************************************************************/
 
 #include <k32.h>
-#include <reactos/emulation.h>
 #include <wow64shared.h>
 
 #define NDEBUG
@@ -1044,6 +1043,66 @@ SetProcessAffinityMask(IN HANDLE hProcess,
     return TRUE;
 }
 
+#define BASEP_AFFINITY_UPDATE_MODE_PERMANENT 0x00000002UL
+
+BOOL
+WINAPI
+SetProcessAffinityUpdateMode(IN HANDLE hProcess,
+                             IN DWORD dwFlags)
+{
+    ULONG UpdateMode;
+    NTSTATUS Status;
+
+    if (hProcess != NtCurrentProcess() ||
+        (dwFlags & ~PROCESS_AFFINITY_ENABLE_AUTO_UPDATE) != 0)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    if (dwFlags & PROCESS_AFFINITY_ENABLE_AUTO_UPDATE)
+        UpdateMode = PROCESS_AFFINITY_ENABLE_AUTO_UPDATE;
+    else
+        UpdateMode = BASEP_AFFINITY_UPDATE_MODE_PERMANENT;
+
+    Status = NtSetInformationProcess(hProcess,
+                                     ProcessAffinityUpdateMode,
+                                     &UpdateMode,
+                                     sizeof(UpdateMode));
+    if (!NT_SUCCESS(Status))
+    {
+        BaseSetLastNTError(Status);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+BOOL
+WINAPI
+QueryProcessAffinityUpdateMode(IN HANDLE hProcess,
+                               OUT LPDWORD lpdwFlags OPTIONAL)
+{
+    ULONG UpdateMode;
+    NTSTATUS Status;
+
+    Status = NtQueryInformationProcess(hProcess,
+                                       ProcessAffinityUpdateMode,
+                                       &UpdateMode,
+                                       sizeof(UpdateMode),
+                                       NULL);
+    if (!NT_SUCCESS(Status))
+    {
+        BaseSetLastNTError(Status);
+        return FALSE;
+    }
+
+    if (lpdwFlags)
+        *lpdwFlags = UpdateMode & PROCESS_AFFINITY_ENABLE_AUTO_UPDATE;
+
+    return TRUE;
+}
+
 /*
  * @implemented
  */
@@ -2030,26 +2089,6 @@ IsWow64Process2(IN HANDLE hProcess,
 }
 
 static
-BOOLEAN
-BasepIsEmulatedMachine(IN USHORT Machine)
-{
-    WCHAR Buffer[MAX_PATH];
-    UNICODE_STRING Path;
-
-    if (Machine != IMAGE_FILE_MACHINE_AMD64) return FALSE;
-
-    RtlInitEmptyUnicodeString(&Path, Buffer, sizeof(Buffer) - sizeof(UNICODE_NULL));
-    if (!NT_SUCCESS(RtlAppendUnicodeToString(&Path, SharedUserData->NtSystemRoot)) ||
-        !NT_SUCCESS(RtlAppendUnicodeToString(&Path, L"\\System32\\" EMULATION_HOST_IMAGE_AMD64)))
-    {
-        return FALSE;
-    }
-
-    Buffer[Path.Length / sizeof(WCHAR)] = UNICODE_NULL;
-    return RtlDoesFileExists_U(Buffer);
-}
-
-static
 NTSTATUS
 BasepQuerySupportedMachines(OUT SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION *Machines,
                             IN ULONG Count)
@@ -2063,6 +2102,24 @@ BasepQuerySupportedMachines(OUT SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMA
                                       Machines,
                                       (Count - 1) * sizeof(*Machines),
                                       NULL);
+}
+
+static
+BOOLEAN
+BasepIsEmulatedMachine(IN USHORT Machine)
+{
+    SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION Machines[8];
+    ULONG Index;
+
+    if (!NT_SUCCESS(BasepQuerySupportedMachines(Machines, RTL_NUMBER_OF(Machines))))
+        return FALSE;
+
+    for (Index = 0; Machines[Index].Machine; Index++)
+    {
+        if (Machines[Index].Machine == Machine)
+            return Machines[Index].UserMode && !Machines[Index].WoW64Container;
+    }
+    return FALSE;
 }
 
 /*
@@ -2824,7 +2881,6 @@ BasepCaptureExtendedAttributes(
         else if (Attribute->Attribute == PROC_THREAD_ATTRIBUTE_HANDLE_LIST)
         {
             SIZE_T ListSize;
-            SIZE_T HandleIndex;
 
             if (!InheritHandles)
             {
@@ -2842,19 +2898,6 @@ BasepCaptureExtendedAttributes(
 
             RtlCopyMemory(*HandleList, Attribute->Value, ListSize);
             *HandleCount = ListSize / sizeof(HANDLE);
-            for (HandleIndex = 0; HandleIndex < *HandleCount; HandleIndex++)
-            {
-                DWORD HandleFlags;
-
-                if (!GetHandleInformation((*HandleList)[HandleIndex], &HandleFlags) || !(HandleFlags & HANDLE_FLAG_INHERIT))
-                {
-                    RtlFreeHeap(RtlGetProcessHeap(), 0, *HandleList);
-                    *HandleList = NULL;
-                    *HandleCount = 0;
-                    SetLastError(ERROR_INVALID_PARAMETER);
-                    return FALSE;
-                }
-            }
         }
     }
 
@@ -3054,7 +3097,7 @@ BasepCreateUserProcess(IN HANDLE UserToken,
         AttributeList->Attributes[AttributeCount].Value = (ULONG_PTR)DebugHandle;
         AttributeCount++;
     }
-    EffectiveToken = UserToken ? UserToken : SaferToken;
+    EffectiveToken = SaferToken ? SaferToken : UserToken;
     if (Extended->SecurityCapabilities)
     {
         HANDLE BaseToken = EffectiveToken;
@@ -3206,11 +3249,6 @@ BasepCreateUserProcess(IN HANDLE UserToken,
     {
         HardErrorMode = SEM_FAILCRITICALERRORS;
         Status = NtSetInformationProcess(ProcessHandle, ProcessDefaultHardErrorMode, &HardErrorMode, sizeof(HardErrorMode));
-        if (!NT_SUCCESS(Status)) goto Failure;
-    }
-    if (SaferToken && !UserToken)
-    {
-        Status = BasepReplaceProcessThreadTokens(SaferToken, ProcessHandle, ThreadHandle);
         if (!NT_SUCCESS(Status)) goto Failure;
     }
     if (JobHandle)
@@ -4162,7 +4200,7 @@ StartScan:
 
     /* Have we already done, and do we need to do, SRP (WinSafer) checks? */
     if (!(SkipSaferAndAppCompat) &&
-        ~(dwCreationFlags & CREATE_PRESERVE_CODE_AUTHZ_LEVEL))
+        !(dwCreationFlags & CREATE_PRESERVE_CODE_AUTHZ_LEVEL))
     {
         /* Assume yes */
         SaferNeeded = TRUE;
@@ -4900,6 +4938,7 @@ StartScan:
         || ExtendedAttributes.ComponentFilterPresent
         || ExtendedAttributes.PseudoConsole
         || hUserToken
+        || TokenHandle
        )
     {
         Result = BasepCreateUserProcess(hUserToken, TokenHandle, JobHandle, &PathName, lpApplicationName, lpCommandLine, lpEnvironment, lpCurrentDirectory, &StartupInfo, dwCreationFlags | NoWindow, bInheritHandles, lpProcessAttributes, lpThreadAttributes, ParameterFlags, Flags, ParentProcess, InheritHandleList, InheritHandleCount, &PriorityClass, &ExtendedAttributes, lpProcessInformation);
@@ -5689,7 +5728,7 @@ Quickie:
     if (TokenHandle)
     {
         /* And if the user asked for one */
-        if (hUserToken)
+        if ((hUserToken) && (hNewToken))
         {
             /* Then return it */
             *hNewToken = TokenHandle;

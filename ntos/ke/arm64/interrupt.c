@@ -158,12 +158,31 @@ typedef struct DECLSPEC_CACHEALIGN _KI_ARM64_TIMER_STATE
     ULONGLONG CounterRemainder;
     ULONG ElapsedIncrement;
     ULONGLONG PeriodicDeadline;
+    KSPIN_LOCK AccountingLock;
+    ULONG OwnerIncrement;
+    BOOLEAN Owner;
+    volatile BOOLEAN IdleSuspended;
 } KI_ARM64_TIMER_STATE, *PKI_ARM64_TIMER_STATE;
+
+#define KI_ARM64_CLOCK_RUNNING 0
+#define KI_ARM64_CLOCK_ARMING 1
+#define KI_ARM64_CLOCK_IDLE 2
+#define KI_ARM64_CLOCK_PHASE_MASK 3
+#define KI_ARM64_CLOCK_OWNER_SHIFT 2
+#define KI_ARM64_CLOCK_STATE(Owner, Phase) ((LONG)(((ULONG)(Owner) << KI_ARM64_CLOCK_OWNER_SHIFT) | (Phase)))
+#define KI_ARM64_CLOCK_OWNER(State) ((ULONG)(State) >> KI_ARM64_CLOCK_OWNER_SHIFT)
+#define KI_ARM64_CLOCK_PHASE(State) ((ULONG)(State) & KI_ARM64_CLOCK_PHASE_MASK)
+#define KI_ARM64_MAXIMUM_IDLE_CLOCK_INTERVAL 10000000ULL
+#define KI_ARM64_SUSPENDED_CLOCK_SECONDS 86400ULL
 
 static KI_ARM64_TIMER_STATE KiArm64TimerState[MAXIMUM_PROCESSORS];
 static volatile ULONGLONG KiArm64ClockDeadline;
 static volatile LONG KiArm64ClockDeadlineReady;
-static KDPC KiArm64ClockDeadlineDpc;
+static volatile LONG KiArm64ClockOwnerState = KI_ARM64_CLOCK_STATE(0, KI_ARM64_CLOCK_RUNNING);
+static volatile LONG KiArm64DynamicTickEnabled;
+static ULONGLONG KiArm64ClockOwnerCounter;
+static ULONGLONG KiArm64ClockOwnerRemainder;
+static KDPC KiArm64ClockDeadlineDpc[MAXIMUM_PROCESSORS];
 
 /* Include nested and secondary dispatches in interrupt-object rundown. */
 typedef struct DECLSPEC_CACHEALIGN _KI_ARM64_DISPATCH_DEPTH
@@ -172,6 +191,13 @@ typedef struct DECLSPEC_CACHEALIGN _KI_ARM64_DISPATCH_DEPTH
 } KI_ARM64_DISPATCH_DEPTH;
 
 static KI_ARM64_DISPATCH_DEPTH KiArm64DispatchDepth[MAXIMUM_PROCESSORS];
+
+#define KI_ARM64_SPI_BASE 32
+#define KI_ARM64_SPI_LIMIT 1020
+#define KI_ARM64_FOREIGN_BATCH 8
+
+static KI_ARM64_DISPATCH_DEPTH KiArm64ForeignDispatchDepth[MAXIMUM_PROCESSORS];
+static KSPIN_LOCK KiArm64ForeignDispatchLock;
 
 static inline
 PKINTERRUPT
@@ -182,6 +208,74 @@ KiArm64LoadInterruptHeadNoFence(
     PKINTERRUPT *Table = (PKINTERRUPT *)ReadPointerNoFence((PVOID const volatile *)&KiArm64IntTables[Cpu]);
 
     return Table ? (PKINTERRUPT)ReadPointerNoFence((PVOID const volatile *)&Table[IntId]) : NULL;
+}
+
+/* An interrupt controller may deliver an SPI to a processor other than the one it is routed to */
+static
+ULONG
+KiArm64CollectForeignInterrupts(
+    _In_ ULONG IntId,
+    _In_ ULONG Cpu,
+    _In_ ULONG Skip,
+    _Out_writes_to_(KI_ARM64_FOREIGN_BATCH, return) PKINTERRUPT *Batch,
+    _Out_ PBOOLEAN More)
+{
+    PKINTERRUPT Head, Interrupt;
+    ULONG Other, Position = 0, Count = 0;
+
+    ASSERT(IntId >= KI_ARM64_SPI_BASE && IntId < KI_ARM64_SPI_LIMIT);
+    ASSERT(Cpu == KeGetCurrentProcessorNumber());
+    ASSERT(ReadNoFence(&KiArm64ForeignDispatchDepth[Cpu].Value) > 0);
+    ASSERT(KeGetCurrentIrql() < HIGH_LEVEL);
+
+    *More = FALSE;
+    KxAcquireSpinLock(&KiArm64ForeignDispatchLock);
+    for (Other = 0; (Other < (ULONG)KeNumberProcessors) && !*More; Other++)
+    {
+        if (Other == Cpu)
+            continue;
+
+        Head = KiArm64LoadInterruptHeadNoFence(IntId, Other);
+        if (Head == NULL)
+            continue;
+
+        Interrupt = Head;
+        do
+        {
+            ASSERT(Interrupt->Vector == IntId);
+            ASSERT((UCHAR)Interrupt->Number == Other);
+            if (Position++ >= Skip)
+            {
+                if (Count == KI_ARM64_FOREIGN_BATCH)
+                {
+                    *More = TRUE;
+                    break;
+                }
+
+                Batch[Count++] = Interrupt;
+            }
+
+            Interrupt = CONTAINING_RECORD(Interrupt->InterruptListEntry.Flink, KINTERRUPT, InterruptListEntry);
+        } while (Interrupt != Head);
+    }
+    KxReleaseSpinLock(&KiArm64ForeignDispatchLock);
+
+    return Count;
+}
+
+static
+VOID
+KiArm64WaitForForeignDispatch(VOID)
+{
+    ULONG Cpu;
+
+    ASSERT(ReadNoFence(&KiArm64ForeignDispatchDepth[KeGetCurrentProcessorNumber()].Value) == 0);
+
+    for (Cpu = 0; Cpu < MAXIMUM_PROCESSORS; Cpu++)
+    {
+        while (ReadAcquire(&KiArm64ForeignDispatchDepth[Cpu].Value) != 0)
+            YieldProcessor();
+    }
 }
 
 PKINTERRUPT NTAPI KiArm64QueryInterrupt(_In_ ULONG IntId)
@@ -491,6 +585,40 @@ static __inline VOID KiArm64WriteCntpCtl(ULONG v)
     ARM64_ISB();
 }
 
+FORCEINLINE
+ULONG_PTR
+KiArm64MaskClockInterrupts(VOID)
+{
+    ULONG_PTR Daif = ARM64_READ_SYSREG(DAIF);
+
+    ARM64_DAIFSET(3);
+    return Daif;
+}
+
+FORCEINLINE
+VOID
+KiArm64RestoreClockInterrupts(
+    _In_ ULONG_PTR Daif)
+{
+    ARM64_WRITE_SYSREG(DAIF, Daif);
+}
+
+FORCEINLINE
+BOOLEAN
+KiArm64ClockInterruptsMasked(VOID)
+{
+    const ULONG_PTR Mask = ARM64_PSTATE_IRQ_MASK | ARM64_PSTATE_FIQ_MASK;
+
+    return (ARM64_READ_SYSREG(DAIF) & Mask) == Mask;
+}
+
+FORCEINLINE
+BOOLEAN
+KiArm64ProfilingActive(VOID)
+{
+    return ReadPointerNoFence((PVOID const volatile *)&KiProfileSourceListHead.Flink) != &KiProfileSourceListHead;
+}
+
 static
 ULONGLONG
 KiArm64ClockDeadlineCompare(
@@ -510,14 +638,35 @@ KiArm64ClockDeadlineCompare(
     return Counter + ((Deadline - Now) * KiArm64TimerFrequency + 9999999) / 10000000 + 1;
 }
 
-static __inline VOID KiArm64AcknowledgeTimer(ULONG Cpu, PKI_ARM64_TIMER_STATE TimerState, ULONGLONG Counter)
+static
+VOID
+KiArm64ArmPeriodicClock(
+    _Inout_ PKI_ARM64_TIMER_STATE TimerState,
+    _In_ ULONGLONG Counter,
+    _In_ BOOLEAN RestartPeriod)
 {
+    ULONG Increment;
     ULONGLONG Compare, HighResolution, Now, Next;
 
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(!TimerState->IdleSuspended);
+
+    Increment = KiArm64CurrentTimerIncrement();
+    if (!TimerState->Owner && KeMaximumIncrement > Increment)
+        Increment = KeMaximumIncrement;
+    if (TimerState->Increment != Increment || TimerState->PeriodTicks == 0)
+    {
+        TimerState->Increment = Increment;
+        TimerState->PeriodTicks = KiArm64ComputeTimerPeriodTicks(Increment);
+    }
+    ASSERT(TimerState->PeriodTicks != 0);
+
     /* Rearm once beyond the current counter, without replaying missed IRQs. */
-    if (TimerState->PeriodicDeadline <= Counter)
+    if (RestartPeriod)
+        TimerState->PeriodicDeadline = Counter + TimerState->PeriodTicks;
+    else if (TimerState->PeriodicDeadline <= Counter)
         TimerState->PeriodicDeadline += ((Counter - TimerState->PeriodicDeadline) / TimerState->PeriodTicks + 1) * TimerState->PeriodTicks;
-    if (Cpu == 0)
+    if (TimerState->Owner)
     {
         Now = KiQueryInterruptTimePrecise(NULL, FALSE);
         Next = (Now / TimerState->Increment + 1) * TimerState->Increment;
@@ -525,7 +674,7 @@ static __inline VOID KiArm64AcknowledgeTimer(ULONG Cpu, PKI_ARM64_TIMER_STATE Ti
             ((Next - Now) * KiArm64TimerFrequency + 9999999) / 10000000;
     }
     Compare = TimerState->PeriodicDeadline;
-    if (Cpu == 0)
+    if (TimerState->Owner)
     {
         HighResolution = KiArm64ClockDeadlineCompare(FALSE);
         if (HighResolution < Compare)
@@ -536,20 +685,80 @@ static __inline VOID KiArm64AcknowledgeTimer(ULONG Cpu, PKI_ARM64_TIMER_STATE Ti
 
 static
 VOID
-KiArm64ReprogramClock(VOID)
+KiArm64ReprogramClock(
+    _In_ ULONG Cpu)
 {
-    PKI_ARM64_TIMER_STATE TimerState = &KiArm64TimerState[0];
+    PKI_ARM64_TIMER_STATE TimerState = &KiArm64TimerState[Cpu];
     ULONGLONG Compare, HighResolution;
-    BOOLEAN Enabled;
 
-    ASSERT(KeGetCurrentProcessorNumber() == 0);
-    Enabled = KeDisableInterrupts();
+    ASSERT(Cpu == KeGetCurrentProcessorNumber());
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(KiArm64ClockOwnerState == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING));
+    ASSERT(TimerState->Owner);
+    ASSERT(!TimerState->IdleSuspended);
+
     Compare = TimerState->PeriodicDeadline;
     HighResolution = KiArm64ClockDeadlineCompare(TRUE);
     if (HighResolution < Compare)
         Compare = HighResolution;
     KiArm64WriteTimerCompare(Compare);
-    KeRestoreInterrupts(Enabled);
+}
+
+FORCEINLINE
+VOID
+KiArm64RequestClockInterrupt(VOID)
+{
+    ASSERT(KiArm64ClockInterruptsMasked());
+    KiArm64WriteTimerCompare(KiArm64ReadCounter());
+}
+
+static
+BOOLEAN
+KiArm64AcquireClockOwnership(
+    _In_ ULONG Cpu)
+{
+    LONG State, Previous;
+    ULONG Owner;
+
+    ASSERT(Cpu == KeGetCurrentProcessorNumber());
+    ASSERT(KiArm64ClockInterruptsMasked());
+
+    State = ReadAcquire(&KiArm64ClockOwnerState);
+    for (;;)
+    {
+        Owner = KI_ARM64_CLOCK_OWNER(State);
+        ASSERT(Owner < MAXIMUM_PROCESSORS);
+        ASSERT(KiProcessorBlock[Owner] != NULL);
+        ASSERT(KI_ARM64_CLOCK_PHASE(State) <= KI_ARM64_CLOCK_IDLE);
+        if (KI_ARM64_CLOCK_PHASE(State) == KI_ARM64_CLOCK_RUNNING)
+            return (Owner == Cpu);
+        ASSERT((Owner != Cpu) || (KI_ARM64_CLOCK_PHASE(State) == KI_ARM64_CLOCK_IDLE));
+        Previous = InterlockedCompareExchange(&KiArm64ClockOwnerState,
+                                              KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING),
+                                              State);
+        if (Previous == State)
+            break;
+        State = Previous;
+    }
+
+    KeMemoryBarrier();
+    if (Owner != Cpu)
+        KiProcessorBlock[Owner]->ClockOwner = FALSE;
+    KiProcessorBlock[Cpu]->ClockOwner = TRUE;
+    return TRUE;
+}
+
+static
+VOID
+KiArm64QueueClockDeadlineDpc(
+    _In_ ULONG Owner)
+{
+    PKDPC Dpc = &KiArm64ClockDeadlineDpc[Owner];
+
+    ASSERT(Owner < (ULONG)KeNumberProcessors);
+    ASSERT(Owner != KeGetCurrentProcessorNumber());
+    ASSERT(Dpc->DeferredRoutine != NULL);
+    KeInsertQueueDpc(Dpc, NULL, NULL);
 }
 
 static
@@ -561,12 +770,19 @@ KiArm64ClockDeadlineDpcRoutine(
     _In_opt_ PVOID SystemArgument1,
     _In_opt_ PVOID SystemArgument2)
 {
-    UNREFERENCED_PARAMETER(Dpc);
+    ULONG Cpu = KeGetCurrentProcessorNumber();
+    ULONG_PTR Daif;
+
     UNREFERENCED_PARAMETER(DeferredContext);
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
+    ASSERT(Dpc == &KiArm64ClockDeadlineDpc[Cpu]);
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
-    KiArm64ReprogramClock();
+    Daif = KiArm64MaskClockInterrupts();
+    if (ReadAcquire(&KiArm64ClockOwnerState) == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING))
+        KiArm64ReprogramClock(Cpu);
+    KiArm64RestoreClockInterrupts(Daif);
 }
 
 BOOLEAN
@@ -575,43 +791,44 @@ KiSetClockDeadline(
     _In_ ULONGLONG InterruptTime)
 {
     KIRQL OldIrql;
+    ULONG_PTR Daif;
+    ULONG Cpu;
+    LONG State;
 
     KiArm64ClockDeadline = InterruptTime;
     if (!KiArm64ClockDeadlineReady)
         return TRUE;
 
     KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
-    if (KeGetCurrentProcessorNumber() == 0)
-        KiArm64ReprogramClock();
-    else
-        KeInsertQueueDpc(&KiArm64ClockDeadlineDpc, NULL, NULL);
+    KeMemoryBarrier();
+    Cpu = KeGetCurrentProcessorNumber();
+    Daif = KiArm64MaskClockInterrupts();
+    State = ReadAcquire(&KiArm64ClockOwnerState);
+    ASSERT((KI_ARM64_CLOCK_OWNER(State) != Cpu) || (KI_ARM64_CLOCK_PHASE(State) == KI_ARM64_CLOCK_RUNNING));
+    if (State == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING))
+        KiArm64ReprogramClock(Cpu);
+    KiArm64RestoreClockInterrupts(Daif);
+
+    if (KI_ARM64_CLOCK_OWNER(State) != Cpu)
+    {
+        if (KI_ARM64_CLOCK_PHASE(State) == KI_ARM64_CLOCK_RUNNING)
+            KiArm64QueueClockDeadlineDpc(KI_ARM64_CLOCK_OWNER(State));
+        else if (InterruptTime != 0)
+            KiArm64ClockTimerInserted(InterruptTime);
+    }
     KeLowerIrql(OldIrql);
     return TRUE;
 }
 
 static
 VOID
-KiArm64AcknowledgeClockInterrupt(
-    _In_ ULONG Cpu)
+KiArm64AccumulateClockElapsed(
+    _Inout_ PKI_ARM64_TIMER_STATE TimerState,
+    _In_ ULONGLONG Counter)
 {
-    ULONG Increment;
-    ULONGLONG Counter, Elapsed, Scaled;
-    PKI_ARM64_TIMER_STATE TimerState;
+    ULONGLONG Elapsed, Scaled;
 
-    Increment = KiArm64CurrentTimerIncrement();
-    if (Cpu != 0 && KeMaximumIncrement > Increment)
-    {
-        Increment = KeMaximumIncrement;
-    }
-
-    TimerState = &KiArm64TimerState[Cpu];
-    if (TimerState->Increment != Increment || TimerState->PeriodTicks == 0)
-    {
-        TimerState->Increment = Increment;
-        TimerState->PeriodTicks = KiArm64ComputeTimerPeriodTicks(Increment);
-    }
-
-    Counter = KiArm64ReadCounter();
+    ASSERT(Counter >= TimerState->LastCounter);
     Elapsed = Counter - TimerState->LastCounter;
     /* Bound the conversion; any remaining time is charged on following IRQs. */
     Elapsed = min(Elapsed, (ULONGLONG)MAXLONG * KiArm64TimerFrequency / 10000000);
@@ -619,7 +836,356 @@ KiArm64AcknowledgeClockInterrupt(
     TimerState->ElapsedIncrement = (ULONG)(Scaled / KiArm64TimerFrequency);
     TimerState->CounterRemainder = Scaled % KiArm64TimerFrequency;
     TimerState->LastCounter += Elapsed;
-    KiArm64AcknowledgeTimer(Cpu, TimerState, Counter);
+}
+
+static
+ULONG
+KiArm64TakeClockOwnerIncrement(
+    _In_ ULONGLONG Counter)
+{
+    ULONGLONG Elapsed, Scaled;
+    ULONG Increment;
+
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(KiArm64ClockOwnerState == KI_ARM64_CLOCK_STATE(KeGetCurrentProcessorNumber(), KI_ARM64_CLOCK_RUNNING));
+    if (Counter <= KiArm64ClockOwnerCounter)
+        return 0;
+    Elapsed = min(Counter - KiArm64ClockOwnerCounter, (ULONGLONG)MAXLONG * KiArm64TimerFrequency / 10000000);
+    Scaled = Elapsed * 10000000 + KiArm64ClockOwnerRemainder;
+    Increment = (ULONG)(Scaled / KiArm64TimerFrequency);
+    KiArm64ClockOwnerRemainder = Scaled % KiArm64TimerFrequency;
+    KiArm64ClockOwnerCounter += Elapsed;
+    return Increment;
+}
+
+VOID
+NTAPI
+KiArm64QueryClockTickBaseline(
+    _Out_ PLARGE_INTEGER Counter,
+    _Out_ PULONGLONG Remainder)
+{
+    if (KiArm64ClockOwnerCounter == 0)
+    {
+        *Counter = KeQueryPerformanceCounter(NULL);
+        *Remainder = 0;
+        return;
+    }
+
+    ASSERT(KiArm64ClockOwnerRemainder < KiArm64TimerFrequency);
+    Counter->QuadPart = (LONGLONG)KiArm64ClockOwnerCounter;
+    *Remainder = KiArm64ClockOwnerRemainder;
+}
+
+static
+ULONG
+KiArm64ConsumeIdleTicks(
+    _Inout_ PKI_ARM64_TIMER_STATE TimerState,
+    _In_ ULONGLONG Counter)
+{
+    ULONG Ticks = 0;
+
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(KeMaximumIncrement != 0);
+    while (TimerState->LastCounter != Counter)
+    {
+        KiArm64AccumulateClockElapsed(TimerState, Counter);
+        TimerState->TickOffset += TimerState->ElapsedIncrement;
+        TimerState->ElapsedIncrement = 0;
+        Ticks += TimerState->TickOffset / KeMaximumIncrement;
+        TimerState->TickOffset %= KeMaximumIncrement;
+    }
+    return Ticks;
+}
+
+static
+VOID
+KiArm64AcknowledgeClockInterrupt(
+    _In_ ULONG Cpu)
+{
+    PKI_ARM64_TIMER_STATE TimerState = &KiArm64TimerState[Cpu];
+    ULONGLONG Counter;
+
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(KiArm64ClockTimerState(KeGetCurrentPrcb())->ClockActive);
+    ASSERT(!TimerState->IdleSuspended);
+
+    TimerState->Owner = KiArm64AcquireClockOwnership(Cpu);
+    Counter = KiArm64ReadCounter();
+    KiArm64AccumulateClockElapsed(TimerState, Counter);
+    TimerState->OwnerIncrement = TimerState->Owner ? KiArm64TakeClockOwnerIncrement(Counter) : 0;
+    KiArm64ArmPeriodicClock(TimerState, Counter, FALSE);
+}
+
+static
+VOID
+KiArm64ChargeClockTick(
+    _Inout_ PKPRCB Prcb,
+    _Inout_ PKI_ARM64_TIMER_STATE TimerState,
+    _In_ PKTRAP_FRAME TrapFrame,
+    _In_ KIRQL Irql)
+{
+    ULONG RuntimeIncrement;
+    ULONG RuntimeTicks;
+
+    ASSERT(Prcb == KeGetCurrentPrcb());
+    ASSERT(TimerState == &KiArm64TimerState[Prcb->Number]);
+
+    if (TimerState->Owner)
+    {
+        ASSERT(KiArm64ClockOwnerState == KI_ARM64_CLOCK_STATE(Prcb->Number, KI_ARM64_CLOCK_RUNNING));
+        KiUpdateClockTime(Prcb, TimerState->OwnerIncrement);
+    }
+
+    RuntimeIncrement = KeMaximumIncrement ? KeMaximumIncrement : TimerState->Increment;
+    TimerState->TickOffset += TimerState->ElapsedIncrement;
+    if (TimerState->TickOffset >= RuntimeIncrement)
+    {
+        RuntimeTicks = TimerState->TickOffset / RuntimeIncrement;
+        TimerState->TickOffset %= RuntimeIncrement;
+        KiUpdateRunTime(TrapFrame, Irql, RuntimeTicks);
+    }
+    else
+    {
+        Prcb->InterruptCount++;
+    }
+}
+
+static
+ULONGLONG
+KiArm64NextClockDeadline(
+    _In_ ULONGLONG Now)
+{
+    ULONGLONG Deadline = Now + KI_ARM64_MAXIMUM_IDLE_CLOCK_INTERVAL;
+    ULONGLONG DueTime;
+    ULONG Index;
+
+    for (Index = 0; Index < TIMER_TABLE_SIZE; Index++)
+    {
+        DueTime = *(volatile ULONGLONG *)&KiTimerTableListHead[Index].Time.QuadPart;
+        if (DueTime < Deadline)
+            Deadline = DueTime;
+    }
+
+    DueTime = KiArm64ClockDeadline;
+    if ((DueTime != 0) && (DueTime < Deadline))
+        Deadline = DueTime;
+    return Deadline;
+}
+
+VOID
+NTAPI
+KiArm64ClockArmForIdle(
+    _Inout_ PKPRCB Prcb)
+{
+    PKCLOCK_TIMER_STATE ClockState = KiArm64ClockTimerState(Prcb);
+    PKI_ARM64_TIMER_STATE TimerState;
+    ULONG Cpu = Prcb->Number;
+    LONG State, Previous;
+    ULONGLONG Now, Deadline, Counter;
+
+    ASSERT(Prcb == KeGetCurrentPrcb());
+    ASSERT(Cpu < MAXIMUM_PROCESSORS);
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+    ASSERT(Prcb->CurrentThread == Prcb->IdleThread);
+    ASSERT(Prcb->Sleeping);
+    TimerState = &KiArm64TimerState[Cpu];
+    ASSERT(!TimerState->IdleSuspended);
+    ASSERT(!ClockState->ClockArmedForIdle);
+    ASSERT(ClockState->OneShotState == KClockTimerOneShotUnarmed);
+
+    if (!ClockState->ClockActive || !KiArm64DynamicTickEnabled || KiArm64ProfilingActive())
+        return;
+
+    State = ReadAcquire(&KiArm64ClockOwnerState);
+    if (KI_ARM64_CLOCK_OWNER(State) == Cpu)
+    {
+        ASSERT(State == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING));
+        ASSERT(TimerState->Owner);
+        if ((KeActiveProcessors & ~(KiIdleSummary | Prcb->SetMember)) != 0)
+            return;
+        Previous = InterlockedCompareExchange(&KiArm64ClockOwnerState,
+                                              KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_ARMING),
+                                              State);
+        ASSERT(Previous == State);
+        UNREFERENCED_PARAMETER(Previous);
+        KeMemoryBarrier();
+
+        Now = KiQueryInterruptTimePrecise(NULL, FALSE);
+        Deadline = KiArm64NextClockDeadline(Now);
+        if ((Deadline <= Now) || (Deadline - Now < TimerState->Increment))
+        {
+            if (InterlockedCompareExchange(&KiArm64ClockOwnerState,
+                                           KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING),
+                                           KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_ARMING)) ==
+                KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_ARMING))
+            {
+                return;
+            }
+        }
+        else
+        {
+            ASSERT(Deadline - Now <= KI_ARM64_MAXIMUM_IDLE_CLOCK_INTERVAL);
+            ClockState->NextTickDueTime = Deadline;
+            ClockState->ExpectedWakeReason = KClockTimerKTimerExpirationNonHr;
+            if (InterlockedCompareExchange(&KiArm64ClockOwnerState,
+                                           KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_IDLE),
+                                           KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_ARMING)) ==
+                KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_ARMING))
+            {
+                ClockState->ClockActive = FALSE;
+                ClockState->ClockArmedForIdle = TRUE;
+                ClockState->OneShotState = KClockTimerOneShotArmed;
+                KxAcquireSpinLock(&TimerState->AccountingLock);
+                TimerState->IdleSuspended = TRUE;
+                KxReleaseSpinLock(&TimerState->AccountingLock);
+                Counter = KiArm64ReadCounter();
+                KiArm64WriteTimerCompare(Counter + ((Deadline - Now) * KiArm64TimerFrequency + 9999999) / 10000000 + 1);
+                return;
+            }
+        }
+
+        ASSERT(KI_ARM64_CLOCK_OWNER(KiArm64ClockOwnerState) != Cpu);
+        Prcb->ClockOwner = FALSE;
+    }
+
+    TimerState->Owner = FALSE;
+    KxAcquireSpinLock(&TimerState->AccountingLock);
+    TimerState->IdleSuspended = TRUE;
+    KxReleaseSpinLock(&TimerState->AccountingLock);
+    ClockState->ClockActive = FALSE;
+    KiArm64WriteTimerCompare(KiArm64ReadCounter() + KiArm64TimerFrequency * KI_ARM64_SUSPENDED_CLOCK_SECONDS);
+}
+
+VOID
+NTAPI
+KiArm64ClockResumeFromIdle(
+    _Inout_ PKPRCB Prcb)
+{
+    PKCLOCK_TIMER_STATE ClockState = KiArm64ClockTimerState(Prcb);
+    PKI_ARM64_TIMER_STATE TimerState;
+    KTRAP_FRAME TrapFrame;
+    ULONG Cpu = Prcb->Number;
+    ULONG Ticks;
+
+    ASSERT(Prcb == KeGetCurrentPrcb());
+    ASSERT(Cpu < MAXIMUM_PROCESSORS);
+    ASSERT(KiArm64ClockInterruptsMasked());
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+    ASSERT(Prcb->CurrentThread == Prcb->IdleThread);
+    TimerState = &KiArm64TimerState[Cpu];
+
+    if (!TimerState->IdleSuspended)
+    {
+        ASSERT(!ClockState->ClockArmedForIdle);
+        ASSERT(ClockState->OneShotState == KClockTimerOneShotUnarmed);
+        return;
+    }
+
+    ASSERT(!ClockState->ClockActive);
+    ASSERT(ClockState->ClockArmedForIdle == (ClockState->OneShotState == KClockTimerOneShotArmed));
+    ClockState->ClockArmedForIdle = FALSE;
+    ClockState->OneShotState = KClockTimerOneShotUnarmed;
+    ClockState->ClockActive = TRUE;
+    KxAcquireSpinLock(&TimerState->AccountingLock);
+    TimerState->IdleSuspended = FALSE;
+    Ticks = KiArm64ConsumeIdleTicks(TimerState, KiArm64ReadCounter());
+    KxReleaseSpinLock(&TimerState->AccountingLock);
+    TimerState->Owner = KiArm64AcquireClockOwnership(Cpu);
+
+    TrapFrame.PreviousMode = KernelMode;
+    TrapFrame.SavedIrql = DISPATCH_LEVEL;
+    TrapFrame.Pc = (ULONG_PTR)_ReturnAddress();
+    if (TimerState->Owner)
+    {
+        ASSERT(KiArm64ClockOwnerState == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING));
+        KiUpdateClockTime(Prcb, KiArm64TakeClockOwnerIncrement(KiArm64ReadCounter()));
+    }
+    if (Ticks != 0)
+        KiUpdateIdleRunTime(&TrapFrame, Ticks);
+    else
+        Prcb->InterruptCount++;
+    KiArm64ArmPeriodicClock(TimerState, KiArm64ReadCounter(), TRUE);
+}
+
+VOID
+NTAPI
+KiArm64RefreshProcessorRunTime(
+    _In_ PKPRCB Prcb)
+{
+    PKI_ARM64_TIMER_STATE TimerState;
+    ULONG_PTR Daif;
+    ULONG Ticks;
+    KIRQL OldIrql = DISPATCH_LEVEL;
+
+    ASSERT(Prcb != NULL);
+    ASSERT(Prcb->Number < MAXIMUM_PROCESSORS);
+    ASSERT(Prcb->IdleThread != NULL);
+    TimerState = &KiArm64TimerState[Prcb->Number];
+    if (!TimerState->IdleSuspended)
+        return;
+
+    if (KeGetCurrentIrql() < DISPATCH_LEVEL)
+        KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+    Daif = KiArm64MaskClockInterrupts();
+    if (Prcb != KeGetCurrentPrcb())
+    {
+        KxAcquireSpinLock(&TimerState->AccountingLock);
+        if (TimerState->IdleSuspended)
+        {
+            Ticks = KiArm64ConsumeIdleTicks(TimerState, KiArm64ReadCounter());
+            Prcb->KernelTime += Ticks;
+            Prcb->IdleThread->KernelTime += Ticks;
+            KiChargeThreadCycleTime(Prcb, Prcb->IdleThread);
+        }
+        KxReleaseSpinLock(&TimerState->AccountingLock);
+    }
+    KiArm64RestoreClockInterrupts(Daif);
+    if (OldIrql < DISPATCH_LEVEL)
+        KeLowerIrql(OldIrql);
+}
+
+VOID
+FASTCALL
+KiArm64ClockTimerInserted(
+    _In_ ULONGLONG DueTime)
+{
+    PKPRCB Prcb;
+    PKPRCB OwnerPrcb;
+    LONG State;
+    ULONG_PTR Daif;
+    BOOLEAN QueueDpc = FALSE;
+
+    KeMemoryBarrier();
+    State = ReadAcquire(&KiArm64ClockOwnerState);
+    if (KI_ARM64_CLOCK_PHASE(State) == KI_ARM64_CLOCK_RUNNING)
+        return;
+
+    OwnerPrcb = KiProcessorBlock[KI_ARM64_CLOCK_OWNER(State)];
+    ASSERT(OwnerPrcb != NULL);
+    if ((KI_ARM64_CLOCK_PHASE(State) == KI_ARM64_CLOCK_IDLE) &&
+        (DueTime >= *(volatile ULONGLONG *)&KiArm64ClockTimerState(OwnerPrcb)->NextTickDueTime))
+    {
+        return;
+    }
+
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+    Prcb = KeGetCurrentPrcb();
+    ASSERT(OwnerPrcb != Prcb);
+    Daif = KiArm64MaskClockInterrupts();
+    if (KiArm64ClockTimerState(Prcb)->ClockActive && KiArm64AcquireClockOwnership(Prcb->Number))
+    {
+        KiArm64TimerState[Prcb->Number].Owner = TRUE;
+        KiArm64RequestClockInterrupt();
+    }
+    else
+    {
+        State = ReadAcquire(&KiArm64ClockOwnerState);
+        QueueDpc = (KI_ARM64_CLOCK_PHASE(State) != KI_ARM64_CLOCK_RUNNING);
+    }
+    KiArm64RestoreClockInterrupts(Daif);
+    if (QueueDpc)
+        KiArm64QueueClockDeadlineDpc(KI_ARM64_CLOCK_OWNER(State));
 }
 
 static __inline VOID KiArm64WriteCntvCtl(ULONG v)
@@ -632,17 +1198,6 @@ static __inline VOID KiArm64WriteCntvCtl(ULONG v)
     ARM64_WRITE_SYSREG(CNTV_CTL_EL0, (ULONGLONG)v);
     ARM64_ISB();
 }
-
-/*
- * KeUpdateSystemTime - Update system time and call scheduler tick.
- * Declared in ntoskrnl/include/internal/ke.h
- */
-VOID
-FASTCALL
-KeUpdateSystemTime(
-    IN PKTRAP_FRAME TrapFrame,
-    IN ULONG Increment,
-    IN KIRQL Irql);
 
 /*
  * ARM64 Timer ISR - Called at CLOCK_LEVEL/DISPATCH_LEVEL on each tick.
@@ -661,9 +1216,6 @@ KiArm64TimerIsr(
     _In_ PKINTERRUPT Interrupt,
     _In_opt_ PVOID ServiceContext)
 {
-    ULONG Increment;
-    ULONG RuntimeIncrement;
-    ULONG RuntimeTicks;
     PKTRAP_FRAME TrapFrame;
     PKI_ARM64_TIMER_STATE TimerState;
     ULONG Cpu;
@@ -671,33 +1223,10 @@ KiArm64TimerIsr(
     UNREFERENCED_PARAMETER(ServiceContext);
 
     Cpu = KeGetCurrentProcessorNumber();
-    if (Cpu >= MAXIMUM_PROCESSORS)
-    {
-        Cpu = 0;
-    }
-
-    Increment = KiArm64CurrentTimerIncrement();
-    if (Cpu != 0 && KeMaximumIncrement > Increment)
-    {
-        Increment = KeMaximumIncrement;
-    }
-
+    ASSERT(Cpu < MAXIMUM_PROCESSORS);
     TimerState = &KiArm64TimerState[Cpu];
-    if (TimerState->Increment != Increment || TimerState->PeriodTicks == 0)
-    {
-        TimerState->Increment = Increment;
-        TimerState->PeriodTicks = KiArm64ComputeTimerPeriodTicks(Increment);
-    }
 
     /*
-     * Call KeUpdateSystemTime to:
-     * - Update SharedUserData->InterruptTime
-     * - Update SharedUserData->SystemTime
-     * - Update KeTickCount
-     * - Call KeUpdateRunTime for thread/process accounting
-     * - Check for timer expirations
-     * - Handle debugger break-in
-     *
      * The common clock path dereferences the trap frame for previous-mode
      * accounting. Keep this as a real frame, not a sentinel pointer.
      */
@@ -709,7 +1238,7 @@ KiArm64TimerIsr(
      * timing race; the per-CPU counters are read via GDB at the stall instead. */
     if (SmpDbgEnabled)
     {
-        KiTimerIsrCallCount++;
+        InterlockedIncrement((volatile LONG *)&KiTimerIsrCallCount);
         SmpDbgTimerTick(Cpu);
         SmpDbgHeartbeat(Cpu);
     }
@@ -719,30 +1248,8 @@ KiArm64TimerIsr(
      * interrupted context. Match the HAL clock contract used by the other
      * architectures: pass the IRQL that was active before the timer interrupt,
      * not CLOCK_LEVEL itself.
-     *
-     * On SMP, only the boot CPU advances global time. Other CPUs run their
-     * local architected timer for per-CPU runtime and quantum accounting,
-     * matching the x86 APIC clock + clock-IPI split.
      */
-    if (Cpu == 0)
-    {
-        KeUpdateSystemTime(TrapFrame, TimerState->ElapsedIncrement, TrapFrame->SavedIrql);
-    }
-    else
-    {
-        RuntimeIncrement = KeMaximumIncrement ? KeMaximumIncrement : Increment;
-        TimerState->TickOffset += TimerState->ElapsedIncrement;
-        if (TimerState->TickOffset >= RuntimeIncrement)
-        {
-            RuntimeTicks = TimerState->TickOffset / RuntimeIncrement;
-            TimerState->TickOffset %= RuntimeIncrement;
-            KiUpdateRunTime(TrapFrame, TrapFrame->SavedIrql, RuntimeTicks);
-        }
-        else
-        {
-            KeGetCurrentPrcb()->InterruptCount++;
-        }
-    }
+    KiArm64ChargeClockTick(KeGetCurrentPrcb(), TimerState, TrapFrame, TrapFrame->SavedIrql);
 
     /*
      * Clock-driven profiling: ARM64 has no separate profile timer, so the
@@ -799,9 +1306,14 @@ KiArm64StartLocalTimer(VOID)
     ULONGLONG Counter;
     ULONGLONG frq;
     PKI_ARM64_TIMER_STATE TimerState;
+    PKCLOCK_TIMER_STATE ClockState;
+    PKPRCB Prcb;
+    ULONG_PTR Daif;
     ULONG Increment;
     ULONG Cpu;
     ULONG ctl;
+
+    Daif = KiArm64MaskClockInterrupts();
 
     /* Read and validate CNTFRQ_EL0 (shared fallback for bogus firmware) */
     frq = KiArm64GetCounterFrequency();
@@ -809,12 +1321,24 @@ KiArm64StartLocalTimer(VOID)
     KiArm64TimerFrequency = frq;
     Increment = KiArm64CurrentTimerIncrement();
     Cpu = KeGetCurrentProcessorNumber();
-    if (Cpu >= MAXIMUM_PROCESSORS)
-    {
-        Cpu = 0;
-    }
+    ASSERT(Cpu < MAXIMUM_PROCESSORS);
+    Prcb = KeGetCurrentPrcb();
+    ClockState = KiArm64ClockTimerState(Prcb);
 
     TimerState = &KiArm64TimerState[Cpu];
+    ASSERT(!TimerState->IdleSuspended);
+    TimerState->Owner = (KiArm64ClockOwnerState == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING));
+    ASSERT(TimerState->Owner || (Cpu != 0) || KiArm64DynamicTickEnabled);
+    Prcb->ClockOwner = TimerState->Owner;
+    ClockState->ClockArmedForIdle = FALSE;
+    ClockState->OneShotState = KClockTimerOneShotUnarmed;
+    ClockState->ClockActive = TRUE;
+    if (KiArm64ClockDeadlineDpc[Cpu].DeferredRoutine == NULL)
+    {
+        KeInitializeDpc(&KiArm64ClockDeadlineDpc[Cpu], KiArm64ClockDeadlineDpcRoutine, NULL);
+        KiSetTargetProcessorDpc(&KiArm64ClockDeadlineDpc[Cpu], (CCHAR)Cpu);
+        KeSetImportanceDpc(&KiArm64ClockDeadlineDpc[Cpu], HighImportance);
+    }
     TimerState->Increment = Increment;
     TimerState->TickOffset = 0;
     TimerState->PeriodTicks = KiArm64ComputeTimerPeriodTicks(Increment);
@@ -822,6 +1346,11 @@ KiArm64StartLocalTimer(VOID)
     Counter = KiArm64ReadCounter();
     TimerState->LastCounter = Counter;
     TimerState->CounterRemainder = 0;
+    if (TimerState->Owner)
+    {
+        KiArm64ClockOwnerCounter = Counter;
+        KiArm64ClockOwnerRemainder = 0;
+    }
     TimerState->ElapsedIncrement = 0;
     TimerState->PeriodicDeadline = Counter + TimerState->PeriodTicks;
     KiArm64WriteTimerCompare(TimerState->PeriodicDeadline);
@@ -854,12 +1383,11 @@ KiArm64StartLocalTimer(VOID)
 
     if (Cpu == 0 && !KiArm64ClockDeadlineReady)
     {
-        KeInitializeDpc(&KiArm64ClockDeadlineDpc, KiArm64ClockDeadlineDpcRoutine, NULL);
-        KeSetTargetProcessorDpc(&KiArm64ClockDeadlineDpc, 0);
-        KeSetImportanceDpc(&KiArm64ClockDeadlineDpc, HighImportance);
         InterlockedExchange(&KiArm64ClockDeadlineReady, 1);
-        KiArm64ReprogramClock();
+        if (TimerState->Owner)
+            KiArm64ReprogramClock(Cpu);
     }
+    KiArm64RestoreClockInterrupts(Daif);
 }
 
 VOID
@@ -962,6 +1490,10 @@ KeReenableTimerInterrupt(VOID)
      */
     HalEnableSystemInterrupt(TimerIntId, CLOCK_LEVEL, LevelSensitive);
     KiArm64StartLocalTimer();
+    ASSERT(KeGetCurrentProcessorNumber() == 0);
+    if (InterlockedExchange(&KiArm64DynamicTickEnabled, 1) == 0)
+        DPRINT1("[clock] Dynamic tick enabled: idle processors stop their clock interrupt, the clock owner sleeps up to %I64u ms\n",
+                KI_ARM64_MAXIMUM_IDLE_CLOCK_INTERVAL / 10000);
 }
 
 static
@@ -1017,6 +1549,41 @@ KiArm64DispatchChain(_In_ PKINTERRUPT Head)
         }
 
         Interrupt = CONTAINING_RECORD(NextEntry, KINTERRUPT, InterruptListEntry);
+    }
+}
+
+static
+VOID
+KiArm64DispatchForeignInterrupts(
+    _In_ ULONG IntId,
+    _In_ ULONG Cpu,
+    _Inout_updates_(KI_ARM64_FOREIGN_BATCH) PKINTERRUPT *Batch,
+    _In_ ULONG Count,
+    _In_ BOOLEAN More)
+{
+    ULONG Index, Skip = 0;
+
+    ASSERT(Count != 0 && Count <= KI_ARM64_FOREIGN_BATCH);
+
+    for (;;)
+    {
+        for (Index = 0; Index < Count; Index++)
+        {
+            ASSERT(Batch[Index]->Irql <= KeGetCurrentIrql());
+            if (KiArm64CallInterruptServiceRoutine(Batch[Index]) &&
+                (Batch[Index]->Mode == LevelSensitive))
+            {
+                return;
+            }
+        }
+
+        if (!More)
+            return;
+
+        Skip += Count;
+        _disable();
+        Count = KiArm64CollectForeignInterrupts(IntId, Cpu, Skip, Batch, &More);
+        _enable();
     }
 }
 
@@ -1167,6 +1734,10 @@ KiArm64InterruptDispatchEntryInner(_In_ ULONG VectorId, _In_ PKI_ARM64_IRQ_FRAME
     KIRQL OldIrql;
     KIRQL RequestIrql = DISPATCH_LEVEL;
     PKINTERRUPT Head;
+    PKINTERRUPT Foreign[KI_ARM64_FOREIGN_BATCH];
+    ULONG ForeignCount = 0;
+    BOOLEAN ForeignMore = FALSE;
+    BOOLEAN ForeignDispatch = FALSE;
     KTRAP_FRAME LocalTrapFrame;
     PKTRAP_FRAME SavedTrapFrame;
     BOOLEAN Begun;
@@ -1237,10 +1808,21 @@ KiArm64InterruptDispatchEntryInner(_In_ ULONG VectorId, _In_ PKI_ARM64_IRQ_FRAME
     {
         RequestIrql = Head->Irql;
     }
+    else if ((IntId >= KI_ARM64_SPI_BASE) && (IntId < KI_ARM64_SPI_LIMIT) &&
+             (KeGetCurrentIrql() < HIGH_LEVEL))
+    {
+        InterlockedIncrement(&KiArm64ForeignDispatchDepth[Cpu].Value);
+        ForeignDispatch = TRUE;
+        ForeignCount = KiArm64CollectForeignInterrupts(IntId, Cpu, 0, Foreign, &ForeignMore);
+        if (ForeignCount != 0)
+            RequestIrql = Foreign[0]->Irql;
+    }
 
     Begun = HalBeginSystemInterrupt(RequestIrql, IntId, &OldIrql);
     if (!Begun)
     {
+        if (ForeignDispatch)
+            InterlockedDecrement(&KiArm64ForeignDispatchDepth[Cpu].Value);
         InterlockedDecrement(&KiArm64DispatchDepth[Cpu].Value);
         return 0;
     }
@@ -1276,8 +1858,16 @@ KiArm64InterruptDispatchEntryInner(_In_ ULONG VectorId, _In_ PKI_ARM64_IRQ_FRAME
         KiArm64DispatchChain(Head);
         _disable();
     }
+    else if (ForeignCount != 0)
+    {
+        _enable();
+        KiArm64DispatchForeignInterrupts(IntId, Cpu, Foreign, ForeignCount, ForeignMore);
+        _disable();
+    }
 
     KiArm64CurrentInterruptTrapFrame[Cpu] = SavedTrapFrame;
+    if (ForeignDispatch)
+        InterlockedDecrement(&KiArm64ForeignDispatchDepth[Cpu].Value);
     InterlockedDecrement(&KiArm64DispatchDepth[Cpu].Value);
 
     HalEndSystemInterrupt(OldIrql, NULL);
@@ -1326,6 +1916,7 @@ KiArm64SynchronizeInterruptChain(_In_ PKINTERRUPT Interrupt, _In_ BOOLEAN Connec
     ASSERT(ReadAcquire(&KiArm64DispatchDepth[Cpu].Value) == 0);
 
     OldIrql = KfRaiseIrql(HIGH_LEVEL);
+    KxAcquireSpinLock(&KiArm64ForeignDispatchLock);
     Head = Table[Interrupt->Vector];
     if (Connect)
     {
@@ -1344,46 +1935,8 @@ KiArm64SynchronizeInterruptChain(_In_ PKINTERRUPT Interrupt, _In_ BOOLEAN Connec
     }
     Interrupt->Connected = Connect;
     KeMemoryBarrier();
+    KxReleaseSpinLock(&KiArm64ForeignDispatchLock);
     KfLowerIrql(OldIrql);
-}
-
-VOID
-NTAPI
-KeInitializeInterrupt(IN PKINTERRUPT Interrupt,
-                      IN PKSERVICE_ROUTINE ServiceRoutine,
-                      IN PVOID ServiceContext,
-                      IN PKSPIN_LOCK SpinLock,
-                      IN ULONG Vector,
-                      IN KIRQL Irql,
-                      IN KIRQL SynchronizeIrql,
-                      IN KINTERRUPT_MODE InterruptMode,
-                      IN BOOLEAN ShareVector,
-                      IN CHAR ProcessorNumber,
-                      IN BOOLEAN FloatingSave)
-{
-    Interrupt->Type = InterruptObject;
-    Interrupt->Size = sizeof(KINTERRUPT);
-    if (!SpinLock) SpinLock = &Interrupt->SpinLock;
-    KeInitializeSpinLock(&Interrupt->SpinLock);
-
-    Interrupt->ServiceRoutine = ServiceRoutine;
-    Interrupt->ServiceContext = ServiceContext;
-    Interrupt->ActualLock = SpinLock;
-    Interrupt->Vector = Vector;
-    Interrupt->Irql = Irql;
-    Interrupt->SynchronizeIrql = SynchronizeIrql;
-    Interrupt->Mode = InterruptMode;
-    Interrupt->ShareVector = ShareVector;
-    Interrupt->Number = ProcessorNumber;
-    Interrupt->FloatingSave = FloatingSave;
-
-    Interrupt->TickCount = 0;
-    Interrupt->Connected = FALSE;
-    Interrupt->ServiceCount = 0;
-    Interrupt->DispatchCount = 0;
-    Interrupt->DispatchAddress = NULL;
-
-    InitializeListHead(&Interrupt->InterruptListEntry);
 }
 
 static
@@ -1451,6 +2004,7 @@ KiArm64ConnectInterrupt(IN PKINTERRUPT Interrupt)
 Done:
     Connected = Interrupt->Connected;
     KeReleaseSpinLock(&KiArm64IntTableLock, OldIrql);
+    if (!Connected) KiArm64WaitForForeignDispatch();
     if (RestoreAffinity) KeRevertToUserAffinityThreadEx(PreviousAffinity);
 
     return Connected;
@@ -1507,26 +2061,9 @@ KeDisconnectInterrupt(IN PKINTERRUPT Interrupt)
 
 Done:
     KeReleaseSpinLock(&KiArm64IntTableLock, OldIrql);
+    if (Connected) KiArm64WaitForForeignDispatch();
     if (RestoreAffinity) KeRevertToUserAffinityThreadEx(PreviousAffinity);
     return Connected;
-}
-
-BOOLEAN
-NTAPI
-KeSynchronizeExecution(IN OUT PKINTERRUPT Interrupt,
-                       IN PKSYNCHRONIZE_ROUTINE SynchronizeRoutine,
-                       IN PVOID SynchronizeContext OPTIONAL)
-{
-    BOOLEAN Success;
-    KIRQL OldIrql;
-    if (Interrupt->Irql == PASSIVE_LEVEL)
-        return KiSynchronizePassiveInterrupt(Interrupt, SynchronizeRoutine, SynchronizeContext);
-    OldIrql = KfRaiseIrql(Interrupt->SynchronizeIrql);
-    KeAcquireSpinLockAtDpcLevel(Interrupt->ActualLock);
-    Success = SynchronizeRoutine(SynchronizeContext);
-    KeReleaseSpinLockFromDpcLevel(Interrupt->ActualLock);
-    KeLowerIrql(OldIrql);
-    return Success;
 }
 
 /* Legacy alias retained for parity with other arches */

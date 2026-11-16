@@ -1,3 +1,7 @@
+if((ARCH STREQUAL "arm64") AND APPLE_SILICON_SUPPORT)
+    add_subdirectory(appleaopsensor)
+    add_subdirectory(applemtp)
+endif()
 add_subdirectory(hidclass)
 add_subdirectory(hidi2c)
 add_subdirectory(hidparse)

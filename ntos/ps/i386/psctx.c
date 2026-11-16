@@ -1,51 +1,48 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/ps/i386/psctx.c
- * PURPOSE:         Process Manager: Set/Get Context for i386
- * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     i386 thread context get and set for the process manager
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES *******************************************************************/
 
 #include <ntoskrnl.h>
 #define NDEBUG
 #include <debug.h>
 
-/* FUNCTIONS ******************************************************************/
-
 VOID
 NTAPI
-PspGetContext(IN PKTRAP_FRAME TrapFrame,
-              IN PVOID NonVolatileContext,
-              IN OUT PCONTEXT Context)
+PspGetContext(
+    _In_ PKTRAP_FRAME TrapFrame,
+    _In_ PVOID NonVolatileContext,
+    _Inout_ PCONTEXT Context)
 {
     PAGED_CODE();
 
-    /* Convert the trap frame to a context */
     KeTrapFrameToContext(TrapFrame, NULL, Context);
 }
 
 VOID
 NTAPI
-PspSetContext(OUT PKTRAP_FRAME TrapFrame,
-              OUT PVOID NonVolatileContext,
-              IN PCONTEXT Context,
-              IN KPROCESSOR_MODE Mode)
+PspSetContext(
+    _Out_ PKTRAP_FRAME TrapFrame,
+    _Out_ PVOID NonVolatileContext,
+    _In_ PCONTEXT Context,
+    _In_ KPROCESSOR_MODE Mode)
 {
     PAGED_CODE();
 
-    /* Convert the context to a trap frame structure */
     KeContextToTrapFrame(Context, NULL, TrapFrame, Context->ContextFlags, Mode);
 }
 
 VOID
 NTAPI
-PspGetOrSetContextKernelRoutine(IN PKAPC Apc,
-                                IN OUT PKNORMAL_ROUTINE* NormalRoutine,
-                                IN OUT PVOID* NormalContext,
-                                IN OUT PVOID* SystemArgument1,
-                                IN OUT PVOID* SystemArgument2)
+PspGetOrSetContextKernelRoutine(
+    _In_ PKAPC Apc,
+    _Inout_ PKNORMAL_ROUTINE* NormalRoutine,
+    _Inout_ PVOID* NormalContext,
+    _Inout_ PVOID* SystemArgument1,
+    _Inout_ PVOID* SystemArgument2)
 {
     PGET_SET_CTX_CONTEXT GetSetContext;
     PKEVENT Event;
@@ -55,34 +52,27 @@ PspGetOrSetContextKernelRoutine(IN PKAPC Apc,
     PKTRAP_FRAME TrapFrame = NULL;
     PAGED_CODE();
 
-    /* Get the Context Structure */
     GetSetContext = CONTAINING_RECORD(Apc, GET_SET_CTX_CONTEXT, Apc);
     Context = &GetSetContext->Context;
     Event = &GetSetContext->Event;
     Mode = GetSetContext->Mode;
     Thread = Apc->SystemArgument2;
 
-    /* If this is a kernel-mode request, grab the saved trap frame */
     if (Mode == KernelMode) TrapFrame = Thread->Tcb.TrapFrame;
 
-    /* If we don't have one, grab it from the stack */
     if (!TrapFrame)
     {
-        /* Trap frame is right under our initial stack */
         TrapFrame = KeGetTrapFrame(&Thread->Tcb);
     }
 
-    /* Check if it's a set or get */
     if (Apc->SystemArgument1)
     {
-        /* Set the Context */
         PspSetContext(TrapFrame, NULL, Context, Mode);
     }
     else
     {
         ULONG ContextFlags;
 
-        /* Get the Context */
         PspGetContext(TrapFrame, NULL, Context);
 
         ContextFlags = Context->ContextFlags &
@@ -99,11 +89,8 @@ PspGetOrSetContextKernelRoutine(IN PKAPC Apc,
         Context->ContextFlags = ContextFlags;
     }
 
-    /* Notify the Native API that we are done */
     KeSetEvent(Event, IO_NO_INCREMENT, FALSE);
 }
-
-/* EOF */
 
 VOID
 NTAPI
@@ -130,36 +117,6 @@ PsArchInitializeUserThreadContext(
 
 NTSTATUS
 NTAPI
-PspArchCaptureXStateContext(
-    _In_ PCONTEXT Context,
-    _In_ ULONG ContextFlags,
-    _In_ KPROCESSOR_MODE PreviousMode,
-    _In_ BOOLEAN SetContext,
-    _Out_ PVOID *XState)
-{
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(ContextFlags);
-    UNREFERENCED_PARAMETER(PreviousMode);
-    UNREFERENCED_PARAMETER(SetContext);
-
-    /* TODO: capture the extended processor state (CONTEXT_XSTATE) of the context */
-    *XState = NULL;
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
-PspArchCompleteXStateContext(
-    _In_opt_ PVOID XState,
-    _In_ BOOLEAN CopyOut)
-{
-    UNREFERENCED_PARAMETER(XState);
-    UNREFERENCED_PARAMETER(CopyOut);
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
 PspArchSetInstrumentationCallback(
     _In_ PEPROCESS Process,
     _In_reads_bytes_(Length) PVOID Information,
@@ -175,16 +132,24 @@ PspArchSetInstrumentationCallback(
     return STATUS_NOT_SUPPORTED;
 }
 
-VOID
+BOOLEAN
 NTAPI
-PspArchInitializeUserThreadStartup(
-    _In_ PKEXCEPTION_FRAME ExceptionFrame,
-    _Inout_ PKTRAP_FRAME TrapFrame)
+PspArchManagesExecutableWrites(VOID)
 {
-    KiInitializeUserApc(ExceptionFrame,
-                        TrapFrame,
-                        PspSystemDllEntryPoint,
-                        NULL,
-                        PspSystemDllBase,
-                        NULL);
+    return FALSE;
 }
+
+NTSTATUS
+NTAPI
+PspArchCopyLiveWow64Context(
+    _In_ PETHREAD Thread,
+    _Inout_ PWOW64_CONTEXT Context,
+    _In_ BOOLEAN SetContext)
+{
+    UNREFERENCED_PARAMETER(Thread);
+    UNREFERENCED_PARAMETER(Context);
+    UNREFERENCED_PARAMETER(SetContext);
+
+    return STATUS_NOT_FOUND;
+}
+

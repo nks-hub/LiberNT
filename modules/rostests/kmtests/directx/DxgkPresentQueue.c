@@ -442,6 +442,19 @@ DxgkPresentQueueTestContract(VOID)
     ok_bool_false(RetirePolicy.HoldSharedSurfaceRundown,
                   "ordinary destination holds no shared-surface rundown");
 
+    ok_bool_true(DxgkPresentCoreRetiredFlipProgramsSource(TRUE, FALSE, 0x1200),
+                 "a retired flip of an MMIO vsync-flip miniport programs its source");
+    ok_bool_true(DxgkPresentCoreRetiredFlipProgramsSource(FALSE, TRUE, 0x1200),
+                 "a retired flip of an MMIO immediate-flip miniport programs its source");
+    ok_bool_false(DxgkPresentCoreRetiredFlipProgramsSource(FALSE, FALSE, 0x1200),
+                  "a WDDM 1.2 miniport without MMIO flips flipped in its DMA buffer");
+    ok_bool_false(DxgkPresentCoreRetiredFlipProgramsSource(FALSE, FALSE, 0x1300),
+                  "a WDDM 1.3 miniport without MMIO flips flipped in its DMA buffer");
+    ok_bool_false(DxgkPresentCoreRetiredFlipProgramsSource(FALSE, FALSE, 0),
+                  "a miniport that reports no WDDM version flipped in its DMA buffer");
+    ok_bool_true(DxgkPresentCoreRetiredFlipProgramsSource(FALSE, FALSE, 0x2000),
+                 "a WDDM 2 miniport without MMIO flips is still flipped at retirement");
+
     Status = DxgkPresentCoreEvaluateScanoutRetirement(
                  TRUE, FALSE, FALSE, FALSE, FALSE, &RetirePolicy);
     ok_eq_hex(Status, STATUS_INVALID_PARAMETER);
@@ -627,6 +640,62 @@ TestVBlankWaitResult(VOID)
     ok_eq_hex(DxgkPresentVBlankWaitResult(FALSE), STATUS_TIMEOUT);
 }
 
+static VOID
+TestAdapterStartDeferral(VOID)
+{
+    ok_eq_ulong(DXGK_START_CORE_SERVICE_DEMAND_START, 3UL);
+    ok_eq_bool(DxgkStartCoreDefersToSession(FALSE, 3, FALSE), TRUE);
+    ok_eq_bool(DxgkStartCoreDefersToSession(FALSE, 4, FALSE), TRUE);
+    ok_eq_bool(DxgkStartCoreDefersToSession(FALSE, 3, TRUE), FALSE);
+    ok_eq_bool(DxgkStartCoreDefersToSession(TRUE, 3, FALSE), FALSE);
+    ok_eq_bool(DxgkStartCoreDefersToSession(FALSE, 0, FALSE), FALSE);
+    ok_eq_bool(DxgkStartCoreDefersToSession(FALSE, 1, FALSE), FALSE);
+    ok_eq_bool(DxgkStartCoreDefersToSession(FALSE, 2, FALSE), FALSE);
+}
+
+static VOID
+TestSeededPathCount(VOID)
+{
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(TRUE, 1, 1), 1UL);
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(TRUE, 8, 8), 1UL);
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(TRUE, 2, 8), 1UL);
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(FALSE, 1, 1), 0UL);
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(FALSE, 8, 8), 0UL);
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(TRUE, 0, 8), 0UL);
+    ok_eq_ulong(DxgkVidPnCoreSeededPathCount(TRUE, 8, 0), 0UL);
+}
+
+static VOID
+TestDisplayOnlyDesktopMode(VOID)
+{
+    ok_eq_bool(DxgkVidPnCoreDisplayOnlyTakesLargestSource(0), TRUE);
+    ok_eq_bool(DxgkVidPnCoreDisplayOnlyTakesLargestSource(1), TRUE);
+    ok_eq_bool(DxgkVidPnCoreDisplayOnlyTakesLargestSource(2), FALSE);
+    ok_eq_bool(DxgkVidPnCoreDisplayOnlyTakesLargestSource(28), FALSE);
+}
+
+static VOID
+TestSourceFormatRank(VOID)
+{
+    ok_eq_ulong(DXGK_VIDPN_CORE_FORMAT_A8R8G8B8, 21UL);
+    ok_eq_ulong(DXGK_VIDPN_CORE_FORMAT_X8R8G8B8, 22UL);
+    ok_eq_ulong(DxgkVidPnCoreSourceFormatRank(21), 0UL);
+    ok_eq_ulong(DxgkVidPnCoreSourceFormatRank(22), 1UL);
+    ok_eq_ulong(DxgkVidPnCoreSourceFormatRank(32), 2UL);
+    ok_eq_ulong(DxgkVidPnCoreSourceFormatRank(23), 2UL);
+    ok_eq_ulong(DxgkVidPnCoreSourceFormatRank(0), 2UL);
+}
+
+static
+VOID
+DxgkPresentQueueTestContextless(VOID)
+{
+    ok_bool_true(DxgkPresentCoreContextless(TRUE, FALSE), "a contextless miniport flips without a context");
+    ok_bool_false(DxgkPresentCoreContextless(TRUE, TRUE), "a blt keeps the context whose DMA buffer it writes");
+    ok_bool_false(DxgkPresentCoreContextless(FALSE, FALSE), "a miniport without the cap flips through its context");
+    ok_bool_false(DxgkPresentCoreContextless(FALSE, TRUE), "a miniport without the cap blts through its context");
+}
+
 START_TEST(DxgkPresentQueue)
 {
     PVOID DeviceA = (PVOID)(ULONG_PTR)0x1000;
@@ -641,6 +710,10 @@ START_TEST(DxgkPresentQueue)
     ULONG Index;
 
     TestVBlankWaitResult();
+    TestAdapterStartDeferral();
+    TestSeededPathCount();
+    TestDisplayOnlyDesktopMode();
+    TestSourceFormatRank();
 
 #if (REACTOS_WDDM_TARGET_LEVEL >= 1200)
     DxgkPresentQueueTestRefreshTargets();
@@ -753,4 +826,5 @@ START_TEST(DxgkPresentQueue)
     ok_eq_ulong(Queue.Count, 0);
     ok_eq_long(InterlockedCompareExchange(&Queue.MatchOutsideLock, 0, 0), 0);
     ok_eq_long(InterlockedCompareExchange(&Queue.ReleaseInsideLock, 0, 0), 0);
+    DxgkPresentQueueTestContextless();
 }

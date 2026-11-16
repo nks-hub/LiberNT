@@ -220,7 +220,7 @@ target_include_directories(wdf01000
         shared/irphandlers/pnp/km # pnpprivkm.hpp
     )
 
-target_link_libraries(wdf01000 aux_klib usbdex wdmsec ntoskrnl_vista ${PSEH_LIB})
+target_link_libraries(wdf01000 aux_klib usbdex wdmsec ${PSEH_LIB})
 add_importlibs(wdf01000 wdfldr ntoskrnl hal)
 
 if(CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_ID STREQUAL "Clang")
@@ -231,4 +231,9 @@ endif()
 
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
     target_compile_options(wdf01000 PRIVATE -Wno-missing-braces -Wno-multichar -Wno-unused-but-set-variable)
+endif()
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    # The class operator new takes the driver globals and FxStump's operator delete frees the same pool block
+    target_compile_options(wdf01000 PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-Wno-mismatched-new-delete>)
 endif()

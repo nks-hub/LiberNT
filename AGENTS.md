@@ -16,7 +16,7 @@ Most of the tree is still shared with ReactOS, and the components synchronised w
 
 | Area | In LiberNT | Where |
 |---|---|---|
-| Memory manager | NVS, the NT Virtual Memory Subsystem: a clean-room NT10 memory manager with its own kernel pool. The ReactOS ARM3 memory manager has been removed. | `ntos/mm` |
+| Memory manager | NVS, the NT Virtual Memory Subsystem: a clean-room NT10 memory manager with its own kernel pool. | `ntos/mm` |
 | Cache manager | A clean-room cache manager. | `ntos/cc` |
 | ARM64 | The ARM64 port: kernel, HAL and FreeLoader. | `ntos/ke/arm64`, `hal/halarm64`, `boot/freeldr/freeldr/arch/arm64` |
 | RISC-V64 | The HAL of the port in progress. | `hal/halriscv64` |
@@ -56,7 +56,7 @@ Most of the tree is still shared with ReactOS, and the components synchronised w
 - Black-box study is the legal default. A lawful user may observe, study and test a program while running it to find the ideas and principles behind it (EU Software Directive 2009/24/EC, art. 5(3); in France, Code de la propriété intellectuelle L122-6-1 III).
 - Reading Windows binaries is decompilation and is allowed only within art. 6 of the same directive (L122-6-1 IV): by a lawful licensee, only when the information needed for interoperability is not otherwise readily available, and only for the parts needed for interoperability. Never use that information for another goal, never give it to others except for interoperability, and never use it to write a program substantially similar in its expression. The Windows licence forbids reverse engineering beyond what this law allows.
 - Never copy GPL code from Linux. Study the technique and reimplement it.
-- Never use legacy ReactOS code (the ARM3 memory manager, NT4 and NT5-era designs) as a reference.
+- Never use legacy ReactOS code or NT4 and NT5-era designs as a reference.
 
 ## Compatibility criteria
 
@@ -164,16 +164,25 @@ To develop this without a second machine, `~/reactos-scripts/kdnet_bench.sh` (se
 
 ## Fixing bugs
 
+These rules apply to bugs in new code and existing code alike.
+
 - Fix bugs recursively. A bug found while working toward a goal becomes the goal: never step past it to stay on the main task. Fix that exact bug, then return to the parent bug or goal, and treat every bug found beneath it the same way. A `TODO:` or `FIXME:` marker never replaces that fix: markers are for gaps outside the current work, not for bugs met on the way.
 - Start from the code, not from reruns. Read and analyze the code around the failure to find the cause before trying to reproduce it.
 - Catch the bug in a test: write one that reproduces it, make the fix, and confirm the fix in a separate run of that test.
 - A bug seen once, such as a race, is real. Do not shut down the harness that caught it: keep the machine stopped in the debugger and find the cause live. The harness always accepts a debugger, gdb through kdgdb on a Linux host or the kernel debugger on a Windows host, to debug it end to end.
 
-## Verifying a fix
+## Verifying new code and fixes
 
-- A fix counts only after a real boot or test run shows it working. A clean build proves nothing about behavior.
+Apply these rules equally to new code, features and bug fixes.
+
+- Before declaring code ready, trace concurrent readers, writers, hardware updates, callbacks and teardown across the whole affected state machine. Identify the locks, atomic operations, memory ordering and object lifetime that make each interleaving safe; verify that snapshots remain valid until they are used.
+- Review boundary and failure cases explicitly: empty and sparse ranges, arithmetic limits, allocation and I/O failures, partial progress, retries, rollback and cleanup. Add focused tests for reachable failures and adverse interleavings, including deterministic race orchestration where practical. A passing happy-path test or build does not establish race freedom or error-path correctness.
+- Verify the externally observable result and all related state, not just the return status: check data and metadata, accounting, ownership and cleanup as applicable, including unaffected objects and repeated operations.
+- Make tests exercise the implementation and artifacts being changed. For a regression test, confirm that it fails for the intended reason on the unfixed code and passes with the fix; investigate skips, timeouts and unrelated failures rather than counting them as passes.
+- Report which build, binary and environment were tested, the relevant results and any checks not run. State the limits of the evidence: a stress test can expose a race but cannot prove race freedom, and a host test or VM run does not prove behavior on untested architectures or hardware.
+- A change counts only after a real boot or test run shows it working. A clean build proves nothing about behavior.
 - Fix a broken change in place. Never build on a change that does not work, and never set it aside to test something else.
-- When a run shows that an attempt does not fix the bug, revert it before the next attempt; never stack changes that fix nothing. A session's diff holds only targeted changes, each justified by a run.
+- When a run shows that an attempt does not work or does not fix the bug, revert it before the next attempt; never stack changes that do not work. A session's diff holds only targeted changes, each justified by a run.
 - For races, lost wakeups, deadlocks, lock ordering and hot paths: hold the first hypothesis loosely, get an independent adversarial review, accept only facts verified in the source, and confirm them with a real boot. Treat every second opinion, and your own conclusion, as claims to verify.
 - Before committing, harden the C and C++ files in the diff with cppcheck, run with the build's own include paths and defines. Write the compile database outside the build directory, pass one `--file-filter` per changed file, and use the target defines of the build directory (the amd64 ones are shown):
 

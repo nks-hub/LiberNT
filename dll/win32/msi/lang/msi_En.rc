@@ -93,6 +93,10 @@ STRINGTABLE
 
     IDS_ERR_INSERTDISK "Please insert the disk: [2]"
     IDS_ERR_CABNOTFOUND "Source file not found{{(cabinet)}}: [2]. Verify that the file exists and that you can access it."
+#ifdef __REACTOS__
+    IDS_ERR_RESTARTSUSPENDED "Configuring [2] cannot be completed until you restart your system. To restart now and resume configuration click Yes, or click No to stop this configuration."
+    IDS_ERR_RESTARTREQUIRED "For the configuration changes made to [2] to take effect you must restart your system. To restart now click Yes, or click No if you plan to manually restart at a later time."
+#endif
 }
 
 /* Standard action description strings */
@@ -219,3 +223,15 @@ STRINGTABLE
     IDS_TEMP_WRITEINIVALUES "File: [1],  Section: [2],  Key: [3], Value: [4]"
     IDS_TEMP_WRITEREGISTRYVALUES "Key: [1], Name: [2], Value: [3]"
 }
+
+#ifdef __REACTOS__
+STRINGTABLE
+{
+    IDS_BASIC_UI_TITLE "Windows Installer"
+    IDS_BASIC_UI_PREPARE "Preparing to install..."
+    IDS_BASIC_UI_PREPARE_REMOVE "Preparing to remove..."
+    IDS_BASIC_UI_CONFIGURE "Please wait while Windows configures %s"
+    IDS_BASIC_UI_CANCEL "Cancel"
+    IDS_BASIC_UI_GATHER "Gathering required information..."
+}
+#endif

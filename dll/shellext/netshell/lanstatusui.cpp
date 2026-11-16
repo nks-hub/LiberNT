@@ -1657,9 +1657,14 @@ CLanStatus::EnumerateTrayConnections()
         if (pItem)
         {
             pItem->Seen = TRUE;
+            pItem->pNet->Release();
+            pItem->pNet = pNetCon.Detach();
             pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
             if (pContext)
+            {
+                pContext->pNet = pItem->pNet;
                 UpdateLanStatus(NULL, pContext);
+            }
             NcFreeNetconProperties(pProps);
             continue;
         }

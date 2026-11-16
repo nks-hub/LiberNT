@@ -1,8 +1,16 @@
-#pragma once
+/*
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Kernel debugger I/O provider declarations
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
 
-/* KD ROUTINES ***************************************************************/
+#pragma once
+#include <cportlib/cportlib.h>
 
 struct _KD_DISPATCH_TABLE;
+
+#define KDP_BOOT_PHASE_BUSES 2
 
 #define KDP_BOOT_PHASE_SYSTEM_ROOT 6
 
@@ -18,9 +26,104 @@ VOID
     _In_ PCCH String,
     _In_ ULONG Length);
 
+extern PCONTEXT KdpReportedContext;
+
+extern KPROCESSOR_MODE KdpReportedMode;
+
+extern BOOLEAN KdpReportedFirstChance;
+
+#ifdef KDBG
+#define KdpKdbgInit KdbInitialize
+#endif
+
+#define KdScreen    0
+
+#ifdef KDBG
+
+#define KdMax       4
+#else
+#define KdMax       3
+#endif
+
+typedef struct _KDP_DEBUG_MODE
+{
+    union
+    {
+        struct
+        {
+            UCHAR Screen :1;
+            UCHAR Serial :1;
+            UCHAR File   :1;
+            UCHAR Net    :1;
+        };
+
+        ULONG Value;
+    };
+} KDP_DEBUG_MODE;
+
+typedef struct _KD_DISPATCH_TABLE
+{
+    LIST_ENTRY KdProvidersList;
+    PKDP_INIT_ROUTINE KdpInitRoutine;
+    PKDP_PRINT_ROUTINE KdpPrintRoutine;
+    NTSTATUS InitStatus;
+} KD_DISPATCH_TABLE, *PKD_DISPATCH_TABLE;
+
+extern KDP_DEBUG_MODE KdpDebugMode;
+
+extern ULONG  SerialPortNumber;
+
+extern CPPORT SerialPortInfo;
+
+extern PKDP_INIT_ROUTINE InitRoutines[KdMax];
+
+extern KD_DISPATCH_TABLE DispatchTable[KdMax];
+
+extern LIST_ENTRY KdProviders;
+
+NTSTATUS
+NTAPI
+KdpSerialInit(
+    _In_ struct _KD_DISPATCH_TABLE *DispatchTable,
+    _In_ ULONG BootPhase);
+
 VOID
-KdIoPuts(
-    _In_ PCSTR String);
+KdpInfoInitialize(
+    _In_ struct _LOADER_PARAMETER_BLOCK *LoaderBlock);
+
+ULONG
+NTAPI
+KdpInfoState(VOID);
+
+SIZE_T
+KdIoReadLine(
+    _Out_ PCHAR Buffer,
+    _In_ SIZE_T Size);
+
+VOID
+KdpNetDisplayStatus(VOID);
+
+BOOLEAN
+KdpNetGetByte(
+    _Out_ PUCHAR Byte);
+
+NTSTATUS
+NTAPI
+KdpNetInit(
+    _In_ struct _KD_DISPATCH_TABLE *DispatchTable,
+    _In_ ULONG BootPhase);
+
+BOOLEAN
+KdpNetPollBreakIn(VOID);
+
+BOOLEAN
+KdpNetQueryAttached(
+    _Out_opt_ PULONG Columns,
+    _Out_opt_ PULONG Rows);
+
+VOID
+KdpNetSendCommand(
+    _In_ PCSTR Command);
 
 VOID
 __cdecl
@@ -28,13 +131,9 @@ KdIoPrintf(
     _In_ PCSTR Format,
     ...);
 
-SIZE_T
-KdIoReadLine(
-    _Out_ PCHAR Buffer,
-    _In_ SIZE_T Size);
-
-
-/* INIT ROUTINES *************************************************************/
+VOID
+KdIoPuts(
+    _In_ PCSTR String);
 
 BOOLEAN
 NTAPI
@@ -49,16 +148,30 @@ KdbpReleaseLock(
     _In_ KIRQL OldIrql,
     _In_ BOOLEAN LockAcquired);
 
+NTSTATUS
+NTAPI
+KdpInitializeProviders(
+    _In_ ULONG BootPhase);
+
+VOID
+NTAPI
+KdpSelectDebugMode(
+    _In_opt_ struct _LOADER_PARAMETER_BLOCK *LoaderBlock);
+
 BOOLEAN
 KdpScreenAcquire(VOID);
+
+VOID
+KdpScreenEnterBugCheck(
+    _In_ BOOLEAN FollowPrints);
 
 BOOLEAN
 KdpScreenEnterStop(
     _In_ BOOLEAN Requested);
 
 VOID
-KdpScreenRelease(
-    _In_ BOOLEAN DisplayAcquired);
+KdpScreenHoldOutput(
+    _In_ BOOLEAN Hold);
 
 NTSTATUS
 NTAPI
@@ -66,45 +179,9 @@ KdpScreenInit(
     _In_ struct _KD_DISPATCH_TABLE *DispatchTable,
     _In_ ULONG BootPhase);
 
-NTSTATUS
-NTAPI
-KdpSerialInit(
-    _In_ struct _KD_DISPATCH_TABLE *DispatchTable,
-    _In_ ULONG BootPhase);
-
-NTSTATUS
-NTAPI
-KdpNetInit(
-    _In_ struct _KD_DISPATCH_TABLE *DispatchTable,
-    _In_ ULONG BootPhase);
-
-BOOLEAN
-KdpNetGetByte(
-    _Out_ PUCHAR Byte);
-
 VOID
-KdpNetSendCommand(
-    _In_ PCSTR Command);
-
-VOID
-KdpNetSendBytes(
-    _In_reads_bytes_(Length) PCCH Buffer,
-    _In_ ULONG Length);
-
-BOOLEAN
-KdpNetPollBreakIn(VOID);
-
-VOID
-KdpNetDisplayStatus(VOID);
-
-BOOLEAN
-KdpNetQueryAttached(
-    _Out_opt_ PULONG Columns,
-    _Out_opt_ PULONG Rows);
-
-VOID
-KdpInfoInitialize(
-    _In_ struct _LOADER_PARAMETER_BLOCK *LoaderBlock);
+KdpScreenRelease(
+    _In_ BOOLEAN DisplayAcquired);
 
 ULONG
 NTAPI
@@ -115,67 +192,13 @@ KdpInfoQuery(
     _In_ ULONG Size,
     _Out_ PULONG Total);
 
-ULONG
+VOID
+KdpNetSendBytes(
+    _In_reads_bytes_(Length) PCCH Buffer,
+    _In_ ULONG Length);
+
+VOID
 NTAPI
-KdpInfoState(VOID);
-
-#ifdef KDBG
-#define KdpKdbgInit KdbInitialize
-#endif
-
-
-/* KD GLOBALS ****************************************************************/
-
-/* KD Native Modes */
-#define KdScreen    0
-// #define KdSerial    1
-#ifdef KDBG
-// #define KdKdbg      2
-#define KdMax       4
-#else
-#define KdMax       3
-#endif
-
-/* KD Private Debug Modes */
-typedef struct _KDP_DEBUG_MODE
-{
-    union
-    {
-        struct
-        {
-            /* Native Modes */
-            UCHAR Screen :1;
-            UCHAR Serial :1;
-            UCHAR File   :1;
-            UCHAR Net    :1;
-        };
-
-        /* Generic Value */
-        ULONG Value;
-    };
-} KDP_DEBUG_MODE;
-
-/* Dispatch Table for Wrapper Functions */
-typedef struct _KD_DISPATCH_TABLE
-{
-    LIST_ENTRY KdProvidersList;
-    PKDP_INIT_ROUTINE KdpInitRoutine;
-    PKDP_PRINT_ROUTINE KdpPrintRoutine;
-    NTSTATUS InitStatus;
-} KD_DISPATCH_TABLE, *PKD_DISPATCH_TABLE;
-
-/* The current Debugging Mode */
-extern KDP_DEBUG_MODE KdpDebugMode;
-
-/* Port Information for the Serial Native Mode */
-extern ULONG  SerialPortNumber;
-extern CPPORT SerialPortInfo;
-
-/* Init Functions for Native Providers */
-extern PKDP_INIT_ROUTINE InitRoutines[KdMax];
-
-/* Dispatch Tables for Native Providers */
-extern KD_DISPATCH_TABLE DispatchTable[KdMax];
-
-/* The KD Native Provider List */
-extern LIST_ENTRY KdProviders;
+KdpProvidersPrint(
+    _In_reads_bytes_(Length) PCCH String,
+    _In_ ULONG Length);

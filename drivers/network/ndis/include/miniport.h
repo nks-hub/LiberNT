@@ -223,6 +223,21 @@ NDIS_STATUS
 MiniReset(
     PLOGICAL_ADAPTER Adapter);
 
+VOID
+MiniStartHangTimer(
+    PLOGICAL_ADAPTER Adapter);
+
+VOID
+MiniStopHangTimer(
+    PLOGICAL_ADAPTER Adapter);
+
+VOID NTAPI
+MiniportHangDpc(
+    PKDPC Dpc,
+    PVOID DeferredContext,
+    PVOID SystemArgument1,
+    PVOID SystemArgument2);
+
 VOID NTAPI
 MiniResetComplete(
     IN NDIS_HANDLE MiniportAdapterHandle,
@@ -237,5 +252,28 @@ VOID
 MiniWorkItemComplete(
     PLOGICAL_ADAPTER     Adapter,
     NDIS_WORK_ITEM_TYPE  WorkItemType);
+
+FORCEINLINE
+VOID
+NdisKeepFirstMultiSzString(
+    _Inout_ PUNICODE_STRING String)
+{
+    USHORT Index;
+
+    ASSERT(String->Buffer != NULL || String->Length == 0);
+    ASSERT((String->Length % sizeof(WCHAR)) == 0);
+    ASSERT(String->Length <= String->MaximumLength);
+
+    for (Index = 0; Index < String->Length / sizeof(WCHAR); Index++)
+    {
+        if (String->Buffer[Index] == UNICODE_NULL)
+        {
+            String->Length = (USHORT)(Index * sizeof(WCHAR));
+            break;
+        }
+    }
+
+    ASSERT(String->Length == 0 || String->Buffer[String->Length / sizeof(WCHAR) - 1] != UNICODE_NULL);
+}
 
 /* EOF */

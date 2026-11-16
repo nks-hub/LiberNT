@@ -22,6 +22,7 @@ typedef struct _IOP_CANCEL_FILTER
     PEPROCESS Process;
     BOOLEAN SynchronousOnly;
     BOOLEAN Retry;
+    BOOLEAN AlertSynchronous;
 } IOP_CANCEL_FILTER, *PIOP_CANCEL_FILTER;
 
 /* PRIVATE FUNCTIONS **********************************************************/
@@ -57,6 +58,7 @@ IopCancelListIrps(
 {
     PDRIVER_CANCEL CancelRoutine;
     BOOLEAN Found = FALSE;
+    PETHREAD AlertThread;
     PLIST_ENTRY Entry;
     KIRQL CancelIrql;
     KIRQL OldIrql;
@@ -85,11 +87,13 @@ IopCancelListIrps(
         IoAcquireCancelSpinLock(&CancelIrql);
         Irp->Cancel = TRUE;
         CancelRoutine = IoSetCancelRoutine(Irp, NULL);
+        AlertThread = (Filter->AlertSynchronous && IsIrpSynchronous(Irp, Irp->Tail.Overlay.OriginalFileObject)) ? Irp->Tail.Overlay.Thread : NULL;
         KeReleaseSpinLockFromDpcLevel(ListLock);
 
         if (CancelRoutine == NULL || Irp->CurrentLocation > Irp->StackCount + 1)
         {
             IoReleaseCancelSpinLock(OldIrql);
+            if (CancelRoutine == NULL && AlertThread != NULL) KeAlertThread(&AlertThread->Tcb, KernelMode);
             continue;
         }
 
@@ -105,7 +109,7 @@ IopCancelFileIrps(
     _In_opt_ PETHREAD Thread,
     _In_opt_ PEPROCESS Process)
 {
-    IOP_CANCEL_FILTER Filter = { NULL, Match, Thread, Process, FALSE, FALSE };
+    IOP_CANCEL_FILTER Filter = { NULL, Match, Thread, Process, FALSE, FALSE, FALSE };
 
     return IopCancelListIrps(&FileObject->IrpList, &FileObject->IrpListLock, &Filter);
 }
@@ -117,7 +121,7 @@ IopCancelThreadIrpsForFile(
     _In_opt_ PIO_STATUS_BLOCK Match)
 {
     PETHREAD Thread = PsGetCurrentThread();
-    IOP_CANCEL_FILTER Filter = { FileObject, Match, NULL, NULL, FALSE, FALSE };
+    IOP_CANCEL_FILTER Filter = { FileObject, Match, NULL, NULL, FALSE, FALSE, FALSE };
 
     return IopCancelListIrps(&Thread->IrpList, &Thread->IrpListLock, &Filter);
 }
@@ -215,7 +219,7 @@ NTAPI
 IoCancelThreadIo(
     _In_ PETHREAD Thread)
 {
-    IOP_CANCEL_FILTER Filter = { NULL, NULL, NULL, NULL, FALSE, FALSE };
+    IOP_CANCEL_FILTER Filter = { NULL, NULL, NULL, NULL, FALSE, FALSE, FALSE };
     LARGE_INTEGER Interval;
     PLIST_ENTRY Entry;
     ULONG Attempts = 0;
@@ -386,7 +390,7 @@ NtCancelIoFileEx(
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
     IO_STATUS_BLOCK KernelIosb;
     PFILE_OBJECT FileObject;
-    IOP_CANCEL_FILTER Filter = { NULL, NULL, NULL, NULL, FALSE, FALSE };
+    IOP_CANCEL_FILTER Filter = { NULL, NULL, NULL, NULL, FALSE, FALSE, TRUE };
     BOOLEAN Found = FALSE;
     NTSTATUS Status;
 
@@ -463,7 +467,7 @@ NtCancelSynchronousIoFile(
     _Out_ PIO_STATUS_BLOCK IoStatusBlock)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    IOP_CANCEL_FILTER Filter = { NULL, NULL, NULL, NULL, FALSE, FALSE };
+    IOP_CANCEL_FILTER Filter = { NULL, NULL, NULL, NULL, FALSE, FALSE, TRUE };
     IO_STATUS_BLOCK KernelIosb;
     BOOLEAN Found = FALSE;
     PETHREAD Thread;

@@ -215,14 +215,18 @@ ObpFindPrivateNamespace(
 VOID
 NTAPI
 ObpRemovePrivateNamespace(
-    _In_ POBJECT_DIRECTORY Directory)
+    _In_ POBJECT_DIRECTORY Directory,
+    _In_ BOOLEAN LastHandleClosed)
 {
     POBP_PRIVATE_NAMESPACE Namespace;
 
     ObpLockPrivateNamespaces();
     Namespace = Directory->NamespaceEntry;
+    if (Namespace && LastHandleClosed && OBJECT_TO_OBJECT_HEADER(Directory)->HandleCount)
+        Namespace = NULL;
     if (Namespace)
     {
+        ASSERT(Namespace->Directory == Directory);
         RemoveEntryList(&Namespace->Link);
         Directory->NamespaceEntry = NULL;
     }
@@ -383,8 +387,9 @@ NtOpenPrivateNamespace(
     Namespace = ObpFindPrivateNamespace(Boundary);
     if (Namespace)
     {
-        Directory = Namespace->Directory;
-        ObReferenceObject(Directory);
+        ASSERT(Namespace->Directory->NamespaceEntry == Namespace);
+        if (ObReferenceObjectSafe(Namespace->Directory))
+            Directory = Namespace->Directory;
     }
     ObpUnlockPrivateNamespaces();
 
@@ -439,9 +444,9 @@ NtDeletePrivateNamespace(
     if (!NT_SUCCESS(Status)) return Status;
 
     if (!Directory->NamespaceEntry)
-        Status = STATUS_OBJECT_NAME_NOT_FOUND;
+        Status = STATUS_INVALID_HANDLE;
     else
-        ObpRemovePrivateNamespace(Directory);
+        ObpRemovePrivateNamespace(Directory, FALSE);
 
     ObDereferenceObject(Directory);
     return Status;

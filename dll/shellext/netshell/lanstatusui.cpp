@@ -1844,6 +1844,10 @@ CLanStatus::ShowStatusDialogByCLSID(const GUID *pguidCmdGroup)
 {
     NOTIFICATION_ITEM *pItem;
 
+    /* Enumerate now, on the tray thread that owns the item windows */
+    if (m_hwndWatch)
+        SendMessageW(m_hwndWatch, WM_TIMER, NETSHELL_REFRESH_TIMER, 0);
+
     pItem = m_pHead;
     while (pItem)
     {

@@ -7,6 +7,7 @@
 #include <apitest.h>
 #include <windows.h>
 #include <shellapi.h>
+#include <shlwapi.h>
 
 typedef HRESULT (WINAPI *SHELL_NOTIFYICONGETRECT)(const NOTIFYICONIDENTIFIER*, RECT*);
 
@@ -30,16 +31,81 @@ CheckQueryResult(SHELL_NOTIFYICONGETRECT GetRect, const NOTIFYICONIDENTIFIER& Id
     CheckRect(Rect, 0, 0, 0, 0);
 }
 
+/* The shell handles a new icon and a click on its own time */
+static HRESULT
+QueryUntil(SHELL_NOTIFYICONGETRECT GetRect, const NOTIFYICONIDENTIFIER& Identifier, HRESULT First, HRESULT Second, RECT *Rect)
+{
+    HRESULT Result = E_FAIL;
+
+    for (int Try = 0; Try < 30; Try++)
+    {
+        MSG Msg;
+
+        while (PeekMessageW(&Msg, NULL, 0, 0, PM_REMOVE))
+            DispatchMessageW(&Msg);
+        *Rect = g_SentinelRect;
+        Result = GetRect(&Identifier, Rect);
+        if (Result == First || Result == Second)
+            break;
+        Sleep(100);
+    }
+    return Result;
+}
+
+/* The shell keeps what the user chose for an icon under this key and reads it when the icon is added */
+static void
+DemoteIcon(UINT Id)
+{
+    WCHAR Path[MAX_PATH], Name[64];
+    DWORD Demoted = 0;
+    HKEY Key;
+
+    if (!GetModuleFileNameW(NULL, Path, _countof(Path)) ||
+        RegOpenKeyExW(HKEY_CURRENT_USER, L"Control Panel\\NotifyIconSettings", 0, KEY_READ | KEY_WRITE, &Key) != ERROR_SUCCESS)
+    {
+        return;
+    }
+
+    for (DWORD Index = 0; RegEnumKeyW(Key, Index, Name, _countof(Name)) == ERROR_SUCCESS; Index++)
+    {
+        WCHAR IconPath[MAX_PATH + 1] = L"";
+        DWORD IconId = ~Id, PathSize = sizeof(IconPath) - sizeof(WCHAR), IdSize = sizeof(IconId);
+
+        if (SHGetValueW(Key, Name, L"ExecutablePath", NULL, IconPath, &PathSize) == ERROR_SUCCESS &&
+            SHGetValueW(Key, Name, L"UID", NULL, &IconId, &IdSize) == ERROR_SUCCESS &&
+            IconId == Id && !lstrcmpiW(IconPath, Path))
+        {
+            SHSetValueW(Key, Name, L"IsPromoted", REG_DWORD, &Demoted, sizeof(Demoted));
+        }
+    }
+    RegCloseKey(Key);
+}
+
+static void
+Click(const RECT& Rect)
+{
+    INPUT Input[3] = { { 0 } };
+
+    Input[0].type = Input[1].type = Input[2].type = INPUT_MOUSE;
+    Input[0].mi.dx = (Rect.left + Rect.right) / 2 * 65535 / (GetSystemMetrics(SM_CXSCREEN) - 1);
+    Input[0].mi.dy = (Rect.top + Rect.bottom) / 2 * 65535 / (GetSystemMetrics(SM_CYSCREEN) - 1);
+    Input[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+    Input[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    Input[2].mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    ok(SendInput(3, Input, sizeof(INPUT)) == 3, "SendInput failed with %lu\n", GetLastError());
+}
+
 START_TEST(Shell_NotifyIconGetRect)
 {
     HMODULE Shell32 = GetModuleHandleW(L"shell32.dll");
     SHELL_NOTIFYICONGETRECT GetRect;
     NOTIFYICONIDENTIFIER Identifier = { 0 };
     NOTIFYICONDATAW Icon = { 0 };
-    RECT Rect;
+    RECT Rect, Button;
     HRESULT Result;
+    BOOL InOverflow = FALSE;
     HWND Window;
-    BOOL Added;
+    BOOL Added = FALSE;
 
     GetRect = reinterpret_cast<SHELL_NOTIFYICONGETRECT>(GetProcAddress(Shell32, "Shell_NotifyIconGetRect"));
     if (!GetRect)
@@ -68,6 +134,12 @@ START_TEST(Shell_NotifyIconGetRect)
     Identifier.cbSize = sizeof(Identifier);
     CheckQueryResult(GetRect, Identifier, E_FAIL);
 
+    if (!FindWindowW(L"Shell_TrayWnd", NULL))
+    {
+        skip("The shell has no taskbar\n");
+        return;
+    }
+
     Window = CreateWindowExW(0, L"STATIC", L"Shell_NotifyIconGetRect test", WS_OVERLAPPED,
                              0, 0, 100, 100, NULL, NULL, GetModuleHandleW(NULL), NULL);
     ok(Window != NULL, "CreateWindowExW failed with %lu\n", GetLastError());
@@ -81,26 +153,46 @@ START_TEST(Shell_NotifyIconGetRect)
     Icon.uCallbackMessage = WM_APP + 1;
     Icon.hIcon = LoadIconW(NULL, MAKEINTRESOURCEW(32512));
     lstrcpyW(Icon.szTip, L"Shell_NotifyIconGetRect test");
-    Added = Shell_NotifyIconW(NIM_ADD, &Icon);
-    ok(Added, "NIM_ADD failed with %lu\n", GetLastError());
+    Identifier.hWnd = Window;
+    Identifier.uID = Icon.uID;
+
+    /* Windows 11 shows an icon it has never seen on the taskbar and puts it into the overflow area when it is added again */
+    for (int Try = 0; Try < 3; Try++)
+    {
+        DemoteIcon(Icon.uID);
+        Added = Shell_NotifyIconW(NIM_ADD, &Icon);
+        ok(Added, "NIM_ADD failed with %lu\n", GetLastError());
+        if (!Added)
+            break;
+        Result = QueryUntil(GetRect, Identifier, S_OK, S_FALSE, &Rect);
+        if (Result == S_FALSE || Try == 2)
+            break;
+        ok(Shell_NotifyIconW(NIM_DELETE, &Icon), "NIM_DELETE failed with %lu\n", GetLastError());
+    }
 
     if (Added)
     {
-        Sleep(250);
-        Identifier.hWnd = Window;
-        Identifier.uID = Icon.uID;
-        Rect = g_SentinelRect;
-        Result = GetRect(&Identifier, &Rect);
-        ok(Result == S_OK || Result == E_FAIL, "unexpected result 0x%08lx\n", Result);
-        if (Result == S_OK)
+        ok(Result == S_FALSE, "the shell does not keep the icon in a closed overflow area, result 0x%08lx\n", Result);
+        ok(Rect.right > Rect.left && Rect.bottom > Rect.top, "invalid rect (%ld,%ld)-(%ld,%ld)\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
+
+        /* S_FALSE comes with the rectangle of the overflow button: the new icon is in the closed overflow area */
+        if (Result == S_FALSE)
         {
-            ok(Rect.right > Rect.left && Rect.bottom > Rect.top,
-               "invalid successful rect (%ld,%ld)-(%ld,%ld)\n",
+            Button = Rect;
+            InOverflow = TRUE;
+            Click(Button);
+            Result = QueryUntil(GetRect, Identifier, S_OK, S_OK, &Rect);
+            ok_hex(Result, S_OK);
+            ok(!EqualRect(&Rect, &Button), "the open overflow area still gives the button (%ld,%ld)-(%ld,%ld)\n",
                Rect.left, Rect.top, Rect.right, Rect.bottom);
-        }
-        else
-        {
-            CheckRect(Rect, 0, 0, 0, 0);
+            ok(Rect.right - Rect.left >= GetSystemMetrics(SM_CXSMICON) && Rect.bottom - Rect.top >= GetSystemMetrics(SM_CYSMICON),
+               "the rect (%ld,%ld)-(%ld,%ld) is smaller than the icon\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
+
+            Click(Button);
+            Result = QueryUntil(GetRect, Identifier, S_FALSE, S_FALSE, &Rect);
+            ok_hex(Result, S_FALSE);
+            ok(EqualRect(&Rect, &Button), "the closed overflow area gives (%ld,%ld)-(%ld,%ld), not the button\n",
+               Rect.left, Rect.top, Rect.right, Rect.bottom);
         }
 
         Identifier.uID++;
@@ -112,7 +204,18 @@ START_TEST(Shell_NotifyIconGetRect)
         Icon.dwState = NIS_HIDDEN;
         ok(Shell_NotifyIconW(NIM_MODIFY, &Icon), "hiding icon failed with %lu\n", GetLastError());
         Sleep(100);
-        CheckQueryResult(GetRect, Identifier, E_FAIL);
+        if (InOverflow)
+        {
+            /* On Windows 11 an icon with NIS_HIDDEN still gets the button of the closed overflow area */
+            Rect = g_SentinelRect;
+            Result = GetRect(&Identifier, &Rect);
+            ok_hex(Result, S_FALSE);
+            ok(EqualRect(&Rect, &Button), "the hidden icon gives (%ld,%ld)-(%ld,%ld), not the button\n", Rect.left, Rect.top, Rect.right, Rect.bottom);
+        }
+        else
+        {
+            CheckQueryResult(GetRect, Identifier, E_FAIL);
+        }
 
         ok(Shell_NotifyIconW(NIM_DELETE, &Icon), "NIM_DELETE failed with %lu\n", GetLastError());
         CheckQueryResult(GetRect, Identifier, E_FAIL);

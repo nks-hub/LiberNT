@@ -429,7 +429,7 @@ NtAdjustGroupsToken(
                               TYPE_ALIGNMENT(TOKEN_GROUPS));
             }
 
-            if (ReturnLength != NULL) ProbeForWriteUlong(ReturnLength);
+            if (PreviousState != NULL || ReturnLength != NULL) ProbeForWriteUlong(ReturnLength);
 
             if (!ResetToDefault)
             {

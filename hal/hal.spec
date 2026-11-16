@@ -58,14 +58,16 @@
 @ stdcall HalQueryDisplayParameters(ptr ptr ptr ptr)
 @ stdcall -arch=arm64 HalQueryPciBusRange(ptr ptr)
 @ stdcall -arch=arm64,riscv64,ppc HalQueryPciMsiSupport(long long ptr ptr ptr ptr ptr)
-@ stdcall -arch=i386,x86_64,riscv64,ppc HalQueryPciRoutedInterrupt(long long long long long ptr)
+@ stdcall -arch=i386,x86_64,arm64,riscv64,ppc HalQueryPciRoutedInterrupt(long long long long long ptr)
 @ stdcall HalQueryRealTimeClock(ptr)
 @ stdcall HalReadDmaCounter(ptr)
 @ stdcall HalReportResourceUsage()
 @ stdcall -arch=arm64 HalRequestDebugWakeIpi(long)
 @ stdcall -arch=arm64 HalArm64DbgGicState(long ptr ptr ptr ptr)
+@ stdcall -arch=arm64 HalArm64DbgPendInterrupt(long)
 @ stdcall -arch=arm64 HalArm64ProfileSample(long)
 @ stdcall -arch=arm64 HalArm64ConnectInterrupt(long)
+@ stdcall -arch=arm64 HalArm64TranslateDeviceTreeInterrupt(ptr long ptr long ptr ptr)
 @ stdcall -arch=arm64 HalArm64DisconnectInterrupt(long)
 @ stdcall -arch=!arm64 HalRequestIpi(long)
 @ stdcall -arch=arm64 HalRequestIpi(long ptr)
@@ -90,13 +92,15 @@
 @ stdcall HalTranslateBusAddress(long long long long ptr ptr)
 @ stdcall -version=0x0601+ HalConvertDeviceIdtToIrql(long)
 @ stdcall HalpConfigurePciRootBridge(ptr)
+@ stdcall HalpAcpiQueryFaults(ptr long ptr)
 @ stdcall -arch=arm64 HalpConfigureDmaAdapter(ptr ptr long)
+@ stdcall -arch=arm64 HalpSetDmaAdapterCoherency(ptr long)
 @ stdcall HalpRegisterPciRouteQuery(ptr)
 @ stdcall HalpSetPciRoutingMap(ptr long)
 @ stdcall HalpRecordPciMaxGsi(ptr)
-@ stdcall -arch=win64 HalpKdReadPciConfig(long long ptr long long)
+@ stdcall -arch=i386,win64 HalpKdReadPciConfig(long long ptr long long)
 @ stdcall -arch=win64 HalpGetInterruptTargetInformation(ptr)
-@ stdcall -arch=win64 HalpGetMessageRoutingInfo(ptr)
+@ stdcall HalpGetMessageRoutingInfo(ptr)
 @ stdcall -arch=i386,x86_64 IoAssignDriveLetters(ptr str ptr ptr) HalpAssignDriveLetters
 @ stdcall IoFlushAdapterBuffers(ptr ptr ptr ptr long long)
 @ stdcall IoFreeAdapterChannel(ptr)
@@ -191,10 +195,10 @@
 @ stdcall -arch=arm64 HalDmaAllocateCrashDumpRegistersEx(ptr long long ptr ptr)
 @ stdcall -arch=arm64 HalDmaFreeCrashDumpRegistersEx(ptr long)
 @ stdcall -arch=arm64 HalEnumerateProcessors(ptr ptr)
-@ stdcall -arch=arm64,riscv64 HalQueryMaximumProcessorCount()
+@ stdcall -arch=arm64,riscv64,x86_64 HalQueryMaximumProcessorCount()
 @ stdcall -arch=arm64 HalRegisterDynamicProcessor(ptr ptr)
 @ stdcall -arch=arm64 HalStartDynamicProcessor(ptr ptr)
-@ stdcall -arch=arm64,riscv64 HalIsHyperThreadingEnabled()
+@ stdcall -arch=arm64,riscv64,x86_64 HalIsHyperThreadingEnabled()
 @ stdcall -arch=arm64 HalBeginSystemInterruptUnspecified(long ptr)
 @ stdcall -arch=arm64 HalRequestClockInterrupt(long)
 @ stdcall -arch=arm64 HalRequestDeferredRecoveryServiceInterrupt()
@@ -235,9 +239,7 @@
 @ stub -arch=x86_64 HalEnumerateProcessors
 @ stub -arch=x86_64 HalHandleMcheck
 @ stub -arch=x86_64 HalInitializeOnResume
-@ stub -arch=x86_64 HalIsHyperThreadingEnabled
 @ stub -arch=x86_64 HalPerformEndOfInterrupt
-@ stub -arch=x86_64 HalQueryMaximumProcessorCount
 @ stub -arch=x86_64 HalRegisterDynamicProcessor
 @ stub -arch=x86_64 HalRegisterErrataCallbacks
 @ stub -arch=x86_64 HalRequestClockInterrupt

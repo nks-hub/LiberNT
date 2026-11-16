@@ -724,6 +724,7 @@ DxgkpWaitForVerticalBlank(
     InsertTailList(&Queue->VBlankWaiterList, &Waiter.Entry);
     WaiterLinked = TRUE;
     KeReleaseSpinLock(&Queue->VBlankWaitLock, OldIrql);
+    DxgkVsyncPowerDemand(Adapter);
     LinkGeneration = InterlockedCompareExchange(&Adapter->LinkConfigGeneration, 0, 0);
     Began = KeQueryInterruptTime();
     Deadline = Began + DXGK_VBLANK_WAIT_TIMEOUT_100NS;
@@ -901,6 +902,8 @@ DxgkPresentSetSyncRefreshCountWaitTarget(
         Status = STATUS_SUCCESS;
     }
     KeReleaseSpinLock(&Queue->VBlankWaitLock, OldIrql);
+    if (NT_SUCCESS(Status))
+        DxgkVsyncPowerDemand(Adapter);
 
 Cleanup:
     DxgkpReleasePresentQueues(Adapter);
@@ -1617,7 +1620,8 @@ DxgkpProgramSharedPrimaryScanout(
     _In_ D3DDDI_FLIPINTERVAL_TYPE FlipInterval,
     _In_opt_ PDXGKRNL_DEVICE Device,
     _In_ ULONG_PTR Window,
-    _In_ ULONG64 CompositorGeneration)
+    _In_ ULONG64 CompositorGeneration,
+    _In_ BOOLEAN RetiredFlip)
 {
     PDXGKARG_SETVIDPNSOURCEADDRESS SetSourceAddress = NULL;
     LARGE_INTEGER PrimaryAddress;
@@ -1625,6 +1629,7 @@ DxgkpProgramSharedPrimaryScanout(
     NTSTATUS Status;
     BOOLEAN KmdTransaction = FALSE;
     BOOLEAN Program;
+    BOOLEAN ProgramSource;
 
     if (Adapter == NULL ||
         Allocation == NULL ||
@@ -1688,6 +1693,16 @@ DxgkpProgramSharedPrimaryScanout(
     if (Status != STATUS_NOT_SUPPORTED || DXGK_CB_FULL(Adapter, DxgkDdiSetVidPnSourceAddress) == NULL)
         goto Cleanup;
 
+    ProgramSource = !RetiredFlip ||
+                    DxgkPresentCoreRetiredFlipProgramsSource((BOOLEAN)Adapter->FlipCaps.FlipOnVSyncMmIo,
+                                                             (BOOLEAN)Adapter->FlipCaps.FlipImmediateMmIo,
+                                                             Adapter->DriverCapsWddmVersion);
+    if (!ProgramSource)
+    {
+        Status = STATUS_SUCCESS;
+        goto MakeVisible;
+    }
+
     SetSourceAddress = ExAllocatePoolWithTag(NonPagedPool, sizeof(*SetSourceAddress), TAG_DXGK_PRESENT);
     if (SetSourceAddress == NULL)
     {
@@ -1747,6 +1762,7 @@ DxgkpProgramSharedPrimaryScanout(
     DptEnd(&g_DxgPresentTrace, Trace, NT_SUCCESS(Status), 0);
     DxgkReleaseKmdCall(Adapter);
 
+MakeVisible:
     if (NT_SUCCESS(Status) &&
         DXGK_CB(Adapter, DxgkDdiSetVidPnSourceVisibility) != NULL)
     {
@@ -2299,6 +2315,12 @@ DxgkpCaptureDesktop(
     Generation = DxgkVidPnGetCompositorGeneration(Adapter, SharedSurface.VidPnSourceId);
     if (Generation == 0)
         goto Cleanup;
+    if (SharedSurface.HeadlessDesktop)
+    {
+        ASSERT(!SharedSurface.VidPnCommitted);
+        Capture->Flags = DXGK_DESKTOP_CAPTURE_NEEDS_COMPOSITOR;
+        goto Cleanup;
+    }
     if (SharedSurface.PrimaryAllocation == NULL ||
         SharedSurface.PrimaryWidth < Capture->Width ||
         SharedSurface.PrimaryHeight < Capture->Height ||
@@ -2462,6 +2484,14 @@ DxgkpCaptureDesktop(
         Entry.SourceAllocation = NULL;
         Entry.SourceOpenBindingReference = PrimaryBinding;
         Entry.SourceOpenBindingHandle = PrimaryBindingHandle;
+        if (Status == STATUS_INVALID_PARAMETER)
+        {
+            /* FIXME: some miniports refuse a copy of the compositor's flip buffer into the capture surface; the compositor serves screen reads instead */
+            DXGKRNL_WARN("DxgkpCaptureDesktop: the miniport refused the scanout copy; screen reads go to the compositor\n");
+            Adapter->CddCaptureUnsupported = TRUE;
+            Capture->Flags = DXGK_DESKTOP_CAPTURE_NEEDS_COMPOSITOR;
+            Status = STATUS_SUCCESS;
+        }
     }
     else
     {
@@ -2470,7 +2500,7 @@ DxgkpCaptureDesktop(
         Entry.SourceIsSharedPrimary = TRUE;
         Status = DxgkpCaptureBlit(Adapter, &Entry);
     }
-    if (!NT_SUCCESS(Status))
+    if (!NT_SUCCESS(Status) || (Capture->Flags & DXGK_DESKTOP_CAPTURE_NEEDS_COMPOSITOR))
         goto Cleanup;
     RequiredBytes = (ULONGLONG)(Capture->Height - 1) * Cached->Surface.Pitch +
                     (ULONGLONG)Capture->Width * sizeof(ULONG);
@@ -2773,7 +2803,7 @@ DxgkpRefreshSharedPrimaryScanout(
     }
 
     Status = DxgkpProgramSharedPrimaryScanout(Adapter, Allocation, Entry->SharedSurface.VidPnSourceId, Entry->hSource, Entry->PresentId, Entry->FlipInterval,
-                 Entry->CddPresent ? NULL : Entry->Device, Entry->Window, Entry->CompositorGeneration);
+                 Entry->CddPresent ? NULL : Entry->Device, Entry->Window, Entry->CompositorGeneration, FALSE);
 
     return Status;
 }
@@ -3491,7 +3521,7 @@ DxgkpExecuteCpuPresent(
         if (Entry->DestinationIsSharedPrimary)
         {
             Status = DxgkpProgramSharedPrimaryScanout(Adapter, DestinationAllocation, Entry->SharedSurface.VidPnSourceId, Entry->hDestination, Entry->PresentId, Entry->FlipInterval,
-                         Entry->CddPresent ? NULL : Entry->Device, Entry->Window, Entry->CompositorGeneration);
+                         Entry->CddPresent ? NULL : Entry->Device, Entry->Window, Entry->CompositorGeneration, FALSE);
             if (!NT_SUCCESS(Status))
             {
                 DXGKRNL_WARN("DxgkpExecuteCpuPresent: shared-primary scanout "
@@ -3968,15 +3998,6 @@ DxgkpExecuteFullPresentMeasured(
     Status = DxgkpWaitForPresentWrites(Entry, FALSE);
     if (!NT_SUCCESS(Status))
         goto PresentCleanup;
-    if (Entry->SharedSurface.HeadlessDesktop &&
-        Entry->CompositorGeneration != 0 && Entry->DestinationIsSharedPrimary)
-    {
-        /* The detached desktop is also read by CDD's capture context. Drain
-         * the previous copy/read before this context overwrites that primary. */
-        Status = DxgkVidMmWaitForTrackedSubmissions(Entry->DestinationAllocation, FALSE);
-        if (!NT_SUCCESS(Status))
-            goto PresentCleanup;
-    }
     /*
      * A miniport that implements DxgkDdiPresent copies on the GPU; only a
      * display-only miniport, which has no present DDI at all, needs the port
@@ -4875,6 +4896,7 @@ DxgkpWaitForMmioScanout(
     BOOLEAN PresentIdReported;
     NTSTATUS Status;
 
+    DxgkVsyncPowerDemand(Adapter);
     /* A periodic bounded wait also observes device/reset teardown when the
      * hardware stops generating interrupts. Timeout never retires storage. */
     Timeout.QuadPart = -(100 * 10000LL);
@@ -5294,6 +5316,7 @@ DxgkpWaitForNextMmioVsync(
     ULONGLONG Began = KeQueryInterruptTime();
     LARGE_INTEGER Timeout;
 
+    DxgkVsyncPowerDemand(Adapter);
     Timeout.QuadPart = -(10 * 10000LL);
     while (InterlockedCompareExchange64(&Adapter->VsyncScanoutSequence[SourceId], 0, 0) == Start)
     {
@@ -5521,9 +5544,16 @@ DxgkpBuildMmioFlip(
     {
         return STATUS_NOT_SUPPORTED;
     }
-    PresentContext = Entry->Context != NULL ? Entry->Context->hMiniportContext : Entry->Device->hMiniportDevice;
-    if (PresentContext == NULL || (Entry->Context == NULL && Adapter->SchedulingCaps.MultiEngineAware))
-        return STATUS_INVALID_HANDLE;
+    if (DxgkPresentCoreContextless(Adapter->SupportContextlessPresent, FALSE))
+    {
+        PresentContext = NULL;
+    }
+    else
+    {
+        PresentContext = Entry->Context != NULL ? Entry->Context->hMiniportContext : Entry->Device->hMiniportDevice;
+        if (PresentContext == NULL || (Entry->Context == NULL && Adapter->SchedulingCaps.MultiEngineAware))
+            return STATUS_INVALID_HANDLE;
+    }
 
     Status = DxgkVidPnAcquireScanoutLease(Adapter, Entry->Device, Entry->VidPnSourceId,
                  Entry->Window, Entry->CompositorGeneration, &ScanoutLease);
@@ -5587,6 +5617,7 @@ DxgkpBuildMmioFlip(
         Status = STATUS_DEVICE_REMOVED;
         goto Cleanup;
     }
+    ASSERT(PresentContext != NULL || Adapter->SupportContextlessPresent);
     Status = DXGK_CB_FULL(Adapter, DxgkDdiPresent)(PresentContext, &PresentArgs);
     if (NT_SUCCESS(Status) && PresentArgs.pDmaBuffer != NULL)
         Status = STATUS_INVALID_DEVICE_STATE;
@@ -6144,43 +6175,15 @@ DxgkpPrepareDetachedDesktopPresent(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _Inout_ PDXGKRNL_PRESENT_ENTRY Entry)
 {
-    NTSTATUS Status;
-    BOOLEAN Program;
+    UNREFERENCED_PARAMETER(Adapter);
 
     if (Entry->Type != DxgkPresentTypeFlip ||
         !Entry->SharedSurface.HeadlessDesktop)
         return STATUS_SUCCESS;
 
-    /* There is no CRTC/vblank on a detached desktop. A registered compositor
-     * still publishes real pixels for screen reads: copy its finished buffer
-     * into the desktop primary using normal GPU DMA instead of admitting an
-     * MMIO flip which can never scan out. Keep this conversion at admission,
-     * before later commands can enter the submitting context's stream. */
-    if (Entry->CompositorGeneration == 0)
-        return STATUS_GRAPHICS_PRESENT_OCCLUDED;
-    if (!Entry->SharedSurface.RundownHeld ||
-        Entry->SharedSurface.PrimaryHandle == NULL ||
-        Entry->hDestination != 0 || Entry->DestinationAllocation != NULL)
-        return STATUS_INVALID_PARAMETER;
-    Status = DxgkVidPnAcquireScanoutLease(Adapter, Entry->Device,
-                 Entry->VidPnSourceId, Entry->Window,
-                 Entry->CompositorGeneration, &Program);
-    if (Program)
-        DxgkVidPnReleaseScanoutLease();
-    if (!NT_SUCCESS(Status))
-        return Status;
-    if (Program)
-        return STATUS_INVALID_DEVICE_STATE;
-    Status = DxgkVidMmReferenceAllocation(Entry->SharedSurface.PrimaryHandle,
-                 Adapter, NULL, &Entry->DestinationAllocation);
-    if (!NT_SUCCESS(Status))
-        return Status;
-    Entry->hDestination = (D3DKMT_HANDLE)(ULONG_PTR)Entry->SharedSurface.PrimaryHandle;
-    Entry->DestinationIsSharedPrimary = TRUE;
-    Entry->Type = DxgkPresentTypeBlt;
-    Entry->FlipInterval = D3DDDI_FLIPINTERVAL_IMMEDIATE;
-    Entry->SourceGpuOnly = TRUE;
-    return STATUS_SUCCESS;
+    /* A detached desktop has no VidPN path: no flip scans out and its shared primary is outside the miniport contract. */
+    ASSERT(!Entry->SharedSurface.VidPnCommitted);
+    return STATUS_GRAPHICS_PRESENT_OCCLUDED;
 }
 
 static NTSTATUS
@@ -6496,6 +6499,7 @@ DxgkpQueuePresent(
         KeClearEvent(&Queue->SpaceAvailableEvent);
 
     KeReleaseSpinLock(&Queue->QueueLock, OldIrql);
+    DxgkVsyncPowerDemand(Adapter);
 
     /*
      * For immediate flip interval (non-DOD), execute right away rather
@@ -6546,6 +6550,8 @@ DxgkpProcessPresentQueueLocked(_In_ PVOID Context)
     NTSTATUS Status;
 
     /* Admission may have closed while this caller waited for the executor. */
+
+    ASSERT(Context != NULL);
     if (InterlockedCompareExchange(&Adapter->SubmitDmaStopping, 0, 0) != 0)
         return STATUS_DELETE_PENDING;
 
@@ -6691,6 +6697,84 @@ DxgkpProcessPresentQueue(
     return Status;
 }
 
+static BOOLEAN
+DxgkpVsyncQueueIdle(
+    _In_ PDXGKRNL_PRESENT_QUEUE Queue)
+{
+    BOOLEAN Idle;
+    KIRQL OldIrql;
+    KeAcquireSpinLock(&Queue->QueueLock, &OldIrql);
+    Idle = Queue->Count == 0;
+    KeReleaseSpinLock(&Queue->QueueLock, OldIrql);
+    if (!Idle)
+        return FALSE;
+    if (Queue->VidPnSourceId < 32 &&
+        InterlockedCompareExchange(&Queue->Adapter->MpoPostPresentLayers[Queue->VidPnSourceId], 0, 0) != 0)
+    {
+        return FALSE;
+    }
+    KeAcquireSpinLock(&Queue->VBlankWaitLock, &OldIrql);
+    Idle = IsListEmpty(&Queue->VBlankWaiterList);
+#if (REACTOS_WDDM_TARGET_LEVEL >= 1200)
+    Idle = Idle && !Queue->DwmVBlankTargetArmed;
+#endif
+    KeReleaseSpinLock(&Queue->VBlankWaitLock, OldIrql);
+    KeAcquireSpinLock(&Queue->MmioFlipLock, &OldIrql);
+    Idle = Idle && IsListEmpty(&Queue->MmioFlipList);
+    KeReleaseSpinLock(&Queue->MmioFlipLock, OldIrql);
+    return Idle && *(PDXGKVMM_ALLOCATION volatile *)&Queue->MmioPendingAllocation == NULL;
+}
+
+static BOOLEAN
+DxgkpVsyncAdapterIdle(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    PDXGKRNL_PRESENT_QUEUE Queues = (PDXGKRNL_PRESENT_QUEUE)Adapter->PresentQueues;
+    ULONG Index;
+
+    if (DxgkSyncHasPeriodicFences())
+        return FALSE;
+    for (Index = 0; Index < Adapter->PresentQueueCount; Index++)
+    {
+        if (!DxgkpVsyncQueueIdle(&Queues[Index]))
+            return FALSE;
+    }
+    return TRUE;
+}
+
+static VOID
+NTAPI
+DxgkpVsyncPowerWorker(
+    _In_ PVOID Context)
+{
+    PDXGKRNL_ADAPTER Adapter = Context;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+    DxgkVsyncPowerIdle(Adapter);
+    DxgkpReleasePresentQueues(Adapter);
+}
+
+static VOID
+DxgkpVsyncPowerPulse(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ BOOLEAN Idle)
+{
+    if (!DxgkVsyncPowerCorePulse(&Adapter->VsyncPower,
+                                 Adapter->SchedulingCaps.VSyncPowerSaveAware != 0 ||
+                                 *(volatile BOOLEAN *)&Adapter->PresentTimerActive,
+                                 Idle))
+    {
+        return;
+    }
+    if (!DxgkpAcquirePresentQueues(Adapter))
+    {
+        DxgkVsyncPowerCoreWorkDone(&Adapter->VsyncPower);
+        return;
+    }
+    ExInitializeWorkItem(&Adapter->VsyncPowerWorkItem, DxgkpVsyncPowerWorker, Adapter);
+    ExQueueWorkItem(&Adapter->VsyncPowerWorkItem, DelayedWorkQueue);
+}
+
 /* ========================================================================
  * DxgkpNotifyVSync
  *
@@ -6738,6 +6822,7 @@ DxgkpNotifyVSync(
     KeAcquireSpinLock(&Queue->QueueLock, &OldIrql);
     HasEntries = Queue->Count != 0;
     KeReleaseSpinLock(&Queue->QueueLock, OldIrql);
+    DxgkpVsyncPowerPulse(Adapter, !HasEntries && DxgkpVsyncAdapterIdle(Adapter));
     /* A periodic monitored fence owes an advance on every pulse even when no
      * present is queued, and that advance runs at PASSIVE_LEVEL; so does an
      * overlay post-present notification. */

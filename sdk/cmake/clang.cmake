@@ -134,7 +134,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(-Wno-unused-variable)
     add_compile_options(-Wno-unused-but-set-variable)
 else()
-    if(OPTIMIZE STREQUAL "1")
+    if(OPTIMIZE STREQUAL "0")
+        add_compile_options(-O0)
+        # Unoptimized frames are several times larger, so kernel stacks are doubled.
+        add_compile_definitions(KERNEL_STACK_SCALE=2)
+        add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:-fno-builtin-memcpy>")
+        if(ARCH STREQUAL "i386")
+            add_compile_options("$<$<COMPILE_LANGUAGE:C,CXX>:SHELL:-mllvm -fast-isel=false>")
+        endif()
+    elseif(OPTIMIZE STREQUAL "1")
         add_compile_options(-Os)
     elseif(OPTIMIZE STREQUAL "2")
         add_compile_options(-Os)
@@ -153,7 +161,10 @@ endif()
 
 # Link-time code generation
 if(LTCG)
-    add_compile_options(-flto)
+    # Thin is the one that scales: each module keeps its own summary, so a
+    # link reads what it needs instead of the whole program at once.
+    add_compile_options(-flto=thin)
+    add_link_options(-flto=thin)
 endif()
 
 if(ARCH STREQUAL "i386")
@@ -709,9 +720,6 @@ add_library(libwinpthread INTERFACE)
 add_library(libunwind STATIC IMPORTED GLOBAL)
 set_target_properties(libunwind PROPERTIES IMPORTED_LOCATION ${_llvm_libunwind})
 target_link_libraries(libunwind INTERFACE libkernel32 libntdll)
-if(DLL_EXPORT_VERSION LESS 0x601)
-    target_link_libraries(libunwind INTERFACE llvmcompat)
-endif()
 
 add_library(libsupc++ STATIC IMPORTED GLOBAL)
 set_target_properties(libsupc++ PROPERTIES IMPORTED_LOCATION ${_llvm_libcxxabi})

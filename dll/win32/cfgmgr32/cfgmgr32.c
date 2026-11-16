@@ -3071,6 +3071,8 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
                 return CR_INVALID_DATA;
             break;
         }
+        /* An instance key holds no class name: it is the Class value of the class key ClassGUID names */
+        if (key->pid - 1 == CM_DRP_CLASS) return CR_INVALID_PROPERTY;
         if (type == DEVPROP_TYPE_GUID)
         {
             guid_string( (const GUID *)buffer, guid, ARRAY_SIZE(guid) );

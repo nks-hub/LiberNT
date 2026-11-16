@@ -253,7 +253,15 @@ typedef enum _PLUGPLAY_CONTROL_CLASS
     PlugPlayControlResetDevice,
     PlugPlayControlHaltDevice,
     PlugPlayControlGetBlockedDriverList,
-    MaxPlugPlayControl
+    MaxPlugPlayControl,
+#ifdef __REACTOS__
+    /* Not a class of Windows, which changes the state of an interface through its device API driver */
+    PlugPlayControlSetDeviceInterfaceState = 0x100,
+    /* Not a class of Windows, whose software device bus reports the capabilities given to SwDeviceCreate */
+    PlugPlayControlSetDeviceCapabilities = 0x101,
+    /* Not a class of Windows, whose software device API creates a device below the parent given to SwDeviceCreate */
+    PlugPlayControlInitializeChildDevice = 0x102
+#endif
 } PLUGPLAY_CONTROL_CLASS;
 
 typedef enum _PLUGPLAY_BUS_CLASS
@@ -594,6 +602,30 @@ typedef struct _PLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA
     ULONG DeviceInstanceLength;
     PWSTR DeviceInstance;
 } PLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA, *PPLUGPLAY_CONTROL_RETRIEVE_DOCK_DATA;
+
+#ifdef __REACTOS__
+typedef struct _PLUGPLAY_CONTROL_INTERFACE_STATE_DATA
+{
+    UNICODE_STRING SymbolicLinkName;
+    BOOLEAN Enable;
+} PLUGPLAY_CONTROL_INTERFACE_STATE_DATA, *PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA;
+
+typedef struct _PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA
+{
+    UNICODE_STRING DeviceInstance;
+    BOOLEAN Removable;
+    BOOLEAN SilentInstall;
+    BOOLEAN NoDisplayInUI;
+    BOOLEAN RawDeviceOK;
+    BOOLEAN SurpriseRemovalOK;
+} PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA, *PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA;
+
+typedef struct _PLUGPLAY_CONTROL_CHILD_DEVICE_DATA
+{
+    UNICODE_STRING DeviceInstance;
+    UNICODE_STRING ParentInstance;
+} PLUGPLAY_CONTROL_CHILD_DEVICE_DATA, *PPLUGPLAY_CONTROL_CHILD_DEVICE_DATA;
+#endif
 
 //
 // Plug and Play Bus Type Definition

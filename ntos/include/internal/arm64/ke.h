@@ -6,8 +6,15 @@
 
 #pragma once
 
+/* Windows 11 ARM64 encodes an explicit DPC target as 0x800 plus the processor index */
+#define KI_DPC_TARGET_PROCESSOR_OFFSET 0x800
+
 #define KI_EMULATED_USER_MACHINE IMAGE_FILE_MACHINE_AMD64
+/* Windows 11 ARM64 spends about 960 ns on a yield with nothing to run, and spin loops are sized on it */
+#define KI_EMPTY_YIELD_STALL_NS 700
 #define KI_EMULATED_USER_SYSTEM_DLL NULL
+#define KiEmulationProcessorArchitecture(Process) \
+    ((PsWow64GetProcessMachine(Process) == IMAGE_FILE_MACHINE_I386) ? PROCESSOR_ARCHITECTURE_INTEL : PROCESSOR_ARCHITECTURE_ARM)
 
 /* This port initializes scheduler sub-nodes and their non-parked CPU sets. */
 #define KI_CORE_PARKING
@@ -39,10 +46,13 @@
 /* TCR_EL1.AS is clear, so the implemented process tag is TTBR1[55:48]. */
 #define KI_ARM64_TLBI_ASID_MASK 0x00FF000000000000ULL
 
+#define KI_ARM64_IDLE_POLLING 2
+
 #define ARM64_SYNC_BARRIER() do { __dmb(_ARM64_BARRIER_SY); __isb(_ARM64_BARRIER_SY); } while (0)
 
 #define ARM64_PSTATE_ASYNC_ABORT_MASK 0x100UL
 #define ARM64_PSTATE_IRQ_MASK         0x080UL
+#define ARM64_PSTATE_FIQ_MASK         0x040UL
 #define ARM64_PSTATE_SSBS             0x1000UL
 
 #ifndef KI_MAX_NUMA_NODES
@@ -159,6 +169,55 @@ KeInvalidateTlbEntry(
     ARM64_DSB(ISH);
     ARM64_ISB();
 }
+
+FORCEINLINE
+BOOLEAN
+KiArm64IdleProcessorNeedsWake(
+    _In_ PKPRCB Prcb)
+{
+    /* Pairs with the barrier after the idle loop publishes or retracts its awake state */
+    ARM64_DMB(ISH);
+    return ReadNoFence(&Prcb->Sleeping) != KI_ARM64_IDLE_POLLING;
+}
+
+#define KiArchIdleProcessorNeedsWake(Prcb) KiArm64IdleProcessorNeedsWake(Prcb)
+#define KiArchIdleLoopPollsForWork() FALSE
+
+CODE_SEG("INIT")
+VOID
+NTAPI
+ExArm64PostHalInitSystemPhase0(VOID);
+
+CODE_SEG("INIT")
+VOID
+NTAPI
+ExArm64PostHalInitSystemPhase1(VOID);
+
+#define ExArchPostHalInitSystemPhase0() ExArm64PostHalInitSystemPhase0()
+#define ExArchPostHalInitSystemPhase1() ExArm64PostHalInitSystemPhase1()
+
+/* ELR already points at the BRK instruction */
+#define KI_BREAKPOINT_PC_ADJUST 0
+#define KiArchExceptionContextFlags(PreviousMode) ((VOID)(PreviousMode), (CONTEXT_FULL | CONTEXT_DEBUG_REGISTERS))
+#define KI_CALLOUT_STACK_RESERVE 16
+
+VOID
+KiArm64FinishExceptionContext(
+    _In_ PKTRAP_FRAME TrapFrame,
+    _Inout_ PCONTEXT Context);
+#define KiArchFinishExceptionContext(TrapFrame, Context) KiArm64FinishExceptionContext(TrapFrame, Context)
+
+BOOLEAN
+KiArm64LastChanceKernelDebugger(
+    _In_ PEXCEPTION_RECORD ExceptionRecord,
+    _Inout_ PCONTEXT Context);
+#define KiArchLastChanceKernelDebugger(ExceptionRecord, Context) KiArm64LastChanceKernelDebugger(ExceptionRecord, Context)
+
+VOID
+KiArm64PrepareUserBreakpoint(
+    _Inout_ PEXCEPTION_RECORD ExceptionRecord,
+    _Inout_ PKTRAP_FRAME TrapFrame);
+#define KiArchPrepareUserBreakpoint(ExceptionRecord, TrapFrame) KiArm64PrepareUserBreakpoint(ExceptionRecord, TrapFrame)
 
 FORCEINLINE
 ULONG64
@@ -526,6 +585,20 @@ KeSetContextReturnRegister(
 
 FORCEINLINE
 ULONG_PTR
+KeGetContextServiceArgument3(_In_ PCONTEXT Context)
+{
+    return Context->X3;
+}
+
+FORCEINLINE
+ULONG_PTR
+KeGetContextServiceArgument4(_In_ PCONTEXT Context)
+{
+    return Context->X4;
+}
+
+FORCEINLINE
+ULONG_PTR
 KeGetContextStackRegister(
     _In_ PCONTEXT Context)
 {
@@ -696,6 +769,121 @@ NTAPI
 KeStartArm64ProcessorTimer(
     VOID);
 
+typedef enum _KCLOCK_TIMER_ONE_SHOT_STATE
+{
+    KClockTimerOneShotUnarmed = 0,
+    KClockTimerOneShotArmed = 1,
+    KClockTimerOneShotRearmRequired = 2,
+    KClockTimerOneShotInvalid = 3
+} KCLOCK_TIMER_ONE_SHOT_STATE;
+
+typedef enum _KCLOCK_TIMER_DEADLINE_TYPE
+{
+    KClockTimerKTimerExpirationNonHr = 0,
+    KClockTimerKTimerExpirationPseudoHr = 1,
+    KClockTimerKTimer2ExpirationHr = 2,
+    KClockTimerKTimersMax = 2,
+    KClockTimerQuantumEnd = 3,
+    KClockTimerGroupSchedulingGenerationEnd = 4,
+    KClockTimerIdlePromotion = 5,
+    KClockTimerBamQosHysteresisEnd = 6,
+    KClockTimerMax = 7
+} KCLOCK_TIMER_DEADLINE_TYPE;
+
+typedef struct _KCLOCK_TIMER_DEADLINE_ENTRY
+{
+    ULONG64 DueTime;
+    ULONG TolerableDelay;
+    union
+    {
+        UCHAR TypeFlags;
+        struct
+        {
+            UCHAR Valid:1;
+            UCHAR NoWake:1;
+            UCHAR Unused:6;
+        };
+    };
+} KCLOCK_TIMER_DEADLINE_ENTRY;
+
+typedef struct _KCLOCK_TICK_TRACE
+{
+    ULONG64 PerformanceCounter;
+    ULONG64 PreInterruptTime;
+    ULONG64 PostInterruptTime;
+    ULONG64 TimeStampCounter;
+    UCHAR IsClockOwner;
+} KCLOCK_TICK_TRACE;
+
+typedef struct _KCLOCK_INCREMENT_TRACE
+{
+    ULONG ActualIncrement;
+    ULONG RequestedIncrement;
+    ULONG64 InterruptTime;
+    ULONG64 PerformanceCounter;
+    UCHAR OneShot;
+} KCLOCK_INCREMENT_TRACE;
+
+typedef struct _KCLOCK_TIMER_STATE
+{
+    ULONG64 NextTickDueTime;
+    ULONG TimeIncrement;
+    ULONG LastRequestedTimeIncrement;
+    KCLOCK_TIMER_ONE_SHOT_STATE OneShotState;
+    KCLOCK_TIMER_DEADLINE_TYPE ExpectedWakeReason;
+    KCLOCK_TIMER_DEADLINE_ENTRY ClockTimerEntries[KClockTimerMax];
+    UCHAR ClockActive;
+    UCHAR ClockArmedForIdle;
+    ULONG ClockTickTraceIndex;
+    ULONG ClockIncrementTraceIndex;
+    KCLOCK_TICK_TRACE ClockTickTraces[16];
+    KCLOCK_INCREMENT_TRACE ClockIncrementTraces[16];
+} KCLOCK_TIMER_STATE, *PKCLOCK_TIMER_STATE;
+
+C_ASSERT(sizeof(KCLOCK_TIMER_DEADLINE_ENTRY) == 0x10);
+C_ASSERT(sizeof(KCLOCK_TICK_TRACE) == 0x28);
+C_ASSERT(sizeof(KCLOCK_INCREMENT_TRACE) == 0x20);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, TimeIncrement) == 0x08);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, OneShotState) == 0x10);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ExpectedWakeReason) == 0x14);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockTimerEntries) == 0x18);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockActive) == 0x88);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockArmedForIdle) == 0x89);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockTickTraceIndex) == 0x8C);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockIncrementTraceIndex) == 0x90);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockTickTraces) == 0x98);
+C_ASSERT(FIELD_OFFSET(KCLOCK_TIMER_STATE, ClockIncrementTraces) == 0x318);
+C_ASSERT(sizeof(KCLOCK_TIMER_STATE) == RTL_FIELD_SIZE(KPRCB, ClockTimerState));
+C_ASSERT(FIELD_OFFSET(KPRCB, ClockTimerState) % TYPE_ALIGNMENT(KCLOCK_TIMER_STATE) == 0);
+
+#define KiArm64ClockTimerState(Prcb) ((PKCLOCK_TIMER_STATE)(Prcb)->ClockTimerState)
+
+VOID
+NTAPI
+KiArm64ClockArmForIdle(
+    _Inout_ PKPRCB Prcb);
+
+VOID
+NTAPI
+KiArm64ClockResumeFromIdle(
+    _Inout_ PKPRCB Prcb);
+
+VOID
+FASTCALL
+KiArm64ClockTimerInserted(
+    _In_ ULONGLONG DueTime);
+
+VOID
+NTAPI
+KiArm64RefreshProcessorRunTime(
+    _In_ PKPRCB Prcb);
+
+VOID
+NTAPI
+KiArm64QueryClockTickBaseline(
+    _Out_ PLARGE_INTEGER Counter,
+    _Out_ PULONGLONG Remainder);
+
 VOID
 NTAPI
 KiArm64SaveProcessorClock(
@@ -735,6 +923,8 @@ extern ULONG KiArm64NumWatchpoints;
 extern UCHAR KiArm64UserStepArmed[MAXIMUM_PROCESSORS];
 extern UCHAR KiArm64UserDebugArmed[MAXIMUM_PROCESSORS];
 VOID NTAPI KiArm64LoadUserDebugState(_In_ PKTRAP_FRAME TrapFrame);
+PKINTERRUPT NTAPI KiArm64QueryInterrupt(_In_ ULONG IntId);
+ULONG NTAPI KiArm64QueryInterruptLimit(VOID);
 VOID NTAPI KiArm64SaveUserDebugState(_Inout_ PKTRAP_FRAME TrapFrame);
 VOID NTAPI KiArm64SaveUserDebugRegisters(_Out_ PBOOLEAN Valid, _Out_writes_(ARM64_MAX_BREAKPOINTS) PULONG Bcr,
                                          _Out_writes_(ARM64_MAX_BREAKPOINTS) PULONG64 Bvr,
@@ -1007,6 +1197,8 @@ KiEnterServiceException(
                                            KiArm64ContextNeedsNonvolatiles(Context, PreviousMode));
     }
 
+    if (ExceptionFrame == NULL) ExceptionFrame = &State->ExceptionFrame;
+
     *ExceptionFrame = *((PKEXCEPTION_FRAME)TrapFrame - 1);
     return ExceptionFrame;
 }
@@ -1042,6 +1234,8 @@ VOID KiReportCpuFeatures(IN PKPRCB Prcb);
 #define KI_DPC_NORMAL_DPC_PRESENT          0x00000010L
 #define KI_DPC_THREAD_ACTIVE               0x00010000L
 #define KI_DPC_THREAD_REQUESTED            0x00020000L
+
+#define KI_ARCH_DPC_REQUEST_STATE
 
 FORCEINLINE
 BOOLEAN
@@ -1127,6 +1321,14 @@ KiClearDpcThreadState(
 #define KiPrcbDpcTimeLimit(Prcb) ((Prcb)->DpcTimeLimitTicks)
 #define KiPrcbDpcWatchdogCount(Prcb) ((Prcb)->DpcWatchdogCount)
 #define KiPrcbDpcWatchdogPeriod(Prcb) ((Prcb)->DpcWatchdogPeriodTicks)
-#define KiClockTickSuspended(Prcb) FALSE
+#define KiPrcbContext(Prcb) ((Prcb)->Context)
+/* TODO: the debugger data offsets of the processor type and vendor string on ARM64 are not known */
+#define KI_PRCB_CPU_TYPE_OFFSET 0
+#define KI_PRCB_VENDOR_STRING_OFFSET 0
+#define KI_PRCB_CONTEXT_OFFSET FIELD_OFFSET(KPRCB, Context)
+#define KiClockTickSuspended(Prcb) (!KiArm64ClockTimerState(Prcb)->ClockActive)
+#define KiClockTimerInserted(DueTime) KiArm64ClockTimerInserted(DueTime)
+#define KiRefreshProcessorRunTime(Prcb) KiArm64RefreshProcessorRunTime(Prcb)
+#define KiQueryClockTickBaseline(Counter, Remainder) KiArm64QueryClockTickBaseline(Counter, Remainder)
 
 #define KiIsUserModeTrap(TrapFrame) ((TrapFrame)->PreviousMode == UserMode)

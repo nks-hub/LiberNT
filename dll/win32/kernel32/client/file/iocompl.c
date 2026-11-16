@@ -24,10 +24,6 @@ C_ASSERT(FIELD_OFFSET(OVERLAPPED_ENTRY, dwNumberOfBytesTransferred) == FIELD_OFF
  * it was actually added to Windows 2003 in SP2. Headers restrict it from
  * pre-Vista though so define the flags we need for it.
  */
-#if (_WIN32_WINNT < 0x0600)
-#define FILE_SKIP_COMPLETION_PORT_ON_SUCCESS 0x1
-#define FILE_SKIP_SET_EVENT_ON_HANDLE        0x2
-#endif
 
 /*
  * @implemented
@@ -54,6 +50,36 @@ SetFileCompletionNotificationModes(IN HANDLE FileHandle,
                                   &FileInformation,
                                   sizeof(FileInformation),
                                   FileIoCompletionNotificationInformation);
+    if (!NT_SUCCESS(Status))
+    {
+        BaseSetLastNTError(Status);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/*
+ * @implemented
+ */
+BOOL
+WINAPI
+SetFileIoOverlappedRange(IN HANDLE FileHandle,
+                         IN PUCHAR OverlappedRangeStart,
+                         IN ULONG Length)
+{
+    FILE_IOSTATUSBLOCK_RANGE_INFORMATION FileInformation;
+    IO_STATUS_BLOCK IoStatusBlock;
+    NTSTATUS Status;
+
+    FileInformation.IoStatusBlockRange = OverlappedRangeStart;
+    FileInformation.Length = Length;
+
+    Status = NtSetInformationFile(FileHandle,
+                                  &IoStatusBlock,
+                                  &FileInformation,
+                                  sizeof(FileInformation),
+                                  FileIoStatusBlockRangeInformation);
     if (!NT_SUCCESS(Status))
     {
         BaseSetLastNTError(Status);

@@ -32,7 +32,25 @@ NPAGED_LOOKASIDE_LIST IrpContextLookasideList;
 NPAGED_LOOKASIDE_LIST FcbLookasideList;
 NPAGED_LOOKASIDE_LIST AttrCtxtLookasideList;
 PDRIVER_OBJECT NtfsDriverObject;
+ULONG NtfsMaxCachedRecords = NTFS_MAX_CACHED_RECORDS;
+static PDRIVER_DISPATCH NtfsFsdDispatchTable[IRP_MJ_MAXIMUM_FUNCTION + 1];
 /* FUNCTIONS ****************************************************************/
+static
+NTSTATUS
+NTAPI
+NtfsFsdDispatch(_In_ PDEVICE_OBJECT VolumeDeviceObject,
+                _Inout_ PIRP Irp)
+{
+    UCHAR MajorFunction = IoGetCurrentIrpStackLocation(Irp)->MajorFunction;
+    NTSTATUS Status;
+
+    FsRtlEnterFileSystem();
+    Status = NtfsFsdDispatchTable[MajorFunction](VolumeDeviceObject, Irp);
+    FsRtlExitFileSystem();
+
+    return Status;
+}
+
 NTSTATUS
 NTAPI
 DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
@@ -40,8 +58,22 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
 {
     NTSTATUS Status;
     UNICODE_STRING UnicodeString;
+    ULONG Index;
     NtfsDriverObject = DriverObject;
     UNREFERENCED_PARAMETER(RegistryPath);
+    switch (MmQuerySystemSize())
+    {
+        case MmSmallSystem:
+            NtfsMaxCachedRecords = NTFS_MAX_CACHED_RECORDS;
+            break;
+        case MmMediumSystem:
+            NtfsMaxCachedRecords = 4 * NTFS_MAX_CACHED_RECORDS;
+            break;
+        case MmLargeSystem:
+        default:
+            NtfsMaxCachedRecords = 16 * NTFS_MAX_CACHED_RECORDS;
+            break;
+    }
     RtlInitUnicodeString(&UnicodeString, L"\\Ntfs");
     Status = IoCreateDevice(DriverObject,
                             0,
@@ -76,6 +108,12 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject,
     DriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL]           = NtfsFsdDeviceControl;
     DriverObject->MajorFunction[IRP_MJ_SHUTDOWN]                 = NtfsFsdShutdown;
     DriverObject->MajorFunction[IRP_MJ_PNP]                      = NtfsFsdPnp;
+
+    for (Index = 0; Index <= IRP_MJ_MAXIMUM_FUNCTION; Index++)
+    {
+        NtfsFsdDispatchTable[Index] = DriverObject->MajorFunction[Index];
+        DriverObject->MajorFunction[Index] = NtfsFsdDispatch;
+    }
 
     // Do not set DO_DIRECT_IO/DO_BUFFERED_IO flags on the FS control device
     // The I/O manager and Cache Manager will decide buffering for file I/O
@@ -860,6 +898,7 @@ NtfsFsdCleanup(_In_ PDEVICE_OBJECT VolumeDeviceObject,
                                FileCB);
             KeLeaveCriticalRegion();
         }
+        NtfsTxfCleanup(VolCB, FileCB);
         LastHandle = TRUE;
         if (FileCB->StreamCB)
         {
@@ -885,8 +924,20 @@ NtfsFsdCleanup(_In_ PDEVICE_OBJECT VolumeDeviceObject,
 
         if (FirstCleanup)
         {
+            BOOLEAN Exclusive = (FileCB->CreateOptions & FILE_DELETE_ON_CLOSE) != 0;
+            BOOLEAN Acquired = FALSE;
+            BOOLEAN Locked = FALSE;
+
             KeEnterCriticalRegion();
-            NtfsAcquireMetadata(VolCB);
+            if (Exclusive)
+            {
+                NtfsAcquireMetadata(VolCB);
+            }
+            else
+            {
+                Acquired = NtfsAcquireMetadataSharedUnlessHeld(VolCB);
+                Locked = NtfsLockOpenLinks(VolCB);
+            }
             if (FileCB->CreateOptions & FILE_DELETE_ON_CLOSE)
             {
                 if (FileCB->NativeCcb.Lcb &&
@@ -921,7 +972,16 @@ NtfsFsdCleanup(_In_ PDEVICE_OBJECT VolumeDeviceObject,
                              !NtfsIsLinkDetached(FileCB->NativeCcb.Lcb) &&
                              (FileCB->NativeCcb.Lcb->CleanupCount == 0 || FileCB->PosixDelete);
             }
-            NtfsReleaseMetadata(VolCB);
+            if (Exclusive)
+            {
+                NtfsReleaseMetadata(VolCB);
+            }
+            else
+            {
+                NtfsUnlockOpenLinks(VolCB, Locked);
+                if (Acquired)
+                    NtfsReleaseMetadataShared(VolCB);
+            }
             KeLeaveCriticalRegion();
         }
 

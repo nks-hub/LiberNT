@@ -416,6 +416,15 @@ SepCheckEntry(
         SepSidInTokenEx(Context->Token, Context->PrincipalSelfSid, Owner,
                         FALSE, Context->SidSet);
 
+    /* A restricted token owns only what both its groups and its restricting SIDs own */
+    if (Context->CallerIsOwner && Context->SidSet != SEP_SID_SET_CAPABILITIES &&
+        Context->Token->RestrictedSidCount != 0)
+    {
+        Context->CallerIsOwner =
+            SepSidInTokenEx(Context->Token, Context->PrincipalSelfSid, Owner, FALSE,
+                            Context->SidSet == SEP_SID_SET_GROUPS ? SEP_SID_SET_RESTRICTED : SEP_SID_SET_GROUPS);
+    }
+
     if (Context->CallerIsOwner && !SepDaclNamesOwnerRights(Dacl))
     {
         if (Context->MaximumAllowed)

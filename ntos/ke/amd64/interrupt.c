@@ -1,108 +1,130 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/ke/amd64/interrupt.c
- * PURPOSE:         Manages the Kernel's IRQ support for external drivers,
- *                  for the purpopses of connecting, disconnecting and setting
- *                  up ISRs for drivers. The backend behind the Io* Interrupt
- *                  routines.
- * PROGRAMMERS:     Timo Kreuzer (timo.kreuzer@reactos.org)
- *                  Alex Ionescu (alex.ionescu@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     amd64 interrupt objects: connection to an IDT vector and disconnection
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES *****************************************************************/
 
 #include <ntoskrnl.h>
 #define NDEBUG
 #include <debug.h>
+
+#define KI_STRAY_INTERRUPT_REPORTS 32
 
 extern UCHAR KiInterruptDispatchTemplate[16];
 extern KI_INTERRUPT_DISPATCH_ENTRY KiUnexpectedRange[256];
 extern KI_INTERRUPT_DISPATCH_ENTRY KiUnexpectedRangeEnd[];
 void KiInterruptDispatch(void);
 
-
-/* FUNCTIONS ****************************************************************/
-
-/* Called from KiUnexpectedInterrupt (trap.S) with the stub's raw error code (vector - 128). Reports stray vectors so misrouted interrupts are visible instead of being silently swallowed. */
+/* trap.S passes the stub's error code, vector - 128, and sends the EOI itself */
 VOID
 NTAPI
-KiUnexpectedInterruptHandler(IN ULONG64 ErrorCode)
+KiUnexpectedInterruptHandler(
+    _In_ ULONG64 ErrorCode)
 {
-    static LONG KiUnexpectedInterruptCount = 0;
+    static LONG Reports = 0;
     ULONG Vector = (ULONG)((ErrorCode + 128) & 0xFF);
-    LONG Count = InterlockedIncrement(&KiUnexpectedInterruptCount);
-    if (Count <= 32) DbgPrint("STRAYINT: unexpected vector 0x%02lx on CPU %u (#%ld) - sending EOI to prevent ISR/PPR wedge\n", Vector, KeGetCurrentPrcb()->Number, Count);
+    LONG Count = InterlockedIncrement(&Reports);
+
+    if (Count <= KI_STRAY_INTERRUPT_REPORTS)
+        DbgPrint("Unexpected interrupt on vector 0x%02lx, processor %u (%ld so far)\n", Vector, KeGetCurrentPrcb()->Number, Count);
 }
 
+/* The dispatch stub is position independent, so a plain copy is enough */
 VOID
-NTAPI
-KeInitializeInterrupt(
-    IN PKINTERRUPT Interrupt,
-    IN PKSERVICE_ROUTINE ServiceRoutine,
-    IN PVOID ServiceContext,
-    IN PKSPIN_LOCK SpinLock,
-    IN ULONG Vector,
-    IN KIRQL Irql,
-    IN KIRQL SynchronizeIrql,
-    IN KINTERRUPT_MODE InterruptMode,
-    IN BOOLEAN ShareVector,
-    IN CHAR ProcessorNumber,
-    IN BOOLEAN FloatingSave)
+KiAmd64PrepareInterruptDispatch(
+    _Inout_ PKINTERRUPT Interrupt)
 {
+    RtlCopyMemory(Interrupt->DispatchCode, KiInterruptDispatchTemplate, sizeof(Interrupt->DispatchCode));
+}
 
-    /* Initialize the header */
-    Interrupt->Type = InterruptObject;
-    Interrupt->Size = sizeof(KINTERRUPT);
+/* The IDT is per processor: run on the target and hold the dispatcher lock while its vector changes */
+static
+KIRQL
+KiLockVectorOf(
+    _In_ PKINTERRUPT Interrupt)
+{
+    KeSetSystemAffinityThread(1ULL << Interrupt->Number);
+    return KiAcquireDispatcherLock();
+}
 
-    /* If no Spinlock is given, use the internal */
-    if (!SpinLock) SpinLock = &Interrupt->SpinLock;
-    KeInitializeSpinLock(&Interrupt->SpinLock);
+static
+VOID
+KiUnlockVector(
+    _In_ KIRQL OldIrql)
+{
+    KiReleaseDispatcherLock(OldIrql);
+    KeRevertToUserAffinityThread();
+}
 
-    /* Set the given parameters */
-    Interrupt->ServiceRoutine = ServiceRoutine;
-    Interrupt->ServiceContext = ServiceContext;
-    Interrupt->ActualLock = SpinLock;
-    Interrupt->Vector = Vector;
-    Interrupt->Irql = Irql;
-    Interrupt->SynchronizeIrql = SynchronizeIrql;
-    Interrupt->Mode = InterruptMode;
-    Interrupt->ShareVector = ShareVector;
-    Interrupt->Number = ProcessorNumber;
-    Interrupt->FloatingSave = FloatingSave;
+static
+BOOLEAN
+KiIsUnexpectedHandler(
+    _In_ PVOID Handler)
+{
+    return (BOOLEAN)((Handler >= (PVOID)KiUnexpectedRange) && (Handler <= (PVOID)KiUnexpectedRangeEnd));
+}
 
-    /* Set initial values */
-    Interrupt->TickCount = 0;
-    Interrupt->Connected = FALSE;
-    Interrupt->ServiceCount = 0;
-    Interrupt->DispatchCount = 0;
-    Interrupt->TrapFrame = NULL;
-    Interrupt->Reserved = 0;
+/* A connected vector points at the DispatchCode of the interrupt that heads its chain */
+static
+PKINTERRUPT
+KiChainHeadOf(
+    _In_ PVOID Handler,
+    _In_ PKINTERRUPT Interrupt)
+{
+    PKINTERRUPT Head = CONTAINING_RECORD(Handler, KINTERRUPT, DispatchCode);
 
-    /* Copy the dispatch code (its location independent, no need to patch it) */
-    RtlCopyMemory(Interrupt->DispatchCode,
-                  KiInterruptDispatchTemplate,
-                  sizeof(Interrupt->DispatchCode));
+    ASSERT(Head->Connected);
+    ASSERT(Head->Vector == Interrupt->Vector);
+    ASSERT(Head->Number == Interrupt->Number);
+    return Head;
+}
 
-    Interrupt->DispatchAddress = 0;
+static
+BOOLEAN
+KiClaimFreeVector(
+    _Inout_ PKINTERRUPT Interrupt,
+    _In_ PVOID UnexpectedHandler)
+{
+    InitializeListHead(&Interrupt->InterruptListEntry);
+    Interrupt->DispatchAddress = KiInterruptDispatch;
+    KeRegisterInterruptHandler(Interrupt->Vector, Interrupt->DispatchCode);
+
+    if (HalEnableSystemInterrupt(Interrupt->Vector, Interrupt->Irql, Interrupt->Mode))
+        return TRUE;
+
+    DPRINT1("HalEnableSystemInterrupt failed\n");
+    KeRegisterInterruptHandler(Interrupt->Vector, UnexpectedHandler);
+    return FALSE;
+}
+
+static
+BOOLEAN
+KiJoinChain(
+    _Inout_ PKINTERRUPT Interrupt,
+    _In_ PKINTERRUPT Head)
+{
+    ASSERT(Head->InterruptListEntry.Flink->Blink == &Head->InterruptListEntry);
+    ASSERT(Head->InterruptListEntry.Blink->Flink == &Head->InterruptListEntry);
+
+    /* Both sides must agree to share, and with the same trigger mode */
+    if (!Interrupt->ShareVector || !Head->ShareVector || (Interrupt->Mode != Head->Mode))
+        return FALSE;
+
+    InsertTailList(&Head->InterruptListEntry, &Interrupt->InterruptListEntry);
+    return TRUE;
 }
 
 BOOLEAN
 NTAPI
-KeConnectInterrupt(IN PKINTERRUPT Interrupt)
+KeConnectInterrupt(
+    _Inout_ PKINTERRUPT Interrupt)
 {
-    PVOID CurrentHandler;
-    PKINTERRUPT ConnectedInterrupt;
-    KIRQL OldIrql;
+    PVOID Handler;
     BOOLEAN Connected;
+    KIRQL OldIrql;
 
-    DPRINT("KeConnectInterrupt vec=0x%x irql=%u shareVector=%d mode=%d\n",
-             Interrupt->Vector, Interrupt->Irql,
-             Interrupt->ShareVector, Interrupt->Mode);
-
-    /* Validate the vector */
-    if ((Interrupt->Vector < PRIMARY_VECTOR_BASE) ||
-        (Interrupt->Vector > MAXIMUM_IDTVECTOR))
+    if ((Interrupt->Vector < PRIMARY_VECTOR_BASE) || (Interrupt->Vector > MAXIMUM_IDTVECTOR))
     {
         DPRINT1("Invalid interrupt vector: %lu\n", Interrupt->Vector);
         return FALSE;
@@ -116,192 +138,76 @@ KeConnectInterrupt(IN PKINTERRUPT Interrupt)
     ASSERT(Interrupt->SynchronizeIrql >= Interrupt->Irql);
     ASSERT(Interrupt->Irql == (Interrupt->Vector >> 4));
 
-    /* Set the system affinity and acquire the dispatcher lock */
-    KeSetSystemAffinityThread(1ULL << Interrupt->Number);
-    OldIrql = KiAcquireDispatcherLock();
+    OldIrql = KiLockVectorOf(Interrupt);
 
-    if (Interrupt->Connected)
-        goto Cleanup;
-
-    /* Query the current handler */
-    CurrentHandler = KeQueryInterruptHandler(Interrupt->Vector);
-
-    /* Check if the vector is unused */
-    if ((CurrentHandler >= (PVOID)KiUnexpectedRange) &&
-        (CurrentHandler <= (PVOID)KiUnexpectedRangeEnd))
+    if (!Interrupt->Connected)
     {
-        /* Initialize the list for chained interrupts */
-        InitializeListHead(&Interrupt->InterruptListEntry);
+        Handler = KeQueryInterruptHandler(Interrupt->Vector);
 
-        /* Set normal dispatch address */
-        Interrupt->DispatchAddress = KiInterruptDispatch;
+        if (KiIsUnexpectedHandler(Handler))
+            Interrupt->Connected = KiClaimFreeVector(Interrupt, Handler);
+        else
+            Interrupt->Connected = KiJoinChain(Interrupt, KiChainHeadOf(Handler, Interrupt));
+    }
 
-        /* Set the new handler */
-        KeRegisterInterruptHandler(Interrupt->Vector,
-                                   Interrupt->DispatchCode);
+    Connected = Interrupt->Connected;
+    KiUnlockVector(OldIrql);
+    return Connected;
+}
 
-        DPRINT("KeConnectInterrupt: registered IDT[0x%x] -> %p\n",
-                 Interrupt->Vector, Interrupt->DispatchCode);
+static
+VOID
+KiLeaveChain(
+    _Inout_ PKINTERRUPT Interrupt)
+{
+    PKINTERRUPT Head = KiChainHeadOf(KeQueryInterruptHandler(Interrupt->Vector), Interrupt);
+    PLIST_ENTRY Others = &Head->InterruptListEntry;
 
-        /* Enable the interrupt */
-        if (!HalEnableSystemInterrupt(Interrupt->Vector,
-                                      Interrupt->Irql,
-                                      Interrupt->Mode))
-        {
-            /* Didn't work, restore old handler */
-            DPRINT1("HalEnableSystemInterrupt failed\n");
-            KeRegisterInterruptHandler(Interrupt->Vector, CurrentHandler);
-            goto Cleanup;
-        }
-        DPRINT("KeConnectInterrupt: HalEnableSystemInterrupt OK for vec=0x%x\n",
-                 Interrupt->Vector);
+    ASSERT(Interrupt->InterruptListEntry.Flink->Blink == &Interrupt->InterruptListEntry);
+    ASSERT(Interrupt->InterruptListEntry.Blink->Flink == &Interrupt->InterruptListEntry);
+
+    if (IsListEmpty(Others))
+    {
+        /* Last one on the vector: give it back to the unexpected-interrupt stub */
+        ASSERT(Head == Interrupt);
+        HalDisableSystemInterrupt(Interrupt->Vector, Interrupt->Irql);
+        KeRegisterInterruptHandler(Interrupt->Vector, &KiUnexpectedRange[Interrupt->Vector]._Op_push);
+    }
+    else if (Head == Interrupt)
+    {
+        /* The next interrupt becomes the head: the list moves to it and the IDT points at its stub */
+        PLIST_ENTRY NextEntry = Others->Flink;
+        PKINTERRUPT Next = CONTAINING_RECORD(NextEntry, KINTERRUPT, InterruptListEntry);
+
+        RemoveTailList(NextEntry);
+        KeRegisterInterruptHandler(Interrupt->Vector, Next->DispatchCode);
     }
     else
     {
-        DPRINT("KeConnectInterrupt: vector 0x%x already has handler %p (chained)\n",
-                 Interrupt->Vector, CurrentHandler);
-
-        /* Get the connected interrupt */
-        ConnectedInterrupt = CONTAINING_RECORD(CurrentHandler, KINTERRUPT, DispatchCode);
-        ASSERT(ConnectedInterrupt->Connected);
-        ASSERT(ConnectedInterrupt->Vector == Interrupt->Vector);
-        ASSERT(ConnectedInterrupt->Number == Interrupt->Number);
-        ASSERT(ConnectedInterrupt->InterruptListEntry.Flink->Blink == &ConnectedInterrupt->InterruptListEntry);
-        ASSERT(ConnectedInterrupt->InterruptListEntry.Blink->Flink == &ConnectedInterrupt->InterruptListEntry);
-
-        /* Check if sharing is ok */
-        if ((Interrupt->ShareVector == 0) ||
-            (ConnectedInterrupt->ShareVector == 0) ||
-            (Interrupt->Mode != ConnectedInterrupt->Mode))
-        {
-            goto Cleanup;
-        }
-
-        /* Insert the new interrupt into the connected interrupt's list */
-        InsertTailList(&ConnectedInterrupt->InterruptListEntry,
-                       &Interrupt->InterruptListEntry);
+        RemoveEntryList(&Interrupt->InterruptListEntry);
     }
-
-    /* Mark as connected */
-    Interrupt->Connected = TRUE;
-
-Cleanup:
-    Connected = Interrupt->Connected;
-    /* Release the dispatcher lock and restore the thread affinity */
-    KiReleaseDispatcherLock(OldIrql);
-    KeRevertToUserAffinityThread();
-    return Connected;
 }
 
 BOOLEAN
 NTAPI
-KeDisconnectInterrupt(IN PKINTERRUPT Interrupt)
+KeDisconnectInterrupt(
+    _Inout_ PKINTERRUPT Interrupt)
 {
     KIRQL OldIrql;
-    PVOID VectorHandler, UnexpectedHandler;
-    PKINTERRUPT VectorFirstInterrupt, NextInterrupt;
-    PLIST_ENTRY HandlerHead;
 
     if (Interrupt->Irql == PASSIVE_LEVEL)
         return KiDisconnectPassiveInterrupt(Interrupt);
 
-    /* Set the system affinity and acquire the dispatcher lock */
-    KeSetSystemAffinityThread(1ULL << Interrupt->Number);
-    OldIrql = KiAcquireDispatcherLock();
+    OldIrql = KiLockVectorOf(Interrupt);
 
-    /* Check if the interrupt was connected - otherwise there's nothing to do */
     if (Interrupt->Connected)
     {
-        /* Get the handler for this interrupt vector */
-        VectorHandler = KeQueryInterruptHandler(Interrupt->Vector);
-
-        /* Get the first interrupt for this handler */
-        VectorFirstInterrupt = CONTAINING_RECORD(VectorHandler, KINTERRUPT, DispatchCode);
-
-        /* The first interrupt list entry is the interrupt list head */
-        HandlerHead = &VectorFirstInterrupt->InterruptListEntry;
-        ASSERT(VectorFirstInterrupt->Connected);
-        ASSERT(VectorFirstInterrupt->Vector == Interrupt->Vector);
-        ASSERT(VectorFirstInterrupt->Number == Interrupt->Number);
-        ASSERT(Interrupt->InterruptListEntry.Flink->Blink == &Interrupt->InterruptListEntry);
-        ASSERT(Interrupt->InterruptListEntry.Blink->Flink == &Interrupt->InterruptListEntry);
-
-        /* If the list is empty, this is the only interrupt for this vector */
-        if (IsListEmpty(HandlerHead))
-        {
-            /* If the list is empty, and the head is not from this interrupt,
-             * this interrupt is somehow incorrectly connected */
-            ASSERT(VectorFirstInterrupt == Interrupt);
-
-            UnexpectedHandler = &KiUnexpectedRange[Interrupt->Vector]._Op_push;
-
-            /* This is the only interrupt, the handler can be disconnected */
-            HalDisableSystemInterrupt(Interrupt->Vector, Interrupt->Irql);
-            KeRegisterInterruptHandler(Interrupt->Vector, UnexpectedHandler);
-        }
-        /* If the interrupt to be disconnected is the list head, but some others follow */
-        else if (VectorFirstInterrupt == Interrupt)
-        {
-            /* Relocate the head to the next element */
-            HandlerHead = HandlerHead->Flink;
-            RemoveTailList(HandlerHead);
-
-            /* Get the next interrupt from the list head */
-            NextInterrupt = CONTAINING_RECORD(HandlerHead,
-                                              KINTERRUPT,
-                                              InterruptListEntry);
-
-            /* Set the next interrupt as the handler for this vector */
-            KeRegisterInterruptHandler(Interrupt->Vector,
-                                       NextInterrupt->DispatchCode);
-        }
-        /* If the interrupt to be disconnected is not the list head */
-        else
-        {
-            /* Remove the to be disconnected interrupt from the interrupt list */
-            RemoveEntryList(&Interrupt->InterruptListEntry);
-        }
-
-        /* Mark as not connected */
+        KiLeaveChain(Interrupt);
         Interrupt->Connected = FALSE;
     }
 
-    /* Release the dispatcher lock and restore the thread affinity */
-    KiReleaseDispatcherLock(OldIrql);
-    KeRevertToUserAffinityThread();
-
+    KiUnlockVector(OldIrql);
     return TRUE;
-}
-
-BOOLEAN
-NTAPI
-KeSynchronizeExecution(IN OUT PKINTERRUPT Interrupt,
-                       IN PKSYNCHRONIZE_ROUTINE SynchronizeRoutine,
-                       IN PVOID SynchronizeContext OPTIONAL)
-{
-    BOOLEAN Success;
-    KIRQL OldIrql;
-
-    if (Interrupt->Irql == PASSIVE_LEVEL)
-        return KiSynchronizePassiveInterrupt(Interrupt, SynchronizeRoutine, SynchronizeContext);
-
-    /* Raise IRQL */
-    OldIrql = KfRaiseIrql(Interrupt->SynchronizeIrql);
-
-    /* Acquire interrupt spinlock */
-    KeAcquireSpinLockAtDpcLevel(Interrupt->ActualLock);
-
-    /* Call the routine */
-    Success = SynchronizeRoutine(SynchronizeContext);
-
-    /* Release lock */
-    KeReleaseSpinLockFromDpcLevel(Interrupt->ActualLock);
-
-    /* Lower IRQL */
-    KeLowerIrql(OldIrql);
-
-    /* Return status */
-    return Success;
 }
 
 BOOLEAN

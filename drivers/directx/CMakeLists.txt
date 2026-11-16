@@ -17,6 +17,10 @@ endif()
 if(ARCH STREQUAL "amd64" OR ARCH STREQUAL "i386")
     add_subdirectory(hdgfx)
 endif()
+if((ARCH STREQUAL "arm64") AND APPLE_SILICON_SUPPORT)
+    add_subdirectory(appledcp)
+    add_subdirectory(appleagx)
+endif()
 if(REACTOS_USE_WDDM AND
    (REACTOS_WDDM_TARGET_LEVEL GREATER_EQUAL 2000) AND
    (ARCH STREQUAL "arm64") AND RPI3_SUPPORT)

@@ -113,6 +113,7 @@ TestGetBestRoute2(
     PMIB_IPFORWARD_TABLE2 Table;
     SOCKADDR_INET Destination, Source;
     MIB_IPFORWARD_ROW2 LuidRoute;
+    NET_LUID Wrong;
     NTSTATUS Status, LuidStatus;
     ULONG i;
 
@@ -159,6 +160,16 @@ TestGetBestRoute2(
         ok_eq_hex(LuidStatus, STATUS_SUCCESS);
         ok_eq_ulong(LuidRoute.InterfaceIndex, Request->Route.InterfaceIndex);
         ok_eq_ulonglong(LuidRoute.InterfaceLuid.Value, Request->Route.InterfaceLuid.Value);
+
+        Wrong = Request->Route.InterfaceLuid;
+        Wrong.Info.IfType = (Wrong.Info.IfType == IF_TYPE_ETHERNET_CSMACD) ? IF_TYPE_SOFTWARE_LOOPBACK : IF_TYPE_ETHERNET_CSMACD;
+        LuidStatus = GetBestRoute2(&Wrong, 0, NULL, &Destination, 0, &LuidRoute, &Source);
+        ok(LuidStatus == STATUS_NOT_FOUND, "LUID 0x%I64x of the wrong type: 0x%08lx\n", Wrong.Value, LuidStatus);
+
+        Wrong = Request->Route.InterfaceLuid;
+        Wrong.Info.Reserved = 1;
+        LuidStatus = GetBestRoute2(&Wrong, 0, NULL, &Destination, 0, &LuidRoute, &Source);
+        ok(LuidStatus == STATUS_NOT_FOUND, "LUID 0x%I64x with reserved bits: 0x%08lx\n", Wrong.Value, LuidStatus);
     }
     if (NT_SUCCESS(Status))
         TestRouteTables(&Request->Route);

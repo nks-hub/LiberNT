@@ -1404,6 +1404,26 @@ MiCreateImageControlArea(
 }
 
 static
+NTSTATUS
+MiCreateImageControlAreaWaiting(
+    _In_ PFILE_OBJECT FileObject,
+    _Out_ PMI_CONTROL_AREA *ControlOut)
+{
+    ULONG Attempts = 0;
+    NTSTATUS Status;
+
+    ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    do
+    {
+        Status = MiCreateImageControlArea(FileObject, ControlOut);
+        ASSERT(NT_SUCCESS(Status) || *ControlOut == NULL);
+    } while (Status == STATUS_NO_MEMORY && NT_SUCCESS(MiWaitForMemory(Status, &Attempts)));
+
+    return Status;
+}
+
+static
 VOID
 NTAPI
 MiDeleteSection(
@@ -1426,9 +1446,10 @@ MiDeleteSection(
     }
 }
 
-static
+CODE_SEG("INIT")
 NTSTATUS
-MiCreatePhysicalMemorySection(VOID)
+NTAPI
+MmCreatePhysicalMemorySection(VOID)
 {
     UNICODE_STRING Name = RTL_CONSTANT_STRING(L"\\Device\\PhysicalMemory");
     OBJECT_ATTRIBUTES ObjectAttributes;
@@ -1529,7 +1550,6 @@ MiSectionInitialize(VOID)
     if (!NT_SUCCESS(Status))
         return Status;
 
-    MiCreatePhysicalMemorySection();
     return STATUS_SUCCESS;
 }
 
@@ -1677,7 +1697,7 @@ MiCreateSectionWithMode(
     }
     else if (AllocationAttributes & SEC_IMAGE)
     {
-        Status = MiCreateImageControlArea(File, &Control);
+        Status = MiCreateImageControlAreaWaiting(File, &Control);
         if (NT_SUCCESS(Status))
         {
             Status = MiValidateImageSigningPolicy(File);
@@ -1778,8 +1798,28 @@ MmCreateSection(
     _In_opt_ HANDLE FileHandle,
     _In_opt_ PFILE_OBJECT FileObject)
 {
-    return MiCreateSectionWithMode(SectionObject, ExGetPreviousMode(), FALSE, DesiredAccess, ObjectAttributes,
+    /* Whatever the thread was doing before, what this caller passes is the kernel's own */
+    return MiCreateSectionWithMode(SectionObject, KernelMode, FALSE, DesiredAccess, ObjectAttributes,
                                    MaximumSize, SectionPageProtection, AllocationAttributes, FileHandle, FileObject);
+}
+
+/*
+ * The same, for a scanner that only reads the file: the file stays free to be
+ * renamed, overwritten or deleted while such a section is open.
+ */
+NTSTATUS
+NTAPI
+MmCreateSectionForDataScan(
+    _Out_ PVOID *SectionObject,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+    _Inout_ PLARGE_INTEGER MaximumSize,
+    _In_ ULONG SectionPageProtection,
+    _In_ ULONG AllocationAttributes,
+    _In_ PFILE_OBJECT FileObject)
+{
+    return MiCreateSectionWithMode(SectionObject, KernelMode, TRUE, DesiredAccess, ObjectAttributes,
+                                   MaximumSize, SectionPageProtection, AllocationAttributes, NULL, FileObject);
 }
 
 BOOLEAN
@@ -2426,7 +2466,8 @@ static
 BOOLEAN
 MiCloseUnusedControlArea(
     _In_ PSECTION_OBJECT_POINTERS Pointers,
-    _In_ BOOLEAN Image)
+    _In_ BOOLEAN Image,
+    _In_ BOOLEAN DelayClose)
 {
     PMI_RWLOCK ControlLock = MiControlLockFor(Pointers);
     PMI_CONTROL_AREA Control;
@@ -2442,6 +2483,9 @@ MiCloseUnusedControlArea(
     if (Control == NULL)
         return TRUE;
 
+    if (DelayClose)
+        MiSegmentCloseWhenUnused(Control->Segment);
+
     return MiSegmentDereferenceAndClose(Control->Segment);
 }
 
@@ -2451,7 +2495,7 @@ MmFlushImageSection(
     _In_ PSECTION_OBJECT_POINTERS SectionObjectPointer,
     _In_ MMFLUSH_TYPE FlushType)
 {
-    if (!MiCloseUnusedControlArea(SectionObjectPointer, TRUE))
+    if (!MiCloseUnusedControlArea(SectionObjectPointer, TRUE, FALSE))
         return FALSE;
 
     if (FlushType == MmFlushForDelete)
@@ -2469,11 +2513,33 @@ MmForceSectionClosed(
     BOOLEAN ImageClosed;
     BOOLEAN DataClosed;
 
-    UNREFERENCED_PARAMETER(DelayClose);
-
-    ImageClosed = MiCloseUnusedControlArea(SectionObjectPointer, TRUE);
-    DataClosed = MiCloseUnusedControlArea(SectionObjectPointer, FALSE);
+    ImageClosed = MiCloseUnusedControlArea(SectionObjectPointer, TRUE, DelayClose);
+    DataClosed = MiCloseUnusedControlArea(SectionObjectPointer, FALSE, DelayClose);
     return (BOOLEAN)(ImageClosed && DataClosed);
+}
+
+BOOLEAN
+NTAPI
+MmForceSectionClosedEx(
+    _In_ PSECTION_OBJECT_POINTERS SectionObjectPointer,
+    _In_ ULONG ForceCloseFlags)
+{
+    BOOLEAN DelayClose = (ForceCloseFlags & MM_FORCE_CLOSED_LATER_OK) != 0;
+    BOOLEAN Closed = TRUE;
+
+    PAGED_CODE();
+
+    if ((ForceCloseFlags & MM_FORCE_CLOSED_IMAGE) &&
+        !MiCloseUnusedControlArea(SectionObjectPointer, TRUE, DelayClose))
+    {
+        Closed = FALSE;
+    }
+    if ((ForceCloseFlags & MM_FORCE_CLOSED_DATA) &&
+        !MiCloseUnusedControlArea(SectionObjectPointer, FALSE, DelayClose))
+    {
+        Closed = FALSE;
+    }
+    return Closed;
 }
 
 BOOLEAN
@@ -2536,8 +2602,9 @@ NtCreateSection(
         return STATUS_DYNAMIC_CODE_BLOCKED;
     }
 
-    Status = MmCreateSection(&SectionObject, DesiredAccess, ObjectAttributes, &SafeMaximumSize,
-                             SectionPageProtection, AllocationAttributes, FileHandle, NULL);
+    Status = MiCreateSectionWithMode(&SectionObject, PreviousMode, FALSE, DesiredAccess, ObjectAttributes,
+                                     &SafeMaximumSize, SectionPageProtection, AllocationAttributes, FileHandle,
+                                     NULL);
     if (!NT_SUCCESS(Status))
         return Status;
 
@@ -2625,6 +2692,7 @@ NtMapViewOfSection(
     PEPROCESS Process;
     ULONG Protection;
     NTSTATUS Status;
+    BOOLEAN RundownAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -2735,7 +2803,8 @@ NtMapViewOfSection(
     {
         Status = STATUS_INVALID_PARAMETER_5;
     }
-    else if (Process != PsGetCurrentProcess() && !ExAcquireRundownProtection(&Process->RundownProtect))
+    else if (Process != PsGetCurrentProcess() &&
+             !(RundownAcquired = ExAcquireRundownProtection(&Process->RundownProtect)))
     {
         Status = STATUS_PROCESS_IS_TERMINATING;
     }
@@ -2743,11 +2812,12 @@ NtMapViewOfSection(
     {
         Status = MmMapViewOfSection(Section, Process, &SafeBase, ZeroBits, CommitSize, &SafeOffset, &SafeSize,
                                     InheritDisposition, AllocationType, Protect);
-        if (Process != PsGetCurrentProcess())
+        if (RundownAcquired)
             ExReleaseRundownProtection(&Process->RundownProtect);
         if (NT_SUCCESS(Status) && Section->Control->Image &&
             Section->Control->ImageInformation.ImageContainsCode &&
             Section->Control->ImageInformation.Machine != PsGetProcessMachine(Process) &&
+            Section->Control->ImageInformation.Machine != PsWow64GetProcessMachine(Process) &&
             Section->Control->ImageInformation.Machine != IMAGE_FILE_MACHINE_NATIVE &&
             !(Section->Control->ImageInformation.Machine == IMAGE_FILE_MACHINE_ARM64EC &&
               PsGetProcessMachine(Process) == IMAGE_FILE_MACHINE_ARM64))

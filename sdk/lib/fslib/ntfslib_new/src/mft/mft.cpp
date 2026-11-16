@@ -279,6 +279,15 @@ MasterFileTable::WriteFileRecordToMFT(_In_ PFileRecord File)
         return STATUS_INVALID_PARAMETER;
     }
 
+    /* A record is rewritten for every change it holds, an index entry as
+     * much as a descriptor, so drop the cached descriptor only when the
+     * attribute carrying it is no longer the one the cache was taken from. */
+    if (File->DiskVolume)
+    {
+        File->DiskVolume->ReviseRecordDescriptor(File->RecordNumber,
+                                                 File->SecurityAttributeStamp());
+    }
+
     Status = File->CommitFixup();
     if (!NT_SUCCESS(Status))
     {

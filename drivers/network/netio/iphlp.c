@@ -39,19 +39,7 @@ NetioInterfaceLuid(
 static
 ULONG
 NetioLuidIndex(
-    _In_ const NET_LUID *Luid)
-{
-    NET_IFINDEX Index;
-    NET_LUID AdapterLuid;
-
-    if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
-        return Index;
-
-    Index = (NET_IFINDEX)Luid->Info.NetLuidIndex;
-    if (NdisIfGetNetLuidFromInterfaceIndex(Index, &AdapterLuid) == NDIS_STATUS_SUCCESS && AdapterLuid.Value)
-        return 0;
-    return Index;
-}
+    _In_ const NET_LUID *Luid);
 
 typedef struct _NETIO_TDI_ROUTE
 {
@@ -811,6 +799,29 @@ NetioRouteLuid(
     Luid = NetioInterfaceLuid(Index, Entry ? Entry->if_type : IF_TYPE_OTHER);
     ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
     return Luid;
+}
+
+static
+ULONG
+NetioLuidIndex(
+    _In_ const NET_LUID *Luid)
+{
+    NET_IFINDEX Index;
+    PUCHAR Entries;
+    IFEntry *Entry;
+    ULONG Count;
+
+    if (NdisIfGetInterfaceIndexFromNetLuid(*Luid, &Index) == NDIS_STATUS_SUCCESS && Index != 0)
+        return Index;
+
+    Index = (NET_IFINDEX)Luid->Info.NetLuidIndex;
+    if (Index == 0 || !NT_SUCCESS(NetioQueryInterfaces(&Entries, &Count)))
+        return 0;
+    Entry = NetioFindInterface(Entries, Count, Index);
+    if (Entry == NULL || NetioInterfaceLuid(Index, Entry->if_type).Value != Luid->Value)
+        Index = 0;
+    ExFreePoolWithTag(Entries, NETIO_IPHLP_TAG);
+    return Index;
 }
 
 static

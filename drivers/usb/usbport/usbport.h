@@ -24,6 +24,7 @@
 #include <usbuser.h>
 #include <drivers/usbport/usbmport.h>
 #include <reactos/drivers/dumpstor.h>
+#include <reactos/drivers/usbcapability.h>
 
 #if DBG
 #define USBPORT_LOG_IRQL(Tag)                                                      \
@@ -84,6 +85,10 @@ USBPORT_FreePoolWithTagDbg(
 
 #define USBPORT_DMA_DIRECTION_FROM_DEVICE 1
 #define USBPORT_DMA_DIRECTION_TO_DEVICE   2
+
+/* USB 2.0 9.2.6.4: a control request with a data stage completes within
+ * 5 s, so a device silent past that is out of specification. */
+#define USBPORT_CONTROL_TRANSFER_TIMEOUT 5000
 
 #define USB_PORT_TAG 'pbsu'
 /* Highest URB function code we recognize (Win8+ stream/chained MDL included). */
@@ -465,6 +470,7 @@ typedef struct _USBPORT_DEVICE_EXTENSION {
   PUSBPORT_MINIPORT_INTERFACE MiniPortInterface;
   USBPORT_RESOURCES UsbPortResources;
   PHYSICAL_ADDRESS MemoryBasePhysical; /* Physical address of memory BAR for MSI-X */
+  INTERFACE_TYPE BusInterfaceType; /* The bus the controller sits on, for its DMA adapter */
   PUSBPORT_COMMON_BUFFER_HEADER MiniPortCommonBuffer;
   KSPIN_LOCK MiniportSpinLock;
   /* Bus Interface */

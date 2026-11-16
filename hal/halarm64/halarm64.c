@@ -7,6 +7,7 @@
  */
 
 #include <ntifs.h>
+#include <wdmguid.h>
 #include <arc/arc.h>
 #include <ndk/kefuncs.h>
 #include <ndk/iofuncs.h>
@@ -21,6 +22,7 @@
 #include <halacpi_arm64.h>
 #include <bugcodes.h>
 #include "halext.h"
+#include "devtree.h"
 
 #include <halsecondary.h>
 #define NDEBUG
@@ -28,10 +30,35 @@
 
 #include "gic_internal.h"
 
+static
+ULONG
+HalpArm64ExternalIntIdLimit(VOID)
+{
+    return HalpArm64InterruptController ? HalpArm64InterruptController->IntIdLimit : 0;
+}
+
+static
+ULONG
+HalpArm64DeviceIntIdLimit(VOID)
+{
+    return min(max(1020, HalpArm64ExternalIntIdLimit()), HAL_ARM64_CONTROLLER_INTID_MAX);
+}
+
+static
+KAFFINITY
+HalpArm64DeviceInterruptAffinity(VOID)
+{
+    if (HalpArm64InterruptController == NULL)
+        return KeQueryActiveProcessors();
+    if (HalpArm64InterruptController->DeliversToAnyProcessor)
+        return KeQueryActiveProcessors();
+    return HalpDefaultInterruptAffinity ? HalpDefaultInterruptAffinity : 1;
+}
+
 ULONG
 HalpSecondaryArchGsivBase(VOID)
 {
-    ULONG Base = 0x400;
+    ULONG Base = max(0x400, HalpArm64ExternalIntIdLimit());
 
     if (HalpGicItsEnabled && HalpGicLpiCount != 0 && Base < HAL_ARM64_LPI_BASE + HalpGicLpiCount)
         Base = HAL_ARM64_LPI_BASE + HalpGicLpiCount;
@@ -41,7 +68,7 @@ HalpSecondaryArchGsivBase(VOID)
 ULONG
 HalpSecondaryArchVectorBase(VOID)
 {
-    return 0x1000;
+    return max(0x1000, HalpArm64ExternalIntIdLimit());
 }
 
 /*
@@ -126,6 +153,8 @@ typedef struct _ADAPTER_OBJECT {
     ULONG Signature;
     ULONG DmaWindowCount;
     HAL_ACPI_DMA_WINDOW DmaWindows[HAL_ACPI_MAX_DMA_WINDOWS];
+    BOOLEAN CoherencyKnown;
+    BOOLEAN Coherent;
 } ADAPTER_OBJECT, *PADAPTER_OBJECT;
 
 /*
@@ -1589,6 +1618,10 @@ extern BOOLEAN HalpArm64WaitForApSync(_In_ ULONG TimeoutMs);
 extern UINT64 HalpArm64GetTrampolinePhysicalAddress(VOID);
 extern BOOLEAN HalpArm64IsTrampolineInitialized(VOID);
 extern VOID HalpArm64DiscoverParkedCpus(_In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+extern VOID HalpArm64DiscoverDeviceTreeCpus(_In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+extern VOID NTAPI HalpAcpiMcfgFromDeviceTree(_In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+extern VOID HalpGicCompleteMsiFrame(VOID);
+extern BOOLEAN HalpArm64ReleaseSpinTableCpu(_In_ ULONG ProcessorNumber, _In_ UINT64 EntryPoint);
 extern BOOLEAN HalpArm64WakeParkedCpu(_In_ ULONG ProcessorNumber,
                                       _In_ UINT64 EntryPoint,
                                       _In_ UINT64 ContextId);
@@ -1777,6 +1810,23 @@ HalGetMsiMessageAddressEx(
         return FALSE;
     }
 
+    if (HalpArm64MsiDoorbell)
+    {
+        if (Vector < HalpArm64MsiDoorbell->FirstVector ||
+            Vector >= (ULONGLONG)HalpArm64MsiDoorbell->FirstVector + HalpArm64MsiDoorbell->VectorCount)
+        {
+            DPRINT1("[arm64][HAL] HalGetMsiMessageAddressEx: vector %llu is outside the %s MSI range\n", Vector,
+                    HalpArm64MsiDoorbell->Name);
+            return FALSE;
+        }
+        *AddressLow = (ULONG)(HalpArm64MsiDoorbell->Address & 0xFFFFFFFFu);
+        if (AddressHigh)
+            *AddressHigh = (ULONG)(HalpArm64MsiDoorbell->Address >> 32);
+        *Data = (USHORT)(Vector - HalpArm64MsiDoorbell->FirstVector);
+        HalpArm64RecordMsiRoute((ULONG)Vector, HalpArm64MsiDoorbell->Address, *Data);
+        return TRUE;
+    }
+
     if (!HalpGicItsPresent)
     {
         /* No ITS - try GICv2m MSI frame fallback */
@@ -1882,6 +1932,13 @@ HalGetMsiVectorRange(
     if (!BaseVector || !VectorCount)
         return FALSE;
 
+    if (HalpArm64MsiDoorbell)
+    {
+        *BaseVector = HalpArm64MsiDoorbell->FirstVector;
+        *VectorCount = HalpArm64MsiDoorbell->VectorCount;
+        return TRUE;
+    }
+
     if (HalpGicItsPresent && !HalpGicItsEnabled && !HalpGicItsInitFailed)
     {
         HalpGicItsInitialize();
@@ -1915,9 +1972,11 @@ HalQueryPciMsiSupport(
     _Out_opt_ PUSHORT EffectiveSegment,
     _Out_opt_ PULONG OscMaskedControls)
 {
+    BOOLEAN MsiSupported = (HalpGicItsPresent && !HalpGicItsInitFailed) || HalpGicMsiPresent || HalpArm64MsiDoorbell;
+
     UNREFERENCED_PARAMETER(Bus);
 
-    if (Supported) *Supported = ((HalpGicItsPresent && !HalpGicItsInitFailed) || HalpGicMsiPresent);
+    if (Supported) *Supported = MsiSupported;
     if (OscStatusFlags) *OscStatusFlags = 0;
     if (OscControlGranted) *OscControlGranted = 0;
     if (OscMaskedControls) *OscMaskedControls = 0;
@@ -1958,7 +2017,7 @@ HalQueryPciMsiSupport(
         *EffectiveSegment = EffSeg;
     }
 
-    return ((HalpGicItsPresent && !HalpGicItsInitFailed) || HalpGicMsiPresent);
+    return MsiSupported;
 }
 
 static __inline PVOID HalpPhysToKseg0(ULONGLONG Physical)
@@ -2235,7 +2294,7 @@ typedef struct _HALP_ARM64_INTERRUPT_STATE
 } HALP_ARM64_INTERRUPT_STATE, *PHALP_ARM64_INTERRUPT_STATE;
 
 static HALP_ARM64_INTERRUPT_STATE HalpArm64PpiState[MAXIMUM_PROCESSORS][16];
-static HALP_ARM64_INTERRUPT_STATE HalpArm64SpiState[1020 - 32];
+static HALP_ARM64_INTERRUPT_STATE HalpArm64SpiState[HAL_ARM64_CONTROLLER_INTID_MAX - 32];
 static volatile LONG HalpArm64InterruptStateLock;
 
 static
@@ -2265,7 +2324,7 @@ PHALP_ARM64_INTERRUPT_STATE
 HalpArm64GetInterruptState(_In_ ULONG Cpu, _In_ ULONG IntId)
 {
     ASSERT(Cpu < MAXIMUM_PROCESSORS);
-    ASSERT(IntId >= 16 && IntId < 1020);
+    ASSERT(IntId >= 16 && IntId < HalpArm64DeviceIntIdLimit());
     return IntId < 32 ? &HalpArm64PpiState[Cpu][IntId - 16] :
                         &HalpArm64SpiState[IntId - 32];
 }
@@ -2791,6 +2850,7 @@ HalInitSystem(
          * called at elevated IRQL during PnP resource assignment.
          */
 
+        HalpArm64CaptureDeviceTree(LoaderBlock);
         HalpArm64Phase1PlatformInit();
 
         return TRUE;
@@ -2806,6 +2866,8 @@ HalInitSystem(
     {
         DPRINT1("[arm64][HAL] ACPI phase0 init failed: 0x%08lx\n", Status);
     }
+    HalpAcpiMcfgFromDeviceTree(LoaderBlock);
+    HalpGicCompleteMsiFrame();
 
     /*
      * Run the platform-extension probes (halext.c).  Normally already done
@@ -2893,6 +2955,7 @@ HalInitSystem(
      * carving those descriptors from HalStartNextProcessor would create two
      * owners for the same physical pages.
      */
+    HalpArm64DiscoverDeviceTreeCpus(LoaderBlock);
     if ((HalpArm64GicInfo.GiccEntryCount > 1) && !HalpArm64InitApTrampoline(LoaderBlock))
     {
         DPRINT1("[arm64][HAL] Phase0: failed to reserve AP startup memory\n");
@@ -3220,6 +3283,34 @@ HalpArm64AllocateDmaMemory(
     return NULL;
 }
 
+static
+BOOLEAN
+HalpArm64DmaCoherent(
+    _In_opt_ PADAPTER_OBJECT AdapterObject)
+{
+    if (AdapterObject && AdapterObject->Signature == HAL_ARM64_DMA_ADAPTER_SIGNATURE && AdapterObject->CoherencyKnown)
+        return AdapterObject->Coherent;
+
+    return HalpArm64DmaCoherency.SystemCoherent;
+}
+
+BOOLEAN
+NTAPI
+HalpSetDmaAdapterCoherency(
+    _In_ PVOID DmaAdapter,
+    _In_ BOOLEAN Coherent)
+{
+    PADAPTER_OBJECT AdapterObject = DmaAdapter;
+
+    if (!AdapterObject || AdapterObject->Signature != HAL_ARM64_DMA_ADAPTER_SIGNATURE)
+        return FALSE;
+
+    AdapterObject->Coherent = Coherent;
+    KeMemoryBarrier();
+    AdapterObject->CoherencyKnown = TRUE;
+    return TRUE;
+}
+
 BOOLEAN
 NTAPI
 HalpConfigureDmaAdapter(
@@ -3331,7 +3422,7 @@ HalAllocateCommonBuffer(
      * remains required for non-coherent systems.
      */
     UNREFERENCED_PARAMETER(CacheEnabled);
-    CacheType = HalpArm64DmaCoherency.SystemCoherent ? MmCached : MmNonCached;
+    CacheType = HalpArm64DmaCoherent(AdapterObject) ? MmCached : MmNonCached;
 
     /* Allocate from a CPU range reachable through this device's DMA window. */
     VirtualAddress = HalpArm64AllocateDmaMemory(AdapterObject, Length, CacheType, &CpuAddress, LogicalAddress);
@@ -3345,7 +3436,7 @@ HalAllocateCommonBuffer(
     RtlZeroMemory(VirtualAddress, Length);
 
     /* For non-coherent systems, clean and invalidate cache */
-    if (CacheType == MmCached && !HalpArm64DmaCoherency.SystemCoherent)
+    if (CacheType == MmCached && !HalpArm64DmaCoherent(AdapterObject))
     {
         HalpArm64CleanInvalidateDcacheRange(VirtualAddress, Length);
         ARM64_DSB(SY);
@@ -3454,7 +3545,7 @@ HalBeginSystemInterrupt(
      * NOTE: INTID 0 IS a valid SGI (HAL_ARM64_SGI_IPI) and must NOT
      * be rejected. The kernel uses SGI 0 for inter-processor interrupts.
      */
-    if ((intid >= 1020) && (intid < HAL_ARM64_LPI_BASE))
+    if ((intid >= HalpArm64DeviceIntIdLimit()) && (intid < HAL_ARM64_LPI_BASE))
         return FALSE;
 
     if (!HalpGicItsEnabled && intid >= HAL_ARM64_LPI_BASE)
@@ -3485,7 +3576,7 @@ HalBeginSystemInterrupt(
                 HalpArm64SetPmrExact(CurrentIrql);
                 HalpArm64RependInterrupt(intid);
             }
-            else if ((intid < 1020) && (cpu < MAXIMUM_PROCESSORS))
+            else if ((intid < HalpArm64DeviceIntIdLimit()) && (cpu < MAXIMUM_PROCESSORS))
             {
                 if (HalpArm64DeferInterrupt(cpu, intid, Irql))
                     HalpArm64RependInterrupt(intid);
@@ -3607,7 +3698,7 @@ HalArm64ConnectInterrupt(
     ULONG64 Daif;
     PHALP_ARM64_INTERRUPT_STATE State;
 
-    if (Vector < 32 || Vector >= 1020 || HalpSecondaryIsIntId(Vector))
+    if (Vector < 32 || Vector >= HalpArm64DeviceIntIdLimit() || HalpSecondaryIsIntId(Vector))
         return;
 
     Daif = HalpArm64LockInterruptState();
@@ -3626,7 +3717,7 @@ HalArm64DisconnectInterrupt(
     ULONG64 Daif;
     PHALP_ARM64_INTERRUPT_STATE State;
 
-    if (Vector < 32 || Vector >= 1020 || HalpSecondaryIsIntId(Vector))
+    if (Vector < 32 || Vector >= HalpArm64DeviceIntIdLimit() || HalpSecondaryIsIntId(Vector))
         return;
 
     Daif = HalpArm64LockInterruptState();
@@ -3670,7 +3761,7 @@ HalDisableSystemInterrupt(
         return;
     }
 
-    if (Vector >= 1020)
+    if (Vector >= HalpArm64DeviceIntIdLimit())
     {
         /* Reserved range (1020-8191): no-op */
         DPRINT1("[arm64] HalDisableSystemInterrupt: Invalid vector %lu (reserved range)\n", Vector);
@@ -3785,7 +3876,7 @@ HalEnableSystemInterrupt(
         return TRUE;
     }
 
-    if (Vector >= 1020)
+    if (Vector >= HalpArm64DeviceIntIdLimit())
     {
         /* Reserved range (1020-8191): error */
         DPRINT1("[arm64] HalEnableSystemInterrupt: Invalid vector %lu (reserved range)\n", Vector);
@@ -3924,7 +4015,7 @@ HalpGetRootInterruptVector(
     if (HalpSecondaryIsIntId(IntId))
     {
         *OutIrql = HalpSecondaryIrql(IntId);
-        *OutAffinity = 1;
+        *OutAffinity = HalpArm64DeviceInterruptAffinity();
         return IntId;
     }
 
@@ -3986,7 +4077,7 @@ HalpGetRootInterruptVector(
         /* PPIs are per-CPU, affinity is current processor */
         Affinity = (KAFFINITY)(1ULL << KeGetCurrentProcessorNumber());
     }
-    else if (IntId < 1020)
+    else if (IntId < HalpArm64DeviceIntIdLimit())
     {
         /* SPIs: Shared Peripheral Interrupts */
         /*
@@ -4062,7 +4153,7 @@ HalFlushCommonBuffer(
     }
 
     /* Skip cache maintenance on cache-coherent systems */
-    if (HalpArm64DmaCoherency.SystemCoherent)
+    if (HalpArm64DmaCoherent(AdapterObject))
     {
         return;
     }
@@ -4314,7 +4405,8 @@ static ULONG NTAPI
 HalpArm64GetDmaAlignment(
     _In_ PDMA_ADAPTER DmaAdapter)
 {
-    UNREFERENCED_PARAMETER(DmaAdapter);
+    if (HalpArm64DmaCoherent((PADAPTER_OBJECT)DmaAdapter))
+        return 1;
     /* ARM64 typically requires cache-line alignment for DMA */
     return HalpArm64GetCacheLineSize();
 }
@@ -5164,15 +5256,70 @@ HalGetAdapter(
  * devices such as the Raspberry Pi 5 on-chip SD host controller. Returns NULL
  * safely when HalGetAdapter fails (DmaHeader is the first ADAPTER_OBJECT field).
  */
+static
+NTSTATUS
+HalpArm64QueryBusInterface(
+    _In_ PDEVICE_OBJECT PhysicalDeviceObject,
+    _Out_ PBUS_INTERFACE_STANDARD BusInterface)
+{
+    PIO_STACK_LOCATION IrpSp;
+    IO_STATUS_BLOCK IoStatus;
+    PDEVICE_OBJECT Top;
+    KEVENT Event;
+    NTSTATUS Status;
+    PIRP Irp;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    RtlZeroMemory(BusInterface, sizeof(*BusInterface));
+    Top = IoGetAttachedDeviceReference(PhysicalDeviceObject);
+    KeInitializeEvent(&Event, NotificationEvent, FALSE);
+    Irp = IoBuildSynchronousFsdRequest(IRP_MJ_PNP, Top, NULL, 0, NULL, &Event, &IoStatus);
+    if (Irp == NULL)
+    {
+        ObDereferenceObject(Top);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    Irp->IoStatus.Status = STATUS_NOT_SUPPORTED;
+    IrpSp = IoGetNextIrpStackLocation(Irp);
+    IrpSp->MinorFunction = IRP_MN_QUERY_INTERFACE;
+    IrpSp->Parameters.QueryInterface.InterfaceType = &GUID_BUS_INTERFACE_STANDARD;
+    IrpSp->Parameters.QueryInterface.Size = sizeof(*BusInterface);
+    IrpSp->Parameters.QueryInterface.Version = 1;
+    IrpSp->Parameters.QueryInterface.Interface = (PINTERFACE)BusInterface;
+    IrpSp->Parameters.QueryInterface.InterfaceSpecificData = NULL;
+
+    Status = IoCallDriver(Top, Irp);
+    if (Status == STATUS_PENDING)
+    {
+        KeWaitForSingleObject(&Event, Executive, KernelMode, FALSE, NULL);
+        Status = IoStatus.Status;
+    }
+
+    ObDereferenceObject(Top);
+    return Status;
+}
+
 static PDMA_ADAPTER NTAPI
 HalpArm64GetDmaAdapter(
     _In_ PVOID Context,
     _In_ PDEVICE_DESCRIPTION DeviceDescription,
     _Out_ PULONG NumberOfMapRegisters)
 {
+    BUS_INTERFACE_STANDARD BusInterface;
     PADAPTER_OBJECT AdapterObject;
+    PDMA_ADAPTER DmaAdapter;
 
-    UNREFERENCED_PARAMETER(Context);
+    if (Context != NULL && KeGetCurrentIrql() == PASSIVE_LEVEL &&
+        NT_SUCCESS(HalpArm64QueryBusInterface(Context, &BusInterface)) && BusInterface.GetDmaAdapter != NULL)
+    {
+        DmaAdapter = BusInterface.GetDmaAdapter(BusInterface.Context, DeviceDescription, NumberOfMapRegisters);
+        if (BusInterface.InterfaceDereference != NULL)
+            BusInterface.InterfaceDereference(BusInterface.Context);
+        return DmaAdapter;
+    }
+
     AdapterObject = HalGetAdapter(DeviceDescription, NumberOfMapRegisters);
     return AdapterObject ? &AdapterObject->DmaHeader : NULL;
 }
@@ -5508,7 +5655,7 @@ HalGetEnvironmentVariable(
 #define HAL_ARM64_DEVICE_IRQL_MAX   12      /* CLOCK_LEVEL - 1 */
 #define HAL_ARM64_DEVICE_IRQL_COUNT (HAL_ARM64_DEVICE_IRQL_MAX - HAL_ARM64_DEVICE_IRQL_MIN + 1)
 
-static KIRQL HalpArm64IntIdToIrql[HAL_ARM64_SPI_MAX];
+static KIRQL HalpArm64IntIdToIrql[HAL_ARM64_CONTROLLER_INTID_MAX];
 static KSPIN_LOCK HalpArm64VectorLock;
 static BOOLEAN HalpArm64VectorLockInit = FALSE;
 
@@ -5626,7 +5773,7 @@ HalGetInterruptVector(
     {
         DeviceIrql = HalpSecondaryIrql(Vector);
         if (Irql) *Irql = DeviceIrql;
-        if (Affinity) *Affinity = 1;
+        if (Affinity) *Affinity = HalpArm64DeviceInterruptAffinity();
         return Vector;
     }
 
@@ -5634,7 +5781,8 @@ HalGetInterruptVector(
     IsNmi = HalpArm64IsNmiSource(Gsi);
 
     /* Validate the interrupt ID */
-    if (Vector >= HAL_ARM64_SPI_MAX && Vector < HAL_ARM64_LPI_BASE)
+    if (Vector >= HAL_ARM64_SPI_MAX && Vector < HAL_ARM64_LPI_BASE &&
+        !(HalpArm64InterruptController && Vector < HalpArm64InterruptController->IntIdLimit))
     {
         DPRINT1("[arm64] HalGetInterruptVector: Invalid INTID %lu (GSI %lu)\n", Vector, Gsi);
         if (Irql) *Irql = PASSIVE_LEVEL;
@@ -5651,8 +5799,7 @@ HalGetInterruptVector(
             DeviceIrql = HAL_ARM64_DEVICE_IRQL_MIN +
                          ((Vector - HAL_ARM64_LPI_BASE) % HAL_ARM64_DEVICE_IRQL_COUNT);
             if (Irql) *Irql = DeviceIrql;
-            if (Affinity) *Affinity = HalpDefaultInterruptAffinity ?
-                                       HalpDefaultInterruptAffinity : 1;
+            if (Affinity) *Affinity = HalpArm64DeviceInterruptAffinity();
             DPRINT("[arm64] HalGetInterruptVector: LPI GSI=%lu Vector=%lu IRQL=%u\n",
                    Gsi, Vector, DeviceIrql);
             return Vector;
@@ -5667,8 +5814,7 @@ HalGetInterruptVector(
                 DeviceIrql = HAL_ARM64_DEVICE_IRQL_MIN +
                              (SpiOffset % HAL_ARM64_DEVICE_IRQL_COUNT);
                 if (Irql) *Irql = DeviceIrql;
-                if (Affinity) *Affinity = HalpDefaultInterruptAffinity ?
-                                           HalpDefaultInterruptAffinity : 1;
+                if (Affinity) *Affinity = HalpArm64DeviceInterruptAffinity();
                 DPRINT("[arm64] HalGetInterruptVector: MSI via GICv2m SPI=%lu\n", Vector);
                 return Vector;
             }
@@ -5699,7 +5845,7 @@ HalGetInterruptVector(
     }
 
     /* Track the allocation */
-    if (Vector < HAL_ARM64_SPI_MAX)
+    if (Vector < HalpArm64DeviceIntIdLimit())
     {
         KeAcquireSpinLock(&HalpArm64VectorLock, &OldIrql);
         if (HalpArm64IntIdToIrql[Vector] == 0)
@@ -5733,9 +5879,7 @@ HalGetInterruptVector(
         }
         else
         {
-            *Affinity = HalpArm64InterruptController ?
-                        (HalpDefaultInterruptAffinity ? HalpDefaultInterruptAffinity : 1) :
-                        KeQueryActiveProcessors();
+            *Affinity = HalpArm64DeviceInterruptAffinity();
         }
     }
 
@@ -6083,7 +6227,14 @@ VOID
 NTAPI
 HalProcessorIdle(VOID)
 {
-    HalpArm64SetPmrExact(KeGetCurrentIrql());
+    const HAL_ARM64_PROCESSOR_IDLE *Idle = HalpArm64ProcessorIdle;
+
+    HalSetGicPriorityMask(KeGetCurrentIrql());
+    if (Idle)
+    {
+        Idle->Idle();
+        return;
+    }
     ARM64_DSB(SY);
     ARM64_ISB();
     ARM64_WFI();
@@ -6091,6 +6242,51 @@ HalProcessorIdle(VOID)
 
 #define HAL_ARM64_RTC_EARLIEST_SECONDS 1767225600UL
 #define HAL_ARM64_PL031_PHYSICAL_ADDRESS 0x09010000ULL
+
+static KSPIN_LOCK HalpArm64SoftClockLock;
+static BOOLEAN HalpArm64SoftClockSet;
+static LONGLONG HalpArm64SoftClockTime;
+static ULONGLONG HalpArm64SoftClockCount;
+
+static
+VOID
+HalpArm64QuerySoftClock(
+    _Out_ PLARGE_INTEGER Time)
+{
+    ULONGLONG Frequency, Ticks;
+    KIRQL OldIrql;
+
+    KeRaiseIrql(HIGH_LEVEL, &OldIrql);
+    KeAcquireSpinLockAtDpcLevel(&HalpArm64SoftClockLock);
+    Frequency = HalpReadCntfrq();
+    Ticks = HalpReadCntvct() - HalpArm64SoftClockCount;
+    if (HalpArm64SoftClockSet)
+        Time->QuadPart = HalpArm64SoftClockTime;
+    else
+        RtlSecondsSince1970ToTime(HAL_ARM64_RTC_EARLIEST_SECONDS, Time);
+    KeReleaseSpinLockFromDpcLevel(&HalpArm64SoftClockLock);
+    KeLowerIrql(OldIrql);
+
+    ASSERT(Frequency != 0);
+    if (Frequency)
+        Time->QuadPart += (LONGLONG)((Ticks / Frequency) * 10000000ULL + ((Ticks % Frequency) * 10000000ULL) / Frequency);
+}
+
+static
+VOID
+HalpArm64SetSoftClock(
+    _In_ PLARGE_INTEGER Time)
+{
+    KIRQL OldIrql;
+
+    KeRaiseIrql(HIGH_LEVEL, &OldIrql);
+    KeAcquireSpinLockAtDpcLevel(&HalpArm64SoftClockLock);
+    HalpArm64SoftClockTime = Time->QuadPart;
+    HalpArm64SoftClockCount = HalpReadCntvct();
+    HalpArm64SoftClockSet = TRUE;
+    KeReleaseSpinLockFromDpcLevel(&HalpArm64SoftClockLock);
+    KeLowerIrql(OldIrql);
+}
 
 static
 BOOLEAN
@@ -6147,9 +6343,10 @@ HalQueryRealTimeClock(
      * device reports the baseline below rather than 1970.
      */
     if ((Seconds < HAL_ARM64_RTC_EARLIEST_SECONDS) || (Seconds == MAXULONG))
-        Seconds = HAL_ARM64_RTC_EARLIEST_SECONDS;
+        HalpArm64QuerySoftClock(&SystemTime);
+    else
+        RtlSecondsSince1970ToTime(Seconds, &SystemTime);
 
-    RtlSecondsSince1970ToTime(Seconds, &SystemTime);
     RtlTimeToTimeFields(&SystemTime, TimeFields);
     return TRUE;
 }
@@ -6308,11 +6505,22 @@ NTAPI
 HalSetRealTimeClock(
     _In_ PTIME_FIELDS TimeFields)
 {
+    LARGE_INTEGER Time;
+
     if (NT_SUCCESS(HalpEfiSetTime(TimeFields)))
         return TRUE;
 
-    UNIMPLEMENTED_STUB();
-    return FALSE;
+    if (HalpArm64HasQemuPl031())
+    {
+        UNIMPLEMENTED_STUB();
+        return FALSE;
+    }
+
+    if (!RtlTimeFieldsToTime(TimeFields, &Time))
+        return FALSE;
+
+    HalpArm64SetSoftClock(&Time);
+    return TRUE;
 }
 
 ULONG
@@ -6421,6 +6629,17 @@ HalStartNextProcessor(
     ARM64_ISB();
 
     /* Check if PSCI is available */
+    if (HalpArm64ReleaseSpinTableCpu(ProcessorNumber, TrampolinePhys))
+    {
+        if (!HalpArm64WaitForApSync(5000))
+        {
+            DPRINT1("[arm64][HAL] HalStartNextProcessor: CPU %lu did not leave its spin table\n", ProcessorNumber);
+            return FALSE;
+        }
+        HalpStartedProcessorCount++;
+        return TRUE;
+    }
+
     if (!HalpArm64PsciInfo.Present)
     {
         DPRINT1("[arm64][HAL] HalStartNextProcessor: PSCI unavailable, trying parking\n");
@@ -6510,15 +6729,27 @@ HalpTranslateBusAddress(
     _Inout_ PULONG AddressSpace,
     _Out_ PPHYSICAL_ADDRESS TranslatedAddress)
 {
-    UNREFERENCED_PARAMETER(InterfaceType);
-    UNREFERENCED_PARAMETER(BusNumber);
-    UNREFERENCED_PARAMETER(AddressSpace);
+    ULONG Index;
 
     if (TranslatedAddress)
     {
         TranslatedAddress->QuadPart = BusAddress.QuadPart;
     }
+    if (InterfaceType != PCIBus || (AddressSpace && *AddressSpace != 0) || !TranslatedAddress)
+        return TRUE;
 
+    for (Index = 0; Index < HalpArm64PciWindowCount; ++Index)
+    {
+        PHALP_ARM64_PCI_WINDOW Window = &HalpArm64PciWindows[Index];
+
+        if (BusNumber >= Window->FirstBus && BusNumber <= Window->LastBus &&
+            (ULONG64)BusAddress.QuadPart >= Window->BusBase &&
+            (ULONG64)BusAddress.QuadPart - Window->BusBase < Window->Size)
+        {
+            TranslatedAddress->QuadPart = (LONGLONG)(Window->CpuBase + ((ULONG64)BusAddress.QuadPart - Window->BusBase));
+            break;
+        }
+    }
     return TRUE;
 }
 
@@ -6598,7 +6829,7 @@ IoFlushAdapterBuffers(
     }
 
     /* Perform cache maintenance for non-coherent DMA */
-    if (!HalpArm64DmaCoherency.SystemCoherent && Mdl && CurrentVa)
+    if (!HalpArm64DmaCoherent(AdapterObject) && Mdl && CurrentVa)
     {
         /*
          * Ensure DMA writes from the device have committed to memory before
@@ -6927,7 +7158,7 @@ IoMapTransfer(
      * CurrentVa, which may not be mapped in the current address space
      * (e.g. user-mode MDL pages during DPC-level I/O).
      */
-    if (!NeedsBounceBuffer && !HalpArm64DmaCoherency.SystemCoherent && TransferLength > 0)
+    if (!NeedsBounceBuffer && !HalpArm64DmaCoherent(AdapterObject) && TransferLength > 0)
     {
         ULONG_PTR KsegVa = HAL_ARM64_PHYS_MAP_BASE |
                             (PhysicalAddress.QuadPart & HAL_ARM64_PHYS_ADDR_MASK);
@@ -7023,6 +7254,11 @@ HalReturnToFirmware(
             }
             else
             {
+                if (HalpArm64SystemReset)
+                {
+                    DPRINT1("[arm64][HAL] HalReturnToFirmware: restarting through %s\n", HalpArm64SystemReset->Name);
+                    HalpArm64SystemReset->Restart();
+                }
                 DPRINT1("[arm64][HAL] HalReturnToFirmware: PSCI not available, halting instead\n");
                 ARM64_DSB(SY);
                 ARM64_ISB();

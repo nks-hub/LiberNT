@@ -15,4 +15,10 @@
 @ stdcall BCryptOpenAlgorithmProvider(ptr wstr wstr long) ksecdd.BCryptOpenAlgorithmProvider
 @ stdcall BCryptSetProperty(ptr wstr ptr long long) ksecdd.BCryptSetProperty
 @ stdcall BCryptVerifySignature(ptr ptr ptr long ptr long long) ksecdd.BCryptVerifySignature
-@ stdcall SystemPrng(ptr long) ksecdd.SystemPrng
+@ stdcall BCryptGenerateKeyPair(ptr ptr long long) ksecdd.BCryptGenerateKeyPair
+@ stdcall BCryptFinalizeKeyPair(ptr long) ksecdd.BCryptFinalizeKeyPair
+@ stdcall BCryptExportKey(ptr ptr wstr ptr long ptr long) ksecdd.BCryptExportKey
+@ stdcall BCryptSecretAgreement(ptr ptr ptr long) ksecdd.BCryptSecretAgreement
+@ stdcall BCryptDeriveKey(ptr wstr ptr ptr long ptr long) ksecdd.BCryptDeriveKey
+@ stdcall BCryptDestroySecret(ptr) ksecdd.BCryptDestroySecret
+@ cdecl SystemPrng(ptr long) ksecdd.SystemPrng

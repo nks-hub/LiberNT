@@ -10,6 +10,8 @@
 
 #include "precomp.h"
 
+#include <icmp.h>
+
 BOOLEAN UDPInitialized = FALSE;
 PORT_SET UDPPorts;
 
@@ -244,6 +246,7 @@ static NTSTATUS UDPSendToAddress(
     IP_PACKET LoopPacket;
     IP_ADDRESS LocalAddress;
     ULONG UnicastSelector;
+    ULONG Selector;
     USHORT LocalPort;
     NTSTATUS Status;
     PNEIGHBOR_CACHE_ENTRY NCE;
@@ -261,22 +264,32 @@ static NTSTATUS UDPSendToAddress(
 
     LocalAddress = AddrFile->Address;
     UnicastSelector = SourceSelector ? SourceSelector : AddrFile->UnicastInterface;
+    Selector = IsMulticast ? (SourceSelector ? SourceSelector : AddrFile->MulticastInterface) : UnicastSelector;
     if (Source)
-    {
-        PIP_INTERFACE Interface;
-
         AddrInitIPv4(&LocalAddress, Source);
-        Interface = AddrLocateInterface(&LocalAddress);
-        if (!Interface)
+    if (Source || SourceSelector)
+    {
+        PIP_INTERFACE SourceInterface = Source ? AddrLocateInterface(&LocalAddress) : NULL;
+        PIP_INTERFACE Selected = Selector ? GetMulticastInterface(Selector) : NULL;
+
+        /* Windows refuses a source that is not on the chosen interface even when it sends as a weak host */
+        Status = STATUS_SUCCESS;
+        if (SourceSelector && !Selected)
+            Status = STATUS_INVALID_PARAMETER;
+        else if (Source && (!SourceInterface || (Selected && Selected != SourceInterface)))
+            Status = STATUS_INVALID_ADDRESS;
+        if (SourceInterface)
+            IPDereferenceInterface(SourceInterface);
+        if (Selected)
+            IPDereferenceInterface(Selected);
+        if (!NT_SUCCESS(Status))
         {
             UnlockObject(AddrFile);
-            return STATUS_INVALID_ADDRESS;
+            return Status;
         }
-        IPDereferenceInterface(Interface);
     }
-    if ((DN2H(RemoteAddress.Address.IPv4Address) & 0xf0000000) == 0xe0000000)
+    if (IsMulticast)
     {
-        ULONG Selector = SourceSelector ? SourceSelector : AddrFile->MulticastInterface;
         if (!Selector) Selector = LocalAddress.Address.IPv4Address;
         NCE = RouteGetMulticastRoute(&RemoteAddress, Selector);
         if (!NCE)
@@ -471,6 +484,16 @@ NTSTATUS UDPSendDatagram(
 			RemoteAddressTa->Address[0].Address[0].in_addr;
 		RemotePort = RemoteAddressTa->Address[0].Address[0].sin_port;
 		break;
+
+    case TDI_ADDRESS_TYPE_IP6:
+        if (AddrFile->Family != TDI_ADDRESS_TYPE_IP6)
+            return STATUS_UNSUCCESSFUL;
+        Status = AddrGetAddress((PTRANSPORT_ADDRESS)RemoteAddressTa, &RemoteAddress, &RemotePort);
+        if (!NT_SUCCESS(Status))
+            return Status;
+        if (!TCPUnmapFromDualStack(&RemoteAddress))
+            return STATUS_INVALID_ADDRESS;
+        break;
 
     default:
 		return STATUS_UNSUCCESSFUL;
@@ -802,8 +825,67 @@ VOID UDPReceive(PIP_INTERFACE Interface, PIP_PACKET IPPacket)
   if (Chosen != NULL) {
     UDPDeliverToAddrFile(Chosen, Interface, IPPacket, IPv4Header, UDPHeader, DataSize);
     DereferenceObject(Chosen);
+  } else if (!DeliverToAll && !AddrIsUnspecified(SrcAddress) && !UDPIsBroadcastAddress(SrcAddress) &&
+             ((DN2H(SrcAddress->Address.IPv4Address) & 0xf0000000) != 0xe0000000)) {
+    ICMPSendDestinationUnreachable(Interface, IPPacket, UDPHeader, ICMP_CODE_DU_PORT_UNREACH, 0);
   }
   TI_DbgPrint(MAX_TRACE, ("Leaving.\n"));
+}
+
+VOID UDPReceiveUnreachable(PIP_INTERFACE Interface, PIP_PACKET IPPacket)
+/*
+ * FUNCTION: Reports an ICMP port unreachable message to the socket whose datagram it answers
+ * ARGUMENTS:
+ *     Interface = Interface the message was received on
+ *     IPPacket  = The ICMP message
+ */
+{
+  PUCHAR Icmp = IPPacket->Data;
+  UINT DataSize = IPPacket->TotalSize - IPPacket->HeaderSize;
+  PADDRESS_FILE AddrFile, Chosen = NULL;
+  IP_ADDRESS Local, Remote;
+  PIP_INTERFACE Owner;
+  AF_SEARCH SearchContext;
+  PIPv4_HEADER Quoted;
+  PUDP_HEADER QuotedUdp;
+  ULONG QuotedHeader;
+
+  UNREFERENCED_PARAMETER(Interface);
+
+  if (DataSize < sizeof(ICMP_HEADER) + sizeof(IPv4_HEADER) + sizeof(UDP_HEADER))
+    return;
+
+  Quoted = (PIPv4_HEADER)(Icmp + sizeof(ICMP_HEADER));
+  QuotedHeader = (Quoted->VerIHL & 0x0F) * 4;
+  if ((Quoted->VerIHL >> 4) != 4 || QuotedHeader < sizeof(IPv4_HEADER) ||
+      DataSize < sizeof(ICMP_HEADER) + QuotedHeader + sizeof(UDP_HEADER) || Quoted->Protocol != IPPROTO_UDP)
+    return;
+
+  /* The quoted datagram has to be one this host could have sent */
+  AddrInitIPv4(&Local, Quoted->SrcAddr);
+  AddrInitIPv4(&Remote, Quoted->DstAddr);
+  Owner = AddrLocateInterface(&Local);
+  if (!Owner)
+    return;
+  IPDereferenceInterface(Owner);
+
+  QuotedUdp = (PUDP_HEADER)((PUCHAR)Quoted + QuotedHeader);
+  AddrFile = AddrSearchFirst(&Local, QuotedUdp->SourcePort, IPPROTO_UDP, &SearchContext);
+  while (AddrFile != NULL) {
+    if (Chosen == NULL || (AddrIsUnspecified(&Chosen->Address) && !AddrIsUnspecified(&AddrFile->Address))) {
+      if (Chosen != NULL)
+        DereferenceObject(Chosen);
+      Chosen = AddrFile;
+    } else {
+      DereferenceObject(AddrFile);
+    }
+    AddrFile = AddrSearchNext(&SearchContext);
+  }
+
+  if (Chosen != NULL) {
+    DGDeliverError(Chosen, &Remote, QuotedUdp->DestPort, STATUS_PORT_UNREACHABLE);
+    DereferenceObject(Chosen);
+  }
 }
 
 

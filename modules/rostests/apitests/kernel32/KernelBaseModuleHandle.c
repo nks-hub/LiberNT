@@ -13,6 +13,17 @@ typedef PVOID (NTAPI *PRTL_PC_TO_FILE_HEADER)(PVOID, PVOID *);
 static PRTL_PC_TO_FILE_HEADER RealPcToFileHeader;
 static PVOID HookAddress;
 static PVOID HookBase;
+static BOOL HookStartsThread;
+static DWORD HookThreadWait;
+
+static
+DWORD
+WINAPI
+EmptyThread(_In_ PVOID Parameter)
+{
+    UNREFERENCED_PARAMETER(Parameter);
+    return 0;
+}
 
 static
 PVOID
@@ -23,6 +34,15 @@ HookPcToFileHeader(
 {
     if (PcValue == HookAddress)
     {
+        /* A new thread takes the loader lock before it runs, as the thread of a language runtime does */
+        if (HookStartsThread)
+        {
+            HANDLE Thread = CreateThread(NULL, 0, EmptyThread, NULL, 0, NULL);
+
+            HookThreadWait = Thread ? WaitForSingleObject(Thread, 5000) : WAIT_FAILED;
+            if (Thread)
+                CloseHandle(Thread);
+        }
         *BaseOfImage = HookBase;
         return HookBase;
     }
@@ -118,6 +138,20 @@ START_TEST(KernelBaseModuleHandle)
         Result = pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)Memory, &Module);
         ok(Result, "GetModuleHandleExW with a reference failed with %lu\n", GetLastError());
         ok(Module == HookBase, "Module is %p, expected %p\n", Module, HookBase);
+
+        HookStartsThread = TRUE;
+        HookThreadWait = WAIT_FAILED;
+        Module = NULL;
+        Result = pGetModuleHandleExW(FromAddress, (LPCWSTR)Memory, &Module);
+        ok(Result, "GetModuleHandleExW failed with %lu\n", GetLastError());
+        ok(HookThreadWait == WAIT_OBJECT_0, "A thread started inside the lookup did not run: wait %lu\n", HookThreadWait);
+
+        HookThreadWait = WAIT_FAILED;
+        Module = NULL;
+        Result = pGetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)Memory, &Module);
+        ok(Result, "GetModuleHandleExW with a reference failed with %lu\n", GetLastError());
+        ok(HookThreadWait == WAIT_OBJECT_0, "A thread started inside the referencing lookup did not run: wait %lu\n", HookThreadWait);
+        HookStartsThread = FALSE;
 
         /* A copy of the image headers, which the loader did not map */
         RtlCopyMemory(Memory, HookBase, 0x1000);

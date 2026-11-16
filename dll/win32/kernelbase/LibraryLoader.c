@@ -8,8 +8,6 @@
 #include <windows.h>
 #include <winternl.h>
 
-NTSYSAPI NTSTATUS NTAPI LdrLockLoaderLock(_In_ ULONG Flags, _Out_opt_ PULONG Disposition, _Out_ PULONG_PTR Cookie);
-NTSYSAPI NTSTATUS NTAPI LdrUnlockLoaderLock(_In_ ULONG Flags, _In_opt_ ULONG_PTR Cookie);
 NTSYSAPI NTSTATUS NTAPI LdrAddRefDll(_In_ ULONG Flags, _In_ HMODULE Module);
 
 #define LDR_ADDREF_DLL_PIN 0x00000001
@@ -33,7 +31,6 @@ KbGetModuleHandleExW(
     _Out_ HMODULE *phModule)
 {
     PVOID ImageBase = NULL;
-    ULONG_PTR Cookie;
     DWORD Error = ERROR_SUCCESS;
     NTSTATUS Status;
 
@@ -43,13 +40,7 @@ KbGetModuleHandleExW(
         return GetModuleHandleExW(dwFlags, lpModuleName, phModule);
     }
 
-    Status = LdrLockLoaderLock(0, NULL, &Cookie);
-    if (!NT_SUCCESS(Status))
-    {
-        *phModule = NULL;
-        SetLastError(RtlNtStatusToDosError(Status));
-        return FALSE;
-    }
+    /* The lookup runs without the loader lock: a program may have redirected it into code that waits for a new thread */
     if (!RtlPcToFileHeader((PVOID)lpModuleName, &ImageBase))
     {
         Error = ERROR_MOD_NOT_FOUND;
@@ -60,7 +51,6 @@ KbGetModuleHandleExW(
         if (!NT_SUCCESS(Status))
             Error = RtlNtStatusToDosError(Status);
     }
-    LdrUnlockLoaderLock(0, Cookie);
 
     if (Error != ERROR_SUCCESS)
     {

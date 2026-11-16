@@ -216,7 +216,7 @@ VOID NBTimeout(VOID)
                     else
                     {
                         /* This guy was stale for way too long */
-                        Status = NDIS_STATUS_REQUEST_ABORTED;
+                        Status = NDIS_STATUS_HOST_UNREACHABLE;
                     }
 
                     NBFlushPacketQueue(NCE, Status);
@@ -301,6 +301,30 @@ VOID NBSendSolicit(PNEIGHBOR_CACHE_ENTRY NCE)
                 NCE->Interface);
 }
 
+/* An address that just became usable resolves the neighbors that were waiting for it at once */
+VOID NBSolicitIncomplete(PIP_INTERFACE Interface)
+{
+    ULONGLONG Now = KeQueryInterruptTime();
+    PNEIGHBOR_CACHE_ENTRY NCE;
+    KIRQL OldIrql;
+    ULONG i;
+
+    KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
+    for (i = 0; i <= NB_HASHMASK; ++i)
+    {
+        TcpipAcquireSpinLockAtDpcLevel(&NeighborCache[i].Lock);
+        for (NCE = NeighborCache[i].Cache; NCE; NCE = NCE->Next)
+        {
+            if (NCE->Interface != Interface || (NCE->State & NUD_PERMANENT) || !(NCE->State & NUD_INCOMPLETE))
+                continue;
+            NBSendSolicit(NCE);
+            NCE->NextSolicit = Now + (ULONGLONG)Interface->RetransmitTime * 10000;
+        }
+        TcpipReleaseSpinLockFromDpcLevel(&NeighborCache[i].Lock);
+    }
+    KeLowerIrql(OldIrql);
+}
+
 VOID NBInvalidateNeighborsForInterface(PIP_INTERFACE Interface)
 {
     KIRQL OldIrql;
@@ -316,7 +340,7 @@ VOID NBInvalidateNeighborsForInterface(PIP_INTERFACE Interface)
             if (NCE->Interface != Interface)
                 continue;
 
-            NBFlushPacketQueue(NCE, NDIS_STATUS_REQUEST_ABORTED);
+            NBFlushPacketQueue(NCE, NDIS_STATUS_NETWORK_UNREACHABLE);
             if (!(NCE->State & NUD_PERMANENT))
             {
                 NCE->State = NUD_INCOMPLETE;
@@ -350,7 +374,7 @@ VOID NBDestroyNeighborsForInterface(PIP_INTERFACE Interface)
                 /* Unlink and destroy the NCE */
                 *PrevNCE = NCE->Next;
 
-                NBFlushPacketQueue(NCE, NDIS_STATUS_REQUEST_ABORTED);
+                NBFlushPacketQueue(NCE, NDIS_STATUS_NETWORK_UNREACHABLE);
                 NCE->Removed = TRUE;
                 NBDereferenceNeighbor(NCE);
 
@@ -706,7 +730,7 @@ BOOLEAN NBQueuePacket(
   if (NCE->Removed)
     {
       TcpipReleaseSpinLock(&NeighborCache[HashValue].Lock, OldIrql);
-      PacketComplete(PacketContext, NdisPacket, NDIS_STATUS_REQUEST_ABORTED);
+      PacketComplete(PacketContext, NdisPacket, NDIS_STATUS_HOST_UNREACHABLE);
       ExFreePoolWithTag(Packet, NEIGHBOR_PACKET_TAG);
       return TRUE;
     }
@@ -757,7 +781,7 @@ VOID NBRemoveNeighbor(
           /* Found it, now unlink it from the list */
           *PrevNCE = CurNCE->Next;
 
-	  NBFlushPacketQueue( CurNCE, NDIS_STATUS_REQUEST_ABORTED );
+	  NBFlushPacketQueue( CurNCE, NDIS_STATUS_HOST_UNREACHABLE );
           CurNCE->Removed = TRUE;
           NBDereferenceNeighbor(CurNCE);
 

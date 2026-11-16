@@ -1,17 +1,12 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * PURPOSE:         Routines for IRQL support
- * PROGRAMMERS:     Timo Kreuzer
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exported IRQL entry points for callers that cannot inline CR8 accesses
+ * COPYRIGHT:   Copyright Timo Kreuzer <timo.kreuzer@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
-/* INCLUDES *****************************************************************/
-
 #include <ntoskrnl.h>
-#define NDEBUG
-#include <debug.h>
-
-/* FUNCTIONS ****************************************************************/
 
 NTKERNELAPI
 KIRQL
@@ -22,14 +17,16 @@ KxGetCurrentIrql(VOID)
 
 NTKERNELAPI
 VOID
-KxLowerIrql(IN KIRQL NewIrql)
+KxLowerIrql(
+    _In_ KIRQL NewIrql)
 {
     KeLowerIrql(NewIrql);
 }
 
 NTKERNELAPI
 KIRQL
-KxRaiseIrql(IN KIRQL NewIrql)
+KxRaiseIrql(
+    _In_ KIRQL NewIrql)
 {
     return KfRaiseIrql(NewIrql);
 }
@@ -45,12 +42,7 @@ KIRQL
 NTAPI
 KeGetEffectiveIrql(VOID)
 {
-    if ((__readeflags() & EFLAGS_INTERRUPT_MASK) == 0)
-    {
-        return HIGH_LEVEL;
-    }
+    BOOLEAN InterruptsOn = (BOOLEAN)((__readeflags() & EFLAGS_INTERRUPT_MASK) != 0);
 
-    return KeGetCurrentIrql();
+    return InterruptsOn ? KeGetCurrentIrql() : HIGH_LEVEL;
 }
-
-/* EOF */

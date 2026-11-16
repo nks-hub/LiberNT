@@ -1,279 +1,124 @@
 /*
-* PROJECT:         ReactOS Kernel
-* LICENSE:         GPL - See COPYING in the top level directory
-* FILE:            ntoskrnl/include/internal/cm_x.h
-* PURPOSE:         Inlined Functions for the Configuration Manager
-* PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
-*/
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Configuration manager inline helpers: hashing, cached cells, KCB locks
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
 
+#define COMPUTE_HASH_CHAR(ConvKey, Char) (37 * (ConvKey) + RtlUpcaseUnicodeChar(Char))
+#define GET_HASH_INDEX(ConvKey) (((CMP_HASH_IRRATIONAL * (ConvKey)) % CMP_HASH_PRIME) % CmpHashTableSize)
+#define GET_HASH_ENTRY(Table, ConvKey) (&(Table)[GET_HASH_INDEX(ConvKey)])
 
-//
-// Returns the hashkey corresponding to a convkey
-//
-#define GET_HASH_KEY(ConvKey)                                       \
-    ((CMP_HASH_IRRATIONAL * (ConvKey)) % CMP_HASH_PRIME)
+#define CMP_IS_CELL_CACHED(Cell) ((((Cell) & HCELL_CACHED) != 0) && ((Cell) != HCELL_NIL))
+#define CMP_GET_CACHED_CELL(Cell) ((ULONG_PTR)((Cell) & ~HCELL_CACHED))
+#define CMP_GET_CACHED_DATA(Cell) (&((PCM_CACHED_VALUE_INDEX)CMP_GET_CACHED_CELL(Cell))->Data.CellData)
+#define CMP_GET_CACHED_VALUE(Cell) (&((PCM_CACHED_VALUE)CMP_GET_CACHED_CELL(Cell))->KeyValue)
 
-//
-// Computes the hashkey of a character
-//
-#define COMPUTE_HASH_CHAR(ConvKey, Char)                            \
-    (37 * ConvKey + RtlUpcaseUnicodeChar(Char))
+#define CmpGetAllocPageFromKcb(Kcb) ((PCM_ALLOC_PAGE)PAGE_ALIGN(Kcb))
+#define CmpGetAllocPageFromDelayAlloc(Alloc) ((PCM_ALLOC_PAGE)PAGE_ALIGN(Alloc))
 
-//
-// Returns the index into the hash table, or the entry itself
-//
-#define GET_HASH_INDEX(ConvKey)                                     \
-    (GET_HASH_KEY(ConvKey) % CmpHashTableSize)
-#define GET_HASH_ENTRY(Table, ConvKey)                              \
-    (&Table[GET_HASH_INDEX(ConvKey)])
-#define ASSERT_VALID_HASH(h)                                        \
-    ASSERT_KCB_VALID(CONTAINING_RECORD((h), CM_KEY_CONTROL_BLOCK, KeyHash))
+#define ASSERT_KCB_VALID(Kcb) ASSERT((Kcb)->Signature == CM_KCB_SIGNATURE)
+#define CMP_ASSERT_EXCLUSIVE_REGISTRY_LOCK() ASSERT(CmpSpecialBootCondition || CmpTestRegistryLockExclusive())
+#define CMP_ASSERT_KCB_LOCK(Kcb) ASSERT(CmpIsKcbLockedExclusive(Kcb) || CmpTestRegistryLockExclusive())
 
-//
-// Returns whether or not the cell is cached
-//
-#define CMP_IS_CELL_CACHED(c)                                       \
-    (((c) & HCELL_CACHED) && ((c) != HCELL_NIL))
-
-//
-// Return data from a cached cell
-//
-#define CMP_GET_CACHED_CELL(c)                                      \
-    (ULONG_PTR)((c) & ~HCELL_CACHED)
-#define CMP_GET_CACHED_DATA(c)                                      \
-    (&(((PCM_CACHED_VALUE_INDEX)(CMP_GET_CACHED_CELL(c)))->Data.CellData))
-#define CMP_GET_CACHED_INDEX(c)                                     \
-    (&(((PCM_CACHED_ENTRY)(CMP_GET_CACHED_CELL(c)))->CellIndex))
-#define CMP_GET_CACHED_VALUE(c)                                     \
-    (&(((PCM_CACHED_VALUE)(CMP_GET_CACHED_CELL(c)))->KeyValue))
-
-//
-// Makes sure that the registry is locked
-//
-#define CMP_ASSERT_REGISTRY_LOCK()                                  \
-    ASSERT((CmpSpecialBootCondition == TRUE) ||                     \
-           (CmpTestRegistryLock() == TRUE))
-
-//
-// Makes sure that the registry is locked or loading
-//
-#define CMP_ASSERT_REGISTRY_LOCK_OR_LOADING(h)                      \
-    ASSERT((CmpSpecialBootCondition == TRUE) ||                     \
-           (((PCMHIVE)h)->CreatorOwner == KeGetCurrentThread()) ||                 \
-           (CmpTestRegistryLock() == TRUE))
-
-//
-// Makes sure that the registry is exclusively locked
-//
-#define CMP_ASSERT_EXCLUSIVE_REGISTRY_LOCK()                        \
-    ASSERT((CmpSpecialBootCondition == TRUE) ||                     \
-           (CmpTestRegistryLockExclusive() == TRUE))
-
-//
-// Makes sure that the registry is exclusively locked or loading
-//
-#define CMP_ASSERT_EXCLUSIVE_REGISTRY_LOCK_OR_LOADING(h)            \
-    ASSERT((CmpSpecialBootCondition == TRUE) ||                     \
-           (((PCMHIVE)h)->CreatorOwner == KeGetCurrentThread()) ||                 \
-           (CmpTestRegistryLockExclusive() == TRUE))
-
-//
-// Makes sure this is a valid KCB
-//
-#define ASSERT_KCB_VALID(k)                                         \
-    ASSERT((k)->Signature == CM_KCB_SIGNATURE)
-
-//
-// Checks if a KCB is exclusively locked
-//
-#define CmpIsKcbLockedExclusive(k)                                  \
-    (GET_HASH_ENTRY(CmpCacheTable,                                  \
-                    (k)->ConvKey)->Owner == KeGetCurrentThread())
-
-//
-// Shared acquires a KCB by index
-//
-#define CmpAcquireKcbLockSharedByIndex(i)                           \
-{                                                                   \
-    ExAcquirePushLockShared(&CmpCacheTable[(i)].Lock);              \
+FORCEINLINE
+BOOLEAN
+CmpIsKcbLockedExclusive(
+    _In_ PCM_KEY_CONTROL_BLOCK Kcb)
+{
+    return (BOOLEAN)(GET_HASH_ENTRY(CmpCacheTable, Kcb->ConvKey)->Owner == KeGetCurrentThread());
 }
 
-//
-// Exclusively acquires a KCB by index
-//
 FORCEINLINE
 VOID
-CmpAcquireKcbLockExclusiveByIndex(ULONG Index)
+CmpAcquireKcbLockSharedByIndex(
+    _In_ ULONG Index)
+{
+    ExAcquirePushLockShared(&CmpCacheTable[Index].Lock);
+}
+
+FORCEINLINE
+VOID
+CmpAcquireKcbLockExclusiveByIndex(
+    _In_ ULONG Index)
 {
     ASSERT(CmpCacheTable[Index].Owner != KeGetCurrentThread());
+
     ExAcquirePushLockExclusive(&CmpCacheTable[Index].Lock);
     CmpCacheTable[Index].Owner = KeGetCurrentThread();
 }
 
-//
-// Exclusively acquires a KCB
-//
 FORCEINLINE
 VOID
-CmpAcquireKcbLockExclusive(PCM_KEY_CONTROL_BLOCK Kcb)
-{
-    CmpAcquireKcbLockExclusiveByIndex(GET_HASH_INDEX(Kcb->ConvKey));
-}
-
-//
-// Exclusively acquires a KCB by key
-//
-FORCEINLINE
-VOID
-CmpAcquireKcbLockExclusiveByKey(IN ULONG ConvKey)
+CmpAcquireKcbLockExclusiveByKey(
+    _In_ ULONG ConvKey)
 {
     CmpAcquireKcbLockExclusiveByIndex(GET_HASH_INDEX(ConvKey));
 }
 
-//
-// Shared acquires a KCB by key
-//
 FORCEINLINE
 VOID
-CmpAcquireKcbLockSharedByKey(
-    _In_ ULONG ConvKey)
+CmpAcquireKcbLockExclusive(
+    _In_ PCM_KEY_CONTROL_BLOCK Kcb)
 {
-    CmpAcquireKcbLockSharedByIndex(GET_HASH_INDEX(ConvKey));
+    CmpAcquireKcbLockExclusiveByKey(Kcb->ConvKey);
 }
 
-//
-// Shared acquires a KCB
-//
-#define CmpAcquireKcbLockShared(k)                                  \
-{                                                                   \
-    ExAcquirePushLockShared(&GET_HASH_ENTRY(CmpCacheTable,          \
-                                            (k)->ConvKey)->Lock);    \
-}
-
-//
-// Tries to convert a KCB lock
-//
 FORCEINLINE
 BOOLEAN
-CmpTryToConvertKcbSharedToExclusive(IN PCM_KEY_CONTROL_BLOCK k)
+CmpTryToAcquireKcbLockExclusiveByKey(
+    _In_ ULONG ConvKey)
 {
-    ASSERT(CmpIsKcbLockedExclusive(k) == FALSE);
-    if (ExConvertPushLockSharedToExclusive(
-            &GET_HASH_ENTRY(CmpCacheTable, k->ConvKey)->Lock))
-    {
-        GET_HASH_ENTRY(CmpCacheTable,
-                       k->ConvKey)->Owner = KeGetCurrentThread();
-        return TRUE;
-    }
-    return FALSE;
+    PCM_KEY_HASH_TABLE_ENTRY Entry = GET_HASH_ENTRY(CmpCacheTable, ConvKey);
+
+    /* For a caller that already holds a lock ordered after the KCB locks */
+    ASSERT(Entry->Owner != KeGetCurrentThread());
+
+    if (!ExTryToAcquirePushLockExclusive(&Entry->Lock))
+        return FALSE;
+
+    Entry->Owner = KeGetCurrentThread();
+    return TRUE;
 }
 
-//
-// Releases an exlusively or shared acquired KCB by index
-//
 FORCEINLINE
 VOID
-CmpReleaseKcbLockByIndex(ULONG Index)
+CmpReleaseKcbLockByIndex(
+    _In_ ULONG Index)
 {
     CmpCacheTable[Index].Owner = NULL;
     ExReleasePushLock(&CmpCacheTable[Index].Lock);
 }
 
-//
-// Releases an exlusively or shared acquired KCB
-//
 FORCEINLINE
 VOID
-CmpReleaseKcbLock(PCM_KEY_CONTROL_BLOCK Kcb)
-{
-    CmpReleaseKcbLockByIndex(GET_HASH_INDEX(Kcb->ConvKey));
-}
-
-//
-// Releases an exlusively or shared acquired KCB by key
-//
-FORCEINLINE
-VOID
-CmpReleaseKcbLockByKey(ULONG ConvKey)
+CmpReleaseKcbLockByKey(
+    _In_ ULONG ConvKey)
 {
     CmpReleaseKcbLockByIndex(GET_HASH_INDEX(ConvKey));
 }
 
-//
-// Converts a KCB lock
-//
 FORCEINLINE
 VOID
-CmpConvertKcbSharedToExclusive(IN PCM_KEY_CONTROL_BLOCK k)
+CmpReleaseKcbLock(
+    _In_ PCM_KEY_CONTROL_BLOCK Kcb)
 {
-    ASSERT(CmpIsKcbLockedExclusive(k) == FALSE);
-    CmpReleaseKcbLock(k);
-    CmpAcquireKcbLockExclusive(k);
+    CmpReleaseKcbLockByKey(Kcb->ConvKey);
 }
 
-//
-// Exclusively acquires an NCB
-//
-#define CmpAcquireNcbLockExclusive(n)                               \
-{                                                                   \
-    ExAcquirePushLockExclusive(&GET_HASH_ENTRY(CmpNameCacheTable,   \
-                                              (n)->ConvKey)->Lock);  \
+FORCEINLINE
+VOID
+CmpAcquireNcbLockExclusiveByKey(
+    _In_ ULONG ConvKey)
+{
+    ExAcquirePushLockExclusive(&GET_HASH_ENTRY(CmpNameCacheTable, ConvKey)->Lock);
 }
 
-//
-// Exclusively acquires an NCB by key
-//
-#define CmpAcquireNcbLockExclusiveByKey(k)                          \
-{                                                                   \
-    ExAcquirePushLockExclusive(&GET_HASH_ENTRY(CmpNameCacheTable,   \
-                                               (k))->Lock);          \
+FORCEINLINE
+VOID
+CmpReleaseNcbLockByKey(
+    _In_ ULONG ConvKey)
+{
+    ExReleasePushLock(&GET_HASH_ENTRY(CmpNameCacheTable, ConvKey)->Lock);
 }
-
-//
-// Releases an exlusively or shared acquired NCB
-//
-#define CmpReleaseNcbLock(k)                                        \
-{                                                                   \
-    ExReleasePushLock(&GET_HASH_ENTRY(CmpNameCacheTable,            \
-                                     (k)->ConvKey)->Lock);           \
-}
-
-//
-// Releases an exlusively or shared acquired NCB by key
-//
-#define CmpReleaseNcbLockByKey(k)                                   \
-{                                                                   \
-    ExReleasePushLock(&GET_HASH_ENTRY(CmpNameCacheTable,            \
-                                      (k))->Lock);                   \
-}
-
-//
-// Asserts that either the registry or the KCB is locked
-//
-#define CMP_ASSERT_HASH_ENTRY_LOCK(k)                               \
-{                                                                   \
-    ASSERT(((GET_HASH_ENTRY(CmpCacheTable, k)->Owner ==              \
-            KeGetCurrentThread())) ||                               \
-           (CmpTestRegistryLockExclusive() == TRUE));               \
-}
-
-//
-// Asserts that either the registry or the KCB is locked
-//
-#define CMP_ASSERT_KCB_LOCK(k)                                      \
-{                                                                   \
-    ASSERT((CmpIsKcbLockedExclusive(k) == TRUE) ||                  \
-           (CmpTestRegistryLockExclusive() == TRUE));               \
-}
-
-//
-// Gets the page attached to the KCB
-//
-#define CmpGetAllocPageFromKcb(k)                                   \
-    (PCM_ALLOC_PAGE)(((ULONG_PTR)(k)) & ~(PAGE_SIZE - 1))
-
-//
-// Gets the page attached to the delayed allocation
-//
-#define CmpGetAllocPageFromDelayAlloc(a)                            \
-    (PCM_ALLOC_PAGE)(((ULONG_PTR)(a)) & ~(PAGE_SIZE - 1))

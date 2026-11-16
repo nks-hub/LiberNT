@@ -3271,6 +3271,8 @@ DxgkGpuVaCreateProcess(
         DXGK_CB_FULL(Adapter, DxgkDdiCreateProcess) != NULL)
     {
         DXGKARG_CREATEPROCESS CreateArgs;
+        BOOLEAN SystemProcess;
+        BOOLEAN GdiProcess;
 
         if (DXGK_CB_FULL(Adapter, DxgkDdiDestroyProcess) == NULL)
             return STATUS_NOT_SUPPORTED;
@@ -3278,8 +3280,13 @@ DxgkGpuVaCreateProcess(
         RtlZeroMemory(&CreateArgs, sizeof(CreateArgs));
         CreateArgs.hDxgkProcess = (HANDLE)Process;
         CreateArgs.Flags.Value  = 0;
-        CreateArgs.Flags.SystemProcess =
-            PsIsSystemProcess(Process->Process) ? 1 : 0;
+        /* CDD renders from the System process here; Windows runs it in the GDI process */
+        DxgkGpuVaCoreProcessKind(Process->PagingProcess,
+                                 PsIsSystemProcess(Process->Process),
+                                 &SystemProcess,
+                                 &GdiProcess);
+        CreateArgs.Flags.SystemProcess = SystemProcess ? 1 : 0;
+        CreateArgs.Flags.GdiProcess = GdiProcess ? 1 : 0;
         CreateArgs.NumPasid     = 0;
         CreateArgs.pPasid       = NULL;
 
@@ -4232,6 +4239,52 @@ DxgkGpuVaInitializePageTablePool(
     return STATUS_SUCCESS;
 }
 
+/* An adapter reset loses the paging process's page tables and its root binding: rewrite them from the shadow with the CPU, as at initialization, and hand the root back. */
+NTSTATUS
+DxgkGpuVaRestorePagingProcess(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    PDXGKRNL_PROCESS Process;
+    PLIST_ENTRY Entry;
+    ULONG RootShift;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(Adapter != NULL);
+    ASSERT(Adapter->KmdExclusiveOwnerThread == PsGetCurrentThread());
+    if (InterlockedCompareExchange(&Adapter->PagingVirtualReady, 0, 0) == 0 ||
+        Adapter->PagingSystemDevice == NULL || Adapter->PagingSystemContext == NULL)
+    {
+        return STATUS_SUCCESS;
+    }
+    Process = Adapter->PagingSystemDevice->ProcessRecord;
+    if (Process == NULL)
+        return STATUS_SUCCESS;
+    RootShift = GpuVaLevelShift(Adapter, GpuVaLevelCount(Adapter) - 1);
+    ASSERT(RootShift < 64);
+
+    ExAcquireFastMutex(&Process->GpuVaLock);
+    ASSERT(Process->RootPageTableEntries != 0);
+    for (Entry = Process->GpuVaPageTableList.Flink;
+         Entry != &Process->GpuVaPageTableList;
+         Entry = Entry->Flink)
+    {
+        CONTAINING_RECORD(Entry, DXGKRNL_GPUVA_PAGE_TABLE, PageTableListEntry)->InitialUpdatePending = TRUE;
+    }
+    Process->PageTableUpdatePending = TRUE;
+    Process->PageTableUpdateStart = 0;
+    Process->PageTableUpdateEnd = (ULONGLONG)Process->RootPageTableEntries << RootShift;
+    ExReleaseFastMutex(&Process->GpuVaLock);
+
+    ASSERT(!Adapter->PagingProcessInitializing);
+    Adapter->PagingProcessInitializing = TRUE;
+    Status = DxgkGpuVaFlushPageTableUpdatesForDevice(Process, Adapter->PagingSystemDevice);
+    Adapter->PagingProcessInitializing = FALSE;
+    if (NT_SUCCESS(Status))
+        Status = DxgkGpuVaSetRootPageTable(Adapter, Process, Adapter->PagingSystemContext);
+    return Status;
+}
+
 VOID
 DxgkGpuVaReleasePageTablePool(
     _In_ PDXGKRNL_ADAPTER Adapter)
@@ -5004,8 +5057,6 @@ DxgkGpuVaUnmapFencePage(
     return DxgkGpuVaFlushPageTableUpdates(Process);
 }
 
-#define GPUVA_ORPHAN_GRACE (10ULL * 1000 * 1000)
-
 static VOID
 GpuVaReleaseMapReservations(
     _Inout_ PDXGKRNL_PROCESS Process,
@@ -5029,8 +5080,9 @@ GpuVaReleaseMapReservations(
 
             if (Range->ReservationBase != Base || Range->ReservationSize != Size || Range->MapAllocated != First->MapAllocated)
                 break;
-            if (Range->GpuVirtualAddress != Cursor || Range->State == GpuVaStateMapped || Range->Protection.SystemUseOnly
-                || Range->OrphanOwner == NULL || (Range->OrphanOwner != Owner && Now - Range->OrphanTime < GPUVA_ORPHAN_GRACE))
+            if (Range->GpuVirtualAddress != Cursor ||
+                !DxgkGpuVaCoreOrphanReleasable(Range->MapAllocated, Range->State == GpuVaStateMapped, (BOOLEAN)Range->Protection.SystemUseOnly,
+                                               Range->OrphanOwner, Owner, Now - Range->OrphanTime))
                 Releasable = FALSE;
             Cursor = Range->GpuVirtualAddress + Range->SizeInBytes;
             End = End->Flink;
@@ -5061,6 +5113,7 @@ DxgkGpuVaInvalidateAllocation(
     _In_ PDXGKVMM_ALLOCATION LogicalAllocation)
 {
     BOOLEAN ReleaseMapRanges = FALSE;
+    PVOID OrphanOwner;
     PLIST_ENTRY Entry;
 
     PAGED_CODE();
@@ -5068,6 +5121,8 @@ DxgkGpuVaInvalidateAllocation(
     if (Adapter == NULL || Process == NULL || Process->Adapter != Adapter || LogicalAllocation == NULL)
         return;
 
+    OrphanOwner = DxgkGpuVaCoreOrphanOwner(LogicalAllocation, LogicalAllocation->ContextAllocation,
+                                           LogicalAllocation->Device, Process);
     ExAcquireFastMutex(&Process->GpuVaLock);
     for (Entry = Process->GpuVaRangeList.Flink; Entry != &Process->GpuVaRangeList; Entry = Entry->Flink)
     {
@@ -5080,7 +5135,7 @@ DxgkGpuVaInvalidateAllocation(
         ReleaseMapRanges |= Range->MapAllocated;
         if (Range->MapAllocated)
         {
-            Range->OrphanOwner = LogicalAllocation->Device != NULL ? (PVOID)LogicalAllocation->Device : (PVOID)Process;
+            Range->OrphanOwner = OrphanOwner;
             Range->OrphanTime = KeQueryInterruptTime();
         }
         Range->State = GpuVaStateReserved;
@@ -5093,7 +5148,7 @@ DxgkGpuVaInvalidateAllocation(
         Range->DriverProtection = 0;
     }
     if (ReleaseMapRanges)
-        GpuVaReleaseMapReservations(Process, NULL);
+        GpuVaReleaseMapReservations(Process, OrphanOwner == (PVOID)LogicalAllocation ? OrphanOwner : NULL);
     KeMemoryBarrier();
     ExReleaseFastMutex(&Process->GpuVaLock);
 }
@@ -5727,7 +5782,7 @@ DxgkGpuVaSetRootPageTable(
         SetArgs.Address = Process->RootPageTableAddress;
         SetArgs.NumEntries = Process->RootPageTableEntries;
         ExReleaseFastMutex(&Process->GpuVaLock);
-        if (!DxgkAcquireKmdCall(Adapter))
+        if (!DxgkAcquireKmdCallForDispatch(Adapter))
             return STATUS_DELETE_PENDING;
         if (InterlockedCompareExchange(&Context->Device->ExecutionState, 0, 0) != D3DKMT_DEVICEEXECUTION_ACTIVE)
         {

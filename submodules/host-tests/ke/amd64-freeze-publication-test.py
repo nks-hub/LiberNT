@@ -28,8 +28,8 @@ def body(source, name):
     return source[start + 1:end - 1]
 
 
-start = init_source.index('    /* Active means it can answer an IPI:')
-end = init_source.index('    /* Set the right wait IRQL */', start)
+start = init_source.index('    /* Active means it can answer an IPI')
+end = init_source.index('    Thread->WaitIrql = DISPATCH_LEVEL;', start)
 fixture = r'''
 #include <assert.h>
 #include <pthread.h>
@@ -106,6 +106,8 @@ static void KiNoteFreezeEpoch(void) { @NOTE@ }
 static BOOLEAN KiHasFreezeFailure(void) { return FALSE; }
 static void __attribute__((noreturn)) HalHaltSystem(void) { __builtin_trap(); }
 static BOOLEAN KiFreezeFailureRequiresReturn(PKPRCB Prcb) { (void)Prcb; return FALSE; }
+static BOOLEAN KiIsBugCheckEntryOwner(PKPRCB Prcb) { (void)Prcb; return FALSE; }
+static void __attribute__((noreturn)) KiSetFreezeFailure(void) { __builtin_trap(); }
 static BOOLEAN KiFreezeWaitExpired(KI_FREEZE_WAIT *Wait) { (void)Wait; return FALSE; }
 static BOOLEAN KiFreezeWaitFailed(PKPRCB Prcb, KI_FREEZE_WAIT *Wait) { (void)Prcb; (void)Wait; return FALSE; }
 static void KiFreezeIfRequested(void) {

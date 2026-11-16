@@ -1,6 +1,4 @@
 
-add_subdirectory(nt_0600)
-
 spec2def(ntdll.dll def/ntdll.spec ADD_IMPORTLIB)
 spec2def(ntdll_chpe.dll chpebridge.spec ADD_IMPORTLIB)
 
@@ -42,15 +40,20 @@ list(APPEND SOURCE
     ldr/ldrcfg.c
     ldr/ldremul.c
     ldr/ldrguard.c
+    ldr/ldrimgidx.c
     ldr/ldrinit.c
+    ldr/ldrnotify.c
     ldr/ldrmui.c
     ldr/ldrpe.c
     ldr/ldrutils.c
     ldr/verifier.c
+    rtl/barrier.c
     rtl/exit.c
     rtl/mui.c
     rtl/nls.c
+    rtl/secmem.c
     rtl/telemetry.c
+    rtl/transaction.c
     rtl/userpfn.c
     rtl/wnf.c
     rtl/time.c
@@ -142,13 +145,11 @@ endif()
 set_subsystem(ntdll console)
 ################# END  HACK #################
 
-target_link_libraries(ntdll ntdllsys ntdllsys_nt6 ntdll_vista_static etwtrace csrlib rtl rtl_um rtl_vista libcntpr setjmp uuid symcrypt ${PSEH_LIB})
+target_link_libraries(ntdll ntdllsys smlib etwtrace csrlib rtl rtl_um libcntpr setjmp uuid symcrypt ${PSEH_LIB})
 if(MSVC AND ARCH STREQUAL "arm64")
     target_link_libraries(ntdll chkstk)
 endif()
-if(DLL_EXPORT_VERSION GREATER_EQUAL 0x600)
-    target_link_libraries(ntdll cryptlib)
-endif()
+target_link_libraries(ntdll cryptlib)
 
 if (STACK_PROTECTOR)
     target_link_libraries(ntdll gcc_ssp_nt)

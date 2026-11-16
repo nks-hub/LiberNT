@@ -8,7 +8,6 @@
 #include "msctfime.h"
 
 #define COMPWND_CLASS L"MSCTFIME CompositionString"
-#define COMPWND_MARGIN 2
 
 static ATOM s_CompWndAtom = 0;
 
@@ -54,7 +53,7 @@ BOOL CCompositionWindow::EnsureWindow()
     }
 
     m_hWnd = ::CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE, COMPWND_CLASS, NULL,
-                               WS_POPUP | WS_DISABLED | WS_BORDER, 0, 0, 0, 0, m_hwndUI, NULL, g_hInst, this);
+                               WS_POPUP | WS_DISABLED, 0, 0, 0, 0, m_hwndUI, NULL, g_hInst, this);
     return m_hWnd != NULL;
 }
 
@@ -176,10 +175,7 @@ void CCompositionWindow::Update(HIMC hIMC)
     ::SelectObject(hDC, hOldFont);
     ::ReleaseDC(m_hWnd, hDC);
 
-    RECT rc = { 0, 0, size.cx + COMPWND_MARGIN * 2 + 1, size.cy + COMPWND_MARGIN * 2 };
-    ::AdjustWindowRectEx(&rc, WS_POPUP | WS_BORDER, FALSE, WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE);
-    ::SetWindowPos(m_hWnd, HWND_TOPMOST, pt.x, pt.y, rc.right - rc.left, rc.bottom - rc.top,
-                   SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    ::SetWindowPos(m_hWnd, HWND_TOPMOST, pt.x, pt.y, size.cx + 1, size.cy + 2, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     ::InvalidateRect(m_hWnd, NULL, TRUE);
 }
 
@@ -197,11 +193,11 @@ void CCompositionWindow::Paint(HDC hDC)
 
     TEXTMETRICW tm;
     ::GetTextMetricsW(hDC, &tm);
-    INT y = COMPWND_MARGIN;
+    INT y = 0;
     INT baseline = y + tm.tmHeight;
 
     DWORD start = 0;
-    INT x = COMPWND_MARGIN;
+    INT x = 0;
     while (start < m_cchText)
     {
         DWORD end = start + 1;
@@ -210,23 +206,18 @@ void CCompositionWindow::Paint(HDC hDC)
 
         SIZE size;
         ::GetTextExtentPoint32W(hDC, m_pszText + start, end - start, &size);
-        RECT rcSeg = { x, y, x + size.cx, baseline };
         BYTE bAttr = m_pAttr[start];
-        if (bAttr == ATTR_TARGET_CONVERTED || bAttr == ATTR_TARGET_NOTCONVERTED)
-        {
-            ::FillRect(hDC, &rcSeg, ::GetSysColorBrush(COLOR_HIGHLIGHT));
-            ::SetTextColor(hDC, ::GetSysColor(COLOR_HIGHLIGHTTEXT));
-        }
-        else
-        {
-            ::SetTextColor(hDC, ::GetSysColor(COLOR_WINDOWTEXT));
-        }
+        BOOL bTarget = (bAttr == ATTR_TARGET_CONVERTED || bAttr == ATTR_TARGET_NOTCONVERTED);
         ::ExtTextOutW(hDC, x, y, 0, NULL, m_pszText + start, end - start, NULL);
 
-        HPEN hPen = ::CreatePen((bAttr == ATTR_INPUT) ? PS_DOT : PS_SOLID, 1, ::GetSysColor(COLOR_WINDOWTEXT));
+        /* FIXME: The line style and colors of the text service's display attributes are not used */
+        HPEN hPen = ::CreatePen(bTarget ? PS_SOLID : PS_DOT, 1, ::GetSysColor(COLOR_WINDOWTEXT));
         HGDIOBJ hOldPen = ::SelectObject(hDC, hPen);
-        ::MoveToEx(hDC, x + 1, baseline, NULL);
-        ::LineTo(hDC, x + size.cx - 1, baseline);
+        for (INT yLine = bTarget ? baseline - 1 : baseline; yLine <= baseline; ++yLine)
+        {
+            ::MoveToEx(hDC, x + 1, yLine, NULL);
+            ::LineTo(hDC, x + size.cx - 1, yLine);
+        }
         ::SelectObject(hDC, hOldPen);
         ::DeleteObject(hPen);
 
@@ -237,7 +228,7 @@ void CCompositionWindow::Paint(HDC hDC)
     SIZE caret = { 0, 0 };
     if (m_dwCursor)
         ::GetTextExtentPoint32W(hDC, m_pszText, m_dwCursor, &caret);
-    RECT rcCaret = { COMPWND_MARGIN + caret.cx, y, COMPWND_MARGIN + caret.cx + 1, baseline };
+    RECT rcCaret = { caret.cx, y, caret.cx + 1, baseline };
     ::FillRect(hDC, &rcCaret, ::GetSysColorBrush(COLOR_WINDOWTEXT));
 
     ::SelectObject(hDC, hOldFont);

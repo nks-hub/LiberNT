@@ -4131,7 +4131,7 @@ DwmCreateSurfaces(HDC hdcScreen, LONG W, LONG H)
      * canvas and wallpaper use that output's dimensions; they must stop
      * reading before either CPU bitmap is replaced by a different size. */
     restoreGpu = DwmGpuComposeIsActive();
-    if (restoreGpu)
+    if (restoreGpu && !DwmGpuComposeResize(W, H))
         DwmGpuComposeShutdown();
 
     if (g_hdcComp != NULL)
@@ -4475,8 +4475,9 @@ DwmComposeLoop(HANDLE hStopEvent)
         {
             HANDLE WaitHandles[2] = {hStopEvent, hWake};
 
-            if (MsgWaitForMultipleObjects(ARRAYSIZE(WaitHandles), WaitHandles,
-                                          FALSE, 200, QS_ALLINPUT) == WAIT_OBJECT_0)
+            if (MsgWaitForMultipleObjects(ARRAYSIZE(WaitHandles), WaitHandles, FALSE,
+                                          hdr->IdleRetryMs != 0 ? hdr->IdleRetryMs : INFINITE,
+                                          QS_ALLINPUT) == WAIT_OBJECT_0)
                 break;
             continue;
         }

@@ -3,6 +3,7 @@
  * LICENSE:         GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later)
  * PURPOSE:         Tests for the NtSetInformationToken API
  * COPYRIGHT:       Copyright 2022 George Bișoc <george.bisoc@reactos.org>
+ *                  Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #include "precomp.h"
@@ -262,6 +263,8 @@ SetTokenSessionIdTests(
     ok_ntstatus(Status, STATUS_SUCCESS);
     if (NT_SUCCESS(Status))
         ok(QueriedSessionId == OriginalSessionId, "Assigned token session changed to %lu\n", QueriedSessionId);
+    Status = NtSetInformationToken(Token, TokenSessionId, &OriginalSessionId, sizeof(OriginalSessionId));
+    ok_ntstatus(Status, STATUS_TOKEN_ALREADY_IN_USE);
     Status = NtSetInformationToken(Target, TokenSessionId, &SessionId, sizeof(SessionId));
     ok_ntstatus(Status, STATUS_SUCCESS);
     Status = NtQueryInformationToken(Target, TokenSessionId, &QueriedSessionId,
@@ -279,6 +282,90 @@ Done:
     if (Target) CloseHandle(Target);
     if (Caller) CloseHandle(Caller);
     if (Previous) CloseHandle(Previous);
+}
+
+static
+VOID
+SetTokenBadPointerTests(
+    _In_ HANDLE Token)
+{
+    TOKEN_MANDATORY_LABEL Label;
+    TOKEN_OWNER Owner;
+    NTSTATUS Status;
+
+    Owner.Owner = (PSID)(ULONG_PTR)0x10;
+    Status = NtSetInformationToken(Token, TokenOwner, &Owner, sizeof(Owner));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+
+    Label.Label.Sid = (PSID)(ULONG_PTR)0x10;
+    Label.Label.Attributes = SE_GROUP_INTEGRITY;
+    Status = NtSetInformationToken(Token, TokenIntegrityLevel, &Label, sizeof(Label));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+}
+
+static
+VOID
+SetTokenNullSidTests(
+    _In_ HANDLE Token)
+{
+    TOKEN_PRIMARY_GROUP Group;
+    TOKEN_MANDATORY_LABEL Label;
+    TOKEN_OWNER Owner;
+    NTSTATUS Status;
+
+    Owner.Owner = NULL;
+    Status = NtSetInformationToken(Token, TokenOwner, &Owner, sizeof(Owner));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+
+    Group.PrimaryGroup = NULL;
+    Status = NtSetInformationToken(Token, TokenPrimaryGroup, &Group, sizeof(Group));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+
+    Label.Label.Sid = NULL;
+    Label.Label.Attributes = SE_GROUP_INTEGRITY;
+    Status = NtSetInformationToken(Token, TokenIntegrityLevel, &Label, sizeof(Label));
+    ok_ntstatus(Status, STATUS_ACCESS_VIOLATION);
+}
+
+static
+VOID
+SetTokenEmptyLabelTests(
+    _In_ HANDLE Token)
+{
+    static SID_IDENTIFIER_AUTHORITY MandatoryAuthority = {SECURITY_MANDATORY_LABEL_AUTHORITY};
+    UCHAR Buffer[sizeof(TOKEN_MANDATORY_LABEL) + SECURITY_MAX_SID_SIZE];
+    PTOKEN_MANDATORY_LABEL Queried = (PTOKEN_MANDATORY_LABEL)Buffer;
+    ULONG EmptySid[FIELD_OFFSET(SID, SubAuthority) / sizeof(ULONG)];
+    TOKEN_MANDATORY_LABEL Label;
+    HANDLE Copy;
+    ULONG Length;
+    NTSTATUS Status;
+
+    if (!DuplicateTokenEx(Token, TOKEN_QUERY | TOKEN_ADJUST_DEFAULT, NULL, SecurityImpersonation, TokenPrimary, &Copy))
+    {
+        ok(0, "DuplicateTokenEx failed with %lu\n", GetLastError());
+        return;
+    }
+
+    RtlInitializeSid((PSID)EmptySid, &MandatoryAuthority, 0);
+    Label.Label.Sid = (PSID)EmptySid;
+    Label.Label.Attributes = SE_GROUP_INTEGRITY;
+    Status = NtSetInformationToken(Copy, TokenIntegrityLevel, &Label, sizeof(Label));
+    ok_ntstatus(Status, STATUS_SUCCESS);
+
+    Status = NtQueryInformationToken(Copy, TokenIntegrityLevel, Buffer, sizeof(Buffer), &Length);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        ok(RtlEqualMemory(RtlIdentifierAuthoritySid(Queried->Label.Sid), &MandatoryAuthority, sizeof(MandatoryAuthority)),
+           "the label left the mandatory label authority\n");
+        ok(*RtlSubAuthorityCountSid(Queried->Label.Sid) == 1, "label has %u sub-authorities\n",
+           *RtlSubAuthorityCountSid(Queried->Label.Sid));
+        if (*RtlSubAuthorityCountSid(Queried->Label.Sid) == 1)
+            ok_eq_ulong(*RtlSubAuthoritySid(Queried->Label.Sid, 0), (ULONG)SECURITY_MANDATORY_UNTRUSTED_RID);
+    }
+
+    CloseHandle(Copy);
 }
 
 START_TEST(NtSetInformationToken)
@@ -313,6 +400,9 @@ START_TEST(NtSetInformationToken)
     /* Now perform tests for each class */
     SetTokenDefaultDaclTests(Token);
     SetTokenSessionIdTests(Token);
+    SetTokenBadPointerTests(Token);
+    SetTokenNullSidTests(Token);
+    SetTokenEmptyLabelTests(Token);
 
     CloseHandle(Token);
 }

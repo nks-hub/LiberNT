@@ -2173,7 +2173,19 @@ LxMmPopulate(
         if (Information.State == MEM_COMMIT)
         {
             if (!LxNtAllows(Information.Protect, Access))
-                return -LX_EFAULT;
+            {
+                /* FIXME: only the first write through a mapping moves the file's times; Linux moves them for each page */
+                if ((Access != LX_PROT_WRITE) || !(Vma->Flags & LX_MAP_SHARED) || !(Vma->Prot & LX_PROT_WRITE) ||
+                    (LxTmpfsFileInode(Vma->File) == NULL) ||
+                    !NT_SUCCESS(LxVmProtect(max(RegionStart, Vma->Start), RegionEnd - max(RegionStart, Vma->Start),
+                                            LxProtToNt(Vma->Prot))))
+                {
+                    return -LX_EFAULT;
+                }
+                LxTmpfsFileModified(Vma->File);
+                Populated++;
+                continue;
+            }
             Cursor = min(RegionEnd, End);
             continue;
         }
@@ -2587,6 +2599,9 @@ LxMmMapView(
     *GrowBase = 0;
     if ((Prot & LX_PROT_WRITE) && !Writable)
         return -LX_EACCES;
+    /* A file whose times lxcore keeps is mapped without write access at first; the first write faults and moves them */
+    if ((Prot & LX_PROT_WRITE) && (LxTmpfsFileInode(File) != NULL))
+        Protect = LxProtToNt((Prot & ~LX_PROT_WRITE) | LX_PROT_READ);
 
     if (File != NULL)
     {
@@ -3055,6 +3070,28 @@ LxMmMapHugeSection(
     return (Error != 0) ? Error : (LONG64)Base;
 }
 
+/* Called with the address space locked */
+static
+BOOLEAN
+LxMmWithinAddressLimit(
+    _In_ PLX_PROCESS Caller,
+    _In_ PLX_PROCESS Process,
+    _In_ ULONG64 Extra)
+{
+    ULONG64 Limit = Caller->Limits[LX_RLIMIT_AS].Cur, Total = 0;
+    PLIST_ENTRY Entry;
+
+    if (Limit == LX_RLIM_INFINITY)
+        return TRUE;
+    for (Entry = Process->Vmas.Flink; Entry != &Process->Vmas; Entry = Entry->Flink)
+    {
+        PLX_VMA Vma = CONTAINING_RECORD(Entry, LX_VMA, Link);
+
+        Total += Vma->End - Vma->Start;
+    }
+    return (Extra <= Limit) && (Total <= Limit - Extra);
+}
+
 LONG64
 LxMmMap(
     _In_ PLX_PROCESS Process,
@@ -3092,7 +3129,8 @@ LxMmMap(
         return -LX_EINVAL;
 
     LxMmLock(Process);
-    if (Process->VmaCount > LxMaxMapCount)
+    /* FIXME: a fixed mapping that replaces existing ones is charged in full against RLIMIT_AS */
+    if ((Process->VmaCount > LxMaxMapCount) || !LxMmWithinAddressLimit(Caller, Process, Length))
     {
         LxMmUnlock(Process);
         return -LX_ENOMEM;
@@ -3651,6 +3689,8 @@ LX_SYSCALL(LxSysMmap)
             Prot |= LX_PROT_EXEC;
         }
         Result = LxMmMap(Call->Process, Call->Args[0], Call->Args[1], Prot, Flags, Zero ? NULL : File, Call->Args[5]);
+        if ((File != NULL) && (Result >= 0))
+            LxTmpfsFileAccessed(File);
     }
     if (File != NULL)
         LxFileDereference(File);
@@ -4372,6 +4412,23 @@ LX_SYSCALL(LxSysMunlock)
     return LxMmLockRange(Call->Process, Call->Args[0], Call->Args[1], 0);
 }
 
+static
+ULONG64
+LxMmCommittedBelow(
+    _In_ ULONG64 Start,
+    _In_ ULONG64 End)
+{
+    MEMORY_BASIC_INFORMATION Information;
+    ULONG64 Cursor = End;
+
+    while ((Cursor > Start) && NT_SUCCESS(LxVmQuery(Cursor - LX_PAGE_SIZE, &Information)) &&
+           (Information.State == MEM_COMMIT) && ((ULONG64)(ULONG_PTR)Information.BaseAddress < Cursor))
+    {
+        Cursor = max(Start, (ULONG64)(ULONG_PTR)Information.BaseAddress);
+    }
+    return End - Cursor;
+}
+
 LX_SYSCALL(LxSysMlockall)
 {
     PLX_PROCESS Process = Call->Process->Mm;
@@ -4392,7 +4449,11 @@ LX_SYSCALL(LxSysMlockall)
         {
             PLX_VMA Vma = CONTAINING_RECORD(Entry, LX_VMA, Link);
 
-            Total += Vma->End - Vma->Start;
+            /* The main stack is mapped whole here; Linux counts what it has grown to, which starts at 128 KiB */
+            if (Vma->Flags & LX_VMA_STACK)
+                Total += min(Vma->End - Vma->Start, LxMmCommittedBelow(Vma->Start, Vma->End) + 0x20000);
+            else
+                Total += Vma->End - Vma->Start;
         }
         if (!LxMmLockAllowed(Call->Process, Process, Total - LxMmLockedIn(Process, 0, MAXULONG64)))
         {
@@ -5081,6 +5142,8 @@ LX_SYSCALL(LxSysBrk)
     if (NewCommitted > Process->BrkCommitted)
     {
         if (LxVmaOverlaps(Process, Process->BrkCommitted, NewCommitted) ||
+            (NewCommitted - Process->BrkBase > Call->Process->Limits[LX_RLIMIT_DATA].Cur) ||
+            !LxMmWithinAddressLimit(Call->Process, Process, NewCommitted - Process->BrkCommitted) ||
             ((Process->MmLockDefault != 0) &&
              !LxMmLockAllowed(Call->Process, Process, NewCommitted - Process->BrkCommitted)) ||
             (LxVmaInsert(Process, Process->BrkCommitted, NewCommitted, LX_PROT_READ | LX_PROT_WRITE,

@@ -1,13 +1,13 @@
 /*
- * PROJECT:     ReactOS Kernel
- * LICENSE:     GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later)
- * PURPOSE:     Boot Theme & Animation header
- * COPYRIGHT:   Copyright 2020 Dmitry Borisov (di.sean@protonmail.com)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Boot logo and progress bar layout
+ * COPYRIGHT:   Copyright 2020 Dmitry Borisov <di.sean@protonmail.com>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #pragma once
 
-/* Shared bitmap structures used by bootanim.c and inbvgop.c */
 typedef struct tagRGBQUAD
 {
     UCHAR rgbBlue;
@@ -31,21 +31,13 @@ typedef struct tagBITMAPINFOHEADER
     ULONG  biClrImportant;
 } BITMAPINFOHEADER, *PBITMAPINFOHEADER;
 
-//
-// Positions of areas and images
-//
-
-/* 16px space between shutdown logo and message */
 #define VID_SHUTDOWN_LOGO_LEFT    225
+
 #define VID_SHUTDOWN_LOGO_TOP     114
+
 #define VID_SHUTDOWN_MSG_LEFT     213
+
 #define VID_SHUTDOWN_MSG_TOP      354
-
-
-
-//
-// Boot Splash-Screen Functions
-//
 
 CODE_SEG("INIT")
 VOID

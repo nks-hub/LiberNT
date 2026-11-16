@@ -57,6 +57,39 @@ BOOLEAN DxgkGpuVaCoreRangeEnd(_In_ ULONGLONG Address, _In_ ULONGLONG Size, _Out_
 BOOLEAN DxgkGpuVaCoreRangesOverlap(_In_ ULONGLONG StartA, _In_ ULONGLONG SizeA, _In_ ULONGLONG StartB, _In_ ULONGLONG SizeB);
 BOOLEAN DxgkGpuVaCoreRangeContains(_In_ ULONGLONG OuterStart, _In_ ULONGLONG OuterSize, _In_ ULONGLONG InnerStart, _In_ ULONGLONG InnerSize);
 BOOLEAN DxgkGpuVaCoreIsPageAligned(_In_ ULONGLONG Value);
+
+FORCEINLINE
+PVOID
+DxgkGpuVaCoreOrphanOwner(
+    _In_ PVOID Allocation,
+    _In_ BOOLEAN ContextAllocation,
+    _In_opt_ PVOID Device,
+    _In_ PVOID Process)
+{
+    ASSERT(Allocation != NULL);
+    ASSERT(Process != NULL);
+
+    if (ContextAllocation)
+        return Allocation;
+    return Device != NULL ? Device : Process;
+}
+
+#define DXGK_GPUVA_ORPHAN_GRACE (10ULL * 1000 * 1000)
+
+FORCEINLINE
+BOOLEAN
+DxgkGpuVaCoreOrphanReleasable(
+    _In_ BOOLEAN MapAllocated,
+    _In_ BOOLEAN Mapped,
+    _In_ BOOLEAN SystemUseOnly,
+    _In_opt_ PVOID OrphanOwner,
+    _In_opt_ PVOID SweepOwner,
+    _In_ ULONGLONG OrphanAge)
+{
+    if (!MapAllocated || Mapped || SystemUseOnly || OrphanOwner == NULL)
+        return FALSE;
+    return OrphanOwner == SweepOwner || OrphanAge >= DXGK_GPUVA_ORPHAN_GRACE;
+}
 BOOLEAN DxgkGpuVaCorePageCount(_In_ ULONGLONG Address, _In_ ULONGLONG Size, _Out_ PULONGLONG PageCount);
 
 BOOLEAN DxgkGpuVaCoreAllocationMapChunk(
@@ -129,6 +162,13 @@ DxgkGpuVaCoreTableNeedsCpuMapping(
 BOOLEAN
 DxgkGpuVaCoreUsesPagingProcessVa(
     _In_ ULONG AdapterUpdateMode);
+
+VOID
+DxgkGpuVaCoreProcessKind(
+    _In_ BOOLEAN PagingProcess,
+    _In_ BOOLEAN SystemEprocess,
+    _Out_ PBOOLEAN SystemProcess,
+    _Out_ PBOOLEAN GdiProcess);
 
 typedef enum _DXGK_GPUVA_TABLE_SNAPSHOT
 {

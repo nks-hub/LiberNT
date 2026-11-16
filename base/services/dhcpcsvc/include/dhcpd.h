@@ -220,6 +220,8 @@ struct client_state {
 	u_int16_t		  secs;
 	time_t			  first_sending;
 	time_t			  interval;
+	unsigned int		  discover_cycle;
+	unsigned int		  request_sends;
 	struct string_list	 *medium;
 	struct dhcp_packet	  packet;
 	int			  packet_length;
@@ -409,6 +411,7 @@ void dhcpack(struct packet *);
 void dhcpnak(struct packet *);
 
 void send_discover(void *);
+void discover_panic(void *);
 void send_request(void *);
 void send_decline(void *);
 void send_release(void *);

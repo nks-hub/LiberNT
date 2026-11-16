@@ -14,10 +14,14 @@ list(APPEND SOURCE
     alongside.c
     diskinfo.c
     diskpage.c
+    filesec.c
     frame.c
+    hostops.c
+    hostpage.c
     langpage.c
     libernt.c
     selftest.c
+    updbcd.c
     upgrade.c
     wizard.c
     libernt.h)
@@ -25,7 +29,8 @@ list(APPEND SOURCE
 file(GLOB libernt_rc_deps res/*.*)
 list(APPEND libernt_rc_deps
     ${REACTOS_SOURCE_DIR}/base/system/userinit/res/rosbitmap.bmp
-    ${REACTOS_SOURCE_DIR}/base/system/userinit/res/rosbitmap_mask.bmp)
+    ${REACTOS_SOURCE_DIR}/base/system/userinit/res/rosbitmap_mask.bmp
+    ${REACTOS_SOURCE_DIR}/boot/bootdata/filesecurity.txt)
 add_rc_deps(libernt.rc ${libernt_rc_deps})
 add_executable(libernt ${SOURCE} libernt.rc)
 
@@ -33,9 +38,10 @@ add_pch(libernt libernt.h SOURCE)
 set_module_type(libernt win32gui UNICODE)
 target_link_libraries(libernt uuid tzlib volresize)
 add_delay_importlibs(libernt setuplib)
-add_importlibs(libernt advapi32 gdi32 user32 comctl32 dwmapi shlwapi setupapi ole32 oleaut32 version msvcrt kernel32 ntdll)
+add_importlibs(libernt advapi32 gdi32 user32 comctl32 dwmapi shlwapi setupapi ole32 oleaut32 version bcrypt msvcrt kernel32 ntdll)
 add_cd_file(TARGET libernt DESTINATION reactos NO_CAB FOR bootcd livecd)
 add_cd_file(TARGET libernt DESTINATION ${ARCH} FOR preinstall)
+add_cd_file(TARGET libernt DESTINATION root NO_CAB NAME_ON_CD setup.exe FOR bootcd)
 
 list(APPEND OOBE_SOURCE
     account.c

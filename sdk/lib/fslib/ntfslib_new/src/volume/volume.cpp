@@ -233,14 +233,87 @@ Volume::~Volume()
     {
         delete[] SecurityCacheData[Index];
         SecurityCacheData[Index] = NULL;
+        delete[] RecordCacheData[Index];
+        RecordCacheData[Index] = NULL;
     }
     delete[] IndexWorkBuffer;
     IndexWorkBuffer = NULL;
+    for (ULONG Index = 0; Index < NTFS_LOOKUP_SLOTS; Index++)
+    {
+        ASSERT(!LookupSlots[Index].Busy);
+        delete[] LookupSlots[Index].Buffer;
+        LookupSlots[Index].Buffer = NULL;
+    }
 
     delete MFT;
     delete LFS;
     delete[] AttrDefCache;
     delete[] UpcaseTable;
+}
+
+PNtfsLookupSlot
+Volume::AcquireLookupSlot(_In_ ULONGLONG DirectoryReference,
+                          _In_ ULONG BufferSize)
+{
+    PNtfsLookupSlot Slot = NULL;
+
+    NtfsAcquireMutex(&LazyCacheMutex);
+    for (ULONG Index = 0; Index < NTFS_LOOKUP_SLOTS; Index++)
+    {
+        PNtfsLookupSlot Candidate = &LookupSlots[Index];
+
+        if (Candidate->Busy)
+            continue;
+        if (!Slot)
+            Slot = Candidate;
+        if (Candidate->Valid && Candidate->FileReference == DirectoryReference)
+        {
+            Slot = Candidate;
+            break;
+        }
+    }
+    if (Slot)
+        Slot->Busy = TRUE;
+    NtfsReleaseMutex(&LazyCacheMutex);
+
+    if (!Slot)
+    {
+        Slot = new(PagedPool, TAG_NTFS) NtfsLookupSlot();
+        if (!Slot)
+            return NULL;
+        RtlZeroMemory(Slot, sizeof(*Slot));
+        Slot->Private = TRUE;
+        Slot->Busy = TRUE;
+    }
+
+    if (!Slot->Buffer || Slot->BufferSize < BufferSize)
+    {
+        delete[] Slot->Buffer;
+        Slot->Buffer = new(PagedPool, TAG_NTFS) UCHAR[BufferSize];
+        Slot->BufferSize = Slot->Buffer ? BufferSize : 0;
+        Slot->Valid = FALSE;
+    }
+    if (!Slot->Buffer)
+    {
+        ReleaseLookupSlot(Slot);
+        return NULL;
+    }
+    return Slot;
+}
+
+void
+Volume::ReleaseLookupSlot(_In_ PNtfsLookupSlot Slot)
+{
+    ASSERT(Slot->Busy);
+    if (Slot->Private)
+    {
+        delete[] Slot->Buffer;
+        delete Slot;
+        return;
+    }
+    NtfsAcquireMutex(&LazyCacheMutex);
+    Slot->Busy = FALSE;
+    NtfsReleaseMutex(&LazyCacheMutex);
 }
 
 static
@@ -252,10 +325,25 @@ VolumeIsHibernated(_In_ PVolume DiskVolume)
     UCHAR Signature[4];
     ULONG Remaining = sizeof(Signature);
     BOOLEAN Hibernated = FALSE;
+    NTSTATUS Status;
 
-    if (!NT_SUCCESS(DiskVolume->MFT->GetFileRecordFromQuery(Name, &File)))
+    Status = DiskVolume->MFT->GetFileRecordFromQuery(Name, &File);
+    if (Status == STATUS_NOT_FOUND || Status == STATUS_OBJECT_NAME_NOT_FOUND ||
+        Status == STATUS_NO_MORE_FILES)
+    {
         return FALSE;
-    if (NT_SUCCESS(File->CopyData(TypeData, NULL, Signature, &Remaining)) && Remaining == 0)
+    }
+
+    /* A volume whose hibernation file cannot be checked is not proven safe to write */
+    if (!NT_SUCCESS(Status))
+        return TRUE;
+
+    Status = File->CopyData(TypeData, NULL, Signature, &Remaining);
+    if (!NT_SUCCESS(Status))
+    {
+        Hibernated = TRUE;
+    }
+    else if (Remaining == 0)
     {
         Hibernated = (Signature[0] == 'h' && Signature[1] == 'i' && Signature[2] == 'b' && Signature[3] == 'r') ||
                      (Signature[0] == 'H' && Signature[1] == 'I' && Signature[2] == 'B' && Signature[3] == 'R');
@@ -270,6 +358,7 @@ Volume::Initialize(_In_ PUCHAR BootSectorData,
 {
     NtfsInitializeMutex(&RecordPoolMutex);
     NtfsInitializeMutex(&SecurityCacheMutex);
+    NtfsInitializeMutex(&LazyCacheMutex);
 
     BootSector* PartitionBootSector;
     PVolumeInformationEx VolumeInfo;
@@ -403,6 +492,7 @@ Volume::ReloadSize()
             CachedBitmapFile = NULL;
             CachedBitmapData = NULL;
             ReservedClustersKnown = FALSE;
+            FreeClusterCountKnown = FALSE;
             SectorsInVolume = PartitionBootSector->SectorsInVolume;
             ClustersInVolume = SectorsInVolume / SectorsPerCluster;
         }

@@ -243,6 +243,8 @@ NtfsGetAttributeInfo(PNtfsVolume DiskVolume,
 
     if (NtfsVolumeIsReadOnly(DiskVolume))
         Buffer->FileSystemAttributes |= FILE_READ_ONLY_VOLUME;
+    else
+        Buffer->FileSystemAttributes |= FILE_SUPPORTS_TRANSACTIONS;
 
     Buffer->MaximumComponentNameLength = 255;
 
@@ -482,6 +484,7 @@ NtfsMountVolume(IN PDEVICE_OBJECT TargetDeviceObject,
     // Do not force buffered or direct I/O at FS level; leave to I/O manager/CC
     if (TargetDeviceObject->AlignmentRequirement > FSDeviceObject->AlignmentRequirement)
         FSDeviceObject->AlignmentRequirement = TargetDeviceObject->AlignmentRequirement;
+    FSDeviceObject->SectorSize = (USHORT)DiskGeometry.BytesPerSector;
 
     // Set up FastIo dispatch table for this volume
     FSDeviceObject->DriverObject->FastIoDispatch = &FastIoDispatch;
@@ -499,6 +502,7 @@ NtfsMountVolume(IN PDEVICE_OBJECT TargetDeviceObject,
     ExInitializeFastMutex(&VolCB->VolumeStateMutex);
     ExInitializeFastMutex(&VolCB->StreamListMutex);
     ExInitializeFastMutex(&VolCB->MissingNameMutex);
+    ExInitializeFastMutex(&VolCB->OpenLinkMutex);
     InitializeListHead(&VolCB->MissingNameList);
     for (Index = 0; Index < NTFS_MISSING_NAME_BUCKETS; Index++)
         InitializeListHead(&VolCB->MissingNameHash[Index]);
@@ -533,6 +537,9 @@ NtfsMountVolume(IN PDEVICE_OBJECT TargetDeviceObject,
     // Give VolCB access to Ntfs Partition object
     VolCB->DiskVolume = DiskVolume;
     VolCB->BytesPerSector = DiskGeometry.BytesPerSector;
+    NtfsTxfInitializeVolume(VolCB);
+    if (NtfsTxfVolumeSupported(VolCB))
+        FSDeviceObject->Flags |= DO_SUPPORTS_TRANSACTIONS;
 
     // Set up storage device in VolCB.
     VolCB->StorageDevice = TargetDeviceObject;
@@ -882,6 +889,8 @@ NtfsLookupCachedRecordLocked(_In_ PVolumeContextBlock VolCB,
     PLIST_ENTRY Bucket = &VolCB->RecordCacheHash[Hash & (NTFS_RECORD_CACHE_BUCKETS - 1)];
     PLIST_ENTRY Entry;
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     for (Entry = Bucket->Flink; Entry != Bucket; Entry = Entry->Flink)
     {
         PNtfsCachedRecord Candidate = CONTAINING_RECORD(Entry, NtfsCachedRecord, HashLink);
@@ -899,7 +908,7 @@ NtfsTrimRecordCache(_In_ PVolumeContextBlock VolCB)
 {
     PLIST_ENTRY Entry = VolCB->RecordCacheList.Blink;
 
-    while (VolCB->RecordCacheCount > NTFS_MAX_CACHED_RECORDS &&
+    while (VolCB->RecordCacheCount > NtfsMaxCachedRecords &&
            Entry != &VolCB->RecordCacheList)
     {
         PNtfsCachedRecord Candidate = CONTAINING_RECORD(Entry, NtfsCachedRecord, Link);

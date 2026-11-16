@@ -132,6 +132,13 @@ NtfsAcquireMutex(_Inout_ PFAST_MUTEX Mutex);
 void
 NtfsReleaseMutex(_Inout_ PFAST_MUTEX Mutex);
 
+void*
+NtfsReadPointerAcquire(_In_ void* const volatile* Source);
+
+void
+NtfsWritePointerRelease(_Out_ void* volatile* Destination,
+                        _In_opt_ void* Value);
+
 BOOLEAN
 NtfsIsNameInExpression(_In_     PUNICODE_STRING Expression,
                        _In_     PUNICODE_STRING Name,
@@ -527,6 +534,20 @@ NtfsFlushVolumeContext(_In_opt_ void* Context);
 
 #ifdef __cplusplus
 
+#define NTFS_LOOKUP_SLOTS 8
+
+typedef struct _NtfsLookupSlot
+{
+    PUCHAR Buffer;
+    ULONG BufferSize;
+    ULONG Generation;
+    ULONGLONG FileReference;
+    ULONGLONG VCN;
+    BOOLEAN Valid;
+    BOOLEAN Busy;
+    BOOLEAN Private;
+} NtfsLookupSlot, *PNtfsLookupSlot;
+
 typedef class Volume
 {
 public:
@@ -557,6 +578,10 @@ public:
     ULONGLONG ReservedClusters = 0;
     BOOLEAN ReservedClustersKnown = FALSE;
 
+    /* Clear bits of $Bitmap, counted once and kept by every allocation and release */
+    ULONGLONG FreeClusterCount = 0;
+    BOOLEAN FreeClusterCountKnown = FALSE;
+
     /* Parsed $Bitmap record, built once: its layout never changes and its
      * data is served through the block cache, so re-parsing it for every
      * cluster allocate/release only burned CPU. */
@@ -572,9 +597,16 @@ public:
      * name resolution was a fifth of the lookup. Descents never nest. */
     PUCHAR IndexWorkBuffer = NULL;
     ULONG IndexWorkBufferSize = 0;
-    ULONGLONG IndexWorkFileReference = 0;
-    ULONGLONG IndexWorkVCN = 0;
-    BOOLEAN IndexWorkBufferValid = FALSE;
+
+    ULONG IndexEditGeneration = 0;
+    NtfsLookupSlot LookupSlots[NTFS_LOOKUP_SLOTS] = {};
+
+    PNtfsLookupSlot
+    AcquireLookupSlot(_In_ ULONGLONG DirectoryReference,
+                      _In_ ULONG BufferSize);
+
+    void
+    ReleaseLookupSlot(_In_ PNtfsLookupSlot Slot);
 
     /* Free list of record-sized buffers. Every parsed record allocated and
      * freed 1 KB of pool; recycling them needs its own lock because records
@@ -584,11 +616,23 @@ public:
     ULONG RecordPoolCount = 0;
     ULONG RecordPoolBufferSize = 0;
 
+    FAST_MUTEX LazyCacheMutex;
+
     FAST_MUTEX SecurityCacheMutex;
     ULONG SecurityCacheId[NTFS_SECURITY_CACHE_ENTRIES] = {};
+    ULONG SecurityCacheHash[NTFS_SECURITY_CACHE_ENTRIES] = {};
     ULONG SecurityCacheLength[NTFS_SECURITY_CACHE_ENTRIES] = {};
     PUCHAR SecurityCacheData[NTFS_SECURITY_CACHE_ENTRIES] = {};
     ULONG SecurityCacheNext = 0;
+    /* Records that keep their descriptor in an attribute of their own, rather
+     * than behind a SecurityId, reach no cache through $Secure. A directory
+     * answers an access check for every open below it, so re-reading its
+     * descriptor costs one disk read per open. */
+    ULONG RecordCacheNumber[NTFS_SECURITY_CACHE_ENTRIES] = {};
+    ULONG RecordCacheLength[NTFS_SECURITY_CACHE_ENTRIES] = {};
+    PUCHAR RecordCacheData[NTFS_SECURITY_CACHE_ENTRIES] = {};
+    ULONGLONG RecordCacheStamp[NTFS_SECURITY_CACHE_ENTRIES] = {};
+    ULONG RecordCacheNext = 0;
 
     ~Volume();
 
@@ -697,7 +741,7 @@ public:
     PWSTR
     GetUpcaseTable()
     {
-        return UpcaseTable;
+        return (PWSTR)NtfsReadPointerAcquire((void* const volatile*)&UpcaseTable);
     }
 
     /**
@@ -800,7 +844,38 @@ public:
     CacheSecurityDescriptor(
         _In_ ULONG SecurityId,
         _In_reads_bytes_(Length) const UCHAR* Descriptor,
-        _In_ ULONG Length);
+        _In_ ULONG Length,
+        _In_ ULONG Hash);
+
+    BOOLEAN
+    FindCachedSecurityId(
+        _In_reads_bytes_(Length) const UCHAR* Descriptor,
+        _In_ ULONG Length,
+        _In_ ULONG Hash,
+        _Out_ PULONG SecurityId);
+
+    BOOLEAN
+    ReadCachedRecordDescriptor(
+        _In_ ULONG RecordNumber,
+        _In_opt_ PUCHAR Buffer,
+        _Inout_ PULONG BufferLength,
+        _Out_ NTSTATUS* Status);
+
+    void
+    CacheRecordDescriptor(
+        _In_ ULONG RecordNumber,
+        _In_reads_bytes_(Length) const UCHAR* Descriptor,
+        _In_ ULONG Length,
+        _In_ ULONGLONG Stamp);
+
+    void
+    InvalidateRecordDescriptor(
+        _In_ ULONG RecordNumber);
+
+    void
+    ReviseRecordDescriptor(
+        _In_ ULONG RecordNumber,
+        _In_ ULONGLONG Stamp);
 
     NTSTATUS
     AssignSecurityId(
@@ -854,6 +929,8 @@ public:
     NTSTATUS RefreshFrom(_In_ const FileRecord& Record);
 
     // ./find.cpp
+    ULONGLONG SecurityAttributeStamp();
+
     PAttribute GetAttribute(_In_     AttributeType Type,
                             _In_opt_ PWSTR Name);
     NTSTATUS GetAttributeData(_In_     AttributeType Type,
@@ -886,6 +963,11 @@ public:
             const UCHAR* Buffer,
         _In_ ULONG BufferLength);
     NTSTATUS DeleteExternalBacking();
+    NTSTATUS ReadObjectId(_Out_ PObjectIdEx ObjectId);
+    NTSTATUS SetObjectId(_In_ const ObjectIdEx* ObjectId);
+    NTSTATUS SetObjectIdExtended(_In_reads_bytes_(48) const UCHAR* ExtendedInfo);
+    NTSTATUS DeleteObjectId();
+    NTSTATUS RenameDataStream(_In_opt_ PWSTR OldName, _In_opt_ PWSTR NewName, _In_ BOOLEAN ReplaceIfExists);
     NTSTATUS ReadExtendedAttributes(
         _In_opt_ PUCHAR Buffer,
         _Inout_ PULONG BufferLength,
@@ -911,6 +993,15 @@ public:
     NTSTATUS ReadSecurityDescriptor(
         _In_opt_ PUCHAR Buffer,
         _Inout_ PULONG BufferLength);
+
+    NTSTATUS ReadCachedSecurityDescriptor(
+        _In_opt_ PUCHAR Buffer,
+        _Inout_ PULONG BufferLength);
+
+    NTSTATUS GetSecurityId(
+        _Out_ PULONG SecurityId);
+
+    BOOLEAN HasAttributeList();
 
     NTSTATUS
     GetBasicInformation(
@@ -1204,7 +1295,7 @@ private:
         _Out_ PBOOLEAN OwnerReferenced);
 
     NTSTATUS
-    CreateInitialAttributeList();
+    CreateInitialAttributeList(_In_opt_ PAttribute GrowingData = NULL);
 
     NTSTATUS
     EnsureAttributeListForMappingGrowth(
@@ -1316,6 +1407,9 @@ private:
         _In_ ULONGLONG RequestedAllocationSize);
 
     NTSTATUS
+    SynchronizeExtensionDataSizes();
+
+    NTSTATUS
     UpdateFileNameSizes(_In_ ULONGLONG AllocatedSize,
                         _In_ ULONGLONG DataSize);
 
@@ -1366,6 +1460,15 @@ private:
         _In_opt_ const UCHAR* Buffer,
         _In_ ULONG BufferLength,
         _In_ BOOLEAN Delete);
+
+    NTSTATUS
+    MakeObjectIdSpace(_In_ ULONG Required);
+
+    NTSTATUS
+    InsertObjectIdAttribute(_In_ const ObjectIdEx* ObjectId);
+
+    NTSTATUS
+    RemoveObjectIdAttribute();
 
     // ./write.cpp
     NTSTATUS
@@ -1425,6 +1528,17 @@ NTSTATUS
 NtfsUpdateReparseIndex(
     _In_ PVolume DiskVolume,
     _In_ ULONG ReparseTag,
+    _In_ ULONGLONG FileReference,
+    _In_ BOOLEAN Remove);
+
+NTSTATUS
+NtfsCheckObjectIdSupport(
+    _In_ PVolume DiskVolume);
+
+NTSTATUS
+NtfsUpdateObjectIdIndex(
+    _In_ PVolume DiskVolume,
+    _In_ const ObjectIdEx* ObjectId,
     _In_ ULONGLONG FileReference,
     _In_ BOOLEAN Remove);
 
@@ -1556,6 +1670,8 @@ private:
     ULONG EnumerationDepth = 0;
     LONG EnumerationLoadedDepth = -1;
     ULONGLONG EnumerationLoadedVCN = ~(ULONGLONG)0;
+    PUCHAR EnumerationBuffer = NULL;
+    ULONG EnumerationBufferSize = 0;
     BOOLEAN DirectEnumeration = FALSE;
 
     // ./editdir.cpp
@@ -1828,6 +1944,13 @@ public:
         _In_ ULONGLONG ParentReference,
         _In_ PUNICODE_STRING Name,
         _Out_ PUNICODE_STRING ShortName);
+
+    NTSTATUS
+    EnumerateLinks(
+        _In_ PFileRecord File,
+        _Inout_ PULONG Context,
+        _Out_ PULONGLONG ParentReference,
+        _Out_ PUNICODE_STRING LinkName);
 
     NTSTATUS
     IsDescendantDirectory(
@@ -2111,6 +2234,9 @@ NtfsGenerateShortName(
      UINT16 LogPageDataOffset;          // Offset 0x26, Size 2
      UINT32 RevisionNumber;             // Offset 0x28, Size 4
  } *PLfsRestartArea;
+
+ /* LfsRestartArea.Flags: the volume was closed cleanly */
+ #define LFS_RESTART_AREA_CLEAN 0x0002
 
  /* Note: Client Version is stored in MajorVersion and MinorVersion
   * for the various versions of RestartArea/

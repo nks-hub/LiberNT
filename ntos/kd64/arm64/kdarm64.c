@@ -117,46 +117,6 @@ KdpSysWriteMsr(_In_ ULONG Msr,
     return STATUS_NOT_IMPLEMENTED;
 }
 
-NTSTATUS
-NTAPI
-KdpSysReadBusData(_In_ BUS_DATA_TYPE BusDataType,
-                  _In_ ULONG BusNumber,
-                  _In_ ULONG SlotNumber,
-                  _In_ ULONG Offset,
-                  _Out_writes_bytes_(Length) PVOID Buffer,
-                  _In_ ULONG Length,
-                  _Out_ PULONG ActualLength)
-{
-    UNREFERENCED_PARAMETER(BusDataType);
-    UNREFERENCED_PARAMETER(BusNumber);
-    UNREFERENCED_PARAMETER(SlotNumber);
-    UNREFERENCED_PARAMETER(Offset);
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(Length);
-    if (ActualLength) *ActualLength = 0;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-NTSTATUS
-NTAPI
-KdpSysWriteBusData(_In_ BUS_DATA_TYPE BusDataType,
-                   _In_ ULONG BusNumber,
-                   _In_ ULONG SlotNumber,
-                   _In_ ULONG Offset,
-                   _In_reads_bytes_(Length) PVOID Buffer,
-                   _In_ ULONG Length,
-                   _Out_ PULONG ActualLength)
-{
-    UNREFERENCED_PARAMETER(BusDataType);
-    UNREFERENCED_PARAMETER(BusNumber);
-    UNREFERENCED_PARAMETER(SlotNumber);
-    UNREFERENCED_PARAMETER(Offset);
-    UNREFERENCED_PARAMETER(Buffer);
-    UNREFERENCED_PARAMETER(Length);
-    if (ActualLength) *ActualLength = 0;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
 /* KdpSysReadControlSpace/KdpSysWriteControlSpace live in kd64/kdcontrol.c,
  * shared with AMD64 (same control-space layout and constants). */
 
@@ -205,7 +165,7 @@ NTAPI
 KdpSysCheckLowMemory(_In_ ULONG Flags)
 {
     UNREFERENCED_PARAMETER(Flags);
-    return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS

@@ -151,27 +151,17 @@ Used Version: git commit 4c4d181
 License: BSD-3-Clause (https://spdx.org/licenses/BSD-3-Clause.html)
 URL: https://github.com/virtio-win/kvm-guest-drivers-windows/tree/master/VirtIO
 
-Title: WinBtrfs
-Path: dll/shellext/shellbtrfs
-Path: drivers/filesystems/btrfs
-Path: sdk/lib/fslib/btrfslib
-Used Version: 1.8.1
-License: LGPL-3.0-or-later (https://spdx.org/licenses/LGPL-3.0-or-later.html)
-URL: https://github.com/maharmstone/btrfs
-
 Title: Microsoft CDFS File System Driver
 Path: drivers/filesystems/cdfs
 Used Version: git commit f73e552
 License: MS-PL (https://spdx.org/licenses/MS-PL.html)
 URL: https://github.com/microsoft/Windows-driver-samples/tree/master/filesys/cdfs
 
-Title: Ext2Fsd
-Path: drivers/filesystems/ext2
-Path: sdk/lib/fslib/ext2lib
-Used Version: 0.69
-License: GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later.html)
-URL: https://web.archive.org/web/20210516213924/http://www.ext2fsd.com
-URL: https://sourceforge.net/projects/ext2fsd
+Title: lwext4
+Path: sdk/lib/3rdparty/lwext4
+Used Version: git commit 58bcf89 with the LiberNT changes listed in sdk/lib/3rdparty/lwext4/LIBERNT.md
+License: BSD-3-Clause (https://spdx.org/licenses/BSD-3-Clause.html), GPL-2.0-or-later for src/ext4_extent.c and src/ext4_xattr.c (https://spdx.org/licenses/GPL-2.0-or-later.html)
+URL: https://github.com/gkostka/lwext4
 
 Title: NFSv4.1 Client for Windows
 Path: base/services/nfsd
@@ -388,6 +378,13 @@ Used Version: 1.2.13
 License: Zlib (https://spdx.org/licenses/Zlib.html)
 URL: http://www.zlib.net
 
+Title: Zstandard
+Path: sdk/lib/3rdparty/zstd
+Used Version: 1.5.7
+License: BSD-3-Clause (https://spdx.org/licenses/BSD-3-Clause.html) OR GPL-2.0-only (https://spdx.org/licenses/GPL-2.0-only.html)
+URL: https://github.com/facebook/zstd
+Modifications: decompressor only (lib/common, lib/decompress); built for kernel mode with zstd_libernt.h, which leaves allocation to the caller's static workspace
+
 Title: chmc and lzxcomp
 Path: sdk/tools/hhpcomp/chmc
 Path: sdk/tools/hhpcomp/lzx_compress
@@ -422,3 +419,13 @@ Path: sdk/include/ddk/d3dkmthk.h
 Used Version: git commit 045831e
 License: MIT (https://spdx.org/licenses/MIT.html)
 URL: https://github.com/microsoft/libdxg
+
+Title: Apple graphics driver of aurora-silicon/linux - firmware interface description only
+Path: sdk/lib/drivers/applertkit/agxinit.c
+Path: sdk/include/reactos/drivers/appleagxinit.h
+Used Version: git commit c880586
+License: MIT (https://spdx.org/licenses/MIT.html), offered as GPL-2.0-only OR MIT
+URL: https://github.com/aurora-silicon/linux
+Notes: Structure layouts, the initial data's layout magic, register selectors, register windows
+Notes: and operating-point selections only; no code, and none of that driver's generated board
+Notes: data. See "3rd Party Apple GPU interface.txt" in this directory.

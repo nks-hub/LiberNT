@@ -389,6 +389,9 @@ typedef struct _SOFTGPU_DEVICE
     volatile LONG       VsyncPhaseEnabled;
     volatile LONG       VsyncEnabled;
     BOOLEAN             VsyncTimerInitialized;
+    BOOLEAN             VsyncTimerRunning;
+    ULONGLONG           VsyncPhaseOrigin;
+    BOOLEAN             DisplayPowerOff;
 
     /*
      * dxgkrnl callback vtable.  Copied from the PDXGK_INTERFACE argument
@@ -509,6 +512,17 @@ SoftGpuPlatformQueryDescriptor(
 
 MEMORY_CACHING_TYPE
 SoftGpuPlatformSegmentCacheType(VOID);
+
+NTSTATUS
+SoftGpuPlatformSetDisplayPower(
+    _Inout_ PSOFTGPU_DEVICE Device,
+    _In_ BOOLEAN On);
+
+#if defined(SOFTGPU_PLATFORM_DRIVER_ENTRY)
+VOID
+SoftGpuPlatformDriverEntry(
+    _Inout_ PDRIVER_OBJECT DriverObject);
+#endif
 
 #if defined(SOFTGPU_PLATFORM_ADAPTER_SERVICES)
 VOID
@@ -1001,6 +1015,10 @@ NTAPI
 SoftGpuVsyncTimerCallback(
     _In_     PEX_TIMER Timer,
     _In_opt_ PVOID     Context);
+
+VOID
+SoftGpuVsyncTimerUpdateLocked(
+    _Inout_ PSOFTGPU_DEVICE Device);
 
 NTSTATUS
 APIENTRY

@@ -282,6 +282,16 @@ LxTmpfsFileInode(PLX_FILE File)
     return NULL;
 }
 
+VOID
+LxTmpfsFileAccessed(PLX_FILE File)
+{
+}
+
+VOID
+LxTmpfsFileModified(PLX_FILE File)
+{
+}
+
 ULONG64
 LxTmpfsInodeSize(PLX_TMPFS_INODE Inode)
 {
@@ -890,6 +900,18 @@ LxFileReadKernel(PLX_FILE File, PVOID Buffer, ULONG Length, ULONG64 Offset)
     return Length;
 }
 
+BOOLEAN
+LxDrmIsFile(PLX_FILE File)
+{
+    return FALSE;
+}
+
+LONG64
+LxDrmMmap(PLX_PROCESS Process, PLX_FILE File, ULONG64 Address, ULONG64 Length, ULONG Prot, ULONG Flags, ULONG64 Offset)
+{
+    return -LX_ENODEV;
+}
+
 VOID
 LxIpcShmVmaOpen(PVOID Section)
 {
@@ -977,16 +999,4 @@ PLX_FILE
 LxHugeFileCreate(PCSTR Path)
 {
     return NULL;
-}
-
-BOOLEAN
-LxDrmIsFile(PLX_FILE File)
-{
-    return FALSE;
-}
-
-LONG64
-LxDrmMmap(PLX_PROCESS Process, PLX_FILE File, ULONG64 Address, ULONG64 Length, ULONG Prot, ULONG Flags, ULONG64 Offset)
-{
-    return -LX_ENODEV;
 }

@@ -278,6 +278,28 @@ IsManufacturerCompatible(
     return FALSE;
 }
 
+static DWORD
+GetInfFeatureScore(
+    IN HINF hInf,
+    IN PCWSTR Section)
+{
+    INFCONTEXT Context;
+    WCHAR Text[16];
+    PWSTR End;
+    ULONG FeatureScore;
+
+    /* The directive is a single hexadecimal byte, written without a 0x prefix */
+    if (SetupFindFirstLineW(hInf, Section, L"FeatureScore", &Context) &&
+        SetupGetStringFieldW(&Context, 1, Text, ARRAY_SIZE(Text), NULL) &&
+        Text[0] != UNICODE_NULL)
+    {
+        FeatureScore = wcstoul(Text, &End, 16);
+        if (*End == UNICODE_NULL && FeatureScore <= 0xFF)
+            return FeatureScore;
+    }
+    return 0xFF;
+}
+
 static BOOL
 AddKnownDriverToList(
     IN PLIST_ENTRY DriverListHead,
@@ -348,6 +370,19 @@ AddKnownDriverToList(
     }
     else
         driverInfo->MatchingId = NULL;
+
+    if (DriverType == SPDIT_COMPATDRIVER)
+    {
+        WCHAR ActualSection[LINE_LEN];
+
+        if (!SetupDiGetActualSectionToInstallW(InfFileDetails->hInf, SectionName, ActualSection,
+                                               ARRAY_SIZE(ActualSection), NULL, NULL))
+        {
+            lstrcpynW(ActualSection, SectionName, ARRAY_SIZE(ActualSection));
+        }
+        /* TODO: the signature score, the top byte of a Windows driver rank, is not computed */
+        Rank |= GetInfFeatureScore(InfFileDetails->hInf, ActualSection) << 16;
+    }
 
     TRACE("Adding driver '%s' [%s/%s] (Rank 0x%lx)\n",
         debugstr_w(driverInfo->Details.DrvDescription), debugstr_w(InfFile),
@@ -1205,13 +1240,13 @@ SetupDiBuildDriverInfoList(
                     continue;
                 }
 
-                if (DriverType == SPDIT_CLASSDRIVER)
-                {
+                /* An extension INF never provides a device's base driver (Using an Extension INF File) */
+                if (IsEqualIID(&ClassGuid, &GUID_DEVCLASS_EXTENSION) ||
                     /* Check if the ClassGuid in this .inf file is corresponding with our needs */
-                    if (!IsEqualIID(&list->ClassGuid, &GUID_NULL) && !IsEqualIID(&list->ClassGuid, &ClassGuid))
-                    {
-                        goto next;
-                    }
+                    (DriverType == SPDIT_CLASSDRIVER &&
+                     !IsEqualIID(&list->ClassGuid, &GUID_NULL) && !IsEqualIID(&list->ClassGuid, &ClassGuid)))
+                {
+                    goto next;
                 }
 
                 ExcludeFromSelect = GetExcludeFromSelectList(currentInfFileDetails->hInf);
@@ -2685,16 +2720,7 @@ DriverDatabaseGetFeatureScore(
     IN HINF hInf,
     IN PCWSTR Section)
 {
-    INFCONTEXT Context;
-    INT FeatureScore;
-
-    if (SetupFindFirstLineW(hInf, Section, L"FeatureScore", &Context) &&
-        SetupGetIntField(&Context, 1, &FeatureScore) &&
-        FeatureScore >= 0 && FeatureScore <= 0xFF)
-    {
-        return FeatureScore;
-    }
-    return 0xFF;
+    return GetInfFeatureScore(hInf, Section);
 }
 
 static VOID
@@ -2849,8 +2875,17 @@ SETUPAPI_RecordDriverDatabasePackage(
         DriverDatabaseSetString(Package, L"Provider", Provider);
     if (OemPath)
     {
+        WCHAR Catalog[MAX_PATH], CatalogPath[2 * MAX_PATH];
+        DWORD SignerScore = SIGNERSCORE_UNSIGNED;
+
         DriverDatabaseSetString(Package, L"InfName", InfName);
         DriverDatabaseSetString(Package, L"OemPath", OemPath);
+        if (SETUPAPI_GetInfCatalogFile(hInf, Catalog, ARRAY_SIZE(Catalog)))
+        {
+            swprintf(CatalogPath, ARRAY_SIZE(CatalogPath), L"%s\\%s", OemPath, Catalog);
+            SignerScore = SETUPAPI_GetCatalogSignerScore(CatalogPath);
+        }
+        DriverDatabaseSetDword(Package, L"SignerScore", SignerScore);
     }
     else
     {
@@ -3021,4 +3056,184 @@ SETUPAPI_DeleteDriverDatabasePackage(
 
     DriverDatabaseUpdateOemInfMap(Database, PublishedName, FALSE);
     RegCloseKey(Database);
+}
+
+static BOOL
+IdInList(
+    IN PCWSTR Id,
+    IN PCWSTR List OPTIONAL)
+{
+    for (; List && *List; List += strlenW(List) + 1)
+    {
+        if (!strcmpiW(Id, List))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL
+FindExtensionModel(
+    IN HINF hInf,
+    IN PCWSTR HardwareIds OPTIONAL,
+    IN PCWSTR CompatibleIds OPTIONAL,
+    OUT PWSTR Section,
+    IN DWORD SectionSize)
+{
+    WCHAR ModelsSection[LINE_LEN], Id[MAX_DEVICE_ID_LEN];
+    INFCONTEXT ContextManufacturer, ContextDevice;
+    DWORD Field, FieldCount;
+    BOOL Result;
+
+    for (Result = SetupFindFirstLineW(hInf, INF_MANUFACTURER, NULL, &ContextManufacturer);
+         Result;
+         Result = SetupFindNextLine(&ContextManufacturer, &ContextManufacturer))
+    {
+        if (!SetupGetStringFieldW(&ContextManufacturer, 1, ModelsSection, ARRAYSIZE(ModelsSection), NULL) ||
+            !IsManufacturerCompatible(&ContextManufacturer) ||
+            !SetupDiGetActualSectionToInstallW(hInf, ModelsSection, ModelsSection, ARRAYSIZE(ModelsSection), NULL, NULL) ||
+            !SetupFindFirstLineW(hInf, ModelsSection, NULL, &ContextDevice))
+        {
+            continue;
+        }
+
+        do
+        {
+            FieldCount = SetupGetFieldCount(&ContextDevice);
+            for (Field = 2; Field <= FieldCount; Field++)
+            {
+                if (SetupGetStringFieldW(&ContextDevice, Field, Id, ARRAYSIZE(Id), NULL) &&
+                    (IdInList(Id, HardwareIds) || IdInList(Id, CompatibleIds)) &&
+                    SetupGetStringFieldW(&ContextDevice, 1, Section, SectionSize, NULL))
+                {
+                    return TRUE;
+                }
+            }
+        } while (SetupFindNextLine(&ContextDevice, &ContextDevice));
+    }
+
+    return FALSE;
+}
+
+static BOOL
+ReadExtensionId(
+    IN HINF hInf,
+    OUT GUID *ExtensionId)
+{
+    WCHAR Text[MAX_GUID_STRING_LEN + 1];
+
+    if (!SetupGetLineTextW(NULL, hInf, Version, L"ExtensionId", Text, ARRAYSIZE(Text), NULL) ||
+        Text[0] != '{' || strlenW(Text) != MAX_GUID_STRING_LEN - 1 || Text[MAX_GUID_STRING_LEN - 2] != '}')
+    {
+        return FALSE;
+    }
+
+    Text[MAX_GUID_STRING_LEN - 2] = 0;
+    return UuidFromStringW(&Text[1], ExtensionId) == RPC_S_OK;
+}
+
+static BOOL
+NewerExtension(
+    IN const struct DeviceExtension *Candidate,
+    IN const struct DeviceExtension *Current)
+{
+    LONG Order = CompareFileTime(&Candidate->DriverDate, &Current->DriverDate);
+
+    if (Order)
+        return Order > 0;
+    return Candidate->DriverVersion > Current->DriverVersion;
+}
+
+/* Among the extension INFs that match a device, the one with the newest DriverVer of each ExtensionId (Using an Extension INF File) */
+BOOL
+SETUPAPI_FindDeviceExtensions(
+    IN PCWSTR HardwareIds OPTIONAL,
+    IN PCWSTR CompatibleIds OPTIONAL,
+    OUT struct DeviceExtension **Extensions,
+    OUT DWORD *Count)
+{
+    struct DeviceExtension Candidate, *List = NULL, *Grown;
+    WCHAR Path[MAX_PATH];
+    LPWSTR Files = NULL, ProviderName = NULL;
+    LPCWSTR File;
+    GUID ClassGuid;
+    DWORD Size = 32768, Used = 0, Index, PathLength;
+    HINF hInf;
+    BOOL Result = FALSE;
+
+    *Extensions = NULL;
+    *Count = 0;
+
+    PathLength = GetSystemWindowsDirectoryW(Path, ARRAYSIZE(Path));
+    if (!PathLength || PathLength + 1 + strlenW(InfDirectory) >= ARRAYSIZE(Path))
+        return FALSE;
+    if (Path[PathLength - 1] != '\\')
+        strcatW(Path, BackSlash);
+    strcatW(Path, InfDirectory);
+    PathLength = strlenW(Path);
+
+    SetLastError(ERROR_INSUFFICIENT_BUFFER);
+    while (!Result && GetLastError() == ERROR_INSUFFICIENT_BUFFER)
+    {
+        HeapFree(GetProcessHeap(), 0, Files);
+        Files = HeapAlloc(GetProcessHeap(), 0, Size * sizeof(WCHAR));
+        if (!Files)
+            return FALSE;
+        Result = SetupGetInfFileListW(NULL, INF_STYLE_WIN4, Files, Size, &Size);
+    }
+    if (!Result)
+    {
+        HeapFree(GetProcessHeap(), 0, Files);
+        return GetLastError() == ERROR_FILE_NOT_FOUND;
+    }
+
+    for (File = Files; *File; File += strlenW(File) + 1)
+    {
+        if (PathLength + strlenW(File) >= ARRAYSIZE(Path))
+            continue;
+        strcpyW(&Path[PathLength], File);
+
+        hInf = SetupOpenInfFileW(Path, NULL, INF_STYLE_WIN4, NULL);
+        if (hInf == INVALID_HANDLE_VALUE)
+            continue;
+
+        ZeroMemory(&Candidate, sizeof(Candidate));
+        if (GetVersionInformationFromInfFile(hInf, &ClassGuid, &ProviderName, &Candidate.DriverDate, &Candidate.DriverVersion) &&
+            IsEqualIID(&ClassGuid, &GUID_DEVCLASS_EXTENSION) &&
+            ReadExtensionId(hInf, &Candidate.ExtensionId) &&
+            FindExtensionModel(hInf, HardwareIds, CompatibleIds, Candidate.Section, ARRAYSIZE(Candidate.Section)))
+        {
+            strcpyW(Candidate.InfPath, Path);
+
+            for (Index = 0; Index < Used; Index++)
+            {
+                if (IsEqualGUID(&List[Index].ExtensionId, &Candidate.ExtensionId))
+                    break;
+            }
+
+            if (Index < Used)
+            {
+                if (NewerExtension(&Candidate, &List[Index]))
+                    List[Index] = Candidate;
+            }
+            else
+            {
+                Grown = List ? HeapReAlloc(GetProcessHeap(), 0, List, (Used + 1) * sizeof(*List))
+                             : HeapAlloc(GetProcessHeap(), 0, sizeof(*List));
+                if (Grown)
+                {
+                    List = Grown;
+                    List[Used++] = Candidate;
+                }
+            }
+        }
+
+        HeapFree(GetProcessHeap(), 0, ProviderName);
+        ProviderName = NULL;
+        SetupCloseInfFile(hInf);
+    }
+
+    HeapFree(GetProcessHeap(), 0, Files);
+    *Extensions = List;
+    *Count = Used;
+    return TRUE;
 }

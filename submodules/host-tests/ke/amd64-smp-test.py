@@ -45,14 +45,17 @@ typedef union {
 #define FALSE 0
 #define APIC_DM_Physical 0
 #define APIC_MT_Fixed 0
-#define HV_X64_MSR_ICR 0
+#define HV_X64_MSR_ICR 0x40000083
+#define MSR_X2APIC_ICR 0x830
+#define APIC_DSH_Destination 0
 #define APIC_ICR0 0
 #define APIC_ICR1 1
 #define APIC_ICR_POLL_LIMIT 8
 #define EFLAGS_INTERRUPT_MASK 0x200
 #define DPRINT1(...) ((void)0)
-static int HalpApicHvMsrs, Enabled = 1, BeforeReads, AfterReads, BeforeBusy, AfterBusy, Writes, MsrWrites;
-static void __writemsr(int n, uint64_t v) { (void)n; (void)v; MsrWrites++; }
+static int HalpApicHvMsrs, HalpX2ApicMode, LastMsr, Enabled = 1, BeforeReads, AfterReads, BeforeBusy, AfterBusy, Writes, MsrWrites;
+static uint64_t LastMsrValue;
+static void __writemsr(int n, uint64_t v) { LastMsr = n; LastMsrValue = v; MsrWrites++; }
 static ULONG __readeflags(void) { return Enabled ? EFLAGS_INTERRUPT_MASK : 0; }
 static void _disable(void) { Enabled = 0; }
 static void _enable(void) { Enabled = 1; }
@@ -87,7 +90,16 @@ int main(void) {
     HalpApicHvMsrs = 1;
     Writes = 0;
     Send(1, 0x50, APIC_MT_Fixed, 0, 0, 1);
-    assert(MsrWrites == 1 && Writes == 0 && !Enabled);
+    assert(MsrWrites == 1 && Writes == 0 && !Enabled && LastMsr == HV_X64_MSR_ICR);
+    HalpApicHvMsrs = 0;
+    HalpX2ApicMode = 1;
+    BeforeReads = AfterReads = 0;
+    BeforeBusy = AfterBusy = 16;
+    Enabled = 1;
+    Send(0x37, 0x50, 1, 0, 0, 1);
+    assert(MsrWrites == 2 && LastMsr == MSR_X2APIC_ICR && Writes == 0 && Enabled);
+    assert(BeforeReads == 0 && AfterReads == 0);
+    assert((LastMsrValue >> 32) == 0x37 && (LastMsrValue & 0xFF) == 0x50);
     return 0;
 }
 '''.replace('@APIC@', body('hal/halx86/apic/apicsmp.c', 'ApicRequestGlobalInterruptLevel'))
@@ -104,6 +116,7 @@ enum { APIC_MT_INIT = 5, APIC_MT_Startup = 6, APIC_TGM_Level = 1,
        APIC_TGM_Edge = 0, APIC_DSH_Destination = 0 };
 #define ASSERT(x) assert(x)
 static unsigned Step;
+static int HalpX2ApicMode;
 static void ApicRequestGlobalInterruptLevel(UCHAR id, UCHAR vector, int type, int trigger, int shorthand, ULONG level) {
     assert(id == 0x37 && vector == 0 && type == APIC_MT_INIT && trigger == APIC_TGM_Level && shorthand == 0);
     assert((Step == 0 && level == 1) || (Step == 2 && level == 0)); Step++;
@@ -113,10 +126,12 @@ static void ApicRequestGlobalInterrupt(UCHAR id, UCHAR vector, int type, int tri
     assert(Step == 4 || Step == 6); Step++;
 }
 static void KeStallExecutionProcessor(ULONG us) {
-    assert((Step == 1 && us == 10000) || ((Step == 3 || Step == 5) && us == 200)); Step++;
+    assert((Step == 1 && us == 10000) || ((Step == 3 || Step == 5) && us == 200));
+    Step += (HalpX2ApicMode && us == 10000) ? 3 : 1;
 }
 static void Start(ULONG NTProcessorNumber, PHYSICAL_ADDRESS StartupLoc) { @SEQUENCE@ }
-int main(void) { PHYSICAL_ADDRESS address = {.QuadPart = 0x8a000}; Start(1, address); assert(Step == 7); return 0; }
+int main(void) { PHYSICAL_ADDRESS address = {.QuadPart = 0x8a000}; Start(1, address); assert(Step == 7);
+                 HalpX2ApicMode = 1; Step = 0; Start(1, address); assert(Step == 7); return 0; }
 '''.replace('@SEQUENCE@', body('hal/halx86/apic/apicsmp.c', 'ApicStartApplicationProcessor'))
 
 freeze = r'''
@@ -167,6 +182,8 @@ static void KiNoteFreezeEpoch(void) { @NOTE@ }
 static ULONG64 KiQueryFreezeEpoch(void) { @EPOCH@ }
 static BOOLEAN KiIsFreezeActive(void) { @ACTIVE@ }
 static BOOLEAN KiFreezeFailureRequiresReturn(PKPRCB Prcb) { (void)Prcb; return FALSE; }
+static BOOLEAN KiIsBugCheckEntryOwner(PKPRCB Prcb) { (void)Prcb; return FALSE; }
+static void KiSetFreezeFailure(void) { assert(!"a freeze failed"); }
 static BOOLEAN KiFreezeWaitExpired(KI_FREEZE_WAIT *Wait) { (void)Wait; return FALSE; }
 static BOOLEAN KiFreezeWaitFailed(PKPRCB Prcb, KI_FREEZE_WAIT *Wait) { (void)Prcb; (void)Wait; return FALSE; }
 static void KiFreezeIfRequested(void) { assert(0); }
@@ -235,6 +252,7 @@ typedef struct { ULONG_PTR Prcb, Thread, KernelStack; } LOADER;
 #define AP_START_WAIT_TIME (5 * 10000000ULL)
 #define EFLAGS_INTERRUPT_MASK 0x200
 #define CLOCK_WATCHDOG_TIMEOUT 0x101
+#define AFFINITY_MASK(n) ((ULONG64)1 << (n))
 #define NonPagedPool 0
 #define TAG_KERNEL 0
 #define KGDT64_R0_CODE 1
@@ -250,7 +268,7 @@ typedef struct { ULONG_PTR Prcb, Thread, KernelStack; } LOADER;
 #define RtlCopyMemory(d,s,n) memcpy(d,s,n)
 #define RtlZeroMemory(d,n) memset(d,0,n)
 #define min(a,b) ((a)<(b)?(a):(b))
-static ULONG KeMaximumProcessors = 2, KeNumprocSpecified, KeBootprocSpecified;
+static ULONG KeMaximumProcessors = 2, KeNumprocSpecified, KeBootprocSpecified, KeMaximumIncrement = 156250;
 static LOADER Loader, *KeLoaderBlock = &Loader;
 static KPRCB *KiProcessorBlock[2];
 static ULONG64 KeActiveProcessors;
@@ -258,7 +276,8 @@ static int Mode, BugcheckCode;
 static ULONGLONG Clock;
 static jmp_buf FailStop;
 static char Table[16];
-static void *ExAllocatePoolZero(int pool, size_t size, int tag) { (void)pool; (void)tag; return calloc(1,size); }
+/* As documented, PAGE_SIZE or more comes back page aligned */
+static void *ExAllocatePoolZero(int pool, size_t size, int tag) { void *p; (void)pool; (void)tag; if (posix_memalign(&p, size >= PAGE_SIZE ? PAGE_SIZE : 16, size)) return NULL; memset(p, 0, size); return p; }
 static void ExFreePoolWithTag(void *p, int tag) { (void)tag; free(p); }
 static void *MmCreateKernelStack(int a, int b) { (void)a; (void)b; return malloc(8192); }
 static void MmDeleteKernelStack(void *p, int a) { (void)a; free(p); }

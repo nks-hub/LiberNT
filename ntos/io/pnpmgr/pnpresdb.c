@@ -24,6 +24,7 @@ typedef struct _PI_RES_ENTRY
 {
     LIST_ENTRY ListEntry;
     PDEVICE_NODE Owner;
+    PVOID Claimant;
     CM_PARTIAL_RESOURCE_DESCRIPTOR Desc;
 } PI_RES_ENTRY, *PPI_RES_ENTRY;
 
@@ -37,6 +38,7 @@ typedef struct _PI_RES_BUCKET
 KMUTEX IopResourceAssignmentLock;
 
 static PI_RES_BUCKET IopResBuckets[PiResClassMax];
+static UCHAR IopResDbHalReport;
 static BOOLEAN IopResDbReady = FALSE;
 static volatile LONG IopResDbSeedState = 0;
 static KEVENT IopResDbSeededEvent;
@@ -68,6 +70,9 @@ IopResDbEnsureSeeded(VOID)
     }
     else if (IopResDbSeedState != 2)
     {
+        /* The seeding thread needs the assignment lock to record what it reads */
+        ASSERT(IopResourceAssignmentLock.OwnerThread != KeGetCurrentThread());
+
         /* Another thread is seeding; wait so we never query a partial database */
         KeWaitForSingleObject(&IopResDbSeededEvent, Executive, KernelMode, FALSE, NULL);
     }
@@ -80,6 +85,7 @@ IopResClassFromType(_In_ UCHAR Type, _Out_ PI_RES_CLASS *Class)
     switch (Type)
     {
         case CmResourceTypeMemory:      *Class = PiResClassMemory; return TRUE;
+        case CmResourceTypeMemoryLarge: *Class = PiResClassMemory; return TRUE;
         case CmResourceTypePort:        *Class = PiResClassPort; return TRUE;
         case CmResourceTypeInterrupt:   *Class = PiResClassInterrupt; return TRUE;
         case CmResourceTypeDma:         *Class = PiResClassDma; return TRUE;
@@ -102,56 +108,92 @@ IopResDbIsAncestorOrSelf(_In_ PDEVICE_NODE Ancestor, _In_ PDEVICE_NODE DeviceNod
     return FALSE;
 }
 
+/* The last address of a range; one that would wrap around runs to the top of the address space */
+static
+UINT64
+IopResDbLast(_In_ UINT64 Start, _In_ UINT64 Length)
+{
+    return (Length - 1 > MAXULONGLONG - Start) ? MAXULONGLONG : Start + (Length - 1);
+}
+
+/* A window holds a range inside it that belongs to its owner or to a device below it; a nested bridge's window may equal its parent's */
+static
+BOOLEAN
+IopResDbWindowHolds(
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Window,
+    _In_ USHORT WindowFlag,
+    _In_ UINT64 WindowStart,
+    _In_ UINT64 WindowLast,
+    _In_opt_ PDEVICE_NODE WindowOwner,
+    _In_ UINT64 Start,
+    _In_ UINT64 Last,
+    _In_opt_ PDEVICE_NODE Owner)
+{
+    ASSERT(WindowStart <= WindowLast);
+    ASSERT(Start <= Last);
+
+    if (!(Window->Flags & WindowFlag) || WindowStart > Start || WindowLast < Last)
+        return FALSE;
+    return WindowOwner == NULL || Owner == NULL || IopResDbIsAncestorOrSelf(WindowOwner, Owner);
+}
+
 static
 BOOLEAN
 IopResDbConflict(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR a, _In_opt_ PDEVICE_NODE aOwner, _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR b, _In_opt_ PDEVICE_NODE bOwner)
 {
-    if (a->Type != b->Type)
+    PI_RES_CLASS aClass, bClass;
+
+    if (!IopResClassFromType(a->Type, &aClass) || !IopResClassFromType(b->Type, &bClass) || aClass != bClass)
         return FALSE;
     if (a->ShareDisposition == CmResourceShareShared && b->ShareDisposition == CmResourceShareShared)
         return FALSE;
 
     switch (a->Type)
     {
+        /* A large window is memory too, with its scaled length */
         case CmResourceTypeMemory:
+        case CmResourceTypeMemoryLarge:
         {
-            UINT64 aStart = (UINT64)a->u.Memory.Start.QuadPart, aEnd = aStart + a->u.Memory.Length;
-            UINT64 bStart = (UINT64)b->u.Memory.Start.QuadPart, bEnd = bStart + b->u.Memory.Length;
-            if (!(aStart < bEnd && bStart < aEnd))
+            UINT64 aStart, bStart;
+            UINT64 aLength = RtlCmDecodeMemIoResource(a, &aStart);
+            UINT64 bLength = RtlCmDecodeMemIoResource(b, &bStart);
+            UINT64 aLast, bLast;
+            if (aLength == 0 || bLength == 0)
                 return FALSE;
-            if ((a->Flags & CM_RESOURCE_MEMORY_WINDOW_DECODE) && aStart <= bStart && aEnd >= bEnd)
-            {
-                return aOwner && bOwner ? !IopResDbIsAncestorOrSelf(aOwner, bOwner) : FALSE;
-            }
-            if ((b->Flags & CM_RESOURCE_MEMORY_WINDOW_DECODE) && bStart <= aStart && bEnd >= aEnd)
-            {
-                return aOwner && bOwner ? !IopResDbIsAncestorOrSelf(bOwner, aOwner) : FALSE;
-            }
-            return TRUE;
+            aLast = IopResDbLast(aStart, aLength);
+            bLast = IopResDbLast(bStart, bLength);
+            if (aStart > bLast || bStart > aLast)
+                return FALSE;
+            return !IopResDbWindowHolds(a, CM_RESOURCE_MEMORY_WINDOW_DECODE, aStart, aLast, aOwner, bStart, bLast, bOwner) &&
+                   !IopResDbWindowHolds(b, CM_RESOURCE_MEMORY_WINDOW_DECODE, bStart, bLast, bOwner, aStart, aLast, aOwner);
         }
         case CmResourceTypePort:
         {
-            UINT64 aStart = (UINT64)a->u.Port.Start.QuadPart, aEnd = aStart + a->u.Port.Length;
-            UINT64 bStart = (UINT64)b->u.Port.Start.QuadPart, bEnd = bStart + b->u.Port.Length;
-            if (!(aStart < bEnd && bStart < aEnd))
+            UINT64 aStart = (UINT64)a->u.Port.Start.QuadPart, aLast;
+            UINT64 bStart = (UINT64)b->u.Port.Start.QuadPart, bLast;
+            if (a->u.Port.Length == 0 || b->u.Port.Length == 0)
                 return FALSE;
-            if ((a->Flags & CM_RESOURCE_PORT_WINDOW_DECODE) && aStart <= bStart && aEnd >= bEnd)
-            {
-                return aOwner && bOwner ? !IopResDbIsAncestorOrSelf(aOwner, bOwner) : FALSE;
-            }
-            if ((b->Flags & CM_RESOURCE_PORT_WINDOW_DECODE) && bStart <= aStart && bEnd >= aEnd)
-            {
-                return aOwner && bOwner ? !IopResDbIsAncestorOrSelf(bOwner, aOwner) : FALSE;
-            }
-            return TRUE;
+            aLast = IopResDbLast(aStart, a->u.Port.Length);
+            bLast = IopResDbLast(bStart, b->u.Port.Length);
+            if (aStart > bLast || bStart > aLast)
+                return FALSE;
+            return !IopResDbWindowHolds(a, CM_RESOURCE_PORT_WINDOW_DECODE, aStart, aLast, aOwner, bStart, bLast, bOwner) &&
+                   !IopResDbWindowHolds(b, CM_RESOURCE_PORT_WINDOW_DECODE, bStart, bLast, bOwner, aStart, aLast, aOwner);
         }
         case CmResourceTypeInterrupt:
+            /* A message interrupt holds a vector the HAL handed out, not an interrupt line */
+            if ((a->Flags & CM_RESOURCE_INTERRUPT_MESSAGE) || (b->Flags & CM_RESOURCE_INTERRUPT_MESSAGE))
+                return FALSE;
             return (a->u.Interrupt.Vector == b->u.Interrupt.Vector);
         case CmResourceTypeBusNumber:
         {
             UINT32 aStart = a->u.BusNumber.Start, aEnd = aStart + a->u.BusNumber.Length;
             UINT32 bStart = b->u.BusNumber.Start, bEnd = bStart + b->u.BusNumber.Length;
             if (!(aStart < bEnd && bStart < aEnd))
+                return FALSE;
+            if (aOwner && bOwner && aStart <= bStart && aEnd >= bEnd && IopResDbIsAncestorOrSelf(aOwner, bOwner))
+                return FALSE;
+            if (aOwner && bOwner && bStart <= aStart && bEnd >= aEnd && IopResDbIsAncestorOrSelf(bOwner, aOwner))
                 return FALSE;
             if ((a->ShareDisposition == CmResourceShareShared &&
                  aStart < bStart && aEnd >= bEnd) ||
@@ -172,7 +214,7 @@ IopResDbConflict(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR a, _In_opt_ PDEVICE_NODE a
 /* Conflicts are logged but still recorded (non-enforcing). */
 static
 NTSTATUS
-IopResDbReserveList(_In_opt_ PDEVICE_NODE DeviceNode, _In_opt_ PCM_RESOURCE_LIST ResourceList, _In_ BOOLEAN SkipInternalInterrupts, _Out_opt_ PBOOLEAN Conflict)
+IopResDbReserveList(_In_opt_ PDEVICE_NODE DeviceNode, _In_opt_ PVOID Claimant, _In_opt_ PCM_RESOURCE_LIST ResourceList, _In_ BOOLEAN SkipInternalInterrupts, _Out_opt_ PBOOLEAN Conflict)
 {
     PCM_FULL_RESOURCE_DESCRIPTOR full;
     ULONG i, j;
@@ -205,6 +247,7 @@ IopResDbReserveList(_In_opt_ PDEVICE_NODE DeviceNode, _In_opt_ PCM_RESOURCE_LIST
             if (entry == NULL)
                 continue;
             entry->Owner = DeviceNode;
+            entry->Claimant = Claimant;
             entry->Desc = *desc;
 
             KeAcquireSpinLock(&IopResBuckets[cls].Lock, &irql);
@@ -236,17 +279,31 @@ IopResDbReserveList(_In_opt_ PDEVICE_NODE DeviceNode, _In_opt_ PCM_RESOURCE_LIST
 NTSTATUS
 IopResDbReserve(_In_ PDEVICE_NODE DeviceNode, _In_opt_ PCM_RESOURCE_LIST ResourceList, _Out_opt_ PBOOLEAN Conflict)
 {
-    return IopResDbReserveList(DeviceNode, ResourceList, FALSE, Conflict);
+    return IopResDbReserveList(DeviceNode, NULL, ResourceList, FALSE, Conflict);
 }
 
 /* Check one candidate descriptor against the database; returns the conflicting entry. */
+static
 BOOLEAN
-IopResDbCheckDescriptor(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_ PDEVICE_NODE CandidateOwner, _Out_opt_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Conflicting)
+IopResDbCheck(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_ PDEVICE_NODE CandidateOwner, _In_opt_ PVOID Claimant,
+              _In_ BOOLEAN IgnoreHalReport, _Out_opt_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Conflicting)
 {
     PI_RES_CLASS cls;
     PLIST_ENTRY le;
     KIRQL irql;
     BOOLEAN found = FALSE;
+    UINT64 Start, Length;
+
+    if (Candidate->Type == CmResourceTypeMemory || Candidate->Type == CmResourceTypeMemoryLarge)
+    {
+        Length = RtlCmDecodeMemIoResource(Candidate, &Start);
+        if (Length != 0 && IopResDbLast(Start, Length) >= MmGetPhysicalAddressLimit())
+        {
+            if (Conflicting)
+                *Conflicting = *Candidate;
+            return TRUE;
+        }
+    }
 
     if (!IopResDbReady || !IopResClassFromType(Candidate->Type, &cls))
         return FALSE;
@@ -256,6 +313,10 @@ IopResDbCheckDescriptor(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_
     {
         PPI_RES_ENTRY entry = CONTAINING_RECORD(le, PI_RES_ENTRY, ListEntry);
         if (CandidateOwner != NULL && entry->Owner == CandidateOwner)
+            continue;
+        if (Claimant != NULL && entry->Claimant == Claimant)
+            continue;
+        if (IgnoreHalReport && entry->Claimant == &IopResDbHalReport)
             continue;
         if (IopResDbConflict(Candidate, CandidateOwner, &entry->Desc, entry->Owner))
         {
@@ -267,6 +328,41 @@ IopResDbCheckDescriptor(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_
     }
     KeReleaseSpinLock(&IopResBuckets[cls].Lock, irql);
     return found;
+}
+
+BOOLEAN
+IopResDbCheckDescriptor(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_ PDEVICE_NODE CandidateOwner, _In_opt_ PVOID Claimant, _Out_opt_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Conflicting)
+{
+    return IopResDbCheck(Candidate, CandidateOwner, Claimant, FALSE, Conflicting);
+}
+
+/* Windows 11 gives a device the boot configuration its firmware describes even where the HAL reports the same range */
+BOOLEAN
+IopResDbCheckBootDescriptor(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_ PDEVICE_NODE CandidateOwner, _In_opt_ PVOID Claimant)
+{
+    return IopResDbCheck(Candidate, CandidateOwner, Claimant, TRUE, NULL);
+}
+
+BOOLEAN
+IopResDbConflictsWithChosen(
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate,
+    _In_opt_ PDEVICE_NODE CandidateOwner,
+    _In_reads_opt_(ChosenCount) PCM_PARTIAL_RESOURCE_DESCRIPTOR Chosen,
+    _In_ ULONG ChosenCount)
+{
+    ULONG Index;
+
+    ASSERT(Candidate != NULL);
+    ASSERT(ChosenCount == 0 || Chosen != NULL);
+
+    for (Index = 0; Index < ChosenCount; Index++)
+    {
+        ASSERT(&Chosen[Index] != Candidate);
+        if (IopResDbConflict(Candidate, CandidateOwner, &Chosen[Index], CandidateOwner))
+            return TRUE;
+    }
+
+    return FALSE;
 }
 
 /* Check every descriptor in a list against the database. */
@@ -287,7 +383,7 @@ IopResDbCheckList(_In_opt_ PCM_RESOURCE_LIST ResourceList)
 
         for (j = 0; j < partial->Count; j++, desc = CmiGetNextPartialDescriptor(desc))
         {
-            if (IopResDbCheckDescriptor(desc, NULL, NULL))
+            if (IopResDbCheckDescriptor(desc, NULL, NULL, NULL))
                 return TRUE;
         }
 
@@ -295,6 +391,47 @@ IopResDbCheckList(_In_opt_ PCM_RESOURCE_LIST ResourceList)
     }
 
     return FALSE;
+}
+
+static
+VOID
+IopResDbReleaseClaim(_In_ PVOID Claimant)
+{
+    ULONG cls;
+
+    ASSERT(Claimant != NULL);
+    for (cls = 0; cls < PiResClassMax; cls++)
+    {
+        PLIST_ENTRY le;
+        KIRQL irql;
+
+        KeAcquireSpinLock(&IopResBuckets[cls].Lock, &irql);
+        le = IopResBuckets[cls].List.Flink;
+        while (le != &IopResBuckets[cls].List)
+        {
+            PPI_RES_ENTRY entry = CONTAINING_RECORD(le, PI_RES_ENTRY, ListEntry);
+            le = le->Flink;
+            if (entry->Claimant == Claimant)
+            {
+                RemoveEntryList(&entry->ListEntry);
+                ExFreePoolWithTag(entry, TAG_IO);
+            }
+        }
+        KeReleaseSpinLock(&IopResBuckets[cls].Lock, irql);
+    }
+}
+
+NTSTATUS
+IopResDbReplaceClaim(_In_opt_ PDEVICE_NODE DeviceNode, _In_ PVOID Claimant, _In_ PCM_RESOURCE_LIST ResourceList)
+{
+    ASSERT(Claimant != NULL);
+    if (!IopResDbReady)
+        return STATUS_SUCCESS;
+    KeWaitForSingleObject(&IopResourceAssignmentLock, Executive, KernelMode, FALSE, NULL);
+    IopResDbReleaseClaim(Claimant);
+    IopResDbReserveList(DeviceNode, Claimant, ResourceList, FALSE, NULL);
+    KeReleaseMutex(&IopResourceAssignmentLock, FALSE);
+    return STATUS_SUCCESS;
 }
 
 VOID
@@ -448,7 +585,7 @@ IopResDbSeedFromRegistry(VOID)
                 /* Only raw lists; skip translated copies */
                 list = (PCM_RESOURCE_LIST)value->Data;
                 if (wcsstr(valueName->Name, L".Translated") == NULL && value->Type == REG_RESOURCE_LIST && IopIsResourceListValid(list, value->DataLength) && list->Count != 0)
-                    IopResDbReserveList(NULL, list, halKey, NULL);
+                    IopResDbReserveList(NULL, halKey ? &IopResDbHalReport : NULL, list, halKey, NULL);
 
                 ExFreePoolWithTag(valueName, TAG_IO);
                 ExFreePoolWithTag(value, TAG_IO);

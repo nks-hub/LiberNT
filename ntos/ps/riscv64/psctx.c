@@ -75,6 +75,34 @@ PspGetOrSetContextKernelRoutine(
     KeSetEvent(&Request->Event, IO_NO_INCREMENT, FALSE);
 }
 
+C_ASSERT(FIELD_OFFSET(CONTEXT, ContextFlags) == FIELD_OFFSET(WOW64_CONTEXT, ContextFlags));
+C_ASSERT(FIELD_OFFSET(WOW64_CONTEXT, SegSs) < sizeof(CONTEXT));
+
+BOOLEAN
+NTAPI
+PsArchGetWow64StartContext(
+    _In_ PCONTEXT Context,
+    _Out_ PULONG Eip,
+    _Out_ PULONG Eax,
+    _Out_ PULONG Ebx,
+    _Out_ PULONG Esp)
+{
+    PWOW64_CONTEXT Wow64Context = (PWOW64_CONTEXT)Context;
+
+    *Eip = *Eax = *Ebx = *Esp = 0;
+    if ((Context->ContextFlags & CONTEXT_RISCV64) ||
+        !(Wow64Context->ContextFlags & WOW64_CONTEXT_i386))
+    {
+        return FALSE;
+    }
+
+    *Eip = Wow64Context->Eip;
+    *Eax = Wow64Context->Eax;
+    *Ebx = Wow64Context->Ebx;
+    *Esp = Wow64Context->Esp;
+    return TRUE;
+}
+
 VOID
 NTAPI
 PsArchInitializeUserThreadContext(
@@ -109,50 +137,6 @@ PspArchCopyLiveWow64Context(
 
 NTSTATUS
 NTAPI
-PspArchCopyWow64DebugRegisters(
-    _In_ PETHREAD Thread,
-    _Inout_ PWOW64_CONTEXT Context,
-    _In_ BOOLEAN SetContext)
-{
-    UNREFERENCED_PARAMETER(Thread);
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(SetContext);
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
-PspArchCaptureXStateContext(
-    _In_ PCONTEXT Context,
-    _In_ ULONG ContextFlags,
-    _In_ KPROCESSOR_MODE PreviousMode,
-    _In_ BOOLEAN SetContext,
-    _Out_ PVOID *XState)
-{
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(ContextFlags);
-    UNREFERENCED_PARAMETER(PreviousMode);
-    UNREFERENCED_PARAMETER(SetContext);
-
-    /* TODO: capture the extended processor state (CONTEXT_XSTATE) of the context */
-    *XState = NULL;
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
-PspArchCompleteXStateContext(
-    _In_opt_ PVOID XState,
-    _In_ BOOLEAN CopyOut)
-{
-    UNREFERENCED_PARAMETER(XState);
-    UNREFERENCED_PARAMETER(CopyOut);
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
 PspArchSetInstrumentationCallback(
     _In_ PEPROCESS Process,
     _In_reads_bytes_(Length) PVOID Information,
@@ -167,16 +151,10 @@ PspArchSetInstrumentationCallback(
     return STATUS_INVALID_INFO_CLASS;
 }
 
-VOID
+BOOLEAN
 NTAPI
-PspArchInitializeUserThreadStartup(
-    _In_ PKEXCEPTION_FRAME ExceptionFrame,
-    _Inout_ PKTRAP_FRAME TrapFrame)
+PspArchManagesExecutableWrites(VOID)
 {
-    KiInitializeUserApc(ExceptionFrame,
-                        TrapFrame,
-                        PspSystemDllEntryPoint,
-                        NULL,
-                        PspSystemDllBase,
-                        NULL);
+    return FALSE;
 }
+

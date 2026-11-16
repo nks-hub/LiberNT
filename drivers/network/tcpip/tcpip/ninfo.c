@@ -15,6 +15,8 @@
 #define IP_ROUTE_TYPE_ADD 3
 #define IP_ROUTE_TYPE_DEL 2
 #define IP_NOT_FORWARDING 2
+#define IP_ROUTE_DIRECT 3
+#define IP_ROUTE_INDIRECT 4
 
 /* Get IPRouteEntry s for each of the routes in the system */
 TDI_STATUS InfoTdiQueryGetRouteTable( PIP_INTERFACE IF, PNDIS_BUFFER Buffer, PUINT BufferSize ) {
@@ -90,7 +92,8 @@ TDI_STATUS InfoTdiQueryGetRouteTable( PIP_INTERFACE IF, PNDIS_BUFFER Buffer, PUI
 		       sizeof(RtCurrent->Gw) );
 
 	RtCurrent->Metric1 = RCacheCur->Metric;
-	RtCurrent->Type = TDI_ADDRESS_TYPE_IP;
+	RtCurrent->Type = (AddrIsUnspecified(&RCacheCur->Router->Address) ||
+	                   IsInterfaceAddress(IF, &RCacheCur->Router->Address)) ? IP_ROUTE_DIRECT : IP_ROUTE_INDIRECT;
 
 	TI_DbgPrint
 	    (DEBUG_INFO,

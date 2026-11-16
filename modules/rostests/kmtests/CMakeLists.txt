@@ -9,6 +9,7 @@ include_directories(
 add_subdirectory(example)
 add_subdirectory(fltmgr)
 add_subdirectory(hidparse)
+add_subdirectory(netio_iphlp)
 add_subdirectory(kernel32)
 add_subdirectory(kmtwow64)
 add_subdirectory(ndis)
@@ -652,6 +653,7 @@ list(APPEND KMTEST_SOURCE
     kernel32/FindFile_user.c
     kernel32/PipeClientComputerName_user.c
     kernel32/SecureMemoryCache_user.c
+    netio_iphlp/NetioIpHlp_user.c
     ntos_se/NtFilterToken.c
     ntos_se/SeLowBoxToken.c
     ntos_se/SeAuditAlarm.c
@@ -726,7 +728,7 @@ set_module_type(kmtest win32cui)
 target_link_libraries(kmtest ${PSEH_LIB})
 # kmtest/filter.c resolves fltlib.dll at runtime so kmtest still starts on
 # NT 5.x systems without Filter Manager.
-add_importlibs(kmtest advapi32 ws2_32 setupapi newdev fwpuclnt user32 msvcrt kernel32 ntdll)
+add_importlibs(kmtest advapi32 iphlpapi ws2_32 setupapi newdev fwpuclnt user32 msvcrt kernel32 ntdll)
 target_compile_definitions(kmtest PRIVATE KMT_USER_MODE NTDDI_VERSION=${REACTOS_TARGET_NTDDI})
 #add_pch(kmtest include/kmt_test.h)
 add_rostests_file(TARGET kmtest)
@@ -747,6 +749,7 @@ add_dependencies(kmtest_drivers
     kmtest_drv
     example_drv
     ndissg_drv
+    netioiphlp_drv
     FltMgrLoad_drv
     fltmgrio_drv
     fltmgr_create

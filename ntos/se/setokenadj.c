@@ -564,7 +564,7 @@ NtAdjustGroupsToken(
                 else
                     Changes[ChangeCount].Attributes = Attributes & ~SE_GROUP_ENABLED;
 
-                ChangeCount++;
+                if (Changes[ChangeCount].Attributes != Attributes) ChangeCount++;
                 break;
             }
 

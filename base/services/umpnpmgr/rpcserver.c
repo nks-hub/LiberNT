@@ -3775,7 +3775,7 @@ PNP_CreateDevInst(
         /* Create a device node for the device */
         RtlInitUnicodeString(&ControlData.DeviceInstance, pszDeviceID);
         RtlInitUnicodeString(&ControlData.ParentInstance, pszParentDeviceID);
-        Status = NtPlugPlayControl(bRootParent ? PlugPlayControlInitializeDevice : PlugPlayControlInitializeChildDevice,
+        Status = NtPlugPlayControl(bSoftware ? PlugPlayControlInitializeChildDevice : PlugPlayControlInitializeDevice,
                                    &ControlData,
                                    sizeof(ControlData));
         if (!NT_SUCCESS(Status))
@@ -4005,7 +4005,6 @@ RemoveSoftwareDeviceInstance(
     _In_ LPWSTR pszDeviceInstance)
 {
     PLUGPLAY_CONTROL_DEVICE_CONTROL_DATA ControlData;
-    PLUGPLAY_CONTROL_ENUMERATE_DEVICE_DATA EnumerateData;
     NTSTATUS Status;
 
     if (!IsValidDeviceInstanceID(pszDeviceInstance) ||
@@ -4018,12 +4017,6 @@ RemoveSoftwareDeviceInstance(
     Status = NtPlugPlayControl(PlugPlayControlDeregisterDevice, &ControlData, sizeof(ControlData));
     if (Status == STATUS_NO_SUCH_DEVICE)
         return CR_SUCCESS;
-    if (!NT_SUCCESS(Status))
-        return NtStatusToCrError(Status);
-
-    RtlInitUnicodeString(&EnumerateData.DeviceInstance, szRootDeviceInstanceID);
-    EnumerateData.Flags = 0;
-    Status = NtPlugPlayControl(PlugPlayControlEnumerateDevice, &EnumerateData, sizeof(EnumerateData));
     return NT_SUCCESS(Status) ? CR_SUCCESS : NtStatusToCrError(Status);
 }
 

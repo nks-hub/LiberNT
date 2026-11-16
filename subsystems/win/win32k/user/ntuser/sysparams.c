@@ -71,9 +71,7 @@ static const WCHAR* VAL_CLICKLOCKTIME = L"ClickLockTime";
 static const WCHAR* VAL_PAINTDESKVER = L"PaintDesktopVersion";
 static const WCHAR* VAL_CARETRATE = L"CursorBlinkRate";
 static const WCHAR* VAL_CARETWIDTH = L"CaretWidth";
-#if (_WIN32_WINNT >= 0x0600)
 static const WCHAR* VAL_SCRLLCHARS = L"WheelScrollChars";
-#endif
 static const WCHAR* VAL_USERPREFMASK = L"UserPreferencesMask";
 static const WCHAR* VAL_SNAP_ENABLED = L"WindowArrangementActive";
 static const WCHAR* VAL_SNAP_DOCKMOVING = L"DockMoving";
@@ -163,6 +161,100 @@ SpiUnscaleFromSystemDpi(INT Value)
     return -(INT)((Magnitude * USER_SYSTEM_DPI_DEFAULT + Dpi / 2) / Dpi);
 }
 
+#define SPI_RAW_SMBIOS_HEADER       8
+#define SPI_MAX_SMBIOS_TABLE        (1024 * 1024)
+#define SPI_MIN_EFFECTIVE_WIDTH     1280
+#define SPI_MIN_EFFECTIVE_HEIGHT    1000
+
+static
+BOOLEAN
+SpiIsPortableChassis(VOID)
+{
+    SYSTEM_FIRMWARE_TABLE_INFORMATION Query;
+    PSYSTEM_FIRMWARE_TABLE_INFORMATION Info;
+    PUCHAR Structure, End, Next;
+    ULONG Length = 0;
+    BOOLEAN Portable = FALSE;
+    NTSTATUS Status;
+
+    RtlZeroMemory(&Query, sizeof(Query));
+    Query.ProviderSignature = 'RSMB';
+    Query.Action = SystemFirmwareTable_Get;
+    Status = ZwQuerySystemInformation(SystemFirmwareTableInformation, &Query, sizeof(Query), &Length);
+    if (Status != STATUS_BUFFER_TOO_SMALL ||
+        Length <= FIELD_OFFSET(SYSTEM_FIRMWARE_TABLE_INFORMATION, TableBuffer) + SPI_RAW_SMBIOS_HEADER ||
+        Length > SPI_MAX_SMBIOS_TABLE)
+        return FALSE;
+    Info = ExAllocatePoolWithTag(PagedPool, Length, USERTAG_SYSTEM);
+    if (!Info)
+        return FALSE;
+    RtlZeroMemory(Info, Length);
+    Info->ProviderSignature = 'RSMB';
+    Info->Action = SystemFirmwareTable_Get;
+    Status = ZwQuerySystemInformation(SystemFirmwareTableInformation, Info, Length, &Length);
+    if (NT_SUCCESS(Status) && Info->TableBufferLength > SPI_RAW_SMBIOS_HEADER &&
+        Info->TableBufferLength <= Length - FIELD_OFFSET(SYSTEM_FIRMWARE_TABLE_INFORMATION, TableBuffer))
+    {
+        Structure = Info->TableBuffer + SPI_RAW_SMBIOS_HEADER;
+        End = Info->TableBuffer + Info->TableBufferLength;
+        while (Structure + 4 <= End && Structure[1] >= 4 && Structure + Structure[1] <= End && Structure[0] != 127)
+        {
+            if (Structure[0] == 3 && Structure[1] > 5)
+            {
+                switch (Structure[5] & 0x7F)
+                {
+                    case 0x08:
+                    case 0x09:
+                    case 0x0A:
+                    case 0x0B:
+                    case 0x0E:
+                    case 0x1E:
+                    case 0x1F:
+                    case 0x20:
+                        Portable = TRUE;
+                        break;
+                }
+                break;
+            }
+            Next = Structure + Structure[1];
+            while (Next + 1 < End && (Next[0] || Next[1]))
+                ++Next;
+            if (Next + 1 >= End)
+                break;
+            Structure = Next + 2;
+        }
+    }
+    ExFreePoolWithTag(Info, USERTAG_SYSTEM);
+    return Portable;
+}
+
+static
+UINT
+SpiRecommendedSystemDpi(VOID)
+{
+    static const UINT Scales[] = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
+    static UINT Recommended;
+    ULONG Width = 0, Height = 0, Index;
+    UINT Scale = 100;
+
+    if (Recommended)
+        return Recommended;
+    Recommended = USER_SYSTEM_DPI_DEFAULT;
+    if (InbvQueryBootScreen(NULL, 0, &Width, &Height) != STATUS_BUFFER_TOO_SMALL || !Width || !Height ||
+        !SpiIsPortableChassis())
+        return Recommended;
+    for (Index = 0; Index < RTL_NUMBER_OF(Scales); ++Index)
+    {
+        if ((ULONGLONG)Width * 100 / Scales[Index] < SPI_MIN_EFFECTIVE_WIDTH ||
+            (ULONGLONG)Height * 100 / Scales[Index] < SPI_MIN_EFFECTIVE_HEIGHT)
+            break;
+        Scale = Scales[Index];
+    }
+    TRACE("Recommended scale for the %lux%lu portable panel: %u%%\n", Width, Height, Scale);
+    Recommended = USER_SYSTEM_DPI_DEFAULT * Scale / 100;
+    return Recommended;
+}
+
 static
 UINT
 SpiLoadSystemDpi(VOID)
@@ -186,6 +278,10 @@ SpiLoadSystemDpi(VOID)
         WARN("Ignoring invalid system DPI %lu\n", Dpi);
         Dpi = USER_SYSTEM_DPI_DEFAULT;
     }
+
+    /* FIXME: a machine LogPixels of 96 cannot keep 100% on a portable panel; per-monitor scaling settings are missing */
+    if (Dpi == USER_SYSTEM_DPI_DEFAULT)
+        Dpi = min(SpiRecommendedSystemDpi(), USER_SYSTEM_DPI_MAX);
 
     return Dpi;
 }
@@ -470,9 +566,7 @@ SpiUpdatePerUserSystemParameters(VOID)
     gspv.ncm.iSmCaptionHeight = SpiLoadMetric(L"SmCaptionHeight", 15);
     gspv.ncm.iMenuWidth = SpiLoadMetric(L"MenuWidth", 18);
     gspv.ncm.iMenuHeight = SpiLoadMetric(L"MenuHeight", 18);
-#if (WINVER >= 0x0600)
     gspv.ncm.iPaddedBorderWidth = SpiLoadMetric(L"PaddedBorderWidth", 4);
-#endif
     SpiLoadFont(&gspv.ncm.lfCaptionFont, L"CaptionFont", &lf1);
     SpiLoadFont(&gspv.ncm.lfSmCaptionFont, L"SmCaptionFont", &lf1);
     SpiLoadFont(&gspv.ncm.lfMenuFont, L"MenuFont", &lf1);
@@ -481,7 +575,7 @@ SpiUpdatePerUserSystemParameters(VOID)
 
     /* Load MINIMIZEDMETRICS */
     gspv.mm.cbSize = sizeof(MINIMIZEDMETRICS);
-    gspv.mm.iWidth = SpiLoadMetric(L"MinWidth", 160);
+    gspv.mm.iWidth = SpiLoadMetric(L"MinWidth", 154);
     gspv.mm.iHorzGap = SpiLoadMetric(L"MinHorzGap", 0);
     gspv.mm.iVertGap = SpiLoadMetric(L"MinVertGap", 0);
     gspv.mm.iArrange = SpiLoadInt(KEY_METRIC, L"MinArrange", ARW_HIDE);
@@ -513,9 +607,7 @@ SpiUpdatePerUserSystemParameters(VOID)
     gspv.uiFontSmoothingType = SpiLoadDWord(KEY_DESKTOP, VAL_FONTSMOOTHINGTYPE, 1);
     gspv.uiFontSmoothingContrast = SpiLoadDWord(KEY_DESKTOP, VAL_FONTSMOOTHINGCONTRAST, 1400);
     gspv.uiFontSmoothingOrientation = SpiLoadDWord(KEY_DESKTOP, VAL_FONTSMOOTHINGORIENTATION, 1);
-#if (_WIN32_WINNT >= 0x0600)
     gspv.uiWheelScrollChars = SpiLoadInt(KEY_DESKTOP, VAL_SCRLLCHARS, 3);
-#endif
 
     /* Some hardcoded values for now */
 
@@ -530,9 +622,7 @@ SpiUpdatePerUserSystemParameters(VOID)
     gspv.iScrSaverTimeout = SpiLoadInt(KEY_DESKTOP, VAL_SCRTO, 600);
     gspv.bScrSaverActive = SpiLoadScreenSaverActive();
     gspv.bScrSaverRunning = FALSE;
-#if(WINVER >= 0x0600)
     gspv.bScrSaverSecure = SpiLoadInt(KEY_DESKTOP, L"ScreenSaverIsSecure", 0) != 0;
-#endif
 
     gspv.bFastTaskSwitch = TRUE;
 
@@ -1407,9 +1497,7 @@ SpiGetSet(UINT uiAction, UINT uiParam, PVOID pvParam, FLONG fl)
                 SpiStoreMetric(L"SmCaptionHeight", gspv.ncm.iSmCaptionHeight);
                 SpiStoreMetric(L"MenuWidth", gspv.ncm.iMenuWidth);
                 SpiStoreMetric(L"MenuHeight", gspv.ncm.iMenuHeight);
-#if (WINVER >= 0x0600)
                 SpiStoreMetric(L"PaddedBorderWidth", gspv.ncm.iPaddedBorderWidth);
-#endif
                 SpiStoreFont(L"CaptionFont", &gspv.ncm.lfCaptionFont);
                 SpiStoreFont(L"SmCaptionFont", &gspv.ncm.lfSmCaptionFont);
                 SpiStoreFont(L"MenuFont", &gspv.ncm.lfMenuFont);
@@ -2000,13 +2088,11 @@ SpiGetSet(UINT uiAction, UINT uiParam, PVOID pvParam, FLONG fl)
         case SPI_SETMENUSHOWDELAY:
             return SpiSetInt(&gspv.dwMenuShowDelay, uiParam, KEY_DESKTOP, L"MenuShowDelay", fl);
 
-#if (_WIN32_WINNT >= 0x0600)
         case SPI_GETWHEELSCROLLCHARS:
             return SpiGetInt(pvParam, &gspv.uiWheelScrollChars, fl);
 
         case SPI_SETWHEELSCROLLCHARS:
             return SpiSetInt(&gspv.uiWheelScrollChars, uiParam, KEY_DESKTOP, VAL_SCRLLCHARS, fl);
-#endif
         case SPI_GETSHOWIMEUI:
             return SpiGetInt(pvParam, &gspv.bShowImeUi, fl);
 
@@ -2032,7 +2118,6 @@ SpiGetSet(UINT uiAction, UINT uiParam, PVOID pvParam, FLONG fl)
             // FIXME: also return value?
             return SpiSetBool(&gspv.bScrSaverRunning, uiParam, KEY_MOUSE, L"", fl);
 
-#if(WINVER >= 0x0600)
         case SPI_GETAUDIODESCRIPTION:
             return SpiGet(pvParam, &gspv.audiodescription, sizeof(AUDIODESCRIPTION), fl);
 
@@ -2045,7 +2130,6 @@ SpiGetSet(UINT uiAction, UINT uiParam, PVOID pvParam, FLONG fl)
 
         case SPI_SETSCREENSAVESECURE:
             return SpiSetBool(&gspv.bScrSaverSecure, uiParam, KEY_DESKTOP, L"ScreenSaverIsSecure", fl);
-#endif
 
         case SPI_GETACTIVEWINDOWTRACKING:
             return SpiGetUserPref(UPM_ACTIVEWINDOWTRACKING, pvParam, fl);
@@ -2179,7 +2263,6 @@ SpiGetSet(UINT uiAction, UINT uiParam, PVOID pvParam, FLONG fl)
         case SPI_SETBLOCKSENDINPUTRESETS:
             return SpiSetBool(&gspv.bBlockSendInputResets, uiParam, KEY_MOUSE, L"", fl);
 
-#if(_WIN32_WINNT >= 0x0600)
         case SPI_GETDISABLEOVERLAPPEDCONTENT:
             return SpiGetInt(pvParam, &gspv.bDisableOverlappedContent, fl);
 
@@ -2203,7 +2286,6 @@ SpiGetSet(UINT uiAction, UINT uiParam, PVOID pvParam, FLONG fl)
 
         case SPI_SETSPEECHRECOGNITION:
             return SpiSetBool(&gspv.bSpeechRecognition, uiParam, KEY_MOUSE, L"", fl);
-#endif
 
         case SPI_GETFOREGROUNDLOCKTIMEOUT:
             return SpiGetInt(pvParam, &gspv.dwForegroundLockTimeout, fl);
@@ -2359,15 +2441,11 @@ SpiGetSetProbeBuffer(UINT uiAction, UINT uiParam, PVOID pvParam)
         case SPI_GETMOUSEHOVERTIME:
         case SPI_GETWHEELSCROLLLINES:
         case SPI_GETMENUSHOWDELAY:
-#if (_WIN32_WINNT >= 0x0600)
         case SPI_GETWHEELSCROLLCHARS:
-#endif
         case SPI_GETSHOWIMEUI:
         case SPI_GETMOUSESPEED:
         case SPI_GETSCREENSAVERRUNNING:
-#if(WINVER >= 0x0600)
         case SPI_GETSCREENSAVESECURE:
-#endif
         case SPI_GETACTIVEWINDOWTRACKING:
         case SPI_GETMENUANIMATION:
         case SPI_GETCOMBOBOXANIMATION:
@@ -2388,12 +2466,10 @@ SpiGetSetProbeBuffer(UINT uiAction, UINT uiParam, PVOID pvParam)
         case SPI_GETFLATMENU:
         case SPI_GETDROPSHADOW:
         case SPI_GETBLOCKSENDINPUTRESETS:
-#if(_WIN32_WINNT >= 0x0600)
         case SPI_GETDISABLEOVERLAPPEDCONTENT:
         case SPI_GETCLIENTAREAANIMATION:
         case SPI_GETCLEARTYPE:
         case SPI_GETSPEECHRECOGNITION:
-#endif
         case SPI_GETFOREGROUNDLOCKTIMEOUT:
         case SPI_GETACTIVEWNDTRKTIMEOUT:
         case SPI_GETFOREGROUNDFLASHCOUNT:
@@ -2503,11 +2579,9 @@ SpiGetSetProbeBuffer(UINT uiAction, UINT uiParam, PVOID pvParam)
             cbSize = sizeof(HKL);
             break;
 
-#if(WINVER >= 0x0600)
         case SPI_GETAUDIODESCRIPTION:
             cbSize = sizeof(AUDIODESCRIPTION);
             break;
-#endif
 
         case SPI_SETMOUSE:
             cbSize = 3 * sizeof(INT);

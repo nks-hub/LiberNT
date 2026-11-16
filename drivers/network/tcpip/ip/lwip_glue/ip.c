@@ -356,7 +356,7 @@ LibUDPSendDatagram(PADDRESS_FILE AddrFile, PTDI_CONNECTION_INFORMATION ConnInfo,
                    PCHAR BufferData, ULONG DataSize, PULONG DataUsed)
 {
     struct lib_ip_msg msg;
-    IP_ADDRESS RemoteAddress;
+    IP_ADDRESS RemoteAddress, UnmappedAddress;
     USHORT RemotePort;
     NTSTATUS Status;
 
@@ -365,6 +365,10 @@ LibUDPSendDatagram(PADDRESS_FILE AddrFile, PTDI_CONNECTION_INFORMATION ConnInfo,
         return Status;
 
     if (RemoteAddress.Type != IP_ADDRESS_V6)
+        return STATUS_INVALID_ADDRESS;
+
+    UnmappedAddress = RemoteAddress;
+    if (TCPUnmapFromDualStack(&UnmappedAddress) && !TCPAddressFileAcceptsMapped(AddrFile))
         return STATUS_INVALID_ADDRESS;
 
     if (DataSize > 0xFFFF - 8)
@@ -1149,6 +1153,8 @@ NTAPI
 LibICMP6TimeoutDpc(PKDPC Dpc, PVOID ContextArg, PVOID SystemArgument1, PVOID SystemArgument2)
 {
     PICMP6_ECHO_CONTEXT Context = ContextArg;
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     if (InterlockedCompareExchange(&Context->Finished, 2, 0) == 0)
         LibICMP6Complete(Context, STATUS_TIMEOUT, IP_REQ_TIMED_OUT);

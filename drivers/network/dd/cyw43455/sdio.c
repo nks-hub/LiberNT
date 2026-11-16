@@ -869,6 +869,8 @@ CywBackplaneSetWindowLocked(
     ULONG Window = Address & SBSDIO_SBWINDOW_MASK;
     NTSTATUS Status;
 
+    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
+
     if (Window == Adapter->CurrentBackplaneWindow)
     {
         return STATUS_SUCCESS;
@@ -947,6 +949,10 @@ CywBackplaneReadl(
     {
         return STATUS_INVALID_PARAMETER;
     }
+    if (Adapter->BusType == CywBusPcie)
+    {
+        return CywPcieBackplaneReadl(Adapter, Address, Value);
+    }
     return CywBackplaneReadlSc(Adapter, Address, Value,
                                Adapter->ControlBuffer);
 }
@@ -960,6 +966,10 @@ CywBackplaneWritel(
     if (Adapter == NULL)
     {
         return STATUS_INVALID_PARAMETER;
+    }
+    if (Adapter->BusType == CywBusPcie)
+    {
+        return CywPcieBackplaneWritel(Adapter, Address, Value);
     }
     return CywBackplaneWritelSc(Adapter, Address, Value,
                                 Adapter->ControlBuffer);

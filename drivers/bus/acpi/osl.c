@@ -294,6 +294,9 @@ AcpiOsGetRootPointer (
         return (ACPI_PHYSICAL_ADDRESS)PhysicalAddress.QuadPart;
     }
 
+    if (KeLoaderBlock && KeLoaderBlock->FirmwareInformation.FirmwareTypeEfi)
+        return 0;
+
     AcpiFindRootPointer(&pa);
     return pa;
 }
@@ -558,6 +561,9 @@ OslExecDpcRoutine(PKDPC Dpc, PVOID Context, PVOID Arg1, PVOID Arg2)
      */
     SListEntry = InterlockedFlushSList(&OslExecPendingList);
     ReversedList = NULL;
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     while (SListEntry != NULL)
     {
         NextEntry = SListEntry->Next;

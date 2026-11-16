@@ -16,6 +16,9 @@ BOOLEAN DxgkVidMmWorkerDrainCoreTryAdmitLocked(_Inout_ volatile LONG *ActiveWork
     *ResetDrainedEvent = *ActiveWorkers == 0;
     (*ActiveWorkers)++;
     return TRUE;
+
+    ASSERT(*ActiveWorkers > 0);
+
 }
 
 BOOLEAN DxgkVidMmWorkerDrainCoreRetireLocked(_Inout_ volatile LONG *ActiveWorkers, _Out_ PBOOLEAN SetDrainedEvent)

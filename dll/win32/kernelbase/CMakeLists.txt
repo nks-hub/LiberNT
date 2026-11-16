@@ -15,29 +15,34 @@ spec2def(kernelbase.dll kernelbase.spec ADD_IMPORTLIB)
 add_library(kernelbase MODULE
     ApiSetQuery.c
     AppContainer.c
+    AppInitDlls.c
     CancelSynchronousIo.c
     ConsoleLegacy.c
     CpuSets.c
     DllMain.c
     AppModelToken.c
+    IntegratedDisplay.c
     MemoryApi.c
+    NlsScripts.c
     PackageFamily.c
     PssSnapshot.c
     Security.c
     SyncObjects.c
     VirtualAlloc2.c
     VolumeInformation.c
+    WerRegistration.c
     WerRuntime.c
     Wow64Directory.c
     XState.c
     ${REACTOS_SOURCE_DIR}/sdk/lib/crt/string/wcsnlen.c
+    ${REACTOS_SOURCE_DIR}/dll/win32/dwrite/scripts.c
     kernelbase.rc
     ${CMAKE_CURRENT_BINARY_DIR}/kernelbase_stubs.c
     ${CMAKE_CURRENT_BINARY_DIR}/kernelbase.def)
 
 set_module_type(kernelbase win32dll ENTRYPOINT DllMain 12)
 target_link_libraries(kernelbase psapi_static kernelbase_static kernel32_shared win32_registry_hkcr wine chkstk uuid)
-add_importlibs(kernelbase kernel32 kernel32_vista ntdll ntdll_vista)
+add_importlibs(kernelbase kernel32 ntdll)
 add_dependencies(kernelbase psdk errcodes)
 add_cd_file(TARGET kernelbase DESTINATION reactos/system32 FOR all)
 

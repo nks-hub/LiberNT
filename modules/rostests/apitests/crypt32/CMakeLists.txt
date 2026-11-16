@@ -3,10 +3,14 @@ list(APPEND SOURCE
     CertControlStore.c
     CertEnumSystemStoreLocation.c
     CertUpdateStore.c
+    ChainNotBefore.c
     ChainRevocation.c
     Countersign.c
     CryptProtectMemory.c
+    FindOIDInfo.c
+    GeneralizedTime.c
     RevocationTimeout.c
+    RootProgram.c
     testlist.c)
 
 add_executable(crypt32_apitest ${SOURCE})

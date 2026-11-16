@@ -303,6 +303,8 @@ static PVIDSCH_DMA_PACKET
 VidSchpFirstActivePacketLocked(
     _In_ PVIDSCH_ENGINE Engine)
 {
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     if (IsListEmpty(&Engine->ActivePacketList))
         return NULL;
 
@@ -781,6 +783,20 @@ VidSchpEngineState(_In_ PDXGKRNL_ADAPTER Adapter, _In_ ULONG EngineOrdinal)
         case Dxgmms2EngineSuspended:  return VidSchEngineSuspended;
         default:                      return VidSchEngineError;
     }
+}
+
+static
+_IRQL_requires_max_(HIGH_LEVEL)
+VIDSCH_ENGINE_STATE
+VidSchpEngineStateAtInterrupt(
+    _In_ PVIDSCH_ENGINE Engine)
+{
+    PDXGMMS2_SCHEDULER_INTERFACE_V1 Sched = VidSchpScheduler(Engine->Adapter);
+
+    if (Sched == NULL)
+        return VidSchEngineError;
+    ASSERT(Sched->ReadEngineState != NULL);
+    return (VIDSCH_ENGINE_STATE)Sched->ReadEngineState(Sched->SchedulerHandle, Engine->SchedulerOrdinal);
 }
 
 /* VIDSCH_ENGINE_STATE and DXGMMS2_ENGINE_STATE share one numbering; the
@@ -1920,10 +1936,12 @@ Recover:
 
     if ((FaultFlags & DXGK_PAGE_FAULT_ENGINE_RESET_REQUIRED) != 0)
     {
+        /* TODO: an engine reset that aborted a paging packet must be followed by an adapter reset here too */
         NTSTATUS ResetStatus =
             VidSchResetEngine(Engine->Adapter,
                               Engine->SchedulerOrdinal,
-                              FALSE);
+                              FALSE,
+                              NULL);
 
         DXGKRNL_ERR("VidSch: engine %lu reset after page fault -> 0x%08lX\n",
                     Engine->SchedulerOrdinal, ResetStatus);
@@ -2388,6 +2406,8 @@ VidSchpTdrDpcRoutine(
     UNREFERENCED_PARAMETER(SystemArgument2);
 
     /* Intentionally empty: adapter.c owns the single TDR watchdog. */
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 }
 
 static VOID
@@ -4168,6 +4188,7 @@ VidSchNotifyInterrupt(
 {
     PVIDSCH_CONTEXT Ctx;
     PVIDSCH_ENGINE Engine = NULL;
+    VIDSCH_ENGINE_STATE EngineState = VidSchEngineError;
     DXGMMS2_FENCE_SNAPSHOT_V1 FenceSnapshot;
     ULONG CurrentCompletedFence;
     ULONG FenceId = 0;
@@ -4270,6 +4291,10 @@ VidSchNotifyInterrupt(
             Adapter->NodeCount) ||
         NodeOrdinal >= DXGK_MAX_TRACKED_NODES)
         VidSchpBugCheckInvalidFence(Adapter, FenceId, 0);
+    if (Ctx != NULL && Ctx->Initialized && NodeOrdinal < Ctx->EngineCount)
+        EngineState = VidSchpEngineStateAtInterrupt(&Ctx->Engines[NodeOrdinal]);
+    if (VidSchPolicyIgnoreEngineInterrupt(EngineState, VidSchEngineResetting))
+        return;
     LastSubmittedFence = (ULONG)InterlockedCompareExchange((volatile LONG *)&Adapter->NodeLastSubmittedFenceId[NodeOrdinal], 0, 0);
     if ((!PreemptionNotification && FenceId == 0) || LastSubmittedFence == 0 || (FenceId != 0 && !VidSchpFenceReached(LastSubmittedFence, FenceId)))
         VidSchpBugCheckInvalidFence(Adapter, FenceId, LastSubmittedFence);
@@ -4285,7 +4310,7 @@ VidSchNotifyInterrupt(
         ULONG PendingFence = Engine != NULL ? (ULONG)InterlockedCompareExchange(&Engine->PendingPreemptionFenceId, 0, 0) : 0;
 
         KeMemoryBarrier();
-        if (Engine == NULL || PendingFence == 0 || PendingFence != NotifyData->DmaPreempted.PreemptionFenceId || Engine->PendingPreemptionEngineOrdinal != NotifyData->DmaPreempted.EngineOrdinal || (VidSchpReadState(Engine) != VidSchEnginePreempting && VidSchpReadState(Engine) != VidSchEngineResetting) || InterlockedCompareExchange(&Engine->PreemptionInterruptPending, 1, 0) != 0)
+        if (Engine == NULL || PendingFence == 0 || PendingFence != NotifyData->DmaPreempted.PreemptionFenceId || Engine->PendingPreemptionEngineOrdinal != NotifyData->DmaPreempted.EngineOrdinal || EngineState != VidSchEnginePreempting || InterlockedCompareExchange(&Engine->PreemptionInterruptPending, 1, 0) != 0)
             VidSchpBugCheckInvalidFence(Adapter, FenceId, LastSubmittedFence);
     }
 
@@ -5038,7 +5063,8 @@ NTSTATUS
 VidSchResetEngine(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _In_ ULONG            EngineOrdinal,
-    _In_ BOOLEAN          EndTdrDdiDeadline)
+    _In_ BOOLEAN          EndTdrDdiDeadline,
+    _Out_opt_ PBOOLEAN    PagingAborted)
 {
     PVIDSCH_CONTEXT Ctx;
     PVIDSCH_ENGINE Engine;
@@ -5055,6 +5081,8 @@ VidSchResetEngine(
 
     PAGED_CODE();
 
+    if (PagingAborted != NULL)
+        *PagingAborted = FALSE;
     if (Adapter == NULL)
         return STATUS_INVALID_PARAMETER;
     if (!VidSchpAcquireCall(Adapter))
@@ -5140,35 +5168,6 @@ VidSchResetEngine(
     }
     KmdCallAcquired = TRUE;
 
-    /*
-     * Ask for the engine back before taking it.  Preemption is the graceful
-     * half of the pair: a driver that can stop the current packet leaves the
-     * engine in a state it defined, where a reset leaves it in whatever state
-     * the hardware happened to be in.  Windows tries this first for that
-     * reason.
-     *
-     * A refusal is expected and costs nothing -- softgpu has no atomic
-     * cancellation primitive and says so rather than reporting a fence nothing
-     * preempted -- so the reset below runs either way.  What this buys is that
-     * a driver which *can* preempt gets the chance.
-     */
-    if (DXGK_CB_FULL(Adapter, DxgkDdiPreemptCommand) != NULL)
-    {
-        DXGKARG_PREEMPTCOMMAND PreemptArgs;
-        NTSTATUS PreemptStatus;
-
-        RtlZeroMemory(&PreemptArgs, sizeof(PreemptArgs));
-        PreemptArgs.NodeOrdinal = EngineOrdinal;
-        PreemptArgs.EngineOrdinal = 0;
-        PreemptArgs.PreemptionFenceId = (UINT)Engine->LastCompletedFence;
-
-        DxgkEnterSchedulerClass(Adapter);
-        PreemptStatus = DXGK_CB_FULL(Adapter, DxgkDdiPreemptCommand)(Adapter->MiniportDeviceContext, &PreemptArgs);
-        DxgkLeaveSchedulerClass(Adapter);
-        if (!NT_SUCCESS(PreemptStatus))
-            DXGKRNL_TRACE("TDR: preemption declined 0x%08lX, resetting engine %u\n", PreemptStatus, EngineOrdinal);
-    }
-
     RtlZeroMemory(&ResetArgs, sizeof(ResetArgs));
     ResetArgs.NodeOrdinal = EngineOrdinal;
     ResetArgs.EngineOrdinal = 0;
@@ -5188,6 +5187,28 @@ VidSchResetEngine(
         {
             Status = STATUS_DEVICE_PROTOCOL_ERROR;
         }
+    }
+
+    if (NT_SUCCESS(Status) && PagingAborted != NULL)
+    {
+        PLIST_ENTRY Entry;
+
+        /* A paging packet among the aborted ones leaves memory in an unknown state: the caller follows with an adapter reset. */
+        KeAcquireSpinLock(&Engine->QueueLock, &OldIrql);
+        for (Entry = Engine->ActivePacketList.Flink; Entry != &Engine->ActivePacketList; Entry = Entry->Flink)
+        {
+            PVIDSCH_DMA_PACKET Packet = CONTAINING_RECORD(Entry, VIDSCH_DMA_PACKET, ActiveEngineEntry);
+
+            if ((Packet->SubmitFlags & VIDSCH_SUBMITFLAG_PAGING) != 0 &&
+                VidSchPolicyResetAbortedFence(Packet->SubmissionFenceId,
+                                              EngineStatus.LastCompletedFenceId,
+                                              ResetArgs.LastAbortedFenceId))
+            {
+                *PagingAborted = TRUE;
+                break;
+            }
+        }
+        KeReleaseSpinLock(&Engine->QueueLock, OldIrql);
     }
 
     if (NT_SUCCESS(Status))

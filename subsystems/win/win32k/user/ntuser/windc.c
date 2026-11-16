@@ -116,6 +116,7 @@ DceAllocDCE(PWND Window OPTIONAL, DCE_TYPE Type)
       ExFreePoolWithTag(pDce, USERTAG_DCE);
       return NULL;
   }
+  ASSERT(UserIsEnteredExclusive());
   DCECount++;
   TRACE("Alloc DCE's! %d\n",DCECount);
   pDce->hwndCurrent = (Window ? UserHMGetHandle(Window) : NULL);
@@ -784,6 +785,7 @@ DceFreeDCE(PDCE pdce, BOOLEAN Force)
 
   ExFreePoolWithTag(pdce, USERTAG_DCE);
 
+  ASSERT(UserIsEnteredExclusive());
   DCECount--;
   TRACE("Freed DCE's! %d \n", DCECount);
 }
@@ -1172,6 +1174,36 @@ NtUserGetDCEx(HWND hWnd OPTIONAL, HANDLE ClipRegion, ULONG Flags)
   if (hWnd && !(Wnd = UserGetWindowObject(hWnd)))
   {
       goto Exit; // Return NULL
+  }
+  if (Wnd && (HRGN)ClipRegion > HRGN_WINDOW && (Flags & (DCX_INTERSECTRGN | DCX_EXCLUDERGN)) &&
+      UserDpiIsVirtualCaller())
+  {
+      PREGION Region = REGION_LockRgn(ClipRegion), Physical = NULL, Target;
+      HRGN hPhysical = NULL;
+
+      if (Region)
+      {
+          Physical = UserDpiCreatePhysicalRegion(Region);
+          REGION_UnlockRgn(Region);
+      }
+      if (Physical)
+      {
+          hPhysical = NtGdiCreateRectRgn(0, 0, 0, 0);
+          Target = hPhysical ? REGION_LockRgn(hPhysical) : NULL;
+          if (Target)
+          {
+              IntGdiCombineRgn(Target, Physical, NULL, RGN_COPY);
+              REGION_UnlockRgn(Target);
+          }
+          REGION_Delete(Physical);
+      }
+      if (hPhysical)
+      {
+          if (!(Flags & DCX_KEEPCLIPRGN))
+              GreDeleteObject(ClipRegion);
+          ClipRegion = hPhysical;
+          Flags &= ~DCX_KEEPCLIPRGN;
+      }
   }
   Ret = UserGetDCEx(Wnd, ClipRegion, Flags);
 

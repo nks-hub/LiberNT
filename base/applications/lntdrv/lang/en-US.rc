@@ -9,6 +9,7 @@ BEGIN
     LTEXT "", IDC_FRAME_SUBTITLE, 120, 26, 290, 18, SS_NOPREFIX
     LTEXT "", IDC_FRAME_PAGE, 120, 48, 290, 160, NOT WS_VISIBLE
     CONTROL "", -1, "Static", SS_ETCHEDHORZ, 120, 212, 300, 1
+    CONTROL "", IDC_CATALOG_LINK, "SysLink", WS_TABSTOP, 120, 222, 90, 9
     PUSHBUTTON "&Back", IDC_FRAME_BACK, 250, 219, 50, 14
     DEFPUSHBUTTON "&Next", IDC_FRAME_NEXT, 305, 219, 50, 14
     PUSHBUTTON "Cancel", IDCANCEL, 360, 219, 50, 14
@@ -32,7 +33,11 @@ STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg"
 BEGIN
     LTEXT "", IDC_PROGRESS_TEXT, 0, 44, 290, 9, SS_NOPREFIX | SS_ENDELLIPSIS
-    LTEXT "", IDC_PROGRESS_DETAIL, 0, 58, 290, 9, SS_NOPREFIX | SS_ENDELLIPSIS
+    LTEXT "", IDC_PROGRESS_DETAIL, 0, 58, 220, 9, SS_NOPREFIX | SS_ENDELLIPSIS
+    LTEXT "", IDC_PROGRESS_SPEED, 222, 58, 68, 9, SS_NOPREFIX | SS_RIGHT
+    CONTROL "", IDC_PROGRESS_ITEM, "msctls_progress32", PBS_SMOOTH, 0, 70, 290, 8
+    CONTROL "", IDC_PROGRESS_TOTAL, "msctls_progress32", PBS_SMOOTH, 0, 88, 290, 8
+    LTEXT "", IDC_PROGRESS_COUNT, 0, 99, 290, 9, SS_NOPREFIX
 END
 
 IDD_DONE DIALOGEX 0, 0, 290, 160
@@ -72,6 +77,8 @@ BEGIN
     IDS_FINISH "&Finish"
     IDS_DEVICES_TITLE "Drivers for this PC"
     IDS_DEVICES_SUBTITLE "Devices without a driver or with a third-party driver that have a newer driver in the Microsoft Update Catalog. Tick the ones to install."
+    IDS_ABOUT_MENU "&About LiberNT Driver Installer..."
+    IDS_ABOUT_TEXT "LiberNT Driver Installer\nCopyright (C) 2026 Ahmed ARIF\nLicensed under the GNU General Public License, version 3 or later.\n\nDrivers are downloaded from the Microsoft Update Catalog, a service of Microsoft Corporation.\nMicrosoft Update Catalog: Copyright (c) Microsoft Corporation. All rights reserved.\nEach driver package belongs to its publisher and is covered by the publisher's license terms."
     IDS_INSTALL_TITLE "Installing drivers"
     IDS_INSTALL_SUBTITLE "Wait until the drivers are installed."
     IDS_DONE_TITLE "Finished"
@@ -90,10 +97,10 @@ BEGIN
     IDS_INSTALL_CANCELLING "Stopping after the current step..."
     IDS_PROGRESS_QUERY "Asking the Microsoft Update Catalog for the package"
     IDS_PROGRESS_DOWNLOAD "Downloading %1 (%2 KB)"
-    IDS_PROGRESS_UNPACK "Unpacking %1"
+    IDS_PROGRESS_UNPACK "Unpacking the package"
     IDS_PROGRESS_VERIFY "Checking the package signature"
     IDS_PROGRESS_CHECK "Checking that the driver fits this device"
-    IDS_PROGRESS_INSTALL "Installing the driver for %1"
+    IDS_PROGRESS_INSTALL "Installing: %1"
     IDS_RESULT_INSTALLED "Installed"
     IDS_RESULT_REBOOT "Installed, restart required"
     IDS_RESULT_SKIPPED "Already has a driver"
@@ -175,4 +182,10 @@ BEGIN
     IDS_SCAN_FOUND "A newer driver was found for %1 device(s)."
     IDS_SCAN_NONE "The Microsoft Update Catalog has nothing new to install for this PC."
     IDS_RESULT_UNSIGNED "signature not verified"
+    IDS_SCAN_THROTTLED "Searching resumes at %1. The Microsoft Update Catalog is limiting searches from this PC."
+    IDS_CATALOG_LINK "<a>Legal notices</a>"
+    IDS_CATALOG_NOTICE "Drivers are downloaded from the Microsoft Update Catalog, a service of Microsoft Corporation.\nMicrosoft Update Catalog: Copyright (c) Microsoft Corporation. All rights reserved.\nMicrosoft and Windows are trademarks of the Microsoft group of companies. LiberNT is not affiliated with Microsoft Corporation.\n\nEach driver package belongs to its publisher and is covered by the publisher's own license terms."
+    IDS_PROGRESS_DOWNLOADING "Downloading"
+    IDS_SPEED_KB "%1 KB/s"
+    IDS_SPEED_MB "%1 MB/s"
 END

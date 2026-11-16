@@ -1353,7 +1353,10 @@ DxgkpQueryChildConnectionForEnumeration(
     ChildStatus.Type = StatusConnection;
     ChildStatus.ChildUid = Descriptor->ChildUid;
     if (!DxgkAcquireKmdCall(Adapter))
-        return STATUS_DELETE_PENDING;
+    {
+        /* A child keeps its last known connection while a GPU reset holds the miniport */
+        return DxgkResetHoldsMiniport(Adapter) ? STATUS_SUCCESS : STATUS_DELETE_PENDING;
+    }
     _SEH2_TRY
     {
         Status = QueryChildStatus(Adapter->MiniportDeviceContext, &ChildStatus, TRUE);
@@ -1423,6 +1426,83 @@ DxgkPnpCacheInitialChildRelations(
     if (Children != NULL)
         ExFreePoolWithTag(Children, TAG_DXGK_RESOURCES);
     return Status;
+}
+
+static NTSTATUS
+DxgkpCallDisplayDetectControl(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ PDXGKDDI_DISPLAYDETECTCONTROL DisplayDetectControl,
+    _In_ DXGK_DISPLAYDETECTCONTROLTYPE Type)
+{
+    DXGKARG_DISPLAYDETECTCONTROL Args;
+    NTSTATUS Status;
+
+    ASSERT(Adapter->KmdExclusiveOwnerThread == PsGetCurrentThread());
+    Args = DxgkChildMakeDisplayDetectControl(Type, D3DDDI_ID_ALL, FALSE);
+    _SEH2_TRY
+    {
+        Status = DisplayDetectControl(Adapter->MiniportDeviceContext, &Args);
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Status = _SEH2_GetExceptionCode();
+    }
+    _SEH2_END;
+    DXGKRNL_TRACE("DxgkDdiDisplayDetectControl: adapter %p type %u -> 0x%08lX\n",
+                  Adapter, (UINT)Type, Status);
+    return Status;
+}
+
+NTSTATUS
+DxgkPnpEnableHotPlugDetection(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    PDXGKDDI_DISPLAYDETECTCONTROL DisplayDetectControl;
+    BOOLEAN HasVideoOutput;
+    KIRQL OldIrql;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(Adapter->State == DxgkAdapterStateStarting);
+    ASSERT(Adapter->KmdExclusiveOwnerThread == PsGetCurrentThread());
+    ASSERT(!Adapter->HotPlugDetectEnabled);
+    DisplayDetectControl = DXGK_CB_FULL(Adapter, DxgkDdiDisplayDetectControl);
+    if (DisplayDetectControl == NULL)
+        return STATUS_SUCCESS;
+    KeAcquireSpinLock(&Adapter->ChildListLock, &OldIrql);
+    HasVideoOutput = Adapter->ChildDescriptors != NULL &&
+                     DxgkChildHasVideoOutput(Adapter->ChildDescriptors, Adapter->NumberOfChildren + 1);
+    KeReleaseSpinLock(&Adapter->ChildListLock, OldIrql);
+    if (!HasVideoOutput)
+        return STATUS_SUCCESS;
+    Status = DxgkpCallDisplayDetectControl(Adapter, DisplayDetectControl, DXGK_DDCT_ENABLEHPD);
+    if (!NT_SUCCESS(Status))
+    {
+        DXGKRNL_ERR("DxgkPnpEnableHotPlugDetection: adapter %p refused to enable hot-plug detection 0x%08lX\n",
+                    Adapter, Status);
+        return Status;
+    }
+    Adapter->HotPlugDetectEnabled = TRUE;
+    return STATUS_SUCCESS;
+}
+
+VOID
+DxgkPnpDisableHotPlugDetection(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    PDXGKDDI_DISPLAYDETECTCONTROL DisplayDetectControl;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(Adapter->KmdExclusiveOwnerThread == PsGetCurrentThread());
+    if (!Adapter->HotPlugDetectEnabled)
+        return;
+    Adapter->HotPlugDetectEnabled = FALSE;
+    DisplayDetectControl = DXGK_CB_FULL(Adapter, DxgkDdiDisplayDetectControl);
+    ASSERT(DisplayDetectControl != NULL);
+    Status = DxgkpCallDisplayDetectControl(Adapter, DisplayDetectControl, DXGK_DDCT_DISABLEHPD);
+    if (!NT_SUCCESS(Status))
+        DXGKRNL_WARN("DxgkPnpDisableHotPlugDetection: adapter %p failed 0x%08lX\n", Adapter, Status);
 }
 
 /*
@@ -1979,6 +2059,12 @@ DxgkpChildPdoQueryId(
     return STATUS_SUCCESS;
 }
 
+/* The adapter and target a monitor hangs off, as Windows 11 publishes them on the monitor device. */
+static const DEVPROPKEY DxgkpMonitorGpuLuidKey =
+    { { 0xca085853, 0x16ce, 0x48aa, { 0xb1, 0x14, 0xde, 0x9c, 0x72, 0x33, 0x42, 0x23 } }, 1 };
+static const DEVPROPKEY DxgkpMonitorOutputIdKey =
+    { { 0xca085853, 0x16ce, 0x48aa, { 0xb1, 0x14, 0xde, 0x9c, 0x72, 0x33, 0x42, 0x23 } }, 2 };
+
 static VOID
 DxgkpChildPublishMonitor(
     _In_ PDEVICE_OBJECT Pdo,
@@ -1988,6 +2074,7 @@ DxgkpChildPublishMonitor(
     PDXGK_CHILD_PDO_OBJECT Object = (PDXGK_CHILD_PDO_OBJECT)Pdo->DeviceExtension;
     UCHAR Edid[128 * (1 + DXGKP_EDID_MAX_EXTENSIONS)];
     ULONG EdidLength;
+    ULONG OutputId;
     HANDLE Key;
     NTSTATUS Status;
 
@@ -1995,6 +2082,18 @@ DxgkpChildPublishMonitor(
 
     if (ChildExt->Descriptor.ChildDeviceType != TypeVideoOutput)
         return;
+
+    ASSERT(ChildExt->ParentAdapter != NULL);
+    OutputId = ChildExt->Descriptor.ChildUid;
+    Status = IoSetDevicePropertyData(Pdo, &DxgkpMonitorGpuLuidKey, LOCALE_NEUTRAL, 0, DEVPROP_TYPE_INT64,
+                                     sizeof(ChildExt->ParentAdapter->AdapterLuid),
+                                     &ChildExt->ParentAdapter->AdapterLuid);
+    if (NT_SUCCESS(Status))
+        Status = IoSetDevicePropertyData(Pdo, &DxgkpMonitorOutputIdKey, LOCALE_NEUTRAL, 0, DEVPROP_TYPE_UINT32,
+                                         sizeof(OutputId), &OutputId);
+    if (!NT_SUCCESS(Status))
+        DXGKRNL_WARN("DxgkpChildPublishMonitor: monitor properties for ChildUid %lu: 0x%08lX\n",
+                     ChildExt->Descriptor.ChildUid, Status);
 
     Status = IoOpenDeviceRegistryKey(Pdo, PLUGPLAY_REGKEY_DEVICE, KEY_SET_VALUE, &Key);
     if (NT_SUCCESS(Status))

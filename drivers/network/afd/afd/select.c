@@ -114,7 +114,9 @@ AfdCapturePollRequest(PIRP Irp, PIO_STACK_LOCATION IrpSp, PAFD_POLL_INFO *PollRe
     PAFD_POLL_INFO Request = Irp->AssociatedIrp.SystemBuffer;
     ULONG i;
 
+    ASSERT(!Irp->MdlAddress);
     Irp->Tail.Overlay.DriverContext[0] = NULL;
+    Irp->Tail.Overlay.DriverContext[1] = NULL;
 
     if (!AfdIs32bitIoctl(Irp))
     {
@@ -166,6 +168,7 @@ AfdReleasePollRequest(PIRP Irp, PAFD_POLL_INFO PollReq)
     if (!Request32)
         return;
 
+    Request32->HandleCount = PollReq->HandleCount;
     for (i = 0; i < PollReq->HandleCount; i++)
     {
         Request32->Handles[i].Events = PollReq->Handles[i].Events;
@@ -252,11 +255,8 @@ BOOLEAN SignalSocket(PAFD_ACTIVE_POLL Poll OPTIONAL, PIRP _Irp OPTIONAL, PAFD_PO
         Irp = _Irp;
     }
 
-    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     ASSERT(Irp != NULL);
     ASSERT(PollReq != NULL);
-    ASSERT(PollReq == Irp->AssociatedIrp.SystemBuffer);
-    ASSERT(AFD_HANDLES(Irp) != NULL);
 
     if ((Status == STATUS_TIMEOUT) || (Status == STATUS_CANCELLED))
         ZeroEvents(PollReq->Handles, PollReq->HandleCount);
@@ -274,6 +274,11 @@ BOOLEAN SignalSocket(PAFD_ACTIVE_POLL Poll OPTIONAL, PIRP _Irp OPTIONAL, PAFD_PO
               PollReq->Handles[i].Status));
     }
     UnlockHandles( AFD_HANDLES(Irp), PollReq->HandleCount );
+    if (Status == STATUS_TIMEOUT)
+    {
+        PollReq->HandleCount = 0;
+        Irp->IoStatus.Information = FIELD_OFFSET(AFD_POLL_INFO, Handles);
+    }
     AfdReleasePollRequest( Irp, PollReq );
     if( Irp->MdlAddress ) UnlockRequest( Irp, IoGetCurrentIrpStackLocation( Irp ) );
     AFD_DbgPrint(MID_TRACE,("Completing\n"));
@@ -337,7 +342,6 @@ VOID KillSelectsForFCB( PAFD_DEVICE_EXTENSION DeviceExt,
         Irp = Poll->Irp;
         PollReq = Irp->AssociatedIrp.SystemBuffer;
         HandleArray = AFD_HANDLES(Irp);
-        ASSERT(HandleArray != NULL);
 
         for( i = 0; i < PollReq->HandleCount; i++ ) {
             AFD_DbgPrint(MAX_TRACE,("Req: %u, This %p\n",
@@ -611,7 +615,6 @@ static BOOLEAN UpdatePollWithFCB( PAFD_ACTIVE_POLL Poll, PFILE_OBJECT FileObject
     PAFD_POLL_INFO PollReq = Poll->Irp->AssociatedIrp.SystemBuffer;
 
     ASSERT( KeGetCurrentIrql() == DISPATCH_LEVEL );
-    ASSERT(AFD_HANDLES(Poll->Irp) != NULL);
 
     for( i = 0; i < PollReq->HandleCount; i++ ) {
         if( !AFD_HANDLES(Poll->Irp)[i].Handle ) continue;

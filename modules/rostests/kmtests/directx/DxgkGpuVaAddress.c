@@ -226,6 +226,65 @@ static VOID TestAllocationRepeatMapping(VOID)
     }
 }
 
+static VOID TestProcessKind(VOID)
+{
+    BOOLEAN SystemProcess;
+    BOOLEAN GdiProcess;
+
+    DxgkGpuVaCoreProcessKind(TRUE, TRUE, &SystemProcess, &GdiProcess);
+    ok_bool_true(SystemProcess, "the paging process is the system process");
+    ok_bool_false(GdiProcess, "the paging process is not the GDI process");
+    DxgkGpuVaCoreProcessKind(FALSE, TRUE, &SystemProcess, &GdiProcess);
+    ok_bool_false(SystemProcess, "the System record that CDD renders in is not the paging process");
+    ok_bool_true(GdiProcess, "the System record that CDD renders in is the GDI process");
+    DxgkGpuVaCoreProcessKind(FALSE, FALSE, &SystemProcess, &GdiProcess);
+    ok_bool_false(SystemProcess, "an application process is not the system process");
+    ok_bool_false(GdiProcess, "an application process is not the GDI process");
+}
+
+static
+VOID
+TestOrphanOwner(VOID)
+{
+    PVOID Allocation = (PVOID)(ULONG_PTR)0x1000;
+    PVOID Device = (PVOID)(ULONG_PTR)0x2000;
+    PVOID Process = (PVOID)(ULONG_PTR)0x3000;
+
+    ok(DxgkGpuVaCoreOrphanOwner(Allocation, TRUE, Device, Process) == Allocation,
+       "a context allocation's VA has no explicit free and goes with the allocation\n");
+    ok(DxgkGpuVaCoreOrphanOwner(Allocation, FALSE, Device, Process) == Device,
+       "a device allocation's VA waits for its device or for the UMD's own free\n");
+    ok(DxgkGpuVaCoreOrphanOwner(Allocation, FALSE, NULL, Process) == Process,
+       "an allocation without a device leaves its VA to the process\n");
+}
+
+static
+VOID
+TestOrphanReleasable(VOID)
+{
+    PVOID Owner = (PVOID)(ULONG_PTR)0x2000;
+    PVOID Other = (PVOID)(ULONG_PTR)0x4000;
+
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(FALSE, FALSE, FALSE, Owner, NULL, DXGK_GPUVA_ORPHAN_GRACE * 4),
+                  "a range its owner reserved explicitly is never swept, however old its orphan mark");
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(FALSE, FALSE, FALSE, Owner, Owner, 0),
+                  "a range its owner reserved explicitly is not swept with the orphan owner either");
+    ok_bool_true(DxgkGpuVaCoreOrphanReleasable(TRUE, FALSE, FALSE, Owner, NULL, DXGK_GPUVA_ORPHAN_GRACE),
+                 "a map-created range is swept once its orphan grace is over");
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(TRUE, FALSE, FALSE, Owner, NULL, DXGK_GPUVA_ORPHAN_GRACE - 1),
+                  "a map-created range waits out its grace for its owner's own free");
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(TRUE, FALSE, FALSE, Owner, Other, 0),
+                  "another owner's sweep does not take a fresh orphan");
+    ok_bool_true(DxgkGpuVaCoreOrphanReleasable(TRUE, FALSE, FALSE, Owner, Owner, 0),
+                 "the orphan owner's own sweep releases it at once");
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(TRUE, TRUE, FALSE, Owner, NULL, DXGK_GPUVA_ORPHAN_GRACE * 4),
+                  "a mapped range is never swept");
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(TRUE, FALSE, TRUE, Owner, NULL, DXGK_GPUVA_ORPHAN_GRACE * 4),
+                  "a system-use range is never swept");
+    ok_bool_false(DxgkGpuVaCoreOrphanReleasable(TRUE, FALSE, FALSE, NULL, NULL, DXGK_GPUVA_ORPHAN_GRACE * 4),
+                  "a range never orphaned is never swept");
+}
+
 START_TEST(DxgkGpuVaAddress)
 {
     TestAlignUp();
@@ -235,6 +294,9 @@ START_TEST(DxgkGpuVaAddress)
     TestMapPieces();
     TestFencePagePieces();
     TestAllocationRepeatMapping();
+    TestProcessKind();
+    TestOrphanOwner();
+    TestOrphanReleasable();
 }
 
 /* EOF */

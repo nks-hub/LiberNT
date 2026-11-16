@@ -699,6 +699,8 @@ NdisMSetMiniportAttributes(
             RtlZeroMemory(&Ext->RegistrationAttrs, sizeof(Ext->RegistrationAttrs));
             RtlCopyMemory(&Ext->RegistrationAttrs, Reg, Reg->Header.Size);
             Ext->RegistrationAttrsValid = TRUE;
+            if (Reg->CheckForHangTimeInSeconds > 0)
+                Adapter->NdisMiniportBlock.CheckForHangSeconds = Reg->CheckForHangTimeInSeconds;
             Ext->DefaultPortActive =
                 (Reg->AttributeFlags & NDIS_MINIPORT_ATTRIBUTES_CONTROLS_DEFAULT_PORT) == 0;
 
@@ -1017,6 +1019,7 @@ Ndis6FindDriverBlock(_In_ PDRIVER_OBJECT DriverObject)
     PNDIS6_DRIVER_BLOCK block = NULL;
     KIRQL oldIrql;
 
+    Ndis6DriverInit();
     KeAcquireSpinLock(&g_Ndis6DriverListLock, &oldIrql);
     for (entry = g_Ndis6DriverList.Flink;
          entry != &g_Ndis6DriverList;
@@ -1472,7 +1475,8 @@ Ndis6DispatchPnp(
             /* The bus stack owns the first pass. The miniport may then adjust
              * message-interrupt requirements while the adapter is halted. */
             Status = Ndis6ForwardPnpIrpAndWait(LowerDevice, Irp);
-            if (!NT_SUCCESS(Status))
+            /* A bus that leaves the request alone completes it with the STATUS_NOT_SUPPORTED it arrived with */
+            if (!NT_SUCCESS(Status) && Status != STATUS_NOT_SUPPORTED)
                 return Ndis6CompleteIrpPreserveInformation(Irp, Status);
 
             LowerInformation = Irp->IoStatus.Information;
@@ -1488,6 +1492,15 @@ Ndis6DispatchPnp(
                      * when the optional miniport filter declines the request. */
                     Irp->IoStatus.Information = LowerInformation;
                     DbgPrint("NDIS6: FilterResourceRequirements declined 0x%08lx\n", (ULONG)NdisStatus);
+                }
+                else
+                {
+                    if (Irp->IoStatus.Information == 0)
+                    {
+                        Irp->IoStatus.Information =
+                            (ULONG_PTR)Stack->Parameters.FilterResourceRequirements.IoResourceRequirementList;
+                    }
+                    Status = STATUS_SUCCESS;
                 }
             }
 

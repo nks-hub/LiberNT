@@ -23,6 +23,12 @@ endif()
 
 if(ARCH STREQUAL "arm64")
     add_registry_inf(hivesys_arm64.inf)
+    if(RPI3_SUPPORT OR RPI5_SUPPORT OR APPLE_SILICON_SUPPORT)
+        add_registry_inf(hivesys_cyw43455.inf)
+    endif()
+    if(APPLE_SILICON_SUPPORT)
+        add_registry_inf(hivesys_apple.inf)
+    endif()
     if(RPI3_SUPPORT)
         add_registry_inf(hivesys_rpi3.inf)
     endif()
@@ -70,25 +76,6 @@ add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/readme.txt DESTINATION root NO_CAB 
 add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/readme.txt DESTINATION reactos FOR all)
 add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/system.ini DESTINATION reactos FOR all)
 add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/win.ini DESTINATION reactos FOR all)
-
-## NOTE: The root setup.exe file is a renamed welcome.exe for BootCD purposes.
-# welcome.exe optional custom configuration (only for LiveImage)
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/welcome_config/)
-    # Copy the main configuration file
-    add_cd_file(FILE ${CMAKE_CURRENT_SOURCE_DIR}/welcome_config/welcome.ini DESTINATION reactos NO_CAB FOR livecd)
-
-    # Convert the translation files (name format: xx-YY.ini) into UTF-16
-    file(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/welcome_config)
-    file(GLOB I18N_FILES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/welcome_config/ ${CMAKE_CURRENT_SOURCE_DIR}/welcome_config/*-*.ini)
-    foreach(_file ${I18N_FILES})
-        set(_converted_file ${CMAKE_CURRENT_BINARY_DIR}/welcome_config/${_file})
-        set(_source_file ${CMAKE_CURRENT_SOURCE_DIR}/welcome_config/${_file})
-        utf16le_convert(${_source_file} ${_converted_file})
-        add_cd_file(TARGET converted_welcome_i18n_files FILE ${_converted_file} DESTINATION reactos/welcome NO_CAB NAME_ON_CD ${_file} FOR livecd)
-        list(APPEND _converted_welcome_i18n_files ${_converted_file})
-    endforeach(_file)
-    add_custom_target(converted_welcome_i18n_files DEPENDS ${_converted_welcome_i18n_files})
-endif()
 
 # freeldr.ini (FREELDR_BOOTCD_INI is prepared by sdk/cmake/boot_images.cmake)
 set(_boot_media_freeldr_ini "${FREELDR_BOOTCD_INI}")
@@ -168,6 +155,10 @@ add_cd_file(FILE "${CMAKE_CURRENT_BINARY_DIR}/Install LiberNT.lnk"
             TARGET livecd_links
             DESTINATION "${dir_startmenu_programs}"
             FOR preinstall)
+add_livecd_shortcut("Finish Setup"
+    "shell:system\\oobe\\oobe.exe" ICON_INDEX 0
+    DESTINATION "${dir_startmenu_programs}"
+    FOR preinstall)
 
 add_livecd_shortcut("Read Me"
     "shell:windows\\readme.txt"

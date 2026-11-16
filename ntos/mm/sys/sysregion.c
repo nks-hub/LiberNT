@@ -264,7 +264,7 @@ MiAssertOwnedSystemRange(
         Pte = MiArchPteRead(Slot);
         MI_ASSERT(MiArchPteIsValid(Pte));
         Frame = MiArchPteFrame(Pte);
-        MI_ASSERT(Frame < System->Pfn.FrameCount);
+        MI_ASSERT(MiPfnTracked(&System->Pfn, Frame));
         MI_ASSERT(MI_ATOMIC_READ32(&System->Pfn.Pfn[Frame].ShareCount) > 0);
     }
 }
@@ -282,6 +282,8 @@ MiSystemDecommitLocked(
     PMI_ADDRESS_SPACE Space = &System->SystemSpace;
     ULONG Freed = 0;
     ULONG i;
+
+    ASSERT(System != NULL);
 
     for (i = 0; i < Count; i++)
     {

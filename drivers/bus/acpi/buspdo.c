@@ -97,7 +97,6 @@ BuspIsPciLinkDevice(
            wcsstr(DeviceData->HardwareIDs, L"PNP0C0F") != NULL;
 }
 
-static
 BOOLEAN
 BuspIsPciRootDevice(
     _In_ PPDO_DEVICE_DATA DeviceData)
@@ -1415,6 +1414,8 @@ BuspCreateRequirementsListFromAcpiResources(
                 RequirementDescriptor->u.Port.Length = io->AddressLength;
                 RequirementDescriptor->u.Port.MinimumAddress.QuadPart = io->Minimum;
                 RequirementDescriptor->u.Port.MaximumAddress.QuadPart = io->Maximum + io->AddressLength - 1;
+                if (IsPciRoot)
+                    RequirementDescriptor->Flags |= CM_RESOURCE_PORT_WINDOW_DECODE;
                 RequirementDescriptor++;
                 break;
             }
@@ -1431,6 +1432,8 @@ BuspCreateRequirementsListFromAcpiResources(
                 RequirementDescriptor->u.Port.Length = io->AddressLength;
                 RequirementDescriptor->u.Port.MinimumAddress.QuadPart = io->Address;
                 RequirementDescriptor->u.Port.MaximumAddress.QuadPart = io->Address + io->AddressLength - 1;
+                if (IsPciRoot)
+                    RequirementDescriptor->Flags |= CM_RESOURCE_PORT_WINDOW_DECODE;
                 RequirementDescriptor++;
                 break;
             }
@@ -1473,7 +1476,7 @@ BuspCreateRequirementsListFromAcpiResources(
                     RequirementDescriptor->u.Port.Alignment = Alignment;
                     RequirementDescriptor->u.Port.Length = addr16->Address.AddressLength;
                     RequirementDescriptor->u.Port.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum + addr16->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum;
                 }
                 else
                 {
@@ -1503,7 +1506,7 @@ BuspCreateRequirementsListFromAcpiResources(
                     RequirementDescriptor->u.Memory.Alignment = Alignment;
                     RequirementDescriptor->u.Memory.Length = addr16->Address.AddressLength;
                     RequirementDescriptor->u.Memory.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum + addr16->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum;
                 }
 
                 RequirementDescriptor++;
@@ -1547,7 +1550,7 @@ BuspCreateRequirementsListFromAcpiResources(
                     RequirementDescriptor->u.Port.Alignment = Alignment;
                     RequirementDescriptor->u.Port.Length = addr32->Address.AddressLength;
                     RequirementDescriptor->u.Port.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum + addr32->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum;
                 }
                 else
                 {
@@ -1577,7 +1580,7 @@ BuspCreateRequirementsListFromAcpiResources(
                     RequirementDescriptor->u.Memory.Alignment = Alignment;
                     RequirementDescriptor->u.Memory.Length = addr32->Address.AddressLength;
                     RequirementDescriptor->u.Memory.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum + addr32->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum;
                 }
 
                 RequirementDescriptor++;
@@ -1625,7 +1628,7 @@ BuspCreateRequirementsListFromAcpiResources(
                     RequirementDescriptor->u.Port.Alignment = Alignment;
                     RequirementDescriptor->u.Port.Length = BuspGetAddressResourceLength(addr64->Address.AddressLength);
                     RequirementDescriptor->u.Port.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum + addr64->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum;
                 }
                 else
                 {
@@ -1654,7 +1657,7 @@ BuspCreateRequirementsListFromAcpiResources(
 
                     BuspSetMemoryRequirementLength(RequirementDescriptor, addr64->Address.AddressLength, Alignment);
                     RequirementDescriptor->u.Memory.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum + addr64->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum;
                 }
 
                 RequirementDescriptor++;
@@ -1702,7 +1705,7 @@ BuspCreateRequirementsListFromAcpiResources(
                     RequirementDescriptor->u.Port.Alignment = Alignment;
                     RequirementDescriptor->u.Port.Length = BuspGetAddressResourceLength(addrx->Address.AddressLength);
                     RequirementDescriptor->u.Port.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum + addrx->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Port.MaximumAddress.QuadPart = Maximum;
                 }
                 else
                 {
@@ -1731,7 +1734,7 @@ BuspCreateRequirementsListFromAcpiResources(
 
                     BuspSetMemoryRequirementLength(RequirementDescriptor, addrx->Address.AddressLength, Alignment);
                     RequirementDescriptor->u.Memory.MinimumAddress.QuadPart = Minimum;
-                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum + addrx->Address.AddressLength - 1;
+                    RequirementDescriptor->u.Memory.MaximumAddress.QuadPart = Maximum;
                 }
 
                 RequirementDescriptor++;
@@ -3002,7 +3005,12 @@ BuspBuildStableInstanceId(
             size_t len = strlen(Device->pnp.unique_id);
             if (len >= MaxChars) len = MaxChars - 1;
             for (size_t i = 0; i < len; ++i)
-                Out[i] = (WCHAR)(unsigned char)Device->pnp.unique_id[i];
+            {
+                unsigned char c = (unsigned char)Device->pnp.unique_id[i];
+
+                /* An ID may not hold a space, a comma or a non-ASCII character; Windows 8.1 lists ACPI\PNP0A06\CPU_HOTPLUG_RESOURCES */
+                Out[i] = (c <= ' ' || c > 0x7F || c == ',') ? L'_' : (WCHAR)c;
+            }
             Out[len] = UNICODE_NULL;
             return (ULONG)len;
         }
@@ -3479,6 +3487,29 @@ Bus_PDO_PnP (
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
     return status;
 }
+/* Windows 11 starts these raw: acpi.sys itself drives containers, the RTC, the EC, fans, buttons, the lid and thermal zones */
+static
+BOOLEAN
+AcpiIsRawDeviceId(
+    _In_ PCSTR HardwareId)
+{
+    static const PCSTR RawIds[] =
+    {
+        "PNP0A05", "PNP0A06", "PNP0B00", "ACPI0010", "PNP0C09",
+        ACPI_FAN_HID, "PNP0C0C", ACPI_BUTTON_HID_LID, "PNP0C0E", ACPI_THERMAL_HID,
+        ACPI_BUTTON_HID_POWERF, ACPI_BUTTON_HID_SLEEPF,
+    };
+    ULONG Index;
+
+    ASSERT(HardwareId != NULL);
+    for (Index = 0; Index < RTL_NUMBER_OF(RawIds); Index++)
+    {
+        if (!_stricmp(HardwareId, RawIds[Index]))
+            return TRUE;
+    }
+    return FALSE;
+}
+
 
 NTSTATUS
 Bus_PDO_QueryDeviceCaps(
@@ -3550,7 +3581,8 @@ Bus_PDO_QueryDeviceCaps(
     {
        AcpiWakeQueryCapabilities(device, deviceCapabilities);
        deviceCapabilities->LockSupported = device->flags.lockable;
-       deviceCapabilities->EjectSupported = device->flags.ejectable;
+       /* Windows 11 offers no processor for ejection, even one with _EJ0 */
+       deviceCapabilities->EjectSupported = device->flags.ejectable && !BuspIsProcessorDevice(device);
        deviceCapabilities->HardwareDisabled = !device->status.enabled && !device->status.functional;
        deviceCapabilities->Removable = device->flags.removable;
        deviceCapabilities->SurpriseRemovalOK = device->flags.surprise_removal_ok;
@@ -3563,21 +3595,65 @@ Bus_PDO_QueryDeviceCaps(
         deviceCapabilities->DockDevice = TRUE;
     DPRINT("DockDevice: %u\n", deviceCapabilities->DockDevice);
 
-    if (!device ||
-        (device->flags.hardware_id &&
-         (strstr(device->pnp.hardware_id, ACPI_BUTTON_HID_LID) ||
-          strstr(device->pnp.hardware_id, ACPI_THERMAL_HID) ||
-          strstr(device->pnp.hardware_id, ACPI_FAN_HID) ||
-          strstr(device->pnp.hardware_id, ACPI_PROCESSOR_HID))))
-    {
-        /* Allow ACPI to control lid, thermal zone, fan, processor, or fixed feature button */
+    if (!device || (device->flags.hardware_id && AcpiIsRawDeviceId(device->pnp.hardware_id)))
         deviceCapabilities->RawDeviceOK = TRUE;
-    }
 
-    deviceCapabilities->SilentInstall = FALSE;
+    deviceCapabilities->SilentInstall = TRUE;
     deviceCapabilities->UINumber = (ULONG)-1;
 
     return STATUS_SUCCESS;
+}
+
+static
+ULONG
+BuspFormatClassCodeIds(
+    _In_ struct acpi_device *Device,
+    _Out_writes_to_(BufferLength, return) PWCHAR Buffer,
+    _In_ ULONG BufferLength)
+{
+    ULONG Value[3] = { 0 };
+    ULONG Length = 0;
+    ULONG i;
+
+    C_ASSERT(ACPI_PCICLS_STRING_SIZE >= 7);
+
+    if (!Device->flags.class_code ||
+        BufferLength < 2 * RTL_NUMBER_OF("ACPI\\CLS_0000&SUBCLS_0000&PI_00") + 1)
+    {
+        return 0;
+    }
+
+    for (i = 0; i < 6; i++)
+    {
+        CHAR Digit = Device->pnp.class_code[i];
+        ULONG Nibble;
+
+        if (Digit >= '0' && Digit <= '9')
+            Nibble = Digit - '0';
+        else if (Digit >= 'A' && Digit <= 'F')
+            Nibble = Digit - 'A' + 10;
+        else if (Digit >= 'a' && Digit <= 'f')
+            Nibble = Digit - 'a' + 10;
+        else
+            return 0;
+
+        Value[i / 2] = (Value[i / 2] << 4) | Nibble;
+    }
+
+    /* TODO: the vendor-qualified _CLS identifiers (ACPI\VEN_vvv&CLS_...) are not reported */
+    Length += (ULONG)swprintf(&Buffer[Length],
+                              BufferLength - Length,
+                              L"ACPI\\CLS_%04lX&SUBCLS_%04lX&PI_%02lX",
+                              Value[0], Value[1], Value[2]);
+    Buffer[Length++] = UNICODE_NULL;
+
+    Length += (ULONG)swprintf(&Buffer[Length],
+                              BufferLength - Length,
+                              L"ACPI\\CLS_%04lX&SUBCLS_%04lX",
+                              Value[0], Value[1]);
+    Buffer[Length++] = UNICODE_NULL;
+
+    return Length;
 }
 
 NTSTATUS
@@ -3596,6 +3672,26 @@ Bus_PDO_QueryDeviceId(
 
     stack = IoGetCurrentIrpStackLocation(Irp);
 
+    if (stack->Parameters.QueryId.IdType == BusQueryDeviceID ||
+        stack->Parameters.QueryId.IdType == BusQueryHardwareIDs)
+    {
+        if (DeviceData->AcpiHandle)
+            acpi_bus_get_device(DeviceData->AcpiHandle, &Device);
+
+        if (Device != NULL && BuspIsProcessorDevice(Device))
+        {
+            status = AcpiProcessorQueryId(stack->Parameters.QueryId.IdType, &buffer);
+            if (status != STATUS_NOT_FOUND)
+            {
+                if (NT_SUCCESS(status))
+                    Irp->IoStatus.Information = (ULONG_PTR)buffer;
+                return status;
+            }
+            status = STATUS_SUCCESS;
+        }
+        Device = NULL;
+    }
+
     switch (stack->Parameters.QueryId.IdType) {
 
     case BusQueryDeviceID:
@@ -3604,12 +3700,7 @@ Bus_PDO_QueryDeviceId(
         if (DeviceData->AcpiHandle)
             acpi_bus_get_device(DeviceData->AcpiHandle, &Device);
 
-        if (Device && BuspIsProcessorDevice(Device) && ProcessorIdString != NULL)
-        {
-            length = (ULONG)wcslen(ProcessorIdString);
-            wcscpy(temp, ProcessorIdString);
-        }
-        else if (Device && Device->pnp.hardware_id)
+        if (Device && Device->pnp.hardware_id)
         {
             length = (ULONG)swprintf(temp,
                                      RTL_NUMBER_OF(temp),
@@ -3684,31 +3775,23 @@ Bus_PDO_QueryDeviceId(
             DPRINT("Device name: %s\n", Device->pnp.device_name);
             DPRINT("Hardware ID: %s\n", Device->pnp.hardware_id);
 
-            if (BuspIsProcessorDevice(Device) && ProcessorHardwareIds.Buffer != NULL)
-            {
-                length = ProcessorHardwareIds.Length / sizeof(WCHAR);
-                src = ProcessorHardwareIds.Buffer;
-            }
-            else
-            {
-                length += BuspFormatVendorDeviceId(&temp[length],
-                                                   RTL_NUMBER_OF(temp) - length,
-                                                   Device->pnp.hardware_id);
-                length += (ULONG)swprintf(&temp[length],
-                                          RTL_NUMBER_OF(temp) - length,
-                                          L"ACPI\\%hs",
-                                          Device->pnp.hardware_id);
-                temp[length++] = UNICODE_NULL;
+            length += BuspFormatVendorDeviceId(&temp[length],
+                                               RTL_NUMBER_OF(temp) - length,
+                                               Device->pnp.hardware_id);
+            length += (ULONG)swprintf(&temp[length],
+                                      RTL_NUMBER_OF(temp) - length,
+                                      L"ACPI\\%hs",
+                                      Device->pnp.hardware_id);
+            temp[length++] = UNICODE_NULL;
 
-                length += (ULONG)swprintf(&temp[length],
-                                          RTL_NUMBER_OF(temp) - length,
-                                          L"*%hs",
-                                          Device->pnp.hardware_id);
-                temp[length++] = UNICODE_NULL;
-                temp[length++] = UNICODE_NULL;
-                src = temp;
-                NT_ASSERT(length * sizeof(WCHAR) <= sizeof(temp));
-            }
+            length += (ULONG)swprintf(&temp[length],
+                                      RTL_NUMBER_OF(temp) - length,
+                                      L"*%hs",
+                                      Device->pnp.hardware_id);
+            temp[length++] = UNICODE_NULL;
+            temp[length++] = UNICODE_NULL;
+            src = temp;
+            NT_ASSERT(length * sizeof(WCHAR) <= sizeof(temp));
 
             buffer = ExAllocatePoolWithTag(PagedPool, length * sizeof(WCHAR), 'IpcA');
             if (!buffer) { status = STATUS_INSUFFICIENT_RESOURCES; break; }
@@ -3767,27 +3850,35 @@ Bus_PDO_QueryDeviceId(
                 temp[length++] = UNICODE_NULL;
                 temp[length++] = UNICODE_NULL;
             }
-            else if (Device->flags.compatible_ids && Device->pnp.cid_list)
-            {
-                for (i = 0; i < Device->pnp.cid_list->Count; i++)
-                {
-                    length += (ULONG)swprintf(&temp[length],
-                                              RTL_NUMBER_OF(temp) - length,
-                                              L"ACPI\\%hs",
-                                              Device->pnp.cid_list->Ids[i].String);
-                    temp[length++] = UNICODE_NULL;
-
-                    length += (ULONG)swprintf(&temp[length],
-                                              RTL_NUMBER_OF(temp) - length,
-                                              L"*%hs",
-                                              Device->pnp.cid_list->Ids[i].String);
-                    temp[length++] = UNICODE_NULL;
-                }
-                temp[length++] = UNICODE_NULL;
-            }
             else
             {
-                break; /* No compatible IDs */
+                if (Device->flags.compatible_ids && Device->pnp.cid_list)
+                {
+                    for (i = 0; i < Device->pnp.cid_list->Count; i++)
+                    {
+                        length += (ULONG)swprintf(&temp[length],
+                                                  RTL_NUMBER_OF(temp) - length,
+                                                  L"ACPI\\%hs",
+                                                  Device->pnp.cid_list->Ids[i].String);
+                        temp[length++] = UNICODE_NULL;
+
+                        length += (ULONG)swprintf(&temp[length],
+                                                  RTL_NUMBER_OF(temp) - length,
+                                                  L"*%hs",
+                                                  Device->pnp.cid_list->Ids[i].String);
+                        temp[length++] = UNICODE_NULL;
+                    }
+                }
+
+                /* Membership of a class is less specific than a _CID, so it ranks after every _CID */
+                length += BuspFormatClassCodeIds(Device,
+                                                 &temp[length],
+                                                 RTL_NUMBER_OF(temp) - length);
+
+                if (length == 0)
+                    break; /* No compatible IDs */
+
+                temp[length++] = UNICODE_NULL;
             }
 
             NT_ASSERT(length * sizeof(WCHAR) <= sizeof(temp));
@@ -4232,6 +4323,16 @@ Bus_PDO_QueryDeviceRelations(
 
         status = STATUS_SUCCESS;
         Irp->IoStatus.Information = (ULONG_PTR)deviceRelations;
+        break;
+
+    case BusRelations:
+        if (!BuspIsPciRootDevice(DeviceData))
+        {
+            status = Irp->IoStatus.Status;
+            break;
+        }
+
+        status = Bus_QueryChildRelations(DeviceData->ParentFdo->DeviceExtension, DeviceData->Common.Self, Irp);
         break;
 
     default:

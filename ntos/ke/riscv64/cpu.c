@@ -38,14 +38,6 @@ KeGetRecommendedSharedDataAlignment(VOID)
 }
 
 VOID
-__cdecl
-KeSaveStateForHibernate(_Out_ PKPROCESSOR_STATE ProcessorState)
-{
-    RtlCaptureContext(&ProcessorState->ContextFrame);
-    KiSaveProcessorControlState(ProcessorState);
-}
-
-VOID
 FASTCALL
 KeZeroPages(_Out_writes_bytes_(Size) PVOID Address, _In_ ULONG Size)
 {
@@ -148,4 +140,16 @@ KiDisplayBugCheckRegisterState(
         }
         KiDisplayAndLogBugCheckString(Line);
     }
+}
+
+BOOLEAN
+NTAPI
+KiUnwindFrame(
+    _Inout_ PCONTEXT Context,
+    _In_ BOOLEAN CallerFrame)
+{
+    UNREFERENCED_PARAMETER(CallerFrame);
+
+    /* FIXME: the RISC-V psABI keeps the return address at fp-8 and the previous fp at fp-16 */
+    return KiUnwindFrameRecord(Context);
 }

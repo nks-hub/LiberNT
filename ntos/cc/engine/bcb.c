@@ -9,9 +9,78 @@
 
 #include "../include/ccengine.h"
 
+C_ASSERT((CC_PINNED_BCB_HASH_SIZE & (CC_PINNED_BCB_HASH_SIZE - 1)) == 0);
+
+static
+ULONG
+CcBcbPinnedHashIndex(
+    _In_ ULONG64 FileOffset,
+    _In_ ULONG Length)
+{
+    ULONG64 Key = (FileOffset ^ ((ULONG64)Length << 44)) * 0x9E3779B97F4A7C15ULL;
+
+    return (ULONG)(Key >> 32) & (CC_PINNED_BCB_HASH_SIZE - 1);
+}
+
 static
 PCC_BCB
-CcBcbFind(
+CcBcbPinnedHashFind(
+    _In_ PCC_MAP Map,
+    _In_ ULONG64 FileOffset,
+    _In_ ULONG Length)
+{
+    PCC_BCB Bcb;
+
+    for (Bcb = Map->PinnedBcbHash[CcBcbPinnedHashIndex(FileOffset, Length)]; Bcb != NULL; Bcb = Bcb->PinnedHashNext)
+    {
+        CC_ASSERT(Bcb->Map == Map && Bcb->Pinned);
+        if (Bcb->FileOffset == FileOffset && Bcb->Length == Length)
+            return Bcb;
+    }
+
+    return NULL;
+}
+
+static
+VOID
+CcBcbPinnedHashInsert(
+    _Inout_ PCC_MAP Map,
+    _Inout_ PCC_BCB Bcb)
+{
+    PCC_BCB *Head = &Map->PinnedBcbHash[CcBcbPinnedHashIndex(Bcb->FileOffset, Bcb->Length)];
+
+    CC_ASSERT(Bcb->Pinned && Bcb->PinnedHashNext == NULL);
+    CC_ASSERT(CcBcbPinnedHashFind(Map, Bcb->FileOffset, Bcb->Length) == NULL);
+    Bcb->PinnedHashNext = *Head;
+    *Head = Bcb;
+}
+
+static
+VOID
+CcBcbUnlink(
+    _Inout_ PCC_MAP Map,
+    _Inout_ PCC_BCB Bcb)
+{
+    PCC_BCB *Link;
+
+    CC_ASSERT(Bcb->Map == Map);
+    RemoveEntryList(&Bcb->Link);
+    if (!Bcb->Pinned)
+        return;
+
+    for (Link = &Map->PinnedBcbHash[CcBcbPinnedHashIndex(Bcb->FileOffset, Bcb->Length)]; *Link != Bcb;
+         Link = &(*Link)->PinnedHashNext)
+    {
+        CC_ASSERT(*Link != NULL);
+    }
+
+    *Link = Bcb->PinnedHashNext;
+    Bcb->PinnedHashNext = NULL;
+}
+
+static
+PCC_BCB
+CcBcbFindInList(
     _In_ PCC_MAP Map,
     _In_ ULONG64 FileOffset,
     _In_ ULONG Length,
@@ -30,15 +99,45 @@ CcBcbFind(
         CC_ASSERT(Bcb->ReferenceCount != 0 || Bcb->Dirty);
         CC_ASSERT(Bcb->PinCount <= (ULONG)Bcb->ReferenceCount);
         CC_ASSERT(Bcb->PinCount == 0 || Bcb->Pinned);
+        CC_ASSERT(Bcb->Pinned || !Bcb->Dirty);
 
-        if (Bcb->Pinned == Pinned && Bcb->FileOffset <= FileOffset &&
-            Bcb->BeyondLastByte >= FileOffset + Length)
+        if (Bcb->Pinned != Pinned)
         {
+            /* Mapped BCBs are kept ahead of every pinned one, so a mapped lookup ends at the first pinned BCB */
+            if (!Pinned)
+                break;
+            continue;
+        }
+
+        if (Bcb->FileOffset <= FileOffset && Bcb->BeyondLastByte >= FileOffset + Length)
+            return Bcb;
+    }
+
+    return NULL;
+}
+
+static
+PCC_BCB
+CcBcbFind(
+    _In_ PCC_MAP Map,
+    _In_ ULONG64 FileOffset,
+    _In_ ULONG Length,
+    _In_ BOOLEAN Pinned)
+{
+    PCC_BCB Bcb;
+
+    if (Pinned)
+    {
+        /* A pinned BCB is created only when no older pinned BCB contains its range, so an exact match is the first container in list order */
+        Bcb = CcBcbPinnedHashFind(Map, FileOffset, Length);
+        if (Bcb != NULL)
+        {
+            CC_ASSERT(Bcb == CcBcbFindInList(Map, FileOffset, Length, TRUE));
             return Bcb;
         }
     }
 
-    return NULL;
+    return CcBcbFindInList(Map, FileOffset, Length, Pinned);
 }
 
 static
@@ -166,8 +265,13 @@ CcBcbAcquire(
         CC_ASSERT(Existing->ReferenceCount < 0x7fffffffL);
         Existing->ReferenceCount++;
     }
-    else
+    else if (Pinned)
+    {
         InsertTailList(&Map->BcbList, &Bcb->Link);
+        CcBcbPinnedHashInsert(Map, Bcb);
+    }
+    else
+        InsertHeadList(&Map->BcbList, &Bcb->Link);
     CC_LOCK_RELEASE(&Map->BcbLock, OldIrql);
 
     if (Existing != NULL)
@@ -219,7 +323,7 @@ CcBcbDereference(
     CC_ASSERT(Bcb->PinCount <= (ULONG)Bcb->ReferenceCount);
     if (Bcb->ReferenceCount == 0 && !Bcb->Dirty)
     {
-        RemoveEntryList(&Bcb->Link);
+        CcBcbUnlink(Map, Bcb);
         Destroy = TRUE;
     }
     CC_LOCK_RELEASE(&Map->BcbLock, OldIrql);
@@ -295,7 +399,10 @@ CcBcbSetDirty(
     _In_ ULONG64 Lsn)
 {
     PCC_MAP Map = Bcb->Map;
+    NTSTATUS Status;
     KIRQL OldIrql;
+
+    Status = CcDirtyMark(Map, Bcb->FileOffset, Bcb->Length);
 
     CC_LOCK_ACQUIRE(&Map->BcbLock, &OldIrql);
     CC_ASSERT(Bcb->ReferenceCount > 0);
@@ -311,7 +418,7 @@ CcBcbSetDirty(
     }
     CC_LOCK_RELEASE(&Map->BcbLock, OldIrql);
 
-    return CcDirtyMark(Map, Bcb->FileOffset, Bcb->Length);
+    return Status;
 }
 
 ULONG64
@@ -363,7 +470,7 @@ CcBcbCompleteFlush(
 
             if (Bcb->ReferenceCount == 0)
             {
-                RemoveEntryList(Entry);
+                CcBcbUnlink(Map, Bcb);
                 InsertTailList(&Retired, Entry);
             }
         }
@@ -381,6 +488,62 @@ CcBcbCompleteFlush(
     }
 
     return StillDirty;
+}
+
+VOID
+CcBcbRetireWritten(
+    _Inout_ PCC_MAP Map,
+    _In_ ULONG64 Generation)
+{
+    LIST_ENTRY Retired;
+    PLIST_ENTRY Entry;
+    PLIST_ENTRY Next;
+    KIRQL OldIrql;
+
+    InitializeListHead(&Retired);
+    CC_LOCK_ACQUIRE(&Map->BcbLock, &OldIrql);
+
+    for (Entry = Map->BcbList.Flink; Entry != &Map->BcbList; Entry = Next)
+    {
+        PCC_BCB Bcb = CONTAINING_RECORD(Entry, CC_BCB, Link);
+
+        Next = Entry->Flink;
+        CC_ASSERT(Bcb->Map == Map && Bcb->ReferenceCount >= 0);
+        CC_ASSERT(Bcb->ReferenceCount != 0 || Bcb->Dirty);
+        CC_ASSERT(Bcb->PinCount <= (ULONG)Bcb->ReferenceCount);
+        if (!Bcb->Dirty || Bcb->PinCount != 0 || Bcb->DirtyGeneration > Generation)
+            continue;
+
+        if (CC_ATOMIC_READ32(&Map->FlushesInProgress) != 0)
+            break;
+
+        if (CcDirtyQuery(Map, Bcb->FileOffset, Bcb->Length))
+            continue;
+
+        /* A flush that took these pages after the first check may still be writing them. */
+        if (CC_ATOMIC_READ32(&Map->FlushesInProgress) != 0)
+            break;
+
+        CC_ASSERT(Bcb->Pinned);
+        Bcb->Dirty = FALSE;
+        Bcb->OldestLsn = 0;
+        Bcb->NewestLsn = 0;
+
+        if (Bcb->ReferenceCount == 0)
+        {
+            CcBcbUnlink(Map, Bcb);
+            InsertTailList(&Retired, Entry);
+        }
+    }
+
+    CC_LOCK_RELEASE(&Map->BcbLock, OldIrql);
+
+    while (!IsListEmpty(&Retired))
+    {
+        Entry = Retired.Flink;
+        RemoveEntryList(Entry);
+        CcBcbDestroy(CONTAINING_RECORD(Entry, CC_BCB, Link));
+    }
 }
 
 BOOLEAN

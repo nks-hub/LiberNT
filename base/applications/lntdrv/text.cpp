@@ -11,6 +11,7 @@
 #include <wininet.h>
 #include <setupapi.h>
 
+#include <algorithm>
 #include <vector>
 
 namespace lntdrv
@@ -83,6 +84,24 @@ std::wstring NumberText(ULONGLONG value)
     return text;
 }
 
+std::wstring ClockText(DWORD seconds)
+{
+    FILETIME now, local;
+    ULARGE_INTEGER time;
+    SYSTEMTIME system;
+    WCHAR text[64] = L"";
+
+    GetSystemTimeAsFileTime(&now);
+    time.LowPart = now.dwLowDateTime;
+    time.HighPart = now.dwHighDateTime;
+    time.QuadPart += (ULONGLONG)seconds * 10000000;
+    now.dwLowDateTime = time.LowPart;
+    now.dwHighDateTime = time.HighPart;
+    if (FileTimeToLocalFileTime(&now, &local) && FileTimeToSystemTime(&local, &system))
+        GetTimeFormatW(LOCALE_USER_DEFAULT, 0, &system, NULL, text, _countof(text));
+    return text;
+}
+
 bool IsOfflineError(DWORD error)
 {
     return error == ERROR_INTERNET_NAME_NOT_RESOLVED || error == ERROR_INTERNET_CANNOT_CONNECT ||
@@ -92,6 +111,29 @@ bool IsOfflineError(DWORD error)
 bool StopsCatalogScan(DWORD error)
 {
     return IsOfflineError(error) || error == ERROR_LNTDRV_CATALOG_THROTTLED;
+}
+
+std::wstring SpeedNumber(ULONGLONG bytesPerSecond, bool &megabytes)
+{
+    ULONGLONG tenths;
+
+    megabytes = bytesPerSecond >= 1024 * 1024;
+    if (!bytesPerSecond)
+        return std::wstring();
+    if (!megabytes)
+        return NumberText(std::max<ULONGLONG>(bytesPerSecond / 1024, 1));
+    tenths = bytesPerSecond * 10 / (1024 * 1024);
+    return NumberText(tenths / 10) + L"." + NumberText(tenths % 10);
+}
+
+std::wstring SpeedText(ULONGLONG bytesPerSecond)
+{
+    bool megabytes = false;
+    std::wstring number = SpeedNumber(bytesPerSecond, megabytes);
+
+    if (number.empty())
+        return number;
+    return FormatText(megabytes ? IDS_SPEED_MB : IDS_SPEED_KB, number);
 }
 
 std::wstring ErrorText(DWORD error)

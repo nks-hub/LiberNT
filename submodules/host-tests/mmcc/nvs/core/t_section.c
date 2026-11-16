@@ -8,6 +8,7 @@
  */
 
 #include "mmharness.h"
+#include <time.h>
 #include <mm/include/misys.h>
 
 #define KB64 0x10000ULL
@@ -869,6 +870,88 @@ SectionCopyOnWrite(void)
     WorldDestroy(&World);
 }
 
+typedef struct _COW_OWNER
+{
+    LONG64 Used;
+    KIRQL HighestIrql;
+    BOOLEAN Refuse;
+} COW_OWNER;
+
+static
+BOOLEAN
+CowOwnerCharge(_In_ PVOID Owner, _In_ LONG64 Pages)
+{
+    COW_OWNER *Budget = Owner;
+
+    if (MiHostIrql > Budget->HighestIrql)
+        Budget->HighestIrql = MiHostIrql;
+    if (Budget->Refuse)
+        return FALSE;
+    Budget->Used += Pages;
+    return TRUE;
+}
+
+static
+VOID
+CowOwnerReturn(_In_ PVOID Owner, _In_ LONG64 Pages)
+{
+    COW_OWNER *Budget = Owner;
+
+    if (MiHostIrql > Budget->HighestIrql)
+        Budget->HighestIrql = MiHostIrql;
+    Budget->Used -= Pages;
+}
+
+static
+void
+SectionCopyOnWriteOwnerCharge(void)
+{
+    TEST_WORLD World;
+    TEST_FILE File;
+    MI_ADDRESS_SPACE A;
+    PMI_SEGMENT Segment;
+    COW_OWNER Owner = { 0, 0, FALSE };
+    ULONG64 BaseA = 0;
+    NTSTATUS Status;
+
+    WorldCreate(&World, 1024, 1, 100000);
+    WorldAttachPageFile(&World, 256);
+    FileCreate(&File, 0x10000);
+    SpaceCreate(&World, 0, &A);
+    World.System.ChargeOwnerCommit = CowOwnerCharge;
+    World.System.ReturnOwnerCommit = CowOwnerReturn;
+    A.CommitOwner = &Owner;
+
+    CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, 0x10000, MI_PROT_READONLY, &TestFileOps,
+                                     &File, NULL, 0, &Segment)));
+    CHECK(NT_SUCCESS(Map(&A, Segment, &BaseA, 0, 0, MI_PROT_WRITECOPY)));
+    MiSegmentDereference(Segment);
+
+    CHECK(UserRead64(&World, 0, BaseA + 0x2000, &Status) == *(ULONG64 *)(File.Data + 0x2000));
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, BaseA + 0x2000, 0x5151)));
+    CHECK(MI_ATOMIC_READ64(&A.CopyOnWriteFaults) == 1);
+    CHECK(Owner.Used == 1 && MI_ATOMIC_READ64(&A.CommittedPages) == 1);
+    CHECK(Owner.HighestIrql <= 1);
+
+    Owner.Refuse = TRUE;
+    CHECK(UserRead64(&World, 0, BaseA + 0x4000, &Status) == *(ULONG64 *)(File.Data + 0x4000));
+    CHECK(UserWrite64(&World, 0, BaseA + 0x4000, 0x5252) == STATUS_COMMITMENT_LIMIT);
+    CHECK(Owner.Used == 1 && MI_ATOMIC_READ64(&A.CommittedPages) == 1);
+    CHECK(UserRead64(&World, 0, BaseA + 0x4000, &Status) == *(ULONG64 *)(File.Data + 0x4000));
+    Owner.Refuse = FALSE;
+
+    CHECK(NT_SUCCESS(MiUnmapView(&A, BaseA)));
+    CHECK(Owner.Used == 0 && MI_ATOMIC_READ64(&A.CommittedPages) == 0);
+    CHECK(Owner.HighestIrql <= 1);
+    World.System.ChargeOwnerCommit = NULL;
+    World.System.ReturnOwnerCommit = NULL;
+    SpaceDestroy(&World, 0, &A);
+
+    WorldExpectClean(&World, 1024);
+    FileDestroy(&File);
+    WorldDestroy(&World);
+}
+
 static
 void
 SectionSystemSpaceView(void)
@@ -1098,6 +1181,73 @@ SectionUnusedCache(void)
     CHECK(World.System.UnusedSegmentCount == 1);
 
     CHECK(MiSegmentPurgeUnused(&World.System, ~0u) == 1);
+    CHECK(Owned[2].Released == 1 && World.System.UnusedSegmentCount == 0);
+    CHECK(IsListEmpty(&World.System.SegmentList));
+
+    SpaceDestroy(&World, 0, &A);
+    WorldExpectClean(&World, 512);
+    for (i = 0; i < 3; i++)
+        FileDestroy(&Owned[i].File);
+    WorldDestroy(&World);
+}
+
+static
+void
+SectionCloseWhenUnused(void)
+{
+    static MI_FILE_OPS OwnedOps = { .Read = OwnedRead, .Write = OwnedWrite, .Release = OwnedRelease };
+    TEST_WORLD World;
+    MI_ADDRESS_SPACE A;
+    OWNED_FILE Owned[3];
+    PMI_SEGMENT Segment[3];
+    ULONG64 Base;
+    NTSTATUS Status;
+    ULONG i;
+
+    memset(Owned, 0, sizeof(Owned));
+    WorldCreate(&World, 512, 1, 1000);
+    World.System.UnusedSegmentLimit = 8;
+    SpaceCreate(&World, 0, &A);
+
+    for (i = 0; i < 3; i++)
+    {
+        FileCreate(&Owned[i].File, 8 * 4096);
+        CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, 8 * 4096, MI_PROT_READWRITE, &OwnedOps,
+                                         &Owned[i], NULL, 0, &Segment[i])));
+        CHECK(!Segment[i]->CloseWhenUnused);
+    }
+
+    Base = 0;
+    CHECK(NT_SUCCESS(Map(&A, Segment[0], &Base, 0, 0, MI_PROT_READWRITE)));
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, Base + 0x3000, 0xDE1A7ED)));
+    MiSegmentDereference(Segment[0]);
+
+    CHECK(MiSegmentTryReference(Segment[0]));
+    MiSegmentCloseWhenUnused(Segment[0]);
+    CHECK(Segment[0]->CloseWhenUnused);
+    CHECK(!MiSegmentDereferenceAndClose(Segment[0]));
+    CHECK(Owned[0].Released == 0 && Segment[0]->State == MI_SEGMENT_ACTIVE);
+    CHECK(UserRead64(&World, 0, Base + 0x3000, &Status) == 0xDE1A7ED);
+
+    CHECK(NT_SUCCESS(MiUnmapView(&A, Base)));
+    CHECK(Owned[0].Released == 1 && Owned[0].ReadsAfterRelease == 0);
+    CHECK(World.System.UnusedSegmentCount == 0);
+    CHECK(*(ULONG64 *)(Owned[0].File.Data + 0x3000) == 0xDE1A7ED);
+
+    Base = 0;
+    CHECK(NT_SUCCESS(Map(&A, Segment[1], &Base, 0, 0, MI_PROT_READWRITE)));
+    MiSegmentDereference(Segment[1]);
+    CHECK(NT_SUCCESS(MiUnmapView(&A, Base)));
+    CHECK(Owned[1].Released == 0 && Segment[1]->State == MI_SEGMENT_UNUSED);
+    CHECK(World.System.UnusedSegmentCount == 1);
+
+    CHECK(MiSegmentTryReference(Segment[1]));
+    MiSegmentCloseWhenUnused(Segment[1]);
+    CHECK(MiSegmentDereferenceAndClose(Segment[1]));
+    CHECK(Owned[1].Released == 1 && World.System.UnusedSegmentCount == 0);
+
+    MiSegmentCloseWhenUnused(Segment[2]);
+    MiSegmentDereference(Segment[2]);
     CHECK(Owned[2].Released == 1 && World.System.UnusedSegmentCount == 0);
     CHECK(IsListEmpty(&World.System.SegmentList));
 
@@ -1860,13 +2010,215 @@ SectionSparseDataFile(void)
     WorldDestroy(&World);
 }
 
+typedef struct _SECTION_PURGE_IN_FLIGHT
+{
+    PMI_SEGMENT Segment;
+    volatile LONG Done;
+} SECTION_PURGE_IN_FLIGHT;
+
+static void *
+SectionPurgeInFlightWorker(void *Context)
+{
+    SECTION_PURGE_IN_FLIGHT *State = Context;
+
+    MiHostCpu = 0;
+    MachineCpu = 0;
+    MiSegmentPurge(State->Segment, 0, PAGE_SIZE);
+    __atomic_store_n(&State->Done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static
+void
+SectionPurgeWaitsForWriter(void)
+{
+    struct timespec Pause = { 0, 500000 };
+    SECTION_PURGE_IN_FLIGHT State;
+    MI_ADDRESS_SPACE Space;
+    PMI_SEGMENT Segment;
+    TEST_WORLD World;
+    TEST_FILE File;
+    pthread_t Worker;
+    ULONG64 Base = 0x40000000;
+    MI_PTE OriginalPte;
+    ULONG Frame;
+    ULONG Spin;
+
+    WorldCreate(&World, 256, 1, 100000);
+    FileCreate(&File, KB64);
+    SpaceCreate(&World, 0, &Space);
+    CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, KB64, MI_PROT_READWRITE,
+                                     &TestFileOps, &File, NULL, 0, &Segment)));
+    CHECK(NT_SUCCESS(Map(&Space, Segment, &Base, 0, KB64, MI_PROT_READWRITE)));
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, Base + 8, 0x5A5A5A5A)));
+    CHECK(NT_SUCCESS(MiUnmapView(&Space, Base)));
+
+    Frame = MiPfnTakeModified(&World.System.Pfn);
+    CHECK(Frame != MI_FRAME_INVALID);
+    if (Frame != MI_FRAME_INVALID)
+    {
+        CHECK((World.PfnArray[Frame].Flags & MI_PFN_FLAG_IN_FLIGHT) != 0);
+        OriginalPte = World.PfnArray[Frame].OriginalPte;
+        State.Segment = Segment;
+        State.Done = 0;
+        MI_ASSERT(pthread_create(&Worker, NULL, SectionPurgeInFlightWorker, &State) == 0);
+        for (Spin = 0; Spin < 200 && !__atomic_load_n(&State.Done, __ATOMIC_ACQUIRE); Spin++)
+            nanosleep(&Pause, NULL);
+        CHECK(!__atomic_load_n(&State.Done, __ATOMIC_ACQUIRE));
+        MiPfnWriteComplete(&World.System.Pfn, Frame, OriginalPte, TRUE);
+        MI_ASSERT(pthread_join(Worker, NULL) == 0);
+        CHECK(__atomic_load_n(&State.Done, __ATOMIC_ACQUIRE));
+        CHECK(!MiSegmentIsResident(Segment, 0, PAGE_SIZE));
+    }
+
+    SpaceDestroy(&World, 0, &Space);
+    MiSegmentDereference(Segment);
+    WorldExpectClean(&World, 256);
+    FileDestroy(&File);
+    WorldDestroy(&World);
+}
+
+typedef struct _SECTION_PROTO_WRITE
+{
+    PMI_SYSTEM System;
+    ULONG Frame;
+    NTSTATUS Status;
+    volatile LONG Done;
+} SECTION_PROTO_WRITE;
+
+static void *
+SectionProtoWriteWorker(void *Context)
+{
+    SECTION_PROTO_WRITE *State = Context;
+
+    MiHostCpu = 0;
+    MachineCpu = 0;
+    State->Status = MiWritePrototypePage(State->System, State->Frame);
+    __atomic_store_n(&State->Done, 1, __ATOMIC_RELEASE);
+    return NULL;
+}
+
+static
+void
+SectionPurgeFlushWriterNoCycle(void)
+{
+    struct timespec Pause = { 0, 500000 };
+    SECTION_PURGE_IN_FLIGHT Purge;
+    SECTION_PROTO_WRITE Write;
+    MI_ADDRESS_SPACE Space;
+    PMI_SEGMENT Segment;
+    TEST_WORLD World;
+    TEST_FILE File;
+    pthread_t Purger, Writer;
+    ULONG64 Base = 0x40000000;
+    ULONG Frame;
+    ULONG Spin;
+
+    WorldCreate(&World, 256, 1, 100000);
+    FileCreate(&File, KB64);
+    SpaceCreate(&World, 0, &Space);
+    CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, KB64, MI_PROT_READWRITE,
+                                     &TestFileOps, &File, NULL, 0, &Segment)));
+    CHECK(NT_SUCCESS(Map(&Space, Segment, &Base, 0, KB64, MI_PROT_READWRITE)));
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, Base + 8, 0x5A5A5A5A)));
+    CHECK(NT_SUCCESS(MiUnmapView(&Space, Base)));
+
+    Frame = MiPfnTakeModified(&World.System.Pfn);
+    CHECK(Frame != MI_FRAME_INVALID);
+    if (Frame != MI_FRAME_INVALID)
+    {
+        MI_MUTEX_ACQUIRE(&Segment->FlushLock);
+        Purge.Segment = Segment;
+        Purge.Done = 0;
+        MI_ASSERT(pthread_create(&Purger, NULL, SectionPurgeInFlightWorker, &Purge) == 0);
+        for (Spin = 0; Spin < 100 && !__atomic_load_n(&Purge.Done, __ATOMIC_ACQUIRE); Spin++)
+            nanosleep(&Pause, NULL);
+        CHECK(!__atomic_load_n(&Purge.Done, __ATOMIC_ACQUIRE));
+
+        Write.System = &World.System;
+        Write.Frame = Frame;
+        Write.Status = STATUS_SUCCESS;
+        Write.Done = 0;
+        MI_ASSERT(pthread_create(&Writer, NULL, SectionProtoWriteWorker, &Write) == 0);
+        for (Spin = 0; Spin < 200 && !__atomic_load_n(&Purge.Done, __ATOMIC_ACQUIRE); Spin++)
+            nanosleep(&Pause, NULL);
+        CHECK(__atomic_load_n(&Write.Done, __ATOMIC_ACQUIRE));
+        CHECK(__atomic_load_n(&Purge.Done, __ATOMIC_ACQUIRE));
+
+        MI_MUTEX_RELEASE(&Segment->FlushLock);
+        MI_ASSERT(pthread_join(Writer, NULL) == 0);
+        MI_ASSERT(pthread_join(Purger, NULL) == 0);
+        CHECK(Write.Status == STATUS_CANT_WAIT);
+        CHECK(!MiSegmentIsResident(Segment, 0, PAGE_SIZE));
+    }
+
+    SpaceDestroy(&World, 0, &Space);
+    MiSegmentDereference(Segment);
+    WorldExpectClean(&World, 256);
+    FileDestroy(&File);
+    WorldDestroy(&World);
+}
+
+static PMI_PTE SectionDirtySlot;
+
+static void
+SectionDirtyDuringPteUpdate(PMI_PTE Slot)
+{
+    if (Slot == SectionDirtySlot)
+    {
+        MI_PTE Pte = __atomic_load_n(Slot, __ATOMIC_SEQ_CST);
+
+        MachineBeforePteUpdate = NULL;
+        __atomic_store_n(Slot, MiArchPteSetDirty(Pte, TRUE), __ATOMIC_SEQ_CST);
+    }
+}
+
+static void
+SectionTrimConcurrentDirty(void)
+{
+    TEST_WORLD World;
+    TEST_FILE File;
+    MI_ADDRESS_SPACE Space;
+    PMI_SEGMENT Segment;
+    PMI_PTE Slot;
+    ULONG64 Base = 0;
+    ULONG Frame;
+    NTSTATUS Status;
+
+    WorldCreate(&World, 256, 1, 1024);
+    FileCreate(&File, PAGE_SIZE);
+    SpaceCreate(&World, 0, &Space);
+    CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, PAGE_SIZE, MI_PROT_READWRITE,
+                                     &TestFileOps, &File, NULL, 0, &Segment)));
+    CHECK(NT_SUCCESS(Map(&Space, Segment, &Base, 0, PAGE_SIZE, MI_PROT_READWRITE)));
+    UserRead64(&World, 0, Base, &Status);
+    CHECK(NT_SUCCESS(Status));
+    Slot = MiPtLookup(&Space, Base, NULL);
+    Frame = (ULONG)MiArchPteFrame(MiArchPteRead(Slot));
+    CHECK(!(MI_PFN_FLAGS(&World.PfnArray[Frame]) & MI_PFN_FLAG_MODIFIED));
+    SectionDirtySlot = Slot;
+    MachineBeforePteUpdate = SectionDirtyDuringPteUpdate;
+    CHECK(MiTrimAddressSpace(&Space, 1, TRUE) == 1);
+    CHECK(MachineBeforePteUpdate == NULL);
+    CHECK(MI_PFN_FLAGS(&World.PfnArray[Frame]) & MI_PFN_FLAG_MODIFIED);
+    CHECK(MiWriteModifiedPages(&World.System, 1) == 1);
+    SpaceDestroy(&World, 0, &Space);
+    MiSegmentDereference(Segment);
+    WorldExpectClean(&World, 256);
+    FileDestroy(&File);
+    WorldDestroy(&World);
+}
+
 void
 TestSection(void)
 {
+    SectionTrimConcurrentDirty();
     SectionWriterAdmission();
     SectionVadCache();
     SectionConcurrentChurn();
     SectionUnmapBatch();
+    SectionPurgeWaitsForWriter();
+    SectionPurgeFlushWriterNoCycle();
     SectionFullUnmapBatches();
     SectionSharedDataFile();
     SectionSparseDataFile();
@@ -1874,9 +2226,11 @@ TestSection(void)
     SectionViewCommitCompatibility();
     SectionReservedPageFile();
     SectionCopyOnWrite();
+    SectionCopyOnWriteOwnerCharge();
     SectionSystemSpaceView();
     SectionViewOutlivesOwner();
     SectionUnusedCache();
+    SectionCloseWhenUnused();
     SectionViewProtection();
     SectionClusterRead();
     SectionPlaceholderView();

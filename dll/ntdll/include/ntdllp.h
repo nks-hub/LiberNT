@@ -219,6 +219,19 @@ LdrpInsertMemoryTableEntry(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
 VOID NTAPI
 LdrpRemoveMemoryTableEntry(IN PLDR_DATA_TABLE_ENTRY LdrEntry);
 
+VOID
+LdrpInsertImageRange(
+    _In_ PLDR_DATA_TABLE_ENTRY Entry);
+
+VOID
+LdrpRemoveImageRange(
+    _In_ PLDR_DATA_TABLE_ENTRY Entry);
+
+BOOLEAN
+LdrpFindImageByAddress(
+    _In_ PVOID Address,
+    _Out_ PLDR_DATA_TABLE_ENTRY *Entry);
+
 FORCEINLINE
 BOOLEAN
 LdrpOwnsLoaderLock(VOID)
@@ -232,6 +245,22 @@ LdrpIsModuleReady(
     _In_ PLDR_DATA_TABLE_ENTRY LdrEntry)
 {
     return (ReadAcquire((volatile LONG *)&LdrEntry->Flags) & LDRP_ENTRY_PROCESSED) != 0;
+}
+
+FORCEINLINE
+BOOLEAN
+LdrpIsModuleInitialized(
+    _In_ PLDR_DATA_TABLE_ENTRY LdrEntry)
+{
+    LONG Flags = ReadAcquire((volatile LONG *)&LdrEntry->Flags);
+    ULONG Size;
+
+    if (!(Flags & LDRP_ENTRY_PROCESSED))
+        return FALSE;
+    if (Flags & LDRP_PROCESS_ATTACH_CALLED)
+        return TRUE;
+    return !LdrEntry->EntryPoint &&
+           !RtlImageDirectoryEntryToData(LdrEntry->DllBase, TRUE, IMAGE_DIRECTORY_ENTRY_IMPORT, &Size);
 }
 
 NTSTATUS NTAPI
@@ -363,8 +392,6 @@ LdrpGuardInvalidateModuleCache(VOID);
 BOOLEAN
 LdrpGuardDynamicTargetIsExecutable(_In_ PVOID Target);
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_VISTA) || (DLL_EXPORT_VERSION >= _WIN32_WINNT_VISTA)
-
 VOID
 NTAPI
 LdrpSendDllNotifications(
@@ -377,8 +404,6 @@ VOID
 NTAPI
 LdrpSetDllNotificationDispatcher(
     _In_opt_ PLDRP_DLL_NOTIFICATION_DISPATCHER Dispatcher);
-
-#endif /* (_WIN32_WINNT >= _WIN32_WINNT_VISTA) || (DLL_EXPORT_VERSION >= _WIN32_WINNT_VISTA) */
 
 /* path.c */
 BOOLEAN
@@ -733,5 +758,9 @@ LdrpUnloadAlternateResourceModule(
 BOOLEAN
 NTAPI
 LdrpFlushAlternateResourceModules(VOID);
+
+VOID
+NTAPI
+RtlpFreeThreadPreferredUILanguages(VOID);
 
 /* EOF */

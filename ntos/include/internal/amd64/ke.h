@@ -1,108 +1,55 @@
-#ifndef __NTOSKRNL_INCLUDE_INTERNAL_AMD64_KE_H
-#define __NTOSKRNL_INCLUDE_INTERNAL_AMD64_KE_H
+/*
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     amd64 kernel layer: registers, frames, interrupt vectors and processor setup
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
+
+#pragma once
 
 #define KI_EMULATED_USER_MACHINE 0
-#define KI_EMULATED_USER_SYSTEM_DLL NULL
-
-/* The switch backend completes the outgoing-thread handoff on the new stack. */
+/* Windows 11 x64 spends 65-79 ns on a yield with nothing to run, no more than the system call */
+#define KI_EMPTY_YIELD_STALL_NS 0
+#define KiEmulationProcessorArchitecture(Process) PROCESSOR_ARCHITECTURE_INTEL
 #define KI_ARCH_THREAD_HANDOFF_USES_RUNNING 1
-#ifdef __cplusplus
-extern "C" {
-#endif
 
-#define X86_EFLAGS_TF           0x00000100 /* Trap flag */
-#define X86_EFLAGS_IF           0x00000200 /* Interrupt Enable flag */
-#define X86_EFLAGS_IOPL         0x00003000 /* I/O Privilege Level bits */
-#define X86_EFLAGS_NT           0x00004000 /* Nested Task flag */
-#define X86_EFLAGS_RF           0x00010000 /* Resume flag */
-#define X86_EFLAGS_VM           0x00020000 /* Virtual Mode */
-#define X86_EFLAGS_ID           0x00200000 /* CPUID detection flag */
+#define X86_FEATURE_PAE 0x00000040
+#define X86_FEATURE_MCE 0x00000080
+#define X86_FEATURE_HT  0x10000000
 
-#define X86_CR0_PE              0x00000001 /* enable Protected Mode */
-#define X86_CR0_NE              0x00000020 /* enable native FPU error reporting */
-#define X86_CR0_TS              0x00000008 /* enable exception on FPU instruction for task switch */
-#define X86_CR0_EM              0x00000004 /* enable FPU emulation (disable FPU) */
-#define X86_CR0_MP              0x00000002 /* enable FPU monitoring */
-#define X86_CR0_WP              0x00010000 /* enable Write Protect (copy on write) */
-#define X86_CR0_PG              0x80000000 /* enable Paging */
-
-#define X86_CR4_PAE             0x00000020 /* enable physical address extensions */
-#define X86_CR4_PGE             0x00000080 /* enable global pages */
-#define X86_CR4_OSFXSR          0x00000200 /* enable FXSAVE/FXRSTOR instructions */
-#define X86_CR4_OSXMMEXCPT      0x00000400 /* enable #XF exception */
-
-/* EDX flags */
-#define X86_FEATURE_FPU         0x00000001 /* x87 FPU is present */
-#define X86_FEATURE_VME         0x00000002 /* Virtual 8086 Extensions are present */
-#define X86_FEATURE_DBG         0x00000004 /* Debugging extensions are present */
-#define X86_FEATURE_PSE         0x00000008 /* Page Size Extension is present */
-#define X86_FEATURE_TSC         0x00000010 /* time stamp counters are present */
-#define X86_FEATURE_PAE         0x00000040 /* physical address extension is present */
-#define X86_FEATURE_MCE         0x00000080
-#define X86_FEATURE_CX8         0x00000100 /* CMPXCHG8B instruction present */
-#define X86_FEATURE_SYSCALL     0x00000800 /* SYSCALL/SYSRET support present */
-#define X86_FEATURE_MTRR        0x00001000 /* Memory type range registers are present */
-#define X86_FEATURE_PGE         0x00002000 /* Page Global Enable */
-#define X86_FEATURE_CMOV        0x00008000 /* "Conditional move" instruction supported */
-#define X86_FEATURE_PAT         0x00010000 /* Page Attribute Table is supported */
-#define X86_FEATURE_DS          0x00200000 /* Debug Store is present */
-#define X86_FEATURE_MMX         0x00800000 /* MMX extension present */
-#define X86_FEATURE_FXSR        0x01000000 /* FXSAVE/FXRSTOR instructions present */
-#define X86_FEATURE_SSE         0x02000000 /* SSE extension present */
-#define X86_FEATURE_SSE2        0x04000000 /* SSE2 extension present */
-#define X86_FEATURE_HT          0x10000000 /* Hyper-Threading present */
-
-/* ECX flags */
-#define X86_FEATURE_SSE3        0x00000001 /* SSE3 is supported */
-#define X86_FEATURE_MONITOR     0x00000008 /* SSE3 Monitor instructions supported */
-#define X86_FEATURE_VMX         0x00000020 /* Virtual Machine eXtensions are available */
-#define X86_FEATURE_SSSE3       0x00000200 /* Supplemental SSE3 are available */
-#define X86_FEATURE_FMA3        0x00001000 /* Fused multiple-add supported */
-#define X86_FEATURE_CX16        0x00002000 /* CMPXCHG16B instruction are available */
-#define X86_FEATURE_PCID        0x00020000 /* Process Context IDentifiers are supported */
-#define X86_FEATURE_SSE41       0x00080000 /* SSE 4.1 is supported */
-#define X86_FEATURE_SSE42       0x00100000 /* SSE 4.2 is supported */
-#define X86_FEATURE_POPCNT      0x00800000 /* POPCNT instruction is available */
-#define X86_FEATURE_XSAVE       0x04000000 /* XSAVE family are available */
-
-/* EDX extended flags */
-#define X86_FEATURE_NX          0x00100000 /* NX support present */
-
-#define X86_EXT_FEATURE_SSE3    0x00000001 /* SSE3 extension present */
-#define X86_EXT_FEATURE_3DNOW   0x40000000 /* 3DNOW! extension present */
-
-#define FRAME_EDITED        0xFFF8
-
-#define X86_MSR_GSBASE          0xC0000101
-#define X86_MSR_KERNEL_GSBASE   0xC0000102
-#define X86_MSR_EFER            0xC0000080
-#define X86_MSR_STAR            0xC0000081
-#define X86_MSR_LSTAR           0xC0000082
-#define X86_MSR_CSTAR           0xC0000083
-#define X86_MSR_SFMASK          0xC0000084
-
-#define EFER_SCE    0x0001
-#define EFER_LME    0x0100
-#define EFER_LMA    0x0400
-#define EFER_NXE    0x0800
-#define EFER_SVME   0x1000
-#define EFER_FFXSR  0x4000
+#define X86_MSR_GSBASE        0xC0000101
+#define X86_MSR_KERNEL_GSBASE 0xC0000102
+#define X86_MSR_STAR          0xC0000081
+#define X86_MSR_LSTAR         0xC0000082
+#define X86_MSR_CSTAR         0xC0000083
+#define X86_MSR_SFMASK        0xC0000084
 
 #define AMD64_TSS 9
 
 #define APIC_EOI_REGISTER 0xFFFFFFFFFFFE00B0ULL
-#define HV_X64_MSR_EOI 0x40000070
-#define HV_CPUID_INTERFACE_HV1 0x31237648
-#define HV_ACCESS_INTR_CTRL_REGS 0x00000010
-#define HV_APIC_ACCESS_RECOMMENDED 0x00000008
-#define HV_RELAXED_TIMING_RECOMMENDED 0x00000020
-#define HV_X2APIC_MSRS_RECOMMENDED 0x00000100
+#define X2APIC_BASE_MSR   0x0000001B
+#define X2APIC_EOI_MSR    0x0000080B
+#define X2APIC_EXTENDED   0x0000000000000400ULL
 
-#ifndef __ASM__
+#define HV_X64_MSR_EOI                0x40000070
+#define HV_CPUID_INTERFACE_HV1        0x31237648
+#define HV_ACCESS_INTR_CTRL_REGS      0x00000010
+#define HV_APIC_ACCESS_RECOMMENDED    0x00000008
+#define HV_RELAXED_TIMING_RECOMMENDED 0x00000020
+#define HV_X2APIC_MSRS_RECOMMENDED    0x00000100
+
+#define KD_BREAKPOINT_TYPE        UCHAR
+#define KD_BREAKPOINT_SIZE        sizeof(UCHAR)
+#define KD_BREAKPOINT_VALUE       0xCC
 
 extern BOOLEAN KiHvApicMsrs;
+extern BOOLEAN KiX2ApicMsrs;
 extern SIZE_T KeXStateLength;
 extern ULONG KiMxCsrMask;
+extern ULONG KeI386NpxPresent;
+extern ULONG KeI386CpuType;
+extern ULONG KeI386CpuStep;
+extern NTKERNELAPI volatile KSYSTEM_TIME KeTickCount;
 
 #include "intrin_i.h"
 
@@ -125,90 +72,114 @@ typedef struct _KI_INTERRUPT_DISPATCH_ENTRY
 } KI_INTERRUPT_DISPATCH_ENTRY, *PKI_INTERRUPT_DISPATCH_ENTRY;
 #pragma pack(pop)
 
-extern ULONG KeI386NpxPresent;
-extern ULONG KeI386XMMIPresent;
-extern ULONG KeI386FxsrPresent;
-extern ULONG KeI386CpuType;
-extern ULONG KeI386CpuStep;
+typedef struct _KI_SERVICE_EXCEPTION_STATE
+{
+    KEXCEPTION_FRAME ExceptionFrame;
+} KI_SERVICE_EXCEPTION_STATE, *PKI_SERVICE_EXCEPTION_STATE;
 
-//
-// INT3 is 1 byte long; assertion failures raise "int 2C" (2 bytes)
-//
-#define KD_BREAKPOINT_TYPE        UCHAR
-#define KD_BREAKPOINT_SIZE        sizeof(UCHAR)
-#define KD_BREAKPOINT_VALUE       0xCC
-#define KD_ASSERT_BREAKPOINT_SIZE 2
+#define KeGetTrapFrame(Thread) \
+    ((PKTRAP_FRAME)((ULONG_PTR)(Thread)->InitialStack - sizeof(KTRAP_FRAME)))
+#define KeGetExceptionFrame(Thread) \
+    ((PKEXCEPTION_FRAME)((ULONG_PTR)KeGetTrapFrame(Thread) - sizeof(KEXCEPTION_FRAME)))
+#define KeGetContextSwitches(Prcb) ((Prcb)->KeContextSwitches)
 
-//
-// One-liners for getting and setting special purpose registers in portable code
-//
 FORCEINLINE
 ULONG_PTR
-KeGetContextPc(PCONTEXT Context)
+KeGetContextPc(
+    _In_ PCONTEXT Context)
 {
     return Context->Rip;
 }
 
 FORCEINLINE
 VOID
-KeSetContextPc(PCONTEXT Context, ULONG_PTR ProgramCounter)
+KeSetContextPc(
+    _Inout_ PCONTEXT Context,
+    _In_ ULONG_PTR ProgramCounter)
 {
     Context->Rip = ProgramCounter;
 }
 
 FORCEINLINE
-ULONG_PTR
-KeGetContextReturnRegister(PCONTEXT Context)
-{
-    return Context->Rax;
-}
-
-FORCEINLINE
 VOID
-KeSetContextReturnRegister(PCONTEXT Context, ULONG_PTR ReturnValue)
+KeSetContextReturnRegister(
+    _Inout_ PCONTEXT Context,
+    _In_ ULONG_PTR ReturnValue)
 {
     Context->Rax = ReturnValue;
 }
 
 FORCEINLINE
 ULONG_PTR
-KeGetContextStackRegister(PCONTEXT Context)
+KeGetContextServiceArgument3(
+    _In_ PCONTEXT Context)
+{
+    return Context->R8;
+}
+
+FORCEINLINE
+ULONG_PTR
+KeGetContextServiceArgument4(
+    _In_ PCONTEXT Context)
+{
+    return Context->R9;
+}
+
+FORCEINLINE
+ULONG_PTR
+KeGetContextStackRegister(
+    _In_ PCONTEXT Context)
 {
     return Context->Rsp;
 }
 
 FORCEINLINE
 ULONG_PTR
-KeGetContextFrameRegister(PCONTEXT Context)
+KeGetContextFrameRegister(
+    _In_ PCONTEXT Context)
 {
     return Context->Rbp;
 }
 
 FORCEINLINE
 VOID
-KeSetContextFrameRegister(PCONTEXT Context, ULONG_PTR Frame)
+KeSetContextFrameRegister(
+    _Inout_ PCONTEXT Context,
+    _In_ ULONG_PTR Frame)
 {
     Context->Rbp = Frame;
 }
 
 FORCEINLINE
 ULONG_PTR
-KeGetTrapFramePc(PKTRAP_FRAME TrapFrame)
+KeGetTrapFramePc(
+    _In_ PKTRAP_FRAME TrapFrame)
 {
     return TrapFrame->Rip;
 }
 
 FORCEINLINE
-PKTRAP_FRAME
-KiGetLinkedTrapFrame(PKTRAP_FRAME TrapFrame)
+ULONG_PTR
+KeGetTrapFrameStackRegister(
+    _In_ PKTRAP_FRAME TrapFrame)
 {
-    return (PKTRAP_FRAME)TrapFrame->TrapFrame;
+    return TrapFrame->Rsp;
 }
 
-typedef struct _KI_SERVICE_EXCEPTION_STATE
+FORCEINLINE
+PULONG_PTR
+KiGetUserModeStackAddress(VOID)
 {
-    UCHAR Reserved;
-} KI_SERVICE_EXCEPTION_STATE, *PKI_SERVICE_EXCEPTION_STATE;
+    return &PsGetCurrentThread()->Tcb.TrapFrame->Rsp;
+}
+
+FORCEINLINE
+BOOLEAN
+KiUserTrap(
+    _In_ PKTRAP_FRAME TrapFrame)
+{
+    return (BOOLEAN)((TrapFrame->SegCs & MODE_MASK) != 0);
+}
 
 FORCEINLINE
 PKEXCEPTION_FRAME
@@ -220,11 +191,17 @@ KiEnterServiceException(
     _In_opt_ PKEXCEPTION_FRAME ExceptionFrame,
     _Out_ PKI_SERVICE_EXCEPTION_STATE State)
 {
+    UNREFERENCED_PARAMETER(Thread);
+    UNREFERENCED_PARAMETER(TrapFrame);
     UNREFERENCED_PARAMETER(Context);
     UNREFERENCED_PARAMETER(PreviousMode);
-    UNREFERENCED_PARAMETER(State);
-    Thread->TrapFrame = KiGetLinkedTrapFrame(TrapFrame);
-    return ExceptionFrame;
+
+    if (ExceptionFrame != NULL)
+        return ExceptionFrame;
+
+    /* FIXME: nonvolatiles a partial context leaves out are zeroed, not kept */
+    RtlZeroMemory(&State->ExceptionFrame, sizeof(State->ExceptionFrame));
+    return &State->ExceptionFrame;
 }
 
 FORCEINLINE
@@ -242,181 +219,81 @@ KiAbortServiceException(
 FORCEINLINE
 VOID
 KiLeaveServiceException(
-    _In_ PKTHREAD Thread,
+    _Inout_ PKTHREAD Thread,
     _In_ PKTRAP_FRAME TrapFrame)
 {
-    UNREFERENCED_PARAMETER(Thread);
-    UNREFERENCED_PARAMETER(TrapFrame);
+    Thread->TrapFrame = (PKTRAP_FRAME)TrapFrame->TrapFrame;
 }
 
-FORCEINLINE
-ULONG_PTR
-KeGetTrapFrameStackRegister(PKTRAP_FRAME TrapFrame)
-{
-    return TrapFrame->Rsp;
-}
-
-FORCEINLINE
-ULONG_PTR
-KeGetTrapFrameFrameRegister(PKTRAP_FRAME TrapFrame)
-{
-    return TrapFrame->Rbp;
-}
-
-//
-// Macro to get trap and exception frame from a thread stack
-//
-#define KeGetTrapFrame(Thread) \
-    ((PKTRAP_FRAME)((ULONG_PTR)((Thread)->InitialStack) - \
-                   sizeof(KTRAP_FRAME)))
-
-//
-// Macro to get context switches from the PRCB
-// All architectures but x86 have it in the PRCB's KeContextSwitches
-//
-#define KeGetContextSwitches(Prcb)  \
-    (Prcb->KeContextSwitches)
-
-//
-// Macro to get the second level cache size field name which differs between
-// CISC and RISC architectures, as the former has unified I/D cache
-//
-#define KiGetSecondLevelDCacheSize() ((PKIPCR)KeGetPcr())->SecondLevelCacheSize
-
-#define KeGetExceptionFrame(Thread) \
-    (PKEXCEPTION_FRAME)((ULONG_PTR)KeGetTrapFrame(Thread) - \
-                        sizeof(KEXCEPTION_FRAME))
-
-//
-// Returns the Interrupt State from a Trap Frame.
-// ON = TRUE, OFF = FALSE
-//
-#define KeGetTrapFrameInterruptState(TrapFrame) \
-        BooleanFlagOn((TrapFrame)->EFlags, EFLAGS_INTERRUPT_MASK)
-
-/* Diable interrupts and return whether they were enabled before */
 FORCEINLINE
 BOOLEAN
 KeDisableInterrupts(VOID)
 {
-    ULONG_PTR Flags;
+    BOOLEAN WereEnabled = (BOOLEAN)((__readeflags() & EFLAGS_INTERRUPT_MASK) != 0);
 
-    /* Get EFLAGS and check if the interrupt bit is set */
-    Flags = __readeflags();
-
-    /* Disable interrupts */
     _disable();
-    return (Flags & EFLAGS_INTERRUPT_MASK) ? TRUE : FALSE;
-}
-
-/* Restore previous interrupt state */
-FORCEINLINE
-VOID
-KeRestoreInterrupts(BOOLEAN WereEnabled)
-{
-    if (WereEnabled) _enable();
-}
-
-//
-// Invalidates the TLB entry for a specified address
-//
-FORCEINLINE
-VOID
-KeInvalidateTlbEntry(IN PVOID Address)
-{
-    /* Invalidate the TLB entry for this address */
-    __invlpg(Address);
-}
-
-VOID MiAmd64FlushTargets(ULONG64 Targets, ULONG64 Address, ULONG64 Pages);
-VOID MiAmd64ProcessTlbRequest(ULONG Source);
-VOID KiSendMemoryIpi(ULONG64 Targets);
-ULONG64 KiQueryFreezeEpoch(VOID);
-BOOLEAN KiIsFreezeActive(VOID);
-
-VOID
-NTAPI
-KiIpiProcessRequests(VOID);
-
-FORCEINLINE
-VOID
-KeFlushProcessTb(VOID)
-{
-#ifdef CONFIG_SMP
-    PKPRCB Prcb = KeGetCurrentPrcb();
-    KAFFINITY TargetSet = KeGetCurrentThread()->ApcState.Process->ActiveProcessors |
-                          Prcb->SetMember;
-
-    MiAmd64FlushTargets((ULONG64)TargetSet, 0, 0);
-#else
-    MiAmd64FlushTargets(1ULL << KeGetCurrentProcessorNumber(), 0, 0);
-#endif
+    return WereEnabled;
 }
 
 FORCEINLINE
 VOID
-KeSweepICache(IN PVOID BaseAddress,
-              IN SIZE_T FlushSize)
+KeRestoreInterrupts(
+    _In_ BOOLEAN WereEnabled)
 {
-    //
-    // Always sweep the whole cache
-    //
+    if (WereEnabled)
+        _enable();
+}
+
+FORCEINLINE
+VOID
+KeSweepICache(
+    _In_opt_ PVOID BaseAddress,
+    _In_ SIZE_T FlushSize)
+{
+    /* Instruction fetch snoops stores on x86; nothing needs writing back */
     UNREFERENCED_PARAMETER(BaseAddress);
     UNREFERENCED_PARAMETER(FlushSize);
-    __wbinvd();
+}
+
+FORCEINLINE
+PKIDTENTRY64
+KiIdtEntryForVector(
+    _In_ ULONG Vector)
+{
+    return &KeGetPcr()->IdtBase[HalVectorToIDTEntry(Vector)];
 }
 
 FORCEINLINE
 VOID
-KiRundownThread(IN PKTHREAD Thread)
+KeRegisterInterruptHandler(
+    _In_ ULONG Vector,
+    _In_ PVOID Handler)
 {
-    /* Nothing to do */
-}
+    PKIDTENTRY64 Idt = KiIdtEntryForVector(Vector);
+    ULONG64 Address = (ULONG64)(ULONG_PTR)Handler;
 
-/* Registers an interrupt handler with an IDT vector */
-FORCEINLINE
-VOID
-KeRegisterInterruptHandler(IN ULONG Vector,
-                           IN PVOID Handler)
-{
-    UCHAR Entry;
-    PKIDTENTRY64 Idt;
-
-    /* Get the entry from the HAL */
-    Entry = HalVectorToIDTEntry(Vector);
-
-    /* Now set the data */
-    Idt = &KeGetPcr()->IdtBase[Entry];
-    Idt->OffsetLow = (ULONG_PTR)Handler & 0xffff;
-    Idt->OffsetMiddle = ((ULONG_PTR)Handler >> 16) & 0xffff;
-    Idt->OffsetHigh = (ULONG_PTR)Handler >> 32;
+    Idt->OffsetLow = (USHORT)Address;
+    Idt->OffsetMiddle = (USHORT)(Address >> 16);
+    Idt->OffsetHigh = (ULONG)(Address >> 32);
     Idt->Selector = KGDT64_R0_CODE;
     Idt->IstIndex = 0;
-    Idt->Type = 0x0e;
+    Idt->Type = 0x0E;
     Idt->Dpl = 0;
     Idt->Present = 1;
     Idt->Reserved0 = 0;
     Idt->Reserved1 = 0;
 }
 
-/* Returns the registered interrupt handler for a given IDT vector */
 FORCEINLINE
 PVOID
-KeQueryInterruptHandler(IN ULONG Vector)
+KeQueryInterruptHandler(
+    _In_ ULONG Vector)
 {
-    UCHAR Entry;
-    PKIDTENTRY64 Idt;
+    PKIDTENTRY64 Idt = KiIdtEntryForVector(Vector);
 
-    /* Get the entry from the HAL */
-    Entry = HalVectorToIDTEntry(Vector);
-
-    /* Get the IDT entry */
-    Idt = &KeGetPcr()->IdtBase[Entry];
-
-    /* Return the address */
-    return (PVOID)((ULONG64)Idt->OffsetHigh << 32 |
-                   (ULONG64)Idt->OffsetMiddle << 16 |
-                   (ULONG64)Idt->OffsetLow);
+    return (PVOID)(ULONG_PTR)(((ULONG64)Idt->OffsetHigh << 32) |
+                              ((ULONG64)Idt->OffsetMiddle << 16) |
+                              (ULONG64)Idt->OffsetLow);
 }
 
 FORCEINLINE
@@ -424,57 +301,41 @@ VOID
 KiSendEOI(VOID)
 {
     if (KiHvApicMsrs)
-    {
         __writemsr(HV_X64_MSR_EOI, 0);
-        return;
-    }
-
-    /* Write 0 to the apic EOI register */
-    *((volatile ULONG*)APIC_EOI_REGISTER) = 0;
+    else if (KiX2ApicMsrs)
+        __writemsr(X2APIC_EOI_MSR, 0);
+    else
+        *(volatile ULONG *)APIC_EOI_REGISTER = 0;
 }
 
 FORCEINLINE
 VOID
-KiEndInterrupt(IN KIRQL Irql,
-               IN PKTRAP_FRAME TrapFrame)
+KiEndInterrupt(
+    _In_ KIRQL Irql,
+    _In_ PKTRAP_FRAME TrapFrame)
 {
-    /* Make sure this is from the clock handler */
-    ASSERT(TrapFrame->ErrorCode == 0xc10c4);
+    ASSERT(TrapFrame->ErrorCode == 0xC10C4);
 
-    /* Disable interrupts and end the interrupt */
     _disable();
     HalEndSystemInterrupt(Irql, TrapFrame);
 }
 
-FORCEINLINE
-BOOLEAN
-KiUserTrap(IN PKTRAP_FRAME TrapFrame)
-{
-    /* Anything else but Ring 0 is Ring 3 */
-    return !!(TrapFrame->SegCs & MODE_MASK);
-}
+#define KiPrcbDpcTimeCount(Prcb) ((Prcb)->DpcTimeCount)
+#define KiPrcbDpcTimeLimit(Prcb) ((Prcb)->DpcTimeLimit)
+#define KiPrcbDpcWatchdogCount(Prcb) ((Prcb)->DpcWatchdogCount)
+#define KiPrcbDpcWatchdogPeriod(Prcb) ((Prcb)->DpcWatchdogPeriod)
+#define KiPrcbContext(Prcb) ((Prcb)->Context)
+#define KI_PRCB_CPU_TYPE_OFFSET FIELD_OFFSET(KPRCB, CpuType)
+#define KI_PRCB_VENDOR_STRING_OFFSET FIELD_OFFSET(KPRCB, VendorString)
+#define KI_PRCB_CONTEXT_OFFSET FIELD_OFFSET(KPRCB, Context)
+#define KiClockTickSuspended(Prcb) FALSE
+#define KiClockTimerInserted(DueTime) ((VOID)(DueTime))
+#define KiRefreshProcessorRunTime(Prcb) ((VOID)(Prcb))
+#define KiQueryClockTickBaseline(Counter, Remainder) (*(Counter) = KeQueryPerformanceCounter(NULL), *(Remainder) = 0)
+#define KiQueryEffectiveProcessorMhz(Number) KiAmd64QueryEffectiveMHz(Number)
 
-//
-// PERF Code
-//
-FORCEINLINE
-VOID
-Ki386PerfEnd(VOID)
-{
-    extern ULONGLONG BootCyclesEnd, BootCycles;
-    BootCyclesEnd = __rdtsc();
-#if DBG
-    DbgPrint("Boot took %I64u cycles!\n", BootCyclesEnd - BootCycles);
-    DbgPrint("Interrupts: %u System Calls: %u Context Switches: %u\n",
-             KeGetCurrentPrcb()->InterruptCount,
-             KeGetCurrentPrcb()->KeSystemCalls,
-             KeGetContextSwitches(KeGetCurrentPrcb()));
-#endif
-}
+DECLSPEC_NORETURN VOID KiSwitchToBootStack(_In_ ULONG_PTR InitialStack);
 
-struct _KPCR;
-
-DECLSPEC_NORETURN VOID KiSwitchToBootStack(IN ULONG_PTR InitialStack);
 VOID KiDivideErrorFault(VOID);
 VOID KiDebugTrapOrFault(VOID);
 VOID KiNmiInterrupt(VOID);
@@ -496,73 +357,53 @@ VOID KiMcheckAbort(VOID);
 VOID KiXmmException(VOID);
 VOID KiApcInterrupt(VOID);
 VOID KiRaiseSecurityCheckFailure(VOID);
-DECLSPEC_NORETURN VOID NTAPI
-KiRaiseSecurityCheckFailureHandler(IN PKTRAP_FRAME TrapFrame);
 VOID KiRaiseAssertion(VOID);
 VOID KiDebugServiceTrap(VOID);
 VOID KiDpcInterrupt(VOID);
 VOID KiIpiInterrupt(VOID);
 
-VOID KiGdtPrepareForApplicationProcessorInit(ULONG Id);
-VOID Ki386InitializeLdt(VOID);
-VOID Ki386SetProcessorFeatures(VOID);
+DECLSPEC_NORETURN
+VOID
+NTAPI
+KiRaiseSecurityCheckFailureHandler(
+    _In_ PKTRAP_FRAME TrapFrame);
+
 VOID KiGetCacheInformation(VOID);
 VOID KiSetProcessorType(VOID);
 ULONG64 KiGetFeatureBits(VOID);
-VOID KiInitializeCpuFeatures(VOID);
-ULONG NTAPI KiAmd64QueryEffectiveMHz(_In_ ULONG ProcessorNumber);
-#define KiQueryEffectiveProcessorMhz(Number) KiAmd64QueryEffectiveMHz(Number)
-/* Current page table root, as recorded in a crash dump header. */
-#define KiReadDirectoryTableBase() ((ULONG64)__readcr3())
-#if DBG
-VOID KiReportCpuFeatures(IN PKPRCB Prcb);
-#endif
+VOID KiReportCpuFeatures(_In_ PKPRCB Prcb);
 
-ULONG KeAllocateGdtSelector(ULONG Desc[2]);
-VOID KeFreeGdtSelector(ULONG Entry);
-VOID NtEarlyInitVdm(VOID);
-VOID KeApplicationProcessorInitDispatcher(VOID);
-VOID KeCreateApplicationProcessorIdleThread(ULONG Id);
+ULONG
+NTAPI
+KiAmd64QueryEffectiveMHz(
+    _In_ ULONG ProcessorNumber);
+
+VOID MiAmd64FlushTargets(_In_ ULONG64 Targets, _In_ ULONG64 Address, _In_ ULONG64 Pages);
+VOID MiAmd64ProcessTlbRequest(_In_ ULONG Source);
+VOID KiSendMemoryIpi(_In_ ULONG64 Targets);
+ULONG64 KiQueryFreezeEpoch(VOID);
+BOOLEAN KiIsFreezeActive(VOID);
 
 VOID
-Ke386InitThreadWithContext(PKTHREAD Thread,
-                           PKSYSTEM_ROUTINE SystemRoutine,
-                           PKSTART_ROUTINE StartRoutine,
-                           PVOID StartContext,
-                           PCONTEXT Context);
-#define KeArchInitThreadWithContext(Thread,SystemRoutine,StartRoutine,StartContext,Context) \
-  Ke386InitThreadWithContext(Thread,SystemRoutine,StartRoutine,StartContext,Context)
+NTAPI
+KiIpiProcessRequests(VOID);
 
-#ifdef _NTOSKRNL_ /* FIXME: Move flags above to NDK instead of here */
 VOID
-KiThreadStartup(PKSYSTEM_ROUTINE SystemRoutine,
-                PKSTART_ROUTINE StartRoutine,
-                PVOID StartContext,
-                BOOLEAN UserThread,
-                KTRAP_FRAME TrapFrame);
-#endif
+KiThreadStartup(
+    _In_ PKSYSTEM_ROUTINE SystemRoutine,
+    _In_ PKSTART_ROUTINE StartRoutine,
+    _In_ PVOID StartContext,
+    _In_ BOOLEAN UserThread,
+    _In_ KTRAP_FRAME TrapFrame);
 
-#endif /* __ASM__ */
-
-// HACK
-extern NTKERNELAPI volatile KSYSTEM_TIME KeTickCount;
-
-// win64 uses DMA macros, this one is not defined
 NTHALAPI
 NTSTATUS
 NTAPI
 HalAllocateAdapterChannel(
-  IN PADAPTER_OBJECT  AdapterObject,
-  IN PWAIT_CONTEXT_BLOCK  Wcb,
-  IN ULONG  NumberOfMapRegisters,
-  IN PDRIVER_CONTROL  ExecutionRoutine);
-
-FORCEINLINE
-PULONG_PTR
-KiGetUserModeStackAddress(void)
-{
-    return &PsGetCurrentThread()->Tcb.TrapFrame->Rsp;
-}
+    _In_ PADAPTER_OBJECT AdapterObject,
+    _In_ PWAIT_CONTEXT_BLOCK Wcb,
+    _In_ ULONG NumberOfMapRegisters,
+    _In_ PDRIVER_CONTROL ExecutionRoutine);
 
 VOID
 KiGetTrapContext(
@@ -575,7 +416,6 @@ KiSetTrapContext(
     _In_ PCONTEXT Context,
     _In_ KPROCESSOR_MODE RequestorMode);
 
-// Exits to user mode, only restores the trap frame, zeroes the non-volatile registers
 DECLSPEC_NORETURN
 VOID
 KiUserCallbackExit(
@@ -598,8 +438,7 @@ KiProcessorFreezeHandler(
 
 VOID
 NTAPI
-KiFreezeIfRequested(
-    VOID);
+KiFreezeIfRequested(VOID);
 
 CODE_SEG("INIT")
 VOID
@@ -662,116 +501,89 @@ VOID
 NTAPI
 KiInitializeMxCsrMask(VOID);
 
-FORCEINLINE
-BOOLEAN
-KiIsDpcInterruptRequested(
-    _In_ PKPRCB Prcb)
-{
-    return Prcb->DpcInterruptRequested != FALSE;
-}
-
-FORCEINLINE
 VOID
-KiSetDpcInterruptRequested(
-    _Inout_ PKPRCB Prcb)
-{
-    Prcb->DpcInterruptRequested = TRUE;
-}
+NTAPI
+KiAmd64BootMark(
+    _In_ ULONG Mark);
 
-FORCEINLINE
 VOID
-KiClearDpcInterruptRequested(
-    _Inout_ PKPRCB Prcb)
-{
-    Prcb->DpcInterruptRequested = FALSE;
-}
+NTAPI
+KiAmd64BootMarkStop(VOID);
 
-FORCEINLINE
 VOID
-KiSetDpcPresent(
-    _Inout_ PKPRCB Prcb)
-{
-    UNREFERENCED_PARAMETER(Prcb);
-}
+NTAPI
+KiAmd64BootReadout(
+    _In_ ULONG Source,
+    _In_ ULONG64 Code,
+    _In_ ULONG64 A,
+    _In_ ULONG64 B,
+    _In_ ULONG64 C,
+    _In_ ULONG64 D);
 
-FORCEINLINE
+#define KiArchBootMark(Mark) KiAmd64BootMark(Mark)
+#define KiArchBootReadout(Source, Code, A, B, C, D) KiAmd64BootReadout(Source, Code, A, B, C, D)
+
+/* int3 traps with RIP past the one-byte instruction */
+#define KI_BREAKPOINT_PC_ADJUST 1
+
+NTSTATUS
+KiAmd64DebugPortExceptionCode(
+    _In_ PKTRAP_FRAME TrapFrame,
+    _In_ NTSTATUS ExceptionCode);
+#define KiArchDebugPortExceptionCode(TrapFrame, Code) KiAmd64DebugPortExceptionCode(TrapFrame, Code)
+
 VOID
-KiClearDpcRequestState(
-    _Inout_ PKPRCB Prcb)
-{
-    Prcb->DpcInterruptRequested = FALSE;
-}
+KiAmd64ReportUnhandledKernelFault(
+    _In_ PKTRAP_FRAME TrapFrame);
+#define KiArchReportUnhandledKernelFault(TrapFrame) KiAmd64ReportUnhandledKernelFault(TrapFrame)
 
-FORCEINLINE
-BOOLEAN
-KiIsDpcThreadActive(
-    _In_ PKPRCB Prcb)
-{
-    return Prcb->DpcThreadActive != FALSE;
-}
-
-FORCEINLINE
-BOOLEAN
-KiIsDpcThreadRequested(
-    _In_ PKPRCB Prcb)
-{
-    return Prcb->DpcThreadRequested != FALSE;
-}
-
-FORCEINLINE
 VOID
-KiSetDpcThreadActive(
-    _Inout_ PKPRCB Prcb)
-{
-    Prcb->DpcThreadActive = TRUE;
-}
+KiAmd64PrepareUserBreakpoint(
+    _Inout_ PEXCEPTION_RECORD ExceptionRecord,
+    _Inout_ PKTRAP_FRAME TrapFrame);
+#define KiArchPrepareUserBreakpoint(ExceptionRecord, TrapFrame) KiAmd64PrepareUserBreakpoint(ExceptionRecord, TrapFrame)
 
-FORCEINLINE
 VOID
-KiSetDpcThreadRequested(
-    _Inout_ PKPRCB Prcb)
-{
-    Prcb->DpcThreadRequested = TRUE;
-}
+KiAmd64PrepareInterruptDispatch(
+    _Inout_ PKINTERRUPT Interrupt);
+#define KiArchPrepareInterruptDispatch(Interrupt) KiAmd64PrepareInterruptDispatch(Interrupt)
 
-FORCEINLINE
+NTSTATUS
+NTAPI
+KiAmd64ContinueExtendedState(
+    _In_ PCONTEXT SourceContext,
+    _In_ ULONG ContextFlags,
+    _In_ KPROCESSOR_MODE PreviousMode);
+#define KiArchContinueExtendedState(SourceContext, ContextFlags, PreviousMode) KiAmd64ContinueExtendedState(SourceContext, ContextFlags, PreviousMode)
+
+NTSTATUS
+NTAPI
+PspAmd64CaptureXStateContext(
+    _In_ PCONTEXT Context,
+    _In_ ULONG ContextFlags,
+    _In_ KPROCESSOR_MODE PreviousMode,
+    _In_ BOOLEAN SetContext,
+    _Out_ PVOID *XState);
+#define PspArchCaptureXStateContext PspAmd64CaptureXStateContext
+
+NTSTATUS
+NTAPI
+PspAmd64CompleteXStateContext(
+    _In_opt_ PVOID XState,
+    _In_ BOOLEAN CopyOut);
+#define PspArchCompleteXStateContext PspAmd64CompleteXStateContext
+
 VOID
-KiClearDpcThreadState(
-    _Inout_ PKPRCB Prcb)
-{
-    Prcb->DpcThreadActive = FALSE;
-    Prcb->DpcThreadRequested = FALSE;
-}
+NTAPI
+PspAmd64InitializeUserThreadStartup(
+    _In_ PKEXCEPTION_FRAME ExceptionFrame,
+    _Inout_ PKTRAP_FRAME TrapFrame);
+#define PspArchInitializeUserThreadStartup PspAmd64InitializeUserThreadStartup
 
-#define KiPrcbDpcTimeCount(Prcb) ((Prcb)->DpcTimeCount)
-#define KiPrcbDpcTimeLimit(Prcb) ((Prcb)->DpcTimeLimit)
-#define KiPrcbDpcWatchdogCount(Prcb) ((Prcb)->DpcWatchdogCount)
-#define KiPrcbDpcWatchdogPeriod(Prcb) ((Prcb)->DpcWatchdogPeriod)
-#define KiClockTickSuspended(Prcb) FALSE
-
-#define _KeIsExecutingDpc() ((BOOLEAN)__readgsbyte(FIELD_OFFSET(KIPCR, Prcb.DpcRoutineActive)))
-
-/* The RPL of the saved code selector is the previous mode. */
-#define KiGetContextPreviousMode(Context) ((KPROCESSOR_MODE)((Context)->SegCs & 1))
-
-#define KiIsUserModeTrap(TrapFrame) \
-    (KiUserTrap(TrapFrame) || ((TrapFrame)->EFlags & EFLAGS_V86_MASK))
-
-/* Interrupt resources of the APIC HAL: flexible line requirements stay on the
- * 24 pins of the first I/O APIC, firmware-fixed GSIs may use any I/O APIC pin,
- * and message vectors start at 0x50, just below CLOCK_LEVEL. Keep in sync
- * with APIC_MAX_IRQ (hal/halx86/apic/apicp.h) and MSI_VECTOR_MIN
- * (hal/halx86/apic/msip.h); IOP_FIXED_INTERRUPT_LIMIT needs
- * <reactos/hal/acpi_pci.h>. */
-#define IOP_LINE_INTERRUPT_LIMIT    24
-#define IOP_FIXED_INTERRUPT_LIMIT   HAL_ACPI_MAX_GSI_PINS
-#define IOP_MESSAGE_VECTOR_BASE     0x50
-#define IOP_MESSAGE_INTERRUPT_IRQL  (CLOCK_LEVEL - 1)
-
-#ifdef __cplusplus
-} // extern "C"
-#endif
-
-#endif /* __NTOSKRNL_INCLUDE_INTERNAL_AMD64_KE_H */
-
-/* EOF */
+NTSTATUS
+NTAPI
+PspAmd64CopyWow64DebugRegisters(
+    _In_ PETHREAD Thread,
+    _Inout_ PWOW64_CONTEXT Context,
+    _In_ BOOLEAN SetContext);
+#define PspArchCopyWow64DebugRegisters PspAmd64CopyWow64DebugRegisters

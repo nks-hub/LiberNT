@@ -209,6 +209,8 @@ KdpNetPromptDpcRoutine(
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     KdpNetDrawPrompt();
 }
 
@@ -314,7 +316,7 @@ KdpNetInit(
         DispatchTable->KdpInitRoutine = KdpNetInit;
         InsertTailList(&KdProviders, &DispatchTable->KdProvidersList);
     }
-    else if (BootPhase == 1)
+    else if (BootPhase == KDP_BOOT_PHASE_BUSES)
     {
         Result = KdpNetInterface.Initialize(KeLoaderBlock);
         if (!NT_SUCCESS(Result))

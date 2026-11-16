@@ -1,289 +1,69 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/include/internal/io.h
- * PURPOSE:         Internal header for the I/O Manager
- * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     I/O manager internals
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
+
+#pragma once
 
 #include "ntdddisk.h"
 
-//
-// Define this if you want debugging support
-//
-#define _IO_DEBUG_                                      0x00
-
-//
-// These define the Debug Masks Supported
-//
-#define IO_IRP_DEBUG                                    0x01
-#define IO_FILE_DEBUG                                   0x02
-#define IO_API_DEBUG                                    0x04
-#define IO_CTL_DEBUG                                    0x08
-
-//
-// Debug/Tracing support
-//
-#if _IO_DEBUG_
-#ifdef NEW_DEBUG_SYSTEM_IMPLEMENTED // enable when Debug Filters are implemented
-#define IOTRACE(x, ...)                                     \
-    {                                                       \
-        DbgPrintEx("%s [%.16s] - ",                         \
-                   __FUNCTION__,                            \
-                   PsGetCurrentProcess()->ImageFileName);   \
-        DbgPrintEx(__VA_ARGS__);                            \
-    }
-#else
-#define IOTRACE(x, ...)                                     \
-    if (x & IopTraceLevel)                                  \
-    {                                                       \
-        DbgPrint("%s [%.16s] - ",                           \
-                 __FUNCTION__,                              \
-                 PsGetCurrentProcess()->ImageFileName);     \
-        DbgPrint(__VA_ARGS__);                              \
-    }
-#endif
-#else
-#define IOTRACE(x, fmt, ...) DPRINT(fmt, ##__VA_ARGS__)
-#endif
-
-//
-// Registry path to the enumeration root key
-//
 #define ENUM_ROOT L"\\Registry\\Machine\\System\\CurrentControlSet\\Enum"
 
-//
-// Returns the type of METHOD_ used in this IOCTL
-//
 #define IO_METHOD_FROM_CTL_CODE(c)                      (c & 0x00000003)
 
-//
-// Bugcheck codes for RAM disk booting
-//
-//
-// No LoaderXIPRom descriptor was found in the loader memory list
-//
 #define RD_NO_XIPROM_DESCRIPTOR  1
-//
-// Unable to open the RAM disk driver (ramdisk.sys or \Device\Ramdisk)
-//
+
 #define RD_NO_RAMDISK_DRIVER     2
-//
-// FSCTL_CREATE_RAM_DISK failed
-//
+
 #define RD_FSCTL_FAILED          3
-//
-// Unable to create GUID string from binary GUID
-//
+
 #define RD_GUID_CONVERT_FAILED   4
-//
-// Unable to create symbolic link pointing to the RAM disk device
-//
+
 #define RD_SYMLINK_CREATE_FAILED 5
-//
-// Unable to create system root path when creating the RAM disk
-//
-#define RD_SYSROOT_INIT_FAILED 6
-//
-// Invalid RDIMAGEOFFSET command-line parameter supplied
-//
+
 #define RD_INVALID_OFFSET 7
-//
-// Invalid RDIMAGELENGTH command-line parameter supplied
-//
+
 #define RD_INVALID_LENGTH 8
 
-//
-// Max traversal of reparse points for a single open in IoParseDevice
-//
-#define IOP_MAX_REPARSE_TRAVERSAL 0x20
+#define RD_NAME_BUILD_FAILED     9
 
-//
-// Private flags for IoCreateFile / IoParseDevice
-//
+#define RD_ENUMERATE_FAILED      10
+
 #define IOP_USE_TOP_LEVEL_DEVICE_HINT       0x01
-#define IOP_CREATE_FILE_OBJECT_EXTENSION    0x02
-#define IOP_TRAVERSED_MOUNT_POINT           0x04
-
 
 typedef struct _FILE_OBJECT_EXTENSION
 {
+    TXN_PARAMETER_BLOCK TxnParameters;
     PDEVICE_OBJECT TopDeviceObjectHint;
     PVOID FilterContext;
     ULONG FoExtFlags;
     IO_PRIORITY_HINT PriorityHint;
+    PMDL IoStatusBlockRange;
 
 } FILE_OBJECT_EXTENSION, *PFILE_OBJECT_EXTENSION;
 
-
-
-//
-// We can call the Ob Inlined API, it's the same thing
-//
-#define IopAllocateMdlFromLookaside                     \
-    ObpAllocateObjectCreateInfoBuffer
-#define IopFreeMdlFromLookaside                         \
-    ObpFreeCapturedAttributes
-
-//
-// Determines if the IRP is Synchronous
-//
 #define IsIrpSynchronous(Irp, FileObject)               \
     (((Irp)->Flags & IRP_SYNCHRONOUS_API) ||            \
      (!(FileObject) ? FALSE :                           \
        (FileObject)->Flags & FO_SYNCHRONOUS_IO))
 
-/* Called in the requestor's process, including I/O completion APCs. */
-FORCEINLINE
-BOOLEAN
-IopIs32BitFileIo(PFILE_OBJECT FileObject, KPROCESSOR_MODE RequestorMode)
-{
-#ifdef _WIN64
-    return RequestorMode != KernelMode &&
-           FileObject != NULL &&
-           !(FileObject->Flags & FO_SYNCHRONOUS_IO) &&
-           PsGetCurrentProcessWow64Process() != NULL;
-#else
-    UNREFERENCED_PARAMETER(FileObject);
-    UNREFERENCED_PARAMETER(RequestorMode);
-    return FALSE;
-#endif
-}
-
-/* The caller must protect writes to user memory with SEH. */
-FORCEINLINE
-VOID
-IopWriteIoStatusBlock(PIO_STATUS_BLOCK Destination,
-                      const IO_STATUS_BLOCK *Source,
-                      BOOLEAN Is32Bit)
-{
-#ifdef _WIN64
-    if (Is32Bit)
-    {
-        PIO_STATUS_BLOCK32 IoStatusBlock32 = (PIO_STATUS_BLOCK32)Destination;
-        IoStatusBlock32->Status = Source->Status;
-        IoStatusBlock32->Information = (ULONG)Source->Information;
-        return;
-    }
-#else
-    UNREFERENCED_PARAMETER(Is32Bit);
-#endif
-    *Destination = *Source;
-}
-
-//
-// Returns the internal Device Object Extension
-//
 #define IoGetDevObjExtension(DeviceObject)              \
     ((PEXTENDED_DEVOBJ_EXTENSION)                       \
      ((DeviceObject)->DeviceObjectExtension))
 
-//
-// Returns the internal Driver Object Extension
-//
 #define IoGetDrvObjExtension(DriverObject)              \
     ((PEXTENDED_DRIVER_EXTENSION)                       \
      ((DriverObject)->DriverExtension))
 
-VOID
-NTAPI
-IopAcquirePnpUnloadBarrier(
-    _In_ PDRIVER_OBJECT DriverObject);
-
-VOID
-NTAPI
-IopReleasePnpUnloadBarrier(
-    _In_ PDRIVER_OBJECT DriverObject);
-
-/*
- * VOID
- * IopDeviceNodeSetFlag(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG Flag);
- */
-#define IopDeviceNodeSetFlag(DeviceNode, Flag)          \
-    ((DeviceNode)->Flags |= (Flag))
-
-/*
- * VOID
- * IopDeviceNodeClearFlag(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG Flag);
- */
-#define IopDeviceNodeClearFlag(DeviceNode, Flag)        \
-    ((DeviceNode)->Flags &= ~(Flag))
-
-/*
- * BOOLEAN
- * IopDeviceNodeHasFlag(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG Flag);
- */
-#define IopDeviceNodeHasFlag(DeviceNode, Flag)          \
-    (((DeviceNode)->Flags & (Flag)) > 0)
-
-/*
- * VOID
- * IopDeviceNodeSetUserFlag(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG UserFlag);
- */
 #define IopDeviceNodeSetUserFlag(DeviceNode, UserFlag)  \
     ((DeviceNode)->UserFlags |= (UserFlag))
 
-/*
- * VOID
- * IopDeviceNodeClearUserFlag(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG UserFlag);
- */
 #define IopDeviceNodeClearUserFlag(DeviceNode, UserFlag)\
     ((DeviceNode)->UserFlags &= ~(UserFlag))
 
-/*
- * BOOLEAN
- * IopDeviceNodeHasUserFlag(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG UserFlag);
- */
-#define IopDeviceNodeHasUserFlag(DeviceNode, UserFlag)  \
-    (((DeviceNode)->UserFlags & (UserFlag)) > 0)
-
- /*
- * VOID
- * IopDeviceNodeSetProblem(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG Problem);
- */
-#define IopDeviceNodeSetProblem(DeviceNode, Problem)    \
-    ((DeviceNode)->Problem |= (Problem))
-
-/*
- * VOID
- * IopDeviceNodeClearProblem(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG Problem);
- */
-#define IopDeviceNodeClearProblem(DeviceNode, Problem)  \
-    ((DeviceNode)->Problem &= ~(Problem))
-
-/*
- * BOOLEAN
- * IopDeviceNodeHasProblem(
- *   PDEVICE_NODE DeviceNode,
- *   ULONG Problem);
- */
-#define IopDeviceNodeHasProblem(DeviceNode, Problem)    \
-    (((DeviceNode)->Problem & (Problem)) > 0)
-
-/*
- * VOID
- * IopInitDeviceTreeTraverseContext(
- *   PDEVICETREE_TRAVERSE_CONTEXT DeviceTreeTraverseContext,
- *   PDEVICE_NODE DeviceNode,
- *   DEVICETREE_TRAVERSE_ROUTINE Action,
- *   PVOID Context);
- */
 #define IopInitDeviceTreeTraverseContext(               \
     _DeviceTreeTraverseContext, _DeviceNode, _Action,   \
     _Context) {                                         \
@@ -292,27 +72,12 @@ IopReleasePnpUnloadBarrier(
     (_DeviceTreeTraverseContext)->Action = (_Action);   \
     (_DeviceTreeTraverseContext)->Context = (_Context); }
 
-/*
- * BOOLEAN
- * IopIsValidPhysicalDeviceObject(
- *   IN PDEVICE_OBJECT PhysicalDeviceObject);
- */
-#define IopIsValidPhysicalDeviceObject(PhysicalDeviceObject)                                                            \
-        (((PEXTENDED_DEVOBJ_EXTENSION)PhysicalDeviceObject) &&                                                          \
-        (((PEXTENDED_DEVOBJ_EXTENSION)PhysicalDeviceObject->DeviceObjectExtension)->DeviceNode))
-
-//
-// Device List Operations
-//
 typedef enum _IOP_DEVICE_LIST_OPERATION
 {
     IopRemove,
     IopAdd
 } IOP_DEVICE_LIST_OPERATION, *PIOP_DEVICE_LIST_OPERATION;
 
-//
-// Transfer statistics
-//
 typedef enum _IOP_TRANSFER_TYPE
 {
     IopReadTransfer,
@@ -320,9 +85,6 @@ typedef enum _IOP_TRANSFER_TYPE
     IopOtherTransfer
 } IOP_TRANSFER_TYPE, *PIOP_TRANSFER_TYPE;
 
-//
-// Packet Types when piggybacking on the IRP Overlay
-//
 typedef enum _COMPLETION_PACKET_TYPE
     {
     IopCompletionPacketIrp,
@@ -331,10 +93,6 @@ typedef enum _COMPLETION_PACKET_TYPE
     IopCompletionPacketWait
 } COMPLETION_PACKET_TYPE, *PCOMPLETION_PACKET_TYPE;
 
-//
-// Special version of the IRP Overlay used to optimize I/O completion
-// by not using up a separate structure.
-//
 typedef struct _IOP_MINI_COMPLETION_PACKET
 {
     struct
@@ -351,8 +109,6 @@ typedef struct _IOP_MINI_COMPLETION_PACKET
     NTSTATUS IoStatus;
     ULONG_PTR IoStatusInformation;
 } IOP_MINI_COMPLETION_PACKET, *PIOP_MINI_COMPLETION_PACKET;
-
-VOID NTAPI IopReleaseWaitCompletionPacket(PIOP_MINI_COMPLETION_PACKET Packet);
 
 #define IOP_IRP_EXTENSION_ACTIVITY_ID 0x0001
 
@@ -398,17 +154,17 @@ typedef struct _IOP_IRP_EXTENSION
 } IOP_IRP_EXTENSION, *PIOP_IRP_EXTENSION;
 
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(IRP, Tail.Overlay.IrpExtension) == 0xC8);
+
 C_ASSERT(sizeof(PVOID) != 8 || sizeof(IRP) == 0xD0);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(IOP_IRP_EXTENSION, ActivityId) == 0x18);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(IOP_IRP_EXTENSION, DriverFlags) == 0x38);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(IOP_IRP_EXTENSION, CopyInformation) == 0x40);
+
 C_ASSERT(sizeof(PVOID) != 8 || sizeof(IOP_IRP_EXTENSION) == 0x50);
 
-VOID NTAPI IopFreeIrpExtension(_Inout_ PIRP Irp);
-
-//
-// I/O Completion Context for IoSetIoCompletionRoutineEx
-//
 typedef struct _IO_UNLOAD_SAFE_COMPLETION_CONTEXT
 {
     PDEVICE_OBJECT DeviceObject;
@@ -416,20 +172,32 @@ typedef struct _IO_UNLOAD_SAFE_COMPLETION_CONTEXT
     PIO_COMPLETION_ROUTINE CompletionRoutine;
 } IO_UNLOAD_SAFE_COMPLETION_CONTEXT, *PIO_UNLOAD_SAFE_COMPLETION_CONTEXT;
 
-//
-// I/O Wrapper around the Executive Work Item
-//
 typedef struct _IO_WORKITEM
 {
-    WORK_QUEUE_ITEM Item;
-    PDEVICE_OBJECT DeviceObject;
-    PIO_WORKITEM_ROUTINE WorkerRoutine;
+    WORK_QUEUE_ITEM WorkItem;
+    PIO_WORKITEM_ROUTINE Routine;
+    PVOID IoObject;
     PVOID Context;
+
+    struct _ETHREAD *WorkOnBehalfThread;
+    ULONG Type;
+    GUID ActivityId;
 } IO_WORKITEM;
 
-//
-// I/O Wrapper around the Kernel Interrupt
-//
+C_ASSERT((sizeof(PVOID) != 8) || (FIELD_OFFSET(IO_WORKITEM, Routine) == 0x20));
+
+C_ASSERT((sizeof(PVOID) != 8) || (FIELD_OFFSET(IO_WORKITEM, IoObject) == 0x28));
+
+C_ASSERT((sizeof(PVOID) != 8) || (FIELD_OFFSET(IO_WORKITEM, Context) == 0x30));
+
+C_ASSERT((sizeof(PVOID) != 8) || (FIELD_OFFSET(IO_WORKITEM, WorkOnBehalfThread) == 0x38));
+
+C_ASSERT((sizeof(PVOID) != 8) || (FIELD_OFFSET(IO_WORKITEM, Type) == 0x40));
+
+C_ASSERT((sizeof(PVOID) != 8) || (FIELD_OFFSET(IO_WORKITEM, ActivityId) == 0x44));
+
+C_ASSERT((sizeof(PVOID) != 8) || (sizeof(IO_WORKITEM) == 0x58));
+
 typedef struct _IO_INTERRUPT
 {
     KINTERRUPT FirstInterrupt;
@@ -437,9 +205,6 @@ typedef struct _IO_INTERRUPT
     KSPIN_LOCK SpinLock;
 } IO_INTERRUPT, *PIO_INTERRUPT;
 
-//
-// I/O Error Log Packet Header
-//
 typedef struct _ERROR_LOG_ENTRY
 {
     CSHORT Type;
@@ -450,31 +215,18 @@ typedef struct _ERROR_LOG_ENTRY
     LARGE_INTEGER TimeStamp;
 } ERROR_LOG_ENTRY, *PERROR_LOG_ENTRY;
 
-//
-// To simplify matters, the kernel is made to support both the checked and free
-// version of the I/O Remove Lock in the same binary. This structure includes
-// both, since the DDK has the structure with a compile-time #ifdef.
-//
 typedef struct _EXTENDED_IO_REMOVE_LOCK
 {
     IO_REMOVE_LOCK_COMMON_BLOCK Common;
     IO_REMOVE_LOCK_DBG_BLOCK Dbg;
 } EXTENDED_IO_REMOVE_LOCK, *PEXTENDED_IO_REMOVE_LOCK;
 
-//
-// Dummy File Object used inside the Open Packet so that OB knows how to
-// deal with the Object Pointer even though it's not a real file.
-//
 typedef struct _DUMMY_FILE_OBJECT
 {
     OBJECT_HEADER ObjectHeader;
     CHAR FileObjectBody[sizeof(FILE_OBJECT)];
 } DUMMY_FILE_OBJECT, *PDUMMY_FILE_OBJECT;
 
-//
-// Open packet used as a context for Device/File parsing so that the parse
-// routine can know what operation is being requested.
-//
 typedef struct _OPEN_PACKET
 {
     CSHORT Type;
@@ -517,20 +269,27 @@ typedef struct _OPEN_PACKET
 } OPEN_PACKET, *POPEN_PACKET;
 
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, RelatedFileObject) == 0x28);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, AllocationSize) == 0x38);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, CreateFileType) == 0x78);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, MailslotOrPipeParameters) == 0x80);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, LocalFileObject) == 0x90);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, InternalFlags) == 0x98);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, AccessMode) == 0x9c);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, DriverCreateContext) == 0xa0);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, FileInformationClass) == 0xc8);
+
 C_ASSERT(sizeof(PVOID) != 8 || FIELD_OFFSET(OPEN_PACKET, ExtendedCreateFlags) == 0xd8);
+
 C_ASSERT(sizeof(PVOID) != 8 || sizeof(OPEN_PACKET) == 0xe0);
 
-//
-// Boot Driver List Entry
-//
 typedef struct _DRIVER_INFORMATION
 {
     LIST_ENTRY Link;
@@ -543,9 +302,6 @@ typedef struct _DRIVER_INFORMATION
     NTSTATUS Status;
 } DRIVER_INFORMATION, *PDRIVER_INFORMATION;
 
-//
-// List of Bus Type GUIDs
-//
 typedef struct _IO_BUS_TYPE_GUID_LIST
 {
     FAST_MUTEX Lock;
@@ -554,28 +310,12 @@ typedef struct _IO_BUS_TYPE_GUID_LIST
     PGUID Guids;
 } IO_BUS_TYPE_GUID_LIST, *PIO_BUS_TYPE_GUID_LIST;
 
-//
-// Shutdown entry for registed devices
-//
 typedef struct _SHUTDOWN_ENTRY
 {
     LIST_ENTRY ShutdownList;
     PDEVICE_OBJECT DeviceObject;
 } SHUTDOWN_ENTRY, *PSHUTDOWN_ENTRY;
 
-//
-// F/S Notification entry for registered File Systems
-//
-typedef struct _FS_CHANGE_NOTIFY_ENTRY
-{
-    LIST_ENTRY FsChangeNotifyList;
-    PDRIVER_OBJECT DriverObject;
-    PDRIVER_FS_NOTIFICATION FSDNotificationProc;
-} FS_CHANGE_NOTIFY_ENTRY, *PFS_CHANGE_NOTIFY_ENTRY;
-
-//
-// Driver (Boot) Re-Initialization Entry
-//
 typedef struct _DRIVER_REINIT_ITEM
 {
     LIST_ENTRY ItemEntry;
@@ -584,16 +324,6 @@ typedef struct _DRIVER_REINIT_ITEM
     PVOID Context;
 } DRIVER_REINIT_ITEM, *PDRIVER_REINIT_ITEM;
 
-//
-// Called on every visit of a node during a preorder-traversal of the device
-// node tree.
-// If the routine returns STATUS_UNSUCCESSFUL the traversal will stop and
-// STATUS_SUCCESS is returned to the caller who initiated the tree traversal.
-// Any other returned status code will be returned to the caller. If a status
-// code that indicates an error (other than STATUS_UNSUCCESSFUL) is returned,
-// the traversal is stopped immediately and the status code is returned to
-// the caller.
-//
 typedef
 NTSTATUS
 (*DEVICETREE_TRAVERSE_ROUTINE)(
@@ -601,36 +331,17 @@ NTSTATUS
     IN PVOID Context
 );
 
-//
-// Context information for traversing the device tree
-//
 typedef struct _DEVICETREE_TRAVERSE_CONTEXT
 {
-    //
-    // Current device node during a traversal
-    //
     PDEVICE_NODE DeviceNode;
 
-    //
-    // Initial device node where we start the traversal
-    //
     PDEVICE_NODE FirstDeviceNode;
 
-    //
-    // Action routine to be called for every device node
-    //
     DEVICETREE_TRAVERSE_ROUTINE Action;
 
-    //
-    // Context passed to the action routine
-    //
     PVOID Context;
 } DEVICETREE_TRAVERSE_CONTEXT, *PDEVICETREE_TRAVERSE_CONTEXT;
 
-//
-// Reserve IRP allocator
-// Used for read paging IOs in low-memory situations
-//
 typedef struct _RESERVE_IRP_ALLOCATOR
 {
     PIRP ReserveIrp;
@@ -639,9 +350,6 @@ typedef struct _RESERVE_IRP_ALLOCATOR
     CCHAR StackSize;
 } RESERVE_IRP_ALLOCATOR, *PRESERVE_IRP_ALLOCATOR;
 
-//
-// Type selection for IopCreateSecurityDescriptorPerType()
-//
 typedef enum _SECURITY_DESCRIPTOR_TYPE
 {
     RestrictedPublic = 1,
@@ -651,9 +359,6 @@ typedef enum _SECURITY_DESCRIPTOR_TYPE
     SystemDefault,
 } SECURITY_DESCRIPTOR_TYPE, *PSECURITY_DESCRIPTOR_TYPE;
 
-//
-// Action types and data for PiQueueDeviceAction()
-//
 typedef enum _DEVICE_ACTION
 {
     PiActionEnumDeviceTree,
@@ -666,791 +371,258 @@ typedef enum _DEVICE_ACTION
     PiActionQueryRemoveDevice,
     PiActionCloseRemovedDevice,
     PiActionEjectDevice,
-    PiActionInsertChildDevice,
 } DEVICE_ACTION;
-
-//
-// Resource code
-//
-ULONG
-NTAPI
-PnpDetermineResourceListSize(IN PCM_RESOURCE_LIST ResourceList);
-
-NTSTATUS
-NTAPI
-IopAssignDeviceResources(
-    IN PDEVICE_NODE DeviceNode
-);
-
-NTSTATUS
-IopFilterResourceRequirements(
-    IN PDEVICE_NODE DeviceNode);
-
-VOID
-NTAPI
-IopInitializeSystemResourceMap(
-    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock
-);
-
-NTSTATUS
-NTAPI
-IopInitializeArbiters(VOID);
-
-NTSTATUS
-NTAPI
-IopFixupResourceListWithRequirements(IN PIO_RESOURCE_REQUIREMENTS_LIST RequirementsList, OUT PCM_RESOURCE_LIST *ResourceList, _In_opt_ PDEVICE_NODE DeviceNode);
-
-NTSTATUS
-NTAPI
-IopDetectResourceConflict(
-     IN PCM_RESOURCE_LIST ResourceList,
-     IN BOOLEAN Silent,
-     OUT OPTIONAL PCM_PARTIAL_RESOURCE_DESCRIPTOR ConflictingDescriptor
-);
-
-BOOLEAN
-IopDmaDescriptorsConflict(
-     _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR First,
-     _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Second
-);
-
-//
-// PNP Routines
-//
-NTSTATUS
-NTAPI
-PipCallDriverAddDevice(
-    IN PDEVICE_NODE DeviceNode,
-    IN BOOLEAN LoadDriver,
-    IN PDRIVER_OBJECT DriverObject
-);
-
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-IopInitializePlugPlayServices(
-    VOID
-);
-
-BOOLEAN
-NTAPI
-PpInitSystem(
-    VOID
-);
-
-VOID
-PnpInit2(
-    VOID
-);
-
-VOID
-IopInitDriverImplementation(
-    VOID
-);
-
-NTSTATUS
-IopGetSystemPowerDeviceObject(
-    IN PDEVICE_OBJECT *DeviceObject
-);
-
-PDEVICE_NODE
-PipAllocateDeviceNode(
-    IN PDEVICE_OBJECT PhysicalDeviceObject
-);
-
-VOID
-PiInsertDevNode(
-    _In_ PDEVICE_NODE DeviceNode,
-    _In_ PDEVICE_NODE ParentNode);
-
-PNP_DEVNODE_STATE
-PiSetDevNodeState(
-    _In_ PDEVICE_NODE DeviceNode,
-    _In_ PNP_DEVNODE_STATE NewState);
-
-VOID
-PiSetDevNodeProblem(
-    _In_ PDEVICE_NODE DeviceNode,
-    _In_ UINT32 Problem);
-
-VOID
-PiClearDevNodeProblem(
-    _In_ PDEVICE_NODE DeviceNode);
-
-VOID
-PiSetDevNodeFlag(
-    _In_ PDEVICE_NODE DeviceNode,
-    _In_ ULONG Flags);
-
-VOID
-PiClearDevNodeFlag(
-    _In_ PDEVICE_NODE DeviceNode,
-    _In_ ULONG Flags);
 
 extern BOOLEAN PnpEnableParallelEnum;
 
-VOID
-PiDevNodeAddDrivers(
-    _In_ PDEVICE_NODE DeviceNode);
-
-VOID
-PiDevNodeStateMachine(
-    _In_ PDEVICE_NODE RootNode);
-
-BOOLEAN
-PiProcessChildrenParallel(
-    _In_ PDEVICE_NODE Parent);
-
 typedef VOID (NTAPI *PPI_PARALLEL_ROUTINE)(_In_ PVOID Item);
-
-BOOLEAN
-PiRunParallel(
-    _In_ PVOID *Items,
-    _In_ LONG Count,
-    _In_ PPI_PARALLEL_ROUTINE Routine);
 
 #if DBG
 VOID PiDiagAcquireDevNode(_In_ PDEVICE_NODE Node);
 VOID PiDiagReleaseDevNode(_In_ PDEVICE_NODE Node);
 #endif
 
-BOOLEAN
-IopIsResourceListValid(
-    _In_ PCM_RESOURCE_LIST ResourceList,
-    _In_ ULONG ResourceListLength);
+typedef struct _PI_QUERY_REMOVE_DATA
+{
+    PNP_VETO_TYPE VetoType;
+    UNICODE_STRING VetoName;
+    PVOID VetoObject;
+} PI_QUERY_REMOVE_DATA, *PPI_QUERY_REMOVE_DATA;
+
+extern POBJECT_TYPE IoCompletionType;
+
+extern POBJECT_TYPE IopWaitCompletionPacketType;
+
+extern PDEVICE_NODE IopRootDeviceNode;
+
+extern KSPIN_LOCK IopDeviceTreeLock;
+
+extern ERESOURCE IopDeviceTreeResource;
+
+extern KMUTEX IopResourceAssignmentLock;
+
+#define IOP_SERVICE_ENUM_LOCK_COUNT 32
+
+extern KMUTEX IopServiceEnumLocks[IOP_SERVICE_ENUM_LOCK_COUNT];
+
+extern ULONG IopTraceLevel;
+
+extern GENERAL_LOOKASIDE IopMdlLookasideList;
+
+extern GENERIC_MAPPING IopCompletionMapping;
+
+extern GENERIC_MAPPING IopFileMapping;
+
+extern LIST_ENTRY IopErrorLogListHead;
+
+extern ULONG IopAutoReboot;
+
+extern ULONG IopNumTriageDumpDataBlocks;
+
+extern PVOID IopTriageDumpDataBlocks[64];
+
+extern IO_BUS_TYPE_GUID_LIST PnpBusTypeGuidList;
+
+extern PDRIVER_OBJECT IopRootDriverObject;
+
+extern KSPIN_LOCK IopDeviceActionLock;
+
+extern LIST_ENTRY IopDeviceActionRequestList;
+
+extern RESERVE_IRP_ALLOCATOR IopReserveIrpAllocator;
+
+extern BOOLEAN IoRemoteBootClient;
+
+typedef struct _IOP_IOMMU_PROVIDER
+{
+    DMA_IOMMU_INTERFACE_V1 Legacy;
+    DMA_IOMMU_INTERFACE_V3 Extended;
+} IOP_IOMMU_PROVIDER, *PIOP_IOMMU_PROVIDER;
+
+typedef NTSTATUS
+(NTAPI *PIOP_DIF_REGISTER_CLASS_DRIVER_PLUGIN)(
+    _In_ ULONG Version,
+    _In_opt_ PVOID Plugin,
+    _In_ ULONG Flags,
+    _In_opt_ PDRIVER_OBJECT DriverObject);
+
+typedef struct _IOP_DIF_PROVIDER
+{
+    PIOP_DIF_REGISTER_CLASS_DRIVER_PLUGIN RegisterClassDriverPlugin;
+} IOP_DIF_PROVIDER, *PIOP_DIF_PROVIDER;
+
+typedef NTSTATUS
+(NTAPI *PIOP_KSR_ENUMERATE_CALLBACK)(
+    _In_ const GUID *MemoryId,
+    _In_ ULONGLONG MemoryLength,
+    _In_opt_ PVOID Context);
+
+typedef struct _IOP_KSR_FIRMWARE_INFORMATION IOP_KSR_FIRMWARE_INFORMATION;
+
+typedef const IOP_KSR_FIRMWARE_INFORMATION *PCIOP_KSR_FIRMWARE_INFORMATION;
+
+typedef struct _IOP_KSR_PROVIDER
+{
+    ULONG Size;
+    ULONG Version;
+    NTSTATUS (NTAPI *ClaimPersistedMemory)(const GUID *, ULONGLONG, PULONGLONG, ULONG, BOOLEAN, PULONG);
+    NTSTATUS (NTAPI *QueryMetadata)(const GUID *, ULONGLONG, PVOID, ULONG, PULONG);
+    VOID (NTAPI *FreePersistedMemory)(const GUID *, BOOLEAN);
+    NTSTATUS (NTAPI *PersistMemoryWithMetadata)(const GUID *, PULONGLONG, ULONG, PVOID, ULONG, PULONGLONG);
+    NTSTATUS (NTAPI *GetFirmwareInformation)(PCIOP_KSR_FIRMWARE_INFORMATION *);
+    NTSTATUS (NTAPI *EnumeratePersistedMemory)(const GUID *, PIOP_KSR_ENUMERATE_CALLBACK, PVOID);
+    NTSTATUS (NTAPI *MdlToMemoryRuns)(PMDL, PULONGLONG, ULONG, PULONG);
+} IOP_KSR_PROVIDER, *PIOP_KSR_PROVIDER;
+
+#define IOP_KSR_PROVIDER_VERSION 1
 
 VOID
-IopResDbInitialize(VOID);
+NTAPI
+FsRtlpFreeAddedEcps(
+    _In_ struct _ECP_LIST *EcpList);
 
 VOID
-IopResDbEnsureSeeded(VOID);
+NTAPI
+FsRtlpMarkCallerEcps(
+    _In_ struct _ECP_LIST *EcpList);
+
+//
+// PnP software devices
+//
+VOID
+PnpSwDeviceInitialize(VOID);
 
 NTSTATUS
-IopResDbReserve(
+NTAPI
+PnpSwDeviceDriverEntry(
+    _In_opt_ PDRIVER_OBJECT DriverObject,
+    _In_opt_ PUNICODE_STRING RegistryPath);
+
+NTSTATUS
+PnpSwDeviceAddChildren(
     _In_ PDEVICE_NODE DeviceNode,
-    _In_opt_ PCM_RESOURCE_LIST ResourceList,
-    _Out_opt_ PBOOLEAN Conflict);
+    _In_ NTSTATUS QueryStatus);
 
 VOID
-IopResDbRelease(
-    _In_ PDEVICE_NODE DeviceNode);
-
-VOID
-IopReleaseNewMessageVectors(
-    _In_opt_ PCM_RESOURCE_LIST ResourceList,
-    _In_ ULONG OldCount);
-
-VOID
-IopReleaseMessageTokens(
-    _In_opt_ PCM_RESOURCE_LIST ResourceList);
-
-NTSTATUS
-IopUpdateControlKeyWithResources(
-    _In_ PDEVICE_NODE DeviceNode);
-
-BOOLEAN
-IopResDbCheckDescriptor(_In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate, _In_opt_ PDEVICE_NODE CandidateOwner, _Out_opt_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Conflicting);
-
-BOOLEAN
-IopResDbCheckList(
-    _In_opt_ PCM_RESOURCE_LIST ResourceList);
-
-VOID
-PiUnlinkDevNode(
-    _In_ PDEVICE_NODE DeviceNode);
-
-NTSTATUS
-IopFreeDeviceNode(
-    IN PDEVICE_NODE DeviceNode
-);
-
-NTSTATUS
-NTAPI
-IopQueryDeviceCapabilities(PDEVICE_NODE DeviceNode,
-                           PDEVICE_CAPABILITIES DeviceCaps);
-
-NTSTATUS
-IopSynchronousCall(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN PIO_STACK_LOCATION IoStackLocation,
-    OUT PVOID *Information
-);
-
-NTSTATUS
-NTAPI
-IopInitiatePnpIrp(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN PIO_STATUS_BLOCK IoStatusBlock,
-    IN UCHAR MinorFunction,
-    IN PIO_STACK_LOCATION Stack
-);
-
-PDEVICE_NODE
-FASTCALL
-IopGetDeviceNode(
-    IN PDEVICE_OBJECT DeviceObject
-);
-
-CODE_SEG("INIT")
-NTSTATUS
-IopInitPlugPlayEvents(VOID);
-
-NTSTATUS
-IopQueueDeviceChangeEvent(
-    _In_ const GUID *EventGuid,
-    _In_ const GUID *InterfaceClassGuid,
-    _In_ PUNICODE_STRING SymbolicLinkName);
-
-NTSTATUS
-IopQueueTargetDeviceEvent(
-    _In_ const GUID *Guid,
-    _In_ PUNICODE_STRING DeviceIds);
-
-NTSTATUS
-IopQueueCustomTargetEvent(
-    _In_ PUNICODE_STRING DeviceIds,
-    _In_ PTARGET_DEVICE_CUSTOM_NOTIFICATION Notification);
-
-NTSTATUS
-IopQueueDeviceInstallEvent(
-    _In_ const GUID *Guid,
-    _In_ PUNICODE_STRING DeviceId);
-
-NTSTATUS
-IopQueuePowerEvent(
-    _In_ ULONG NotificationCode,
-    _In_ ULONG NotificationData,
-    _In_reads_bytes_opt_(PayloadSize) const VOID *Payload,
-    _In_ ULONG PayloadSize,
-    _In_opt_ PLARGE_INTEGER Timeout);
-
-BOOLEAN
-NTAPI
-IoPnPDeliverServicePowerSetting(
-    _In_ ULONG PowerNotificationCode,
-    _In_ ULONG ServiceStatusHandle,
-    _In_reads_bytes_(SettingSize) PVOID Setting,
-    _In_ ULONG SettingSize);
-
-BOOLEAN
-PiIsRemovingRenamedStack(VOID);
-
-VOID
-IopDisableDeviceInterfaces(
-    _In_ PDEVICE_NODE DeviceNode);
-
-NTSTATUS
-NTAPI
-IopOpenRegistryKeyEx(
-    PHANDLE KeyHandle,
-    HANDLE ParentKey,
-    PUNICODE_STRING Name,
-    ACCESS_MASK DesiredAccess);
-
-NTSTATUS
-NTAPI
-IopGetRegistryValue(
-    IN HANDLE Handle,
-    IN PWSTR ValueName,
-    OUT PKEY_VALUE_FULL_INFORMATION *Information
-);
-
-NTSTATUS
-NTAPI
-IopCreateRegistryKeyEx(
-    OUT PHANDLE Handle,
-    IN HANDLE BaseHandle OPTIONAL,
-    IN PUNICODE_STRING KeyName,
-    IN ACCESS_MASK DesiredAccess,
-    IN ULONG CreateOptions,
-    OUT PULONG Disposition OPTIONAL
-);
-
-
-NTSTATUS
-IopTraverseDeviceTree(
-    PDEVICETREE_TRAVERSE_CONTEXT Context);
-
-NTSTATUS
-NTAPI
-IopCreateDeviceKeyPath(
-    IN PCUNICODE_STRING RegistryPath,
-    IN ULONG CreateOptions,
-    OUT PHANDLE Handle);
-
-//
-// PnP Routines
-//
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-IopUpdateRootKey(
-    VOID
-);
-
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-PiInitCacheGroupInformation(
-    VOID
-);
-
-USHORT
-NTAPI
-PpInitGetGroupOrderIndex(
-    IN HANDLE ServiceHandle
-);
-
-USHORT
-NTAPI
-PipGetDriverTagPriority(
-    IN HANDLE ServiceHandle
-);
-
-NTSTATUS
-NTAPI
-PnpRegMultiSzToUnicodeStrings(
-    IN PKEY_VALUE_FULL_INFORMATION KeyValueInformation,
-    OUT PUNICODE_STRING *UnicodeStringList,
-    OUT PULONG UnicodeStringCount
-);
-
-BOOLEAN
-NTAPI
-PnpRegSzToString(
-    IN PWCHAR RegSzData,
-    IN ULONG RegSzLength,
-    OUT PUSHORT StringLength OPTIONAL
-);
-
-VOID
-PiSetDevNodeText(
-    _In_ PDEVICE_NODE DeviceNode,
-    _In_ HANDLE InstanceKey);
-
-//
-// Initialization Routines
-//
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-IopCreateArcNames(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock
-);
-
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-IopCreateArcNamesDisk(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock,
-    IN BOOLEAN SingleDisk,
-    OUT PBOOLEAN FoundBoot
-);
-
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-IopReassignSystemRoot(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock,
-    OUT PANSI_STRING NtBootPath
-);
-
-CODE_SEG("INIT")
-BOOLEAN
-NTAPI
-IoInitSystem(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock
-);
-
-BOOLEAN
-IopVerifyDiskSignature(
-    _In_ PDRIVE_LAYOUT_INFORMATION_EX DriveLayout,
-    _In_ PARC_DISK_SIGNATURE ArcDiskSignature,
-    _Out_ PULONG Signature);
-
-BOOLEAN
-NTAPI
-IoInitializeCrashDump(
-    IN HANDLE DumpFileHandle
-);
-
-BOOLEAN
-NTAPI
-IoInitializeCrashDumpCore(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock OPTIONAL
-);
-
-BOOLEAN
-NTAPI
-IoInitializeDedicatedCrashDump(
-    IN PFILE_OBJECT BootFileObject
-);
-
-BOOLEAN
-NTAPI
-IoInitializeBootPageFileCrashDump(
-    IN PCUNICODE_STRING BootDeviceName
-);
-
-BOOLEAN
-NTAPI
-IoReleaseCrashDumpFile(
-    VOID
-);
-
-VOID
-NTAPI
-IoPublishCrashDumpArtifacts(
-    VOID
-);
-
-CODE_SEG("INIT")
-VOID
-PiInitializeNotifications(
-    VOID);
-
-//
-// Device/Volume Routines
-//
-VOID
-NTAPI
-IopReadyDeviceObjects(
-    IN PDRIVER_OBJECT Driver
-);
-
-PVPB
-NTAPI
-IopCheckVpbMounted(
-    IN POPEN_PACKET OpenPacket,
-    IN PDEVICE_OBJECT DeviceObject,
-    IN PUNICODE_STRING RemainingName,
-    OUT PNTSTATUS Status
-);
-
-NTSTATUS
-NTAPI
-IopMountVolume(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN BOOLEAN AllowRawMount,
-    IN BOOLEAN DeviceIsLocked,
-    IN BOOLEAN Alertable,
-    OUT PVPB *Vpb
-);
-
-PVOID
-IoOpenSymlink(
-    IN PVOID SymbolicLink
-);
-
-PVOID
-IoOpenFileOnDevice(
-    IN PVOID SymbolicLink,
-    IN PWCHAR Name
-);
-
-NTSTATUS
-NTAPI
-IopCreateVpb(
-    IN PDEVICE_OBJECT DeviceObject
-);
-
-VOID
-NTAPI
-IopDereferenceVpbAndFree(
-    IN PVPB Vpb
-);
-
-VOID
-NTAPI
-IoInitFileSystemImplementation(
-    VOID
-);
-
-VOID
-NTAPI
-IoInitVpbImplementation(
-    VOID
-);
-
-NTSTATUS
-NTAPI
-IopReferenceDeviceObject(
-    IN PDEVICE_OBJECT DeviceObject
-);
-
-VOID
-NTAPI
-IopDereferenceDeviceObject(
-    IN PDEVICE_OBJECT DeviceObject,
-    IN BOOLEAN ForceUnload
-);
-
-VOID
-NTAPI
-PiDeviceObjectClosed(
-    _In_ PDEVICE_OBJECT DeviceObject
-);
-
-NTSTATUS
-NTAPI
-IopGetRelatedTargetDevice(
-    IN PFILE_OBJECT FileObject,
-    OUT PDEVICE_NODE *DeviceNode);
-
-NTSTATUS
-NTAPI
-IoGetRelatedTargetDevice(
-    IN PFILE_OBJECT FileObject,
-    OUT PDEVICE_OBJECT *DeviceObject
-);
-
-VOID
-NTAPI
-IopUnloadDevice(
-    IN PDEVICE_OBJECT DeviceObject
-);
-
-PDEVICE_OBJECT
-NTAPI
-IopGetDeviceAttachmentBase(
-    IN PDEVICE_OBJECT DeviceObject
-);
-
-//
-// IRP Routines
-//
-NTSTATUS
-NTAPI
-IopCleanupFailedIrp(
-    IN PFILE_OBJECT FileObject,
-    IN PKEVENT EventObject,
-    IN PVOID Buffer OPTIONAL
-);
-
-VOID
-NTAPI
-IopAbortInterruptedIrp(
-    IN PKEVENT EventObject,
-    IN PIRP Irp
-);
-
-PIRP
-NTAPI
-IopAllocateIrpMustSucceed(
-    IN CCHAR StackSize
-);
-
-BOOLEAN
-NTAPI
-IopInitializeReserveIrp(
-    IN PRESERVE_IRP_ALLOCATOR ReserveIrpAllocator
-);
-
-PIRP
-NTAPI
-IopAllocateReserveIrp(
-    IN CCHAR StackSize
-);
-
-//
-// Shutdown routines
-//
-VOID
-IoInitShutdownNotification(
-    VOID
-);
-
-VOID
-NTAPI
-IoShutdownSystem(
-    IN ULONG Phase
-);
-
-VOID
-NTAPI
-IopShutdownBaseFileSystems(
-    IN PLIST_ENTRY ListHead
-);
-
-//
-// Boot logging support
-//
-CODE_SEG("INIT")
-VOID
-IopInitBootLog(
-    IN BOOLEAN StartBootLog
-);
-
-CODE_SEG("INIT")
-VOID
-IopStartBootLog(
-    VOID
-);
-
-VOID
-IopStopBootLog(
-    VOID
-);
-
-VOID
-IopBootLog(
-    IN PUNICODE_STRING DriverName,
-    IN BOOLEAN Success
-);
-
-VOID
-IopSaveBootLogToFile(
-    VOID
-);
-
-//
-// I/O Cancellation Routines
-//
-VOID
-NTAPI
-IoCancelThreadIo(
-    IN PETHREAD Thread
-);
-
-VOID
-IoInitCancelHandling(
-    VOID
-);
-
-//
-// I/O Completion
-//
-VOID
-NTAPI
-IopCompleteRequest(
-    IN PKAPC Apc,
-    IN PKNORMAL_ROUTINE* NormalRoutine,
-    IN PVOID* NormalContext,
-    IN PVOID* SystemArgument1,
-    IN PVOID* SystemArgument2
-);
-
-VOID
-NTAPI
-IopAbandonThreadAgnosticIrp(
-    IN PIRP Irp
-);
-
-//
-// Error Logging Routines
-//
-VOID
-NTAPI
-IopInitErrorLog(
-    VOID
-);
-
-VOID
-NTAPI
-IopLogWorker(
-    IN PVOID Parameter
-);
-
-//
-// Raw File System MiniDriver
-//
-BOOLEAN
-RawFsIsRawFileSystemDeviceObject(
-    IN PDEVICE_OBJECT DeviceObject
-);
-
-CODE_SEG("INIT")
-NTSTATUS
-NTAPI
-RawFsDriverEntry(
-    IN PDRIVER_OBJECT DriverObject,
-    IN PUNICODE_STRING RegistryPath
-);
-
-//
-// PnP Root MiniDriver
-//
-NTSTATUS
-NTAPI
-PnpRootDriverEntry(
-   IN PDRIVER_OBJECT DriverObject,
-   IN PUNICODE_STRING RegistryPath
-);
-
-NTSTATUS
-PnpRootCreateDeviceObject(
-    OUT PDEVICE_OBJECT *DeviceObject);
-
-NTSTATUS
-PnpRootCreateDevice(
-    IN PUNICODE_STRING ServiceName,
-    OUT PDEVICE_OBJECT *PhysicalDeviceObject,
-    OUT PUNICODE_STRING FullInstancePath
-);
-
-NTSTATUS
-PnpRootRegisterDevice(
-    IN PDEVICE_OBJECT DeviceObject);
-
-NTSTATUS
-PnpRootSetDeviceCapabilities(
-    _In_ PDEVICE_OBJECT DeviceObject,
-    _In_ BOOLEAN Removable,
-    _In_ BOOLEAN SilentInstall,
-    _In_ BOOLEAN NoDisplayInUI,
-    _In_ BOOLEAN RawDeviceOK,
-    _In_ BOOLEAN SurpriseRemovalOK);
-
-VOID
-PnpRootRetireDevice(
-    _In_ PDEVICE_OBJECT DeviceObject);
-
-VOID
-PnpRootInitializeDevExtension(VOID);
+PnpSwDeviceParentRemoved(
+    _In_ PDEVICE_OBJECT Parent);
 
 VOID
 NTAPI
 IopBootDriverStatusUpdate(
-    _In_ BDCB_STATUS_UPDATE_TYPE StatusType
-);
+    _In_ BDCB_STATUS_UPDATE_TYPE StatusType);
 
 BOOLEAN
 NTAPI
 IopBootImageAllowed(
     _In_ PCUNICODE_STRING ImageName,
-    _In_opt_ PCUNICODE_STRING RegistryPath
-);
+    _In_opt_ PCUNICODE_STRING RegistryPath);
 
-//
-// Driver Routines
-//
+VOID
+NTAPI
+IopDeleteDevice(
+    _In_ PVOID ObjectBody);
+
+VOID
+NTAPI
+IopDereferenceDeviceObject(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ BOOLEAN ForceUnload);
+
+PDEVICE_OBJECT
+NTAPI
+IopGetDeviceAttachmentBase(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+VOID
+NTAPI
+IopReadyDeviceObjects(
+    _In_ PDRIVER_OBJECT Driver);
+
+NTSTATUS
+NTAPI
+IopReferenceDeviceObject(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+VOID
+NTAPI
+IopUnloadDevice(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+BOOLEAN
+NTAPI
+IopVerifyDeviceObjectOnStack(
+    _In_ PDEVICE_OBJECT BaseDeviceObject,
+    _In_ PDEVICE_OBJECT TopDeviceObjectHint);
+
+VOID
+FASTCALL
+IopInitTimerImplementation(VOID);
+
+VOID
+NTAPI
+IopRemoveTimerFromTimerList(
+    _In_ PIO_TIMER Timer);
+
 CODE_SEG("INIT")
 VOID
 FASTCALL
-IopInitializeBootDrivers(
-    VOID
-);
+IopInitializeBootDrivers(VOID);
+
+NTSTATUS
+IopInitializeDriverModule(
+    _In_ PLDR_DATA_TABLE_ENTRY ModuleObject,
+    _In_ HANDLE ServiceHandle,
+    _Out_ PDRIVER_OBJECT *DriverObject,
+    _Out_ NTSTATUS *DriverEntryStatus,
+    _In_ BOOLEAN HoldPnpUnloadBarrier);
 
 CODE_SEG("INIT")
 VOID
 FASTCALL
-IopInitializeSystemDrivers(
-    VOID
-);
+IopInitializeSystemDrivers(VOID);
+
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+PiInitCacheGroupInformation(VOID);
+
+USHORT
+NTAPI
+PipGetDriverTagPriority(
+    _In_ HANDLE ServiceHandle);
+
+USHORT
+NTAPI
+PpInitGetGroupOrderIndex(
+    _In_ HANDLE ServiceHandle);
+
+VOID
+NTAPI
+IopAcquirePnpUnloadBarrier(
+    _In_ PDRIVER_OBJECT DriverObject);
 
 VOID
 NTAPI
 IopDeleteDriver(
-    IN PVOID ObjectBody
-);
+    _In_ PVOID ObjectBody);
+
+NTSTATUS
+IopGetDriverNames(
+    _In_ HANDLE ServiceHandle,
+    _Out_ PUNICODE_STRING DriverName,
+    _Out_opt_ PUNICODE_STRING ServiceName);
+
+BOOLEAN
+IopHasSafeBootEntry(
+    _In_ HANDLE SafeBootHandle,
+    _In_ PUNICODE_STRING Name);
+
+VOID
+IopInitDriverImplementation(VOID);
 
 VOID
 IopInitDriverLoadSlots(VOID);
-
-NTSTATUS
-IopReferenceDriverObject(
-    _In_ PCUNICODE_STRING DriverName,
-    _Out_ PDRIVER_OBJECT *DriverObject);
 
 NTSTATUS
 IopLoadDriverForPnp(
@@ -1461,177 +633,41 @@ NTSTATUS
 IopOpenSafeBootKey(
     _Out_ PHANDLE SafeBootHandle);
 
-BOOLEAN
-IopHasSafeBootEntry(
-    _In_ HANDLE SafeBootHandle,
-    _In_ PUNICODE_STRING Name);
-
 NTSTATUS
-IopGetDriverNames(
-    _In_ HANDLE ServiceHandle,
-    _Out_ PUNICODE_STRING DriverName,
-    _Out_opt_ PUNICODE_STRING ServiceName);
-
-NTSTATUS
-IopInitializeDriverModule(
-    _In_ PLDR_DATA_TABLE_ENTRY ModuleObject,
-    _In_ HANDLE ServiceHandle,
-    _Out_ PDRIVER_OBJECT *DriverObject,
-    _Out_ NTSTATUS *DriverEntryStatus,
-    _In_ BOOLEAN HoldPnpUnloadBarrier);
-
-NTSTATUS
-FASTCALL
-IopAttachFilterDrivers(
-    IN PDEVICE_NODE DeviceNode,
-    IN HANDLE EnumSubKey,
-    IN HANDLE ClassKey,
-    IN BOOLEAN Lower
-);
+IopReferenceDriverObject(
+    _In_ PCUNICODE_STRING DriverName,
+    _Out_ PDRIVER_OBJECT *DriverObject);
 
 VOID
 NTAPI
-IopReinitializeDrivers(
-    VOID
-);
+IopReinitializeBootDrivers(VOID);
 
 VOID
 NTAPI
-IopReinitializeBootDrivers(
-    VOID
-);
-
-//
-// File Routines
-//
-VOID
-NTAPI
-IopDeleteDevice(IN PVOID ObjectBody);
-
-NTSTATUS
-NTAPI
-IopParseDevice(
-    IN PVOID ParseObject,
-    IN PVOID ObjectType,
-    IN OUT PACCESS_STATE AccessState,
-    IN KPROCESSOR_MODE AccessMode,
-    IN ULONG Attributes,
-    IN OUT PUNICODE_STRING CompleteName,
-    IN OUT PUNICODE_STRING RemainingName,
-    IN OUT PVOID Context,
-    IN PSECURITY_QUALITY_OF_SERVICE SecurityQos OPTIONAL,
-    OUT PVOID *Object
-);
-
-NTSTATUS
-NTAPI
-IopParseFile(
-    IN PVOID ParseObject,
-    IN PVOID ObjectType,
-    IN OUT PACCESS_STATE AccessState,
-    IN KPROCESSOR_MODE AccessMode,
-    IN ULONG Attributes,
-    IN OUT PUNICODE_STRING CompleteName,
-    IN OUT PUNICODE_STRING RemainingName,
-    IN OUT PVOID Context OPTIONAL,
-    IN PSECURITY_QUALITY_OF_SERVICE SecurityQos OPTIONAL,
-    OUT PVOID *Object
-);
-
-NTSTATUS
-NTAPI
-IopParseFileEx(
-    IN PVOID ParseObject,
-    IN PVOID ObjectType,
-    IN OUT PACCESS_STATE AccessState,
-    IN KPROCESSOR_MODE AccessMode,
-    IN ULONG Attributes,
-    IN OUT PUNICODE_STRING CompleteName,
-    IN OUT PUNICODE_STRING RemainingName,
-    IN OUT PVOID Context OPTIONAL,
-    IN PSECURITY_QUALITY_OF_SERVICE SecurityQos OPTIONAL,
-    IN POB_EXTENDED_PARSE_PARAMETERS ExtendedParameters,
-    OUT PVOID *Object
-);
-
-NTSTATUS
-NTAPI
-IopParseDeviceEx(
-    IN PVOID ParseObject,
-    IN PVOID ObjectType,
-    IN OUT PACCESS_STATE AccessState,
-    IN KPROCESSOR_MODE AccessMode,
-    IN ULONG Attributes,
-    IN OUT PUNICODE_STRING CompleteName,
-    IN OUT PUNICODE_STRING RemainingName,
-    IN OUT PVOID Context OPTIONAL,
-    IN PSECURITY_QUALITY_OF_SERVICE SecurityQos OPTIONAL,
-    IN POB_EXTENDED_PARSE_PARAMETERS ExtendedParameters,
-    OUT PVOID *Object
-);
+IopReinitializeDrivers(VOID);
 
 VOID
 NTAPI
-IopDeleteFile(
-    IN PVOID ObjectBody
-);
+IopReleasePnpUnloadBarrier(
+    _In_ PDRIVER_OBJECT DriverObject);
 
 NTSTATUS
 NTAPI
-IopGetSetSecurityObject(
-    IN PVOID ObjectBody,
-    IN SECURITY_OPERATION_CODE OperationCode,
-    IN PSECURITY_INFORMATION SecurityInformation,
-    IN OUT PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN OUT PULONG BufferLength,
-    OUT PSECURITY_DESCRIPTOR *OldSecurityDescriptor,
-    IN POOL_TYPE PoolType,
-    IN OUT PGENERIC_MAPPING GenericMapping,
-    IN KPROCESSOR_MODE AccessMode
-);
+IoChangeFileObjectFilterContext(
+    _In_ PFILE_OBJECT FileObject,
+    _In_ PVOID FilterContext,
+    _In_ BOOLEAN Define);
 
 NTSTATUS
 NTAPI
-IopSetDeviceSecurityDescriptors(
-    IN PDEVICE_OBJECT UpperDeviceObject,
-    IN PDEVICE_OBJECT PhysicalDeviceObject,
-    IN PSECURITY_INFORMATION SecurityInformation,
-    IN PSECURITY_DESCRIPTOR SecurityDescriptor,
-    IN POOL_TYPE PoolType,
-    IN PGENERIC_MAPPING GenericMapping
-);
+IoComputeDesiredAccessFileObject(
+    _In_ PFILE_OBJECT FileObject,
+    _In_ PACCESS_MASK DesiredAccess);
 
-NTSTATUS
+PVOID
 NTAPI
-IopQueryName(
-    IN PVOID ObjectBody,
-    IN BOOLEAN HasName,
-    OUT POBJECT_NAME_INFORMATION ObjectNameInfo,
-    IN ULONG Length,
-    OUT PULONG ReturnLength,
-    IN KPROCESSOR_MODE PreviousMode
-);
-
-NTSTATUS
-NTAPI
-IopQueryNameInternal(
-    IN PVOID ObjectBody,
-    IN BOOLEAN HasName,
-    IN BOOLEAN QueryDosName,
-    OUT POBJECT_NAME_INFORMATION ObjectNameInfo,
-    IN ULONG Length,
-    OUT PULONG ReturnLength,
-    IN KPROCESSOR_MODE PreviousMode
-);
-
-VOID
-NTAPI
-IopCloseFile(
-    IN PEPROCESS Process OPTIONAL,
-    IN PVOID Object,
-    IN ULONG_PTR ProcessHandleCount,
-    IN ULONG_PTR SystemHandleCount
-);
+IoGetFileObjectFilterContext(
+    _In_ PFILE_OBJECT FileObject);
 
 NTSTATUS
 NTAPI
@@ -1639,87 +675,236 @@ IopAcquireFileObjectLock(
     _In_ PFILE_OBJECT FileObject,
     _In_ KPROCESSOR_MODE AccessMode,
     _In_ BOOLEAN Alertable,
-    _Out_ PBOOLEAN LockFailed
-);
-
-VOID
-NTAPI
-FsRtlpMarkCallerEcps(
-    IN struct _ECP_LIST *EcpList
-);
-
-VOID
-NTAPI
-FsRtlpFreeAddedEcps(
-    IN struct _ECP_LIST *EcpList
-);
+    _Out_ PBOOLEAN LockFailed);
 
 NTSTATUS
 NTAPI
 IopAllocateFileObjectExtension(
-    IN PFILE_OBJECT FileObject
-);
-
-PVOID
-NTAPI
-IoGetFileObjectFilterContext(
-    IN PFILE_OBJECT FileObject
-);
-
-NTSTATUS
-NTAPI
-IoChangeFileObjectFilterContext(
-    IN PFILE_OBJECT FileObject,
-    IN PVOID FilterContext,
-    IN BOOLEAN Define
-);
+    _In_ PFILE_OBJECT FileObject);
 
 VOID
 NTAPI
-IopDoNameTransmogrify(
-    IN PIRP Irp,
-    IN PFILE_OBJECT FileObject,
-    IN PREPARSE_DATA_BUFFER DataBuffer
-);
+IopCloseFile(
+    _In_opt_ PEPROCESS Process,
+    _In_ PVOID Object,
+    _In_ ULONG_PTR ProcessHandleCount,
+    _In_ ULONG_PTR SystemHandleCount);
+
+VOID
+NTAPI
+IopDeleteFile(
+    _In_ PVOID ObjectBody);
 
 NTSTATUS
 NTAPI
-IoComputeDesiredAccessFileObject(
-    IN PFILE_OBJECT FileObject,
-    IN PACCESS_MASK DesiredAccess
-);
+IopGetSetSecurityObject(
+    _In_ PVOID ObjectBody,
+    _In_ SECURITY_OPERATION_CODE OperationCode,
+    _In_ PSECURITY_INFORMATION SecurityInformation,
+    _Inout_ PSECURITY_DESCRIPTOR SecurityDescriptor,
+    _Inout_ PULONG BufferLength,
+    _Out_ PSECURITY_DESCRIPTOR *OldSecurityDescriptor,
+    _In_ POOL_TYPE PoolType,
+    _Inout_ PGENERIC_MAPPING GenericMapping,
+    _In_ KPROCESSOR_MODE AccessMode);
+
+NTSTATUS
+NTAPI
+IopQueryName(
+    _In_ PVOID ObjectBody,
+    _In_ BOOLEAN HasName,
+    _Out_ POBJECT_NAME_INFORMATION ObjectNameInfo,
+    _In_ ULONG Length,
+    _Out_ PULONG ReturnLength,
+    _In_ KPROCESSOR_MODE PreviousMode);
+
+NTSTATUS
+NTAPI
+IopQueryNameInternal(
+    _In_ PVOID ObjectBody,
+    _In_ BOOLEAN HasName,
+    _In_ BOOLEAN QueryDosName,
+    _Out_ POBJECT_NAME_INFORMATION ObjectNameInfo,
+    _In_ ULONG Length,
+    _Out_ PULONG ReturnLength,
+    _In_ KPROCESSOR_MODE PreviousMode);
+
+NTSTATUS
+NTAPI
+IopSetDeviceSecurityDescriptors(
+    _In_ PDEVICE_OBJECT UpperDeviceObject,
+    _In_ PDEVICE_OBJECT PhysicalDeviceObject,
+    _In_ PSECURITY_INFORMATION SecurityInformation,
+    _In_ PSECURITY_DESCRIPTOR SecurityDescriptor,
+    _In_ POOL_TYPE PoolType,
+    _In_ PGENERIC_MAPPING GenericMapping);
+
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+IopCreateArcNames(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+IopCreateArcNamesDisk(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock,
+    _In_ BOOLEAN SingleDisk,
+    _Out_ PBOOLEAN FoundBoot);
+
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+IopReassignSystemRoot(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock,
+    _Out_ PANSI_STRING NtDeviceName);
+
+BOOLEAN
+IopVerifyDiskSignature(
+    _In_ PDRIVE_LAYOUT_INFORMATION_EX DriveLayout,
+    _In_ PARC_DISK_SIGNATURE ArcDiskSignature,
+    _Out_ PULONG Signature);
+
+VOID
+IopBootLog(
+    _In_ PUNICODE_STRING DriverName,
+    _In_ BOOLEAN Success);
+
+CODE_SEG("INIT")
+VOID
+IopInitBootLog(
+    _In_ BOOLEAN StartBootLog);
+
+VOID
+IopSaveBootLogToFile(VOID);
+
+CODE_SEG("INIT")
+VOID
+IopStartBootLog(VOID);
+
+VOID
+IopStopBootLog(VOID);
+
+VOID
+NTAPI
+IoCancelThreadIo(
+    _In_ PETHREAD Thread);
+
+VOID
+IoInitCancelHandling(VOID);
+
+VOID
+NTAPI
+IopAbandonThreadAgnosticIrp(
+    _In_ PIRP Irp);
+
+VOID
+NTAPI
+IopAbortInterruptedIrp(
+    _In_ PKEVENT EventObject,
+    _In_ PIRP Irp);
+
+NTSTATUS
+NTAPI
+IopCleanupFailedIrp(
+    _In_ PFILE_OBJECT FileObject,
+    _In_ PKEVENT EventObject,
+    _In_opt_ PVOID Buffer);
+
+VOID
+NTAPI
+IopCompleteRequest(
+    _In_ PKAPC Apc,
+    _In_ PKNORMAL_ROUTINE* NormalRoutine,
+    _In_ PVOID* NormalContext,
+    _In_ PVOID* SystemArgument1,
+    _In_ PVOID* SystemArgument2);
+
+VOID
+NTAPI
+IopQueueThreadAgnosticIrp(
+    _In_ PIRP Irp,
+    _In_ PFILE_OBJECT FileObject);
+
+NTSTATUS
+NTAPI
+IoSetIoCompletion(
+    _In_ PVOID IoCompletion,
+    _In_ PVOID KeyContext,
+    _In_ PVOID ApcContext,
+    _In_ NTSTATUS IoStatus,
+    _In_ ULONG_PTR IoStatusInformation,
+    _In_ BOOLEAN Quota);
+
+VOID
+NTAPI
+IopCloseIoCompletion(
+    _In_opt_ PEPROCESS Process,
+    _In_ PVOID Object,
+    _In_ ULONG_PTR ProcessHandleCount,
+    _In_ ULONG_PTR SystemHandleCount);
+
+VOID
+NTAPI
+IopDeleteIoCompletion(
+    PVOID ObjectBody);
+
+BOOLEAN
+NTAPI
+IoInitializeBootPageFileCrashDump(
+    _In_ PCUNICODE_STRING BootDeviceName);
+
+BOOLEAN
+NTAPI
+IoInitializeCrashDump(
+    _In_ HANDLE DumpFileHandle);
+
+BOOLEAN
+NTAPI
+IoInitializeCrashDumpCore(
+    _In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+
+BOOLEAN
+NTAPI
+IoInitializeDedicatedCrashDump(
+    _In_ PFILE_OBJECT BootFileObject);
+
+VOID
+NTAPI
+IoPublishCrashDumpArtifacts(VOID);
+
+BOOLEAN
+NTAPI
+IoReleaseCrashDumpFile(VOID);
+
+VOID
+NTAPI
+IopInitErrorLog(VOID);
+
+VOID
+NTAPI
+IopLogWorker(
+    _In_ PVOID Parameter);
 
 NTSTATUS
 NTAPI
 IopGetFileInformation(
-    IN PFILE_OBJECT FileObject,
-    IN ULONG Length,
-    IN FILE_INFORMATION_CLASS FileInfoClass,
-    OUT PVOID Buffer,
-    OUT PULONG ReturnedLength
-);
+    _In_ PFILE_OBJECT FileObject,
+    _In_ ULONG Length,
+    _In_ FILE_INFORMATION_CLASS FileInfoClass,
+    _Out_ PVOID Buffer,
+    _Out_ PULONG ReturnedLength);
 
+CODE_SEG("INIT")
 BOOLEAN
 NTAPI
-IopVerifyDeviceObjectOnStack(
-    IN PDEVICE_OBJECT BaseDeviceObject,
-    IN PDEVICE_OBJECT TopDeviceObjectHint
-);
+IoInitSystem(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
 
-//
-// I/O Timer Routines
-//
-VOID
-FASTCALL
-IopInitTimerImplementation(
-    VOID
-);
-
-VOID
+KIRQL
 NTAPI
-IopRemoveTimerFromTimerList(
-    IN PIO_TIMER Timer
-);
+IopAcquireDatabaseLockExclusive(VOID);
 
 KIRQL
 NTAPI
@@ -1727,119 +912,346 @@ IopAcquireDatabaseLockShared(VOID);
 
 VOID
 NTAPI
-IopReleaseDatabaseLockShared(
-    _In_ KIRQL OldIrql);
-
-KIRQL
-NTAPI
-IopAcquireDatabaseLockExclusive(VOID);
-
-VOID
-NTAPI
 IopReleaseDatabaseLockExclusive(
     _In_ KIRQL OldIrql);
 
-//
-// I/O Completion Routines
-//
 VOID
 NTAPI
-IopDeleteIoCompletion(
-    PVOID ObjectBody
-);
-
-VOID
-NTAPI
-IopQueueThreadAgnosticIrp(
-    IN PIRP Irp,
-    IN PFILE_OBJECT FileObject
-);
-
-VOID
-NTAPI
-IopCloseIoCompletion(
-    IN PEPROCESS Process OPTIONAL,
-    IN PVOID Object,
-    IN ULONG_PTR ProcessHandleCount,
-    IN ULONG_PTR SystemHandleCount
-);
+IopReleaseDatabaseLockShared(
+    _In_ KIRQL OldIrql);
 
 NTSTATUS
 NTAPI
-IoSetIoCompletion(
-    IN PVOID IoCompletion,
-    IN PVOID KeyContext,
-    IN PVOID ApcContext,
-    IN NTSTATUS IoStatus,
-    IN ULONG_PTR IoStatusInformation,
-    IN BOOLEAN Quota
-);
+IopRegisterIommuProvider(
+    _In_ const IOP_IOMMU_PROVIDER *Provider);
+
+PIRP
+NTAPI
+IopAllocateIrpMustSucceed(
+    _In_ CCHAR StackSize);
+
+PIRP
+NTAPI
+IopAllocateReserveIrp(
+    _In_ CCHAR StackSize);
+
+VOID
+NTAPI
+IopFreeIrpExtension(
+    _Inout_ PIRP Irp);
 
 BOOLEAN
 NTAPI
-IopInitializeWaitCompletionPacketType(VOID);
+IopInitializeReserveIrp(
+    _In_ PRESERVE_IRP_ALLOCATOR ReserveIrpAllocator);
 
-//
-// Ramdisk Routines
-//
+NTSTATUS
+NTAPI
+IopParseDevice(
+    _In_ PVOID ParseObject,
+    _In_ PVOID ObjectType,
+    _Inout_ PACCESS_STATE AccessState,
+    _In_ KPROCESSOR_MODE AccessMode,
+    _In_ ULONG Attributes,
+    _Inout_ PUNICODE_STRING CompleteName,
+    _Inout_ PUNICODE_STRING RemainingName,
+    _Inout_ PVOID Context,
+    _In_opt_ PSECURITY_QUALITY_OF_SERVICE SecurityQos,
+    _Out_ PVOID *Object);
+
+NTSTATUS
+NTAPI
+IopParseDeviceEx(
+    _In_ PVOID ParseObject,
+    _In_ PVOID ObjectType,
+    _Inout_ PACCESS_STATE AccessState,
+    _In_ KPROCESSOR_MODE AccessMode,
+    _In_ ULONG Attributes,
+    _Inout_ PUNICODE_STRING CompleteName,
+    _Inout_ PUNICODE_STRING RemainingName,
+    _Inout_opt_ PVOID Context,
+    _In_opt_ PSECURITY_QUALITY_OF_SERVICE SecurityQos,
+    _In_ POB_EXTENDED_PARSE_PARAMETERS ExtendedParameters,
+    _Out_ PVOID *Object);
+
+NTSTATUS
+NTAPI
+IopParseFile(
+    _In_ PVOID ParseObject,
+    _In_ PVOID ObjectType,
+    _Inout_ PACCESS_STATE AccessState,
+    _In_ KPROCESSOR_MODE AccessMode,
+    _In_ ULONG Attributes,
+    _Inout_ PUNICODE_STRING CompleteName,
+    _Inout_ PUNICODE_STRING RemainingName,
+    _Inout_opt_ PVOID Context,
+    _In_opt_ PSECURITY_QUALITY_OF_SERVICE SecurityQos,
+    _Out_ PVOID *Object);
+
+NTSTATUS
+NTAPI
+IopParseFileEx(
+    _In_ PVOID ParseObject,
+    _In_ PVOID ObjectType,
+    _Inout_ PACCESS_STATE AccessState,
+    _In_ KPROCESSOR_MODE AccessMode,
+    _In_ ULONG Attributes,
+    _Inout_ PUNICODE_STRING CompleteName,
+    _Inout_ PUNICODE_STRING RemainingName,
+    _Inout_opt_ PVOID Context,
+    _In_opt_ PSECURITY_QUALITY_OF_SERVICE SecurityQos,
+    _In_ POB_EXTENDED_PARSE_PARAMETERS ExtendedParameters,
+    _Out_ PVOID *Object);
+
 CODE_SEG("INIT")
 NTSTATUS
 NTAPI
 IopStartRamdisk(
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock
-);
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
 
-//
-// Configuration Routines
-//
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+RawFsDriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath);
+
+BOOLEAN
+RawFsIsRawFileSystemDeviceObject(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+NTSTATUS
+NTAPI
+IopDetectResourceConflict(
+    _In_ PCM_RESOURCE_LIST ResourceList,
+    _In_ BOOLEAN Silent,
+    _In_opt_ PVOID Claimant,
+    _Out_ OPTIONAL PCM_PARTIAL_RESOURCE_DESCRIPTOR ConflictingDescriptor);
+
+BOOLEAN
+IopDmaDescriptorsConflict(
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR First,
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Second);
+
 NTSTATUS
 IopFetchConfigurationInformation(
     _Out_ PWSTR* SymbolicLinkList,
     _In_ GUID Guid,
     _In_ ULONG ExpectedInterfaces,
-    _Out_ PULONG Interfaces
-);
+    _Out_ PULONG Interfaces);
+
+VOID
+NTAPI
+IopInitializeSystemResourceMap(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock);
+
+BOOLEAN
+IopIsResourceListValid(
+    _In_ PCM_RESOURCE_LIST ResourceList,
+    _In_ ULONG ResourceListLength);
 
 VOID
 IopStoreSystemPartitionInformation(
     _In_ PUNICODE_STRING NtSystemPartitionDeviceName,
-    _In_ PUNICODE_STRING OsLoaderPathName
-);
+    _In_ PUNICODE_STRING OsLoaderPathName);
 
-//
-// Device action
-//
+ULONG
+NTAPI
+PnpDetermineResourceListSize(
+    _In_ PCM_RESOURCE_LIST ResourceList);
+
 VOID
-PiQueueDeviceAction(
+IoInitShutdownNotification(VOID);
+
+VOID
+NTAPI
+IoShutdownSystem(
+    _In_ ULONG Phase);
+
+VOID
+NTAPI
+IopShutdownBaseFileSystems(
+    _In_ PLIST_ENTRY ListHead);
+
+VOID
+NTAPI
+IoInitFileSystemImplementation(VOID);
+
+VOID
+NTAPI
+IoInitVpbImplementation(VOID);
+
+PVPB
+NTAPI
+IopCheckVpbMounted(
+    _In_ POPEN_PACKET OpenPacket,
     _In_ PDEVICE_OBJECT DeviceObject,
-    _In_ DEVICE_ACTION Action,
-    _In_opt_ PKEVENT CompletionEvent,
-    _Out_opt_ NTSTATUS *CompletionStatus);
+    _In_ PUNICODE_STRING RemainingName,
+    _Out_ PNTSTATUS Status);
 
 NTSTATUS
-PiPerformSyncDeviceAction(
-    _In_ PDEVICE_OBJECT DeviceObject,
-    _In_ DEVICE_ACTION Action);
+NTAPI
+IopCreateVpb(
+    _In_ PDEVICE_OBJECT DeviceObject);
 
-typedef struct _PI_QUERY_REMOVE_DATA
-{
-    PNP_VETO_TYPE VetoType;
-    UNICODE_STRING VetoName;
-} PI_QUERY_REMOVE_DATA, *PPI_QUERY_REMOVE_DATA;
-
-NTSTATUS
-PiQueryRemoveDevice(
-    _In_ PDEVICE_OBJECT DeviceObject,
-    _Out_ PPI_QUERY_REMOVE_DATA RemoveData);
+VOID
+NTAPI
+IopDereferenceVpbAndFree(
+    _In_ PVPB Vpb);
 
 NTSTATUS
-PiInsertChildDevNode(
+NTAPI
+IopMountVolume(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ BOOLEAN AllowRawMount,
+    _In_ BOOLEAN DeviceIsLocked,
+    _In_ BOOLEAN Alertable,
+    _Out_ PVPB *Vpb);
+
+VOID
+NTAPI
+IopReleaseStorageVpb(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+NTSTATUS
+NTAPI
+IopRegisterKsrProvider(
+    _In_ const IOP_KSR_PROVIDER *Provider);
+
+PVOID
+NTAPI
+IopResolveKsrApiSetRoutine(
+    _In_ PCSTR RoutineName);
+
+BOOLEAN
+NTAPI
+IopInitializeWaitCompletionPacketType(VOID);
+
+VOID
+NTAPI
+IopReleaseWaitCompletionPacket(
+    PIOP_MINI_COMPLETION_PACKET Packet);
+
+NTSTATUS
+NTAPI
+IopRegisterDifProvider(
+    _In_ const IOP_DIF_PROVIDER *Provider);
+
+VOID
+IopDisableDeviceInterfaces(
+    _In_ PDEVICE_NODE DeviceNode);
+
+CODE_SEG("INIT")
+NTSTATUS
+IopInitPlugPlayEvents(VOID);
+
+NTSTATUS
+IopQueueCustomTargetEvent(
+    _In_ PUNICODE_STRING DeviceIds,
+    _In_ PTARGET_DEVICE_CUSTOM_NOTIFICATION Notification);
+
+NTSTATUS
+IopQueueDeviceChangeEvent(
+    _In_ const GUID *EventGuid,
+    _In_ const GUID *InterfaceClassGuid,
+    _In_ PUNICODE_STRING SymbolicLinkName);
+
+NTSTATUS
+IopQueueDeviceInstallEvent(
+    _In_ const GUID *Guid,
+    _In_ PUNICODE_STRING DeviceId);
+
+NTSTATUS
+IopQueueTargetDeviceEvent(
+    _In_ const GUID *Guid,
+    _In_ PUNICODE_STRING DeviceIds);
+
+NTSTATUS
+NTAPI
+IoGetRelatedTargetDevice(
+    _In_ PFILE_OBJECT FileObject,
+    _Out_ PDEVICE_OBJECT *DeviceObject);
+
+NTSTATUS
+IopFreeDeviceNode(
+    _In_ PDEVICE_NODE DeviceNode);
+
+PDEVICE_NODE
+FASTCALL
+IopGetDeviceNode(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+NTSTATUS
+NTAPI
+IopGetRelatedTargetDevice(
+    _In_ PFILE_OBJECT FileObject,
+    _Out_ PDEVICE_NODE *DeviceNode);
+
+NTSTATUS
+IopGetSystemPowerDeviceObject(
+    _In_ PDEVICE_OBJECT *DeviceObject);
+
+NTSTATUS
+IopTraverseDeviceTree(
+    PDEVICETREE_TRAVERSE_CONTEXT Context);
+
+VOID
+PiClearDevNodeFlag(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ ULONG Flags);
+
+VOID
+PiClearDevNodeProblem(
+    _In_ PDEVICE_NODE DeviceNode);
+
+VOID
+NTAPI
+PiDeviceObjectClosed(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+VOID
+PiInsertDevNode(
     _In_ PDEVICE_NODE DeviceNode,
     _In_ PDEVICE_NODE ParentNode);
 
-//
-// PnP notifications
-//
+VOID
+PiSetDevNodeFlag(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ ULONG Flags);
+
+VOID
+PiSetDevNodeProblem(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ UINT32 Problem);
+
+PNP_DEVNODE_STATE
+PiSetDevNodeState(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ PNP_DEVNODE_STATE NewState);
+
+VOID
+PiSetDevNodeText(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ HANDLE InstanceKey);
+
+VOID
+PiUnlinkDevNode(
+    _In_ PDEVICE_NODE DeviceNode);
+
+VOID
+NTAPI
+PiUpdateServiceEnum(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_ BOOLEAN Add);
+
+PDEVICE_NODE
+PipAllocateDeviceNode(
+    _In_ PDEVICE_OBJECT PhysicalDeviceObject);
+
+CODE_SEG("INIT")
+VOID
+PiInitializeNotifications(VOID);
+
 CODE_SEG("PAGE")
 VOID
 PiNotifyDeviceInterfaceChange(
@@ -1859,20 +1271,41 @@ PiNotifyTargetDeviceChange(
     _In_ PDEVICE_OBJECT DeviceObject,
     _In_opt_ PTARGET_DEVICE_CUSTOM_NOTIFICATION CustomNotification);
 
-//
-// PnP IRPs
-//
+CODE_SEG("PAGE")
 NTSTATUS
-PiIrpStartDevice(
-    _In_ PDEVICE_NODE DeviceNode);
+PiNotifyTargetDeviceQueryRemove(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Out_ PDRIVER_OBJECT *VetoDriver);
+
+BOOLEAN
+PiProcessChildrenParallel(
+    _In_ PDEVICE_NODE Parent);
+
+BOOLEAN
+PiRunParallel(
+    _In_ PVOID *Items,
+    _In_ LONG Count,
+    _In_ PPI_PARALLEL_ROUTINE Routine);
 
 NTSTATUS
-PiIrpStopDevice(
-    _In_ PDEVICE_NODE DeviceNode);
+NTAPI
+IopInitiatePnpIrp(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIO_STATUS_BLOCK IoStatusBlock,
+    _In_ UCHAR MinorFunction,
+    _In_ PIO_STACK_LOCATION Stack);
 
 NTSTATUS
-PiIrpQueryStopDevice(
-    _In_ PDEVICE_NODE DeviceNode);
+NTAPI
+IopQueryDeviceCapabilities(
+    PDEVICE_NODE DeviceNode,
+    PDEVICE_CAPABILITIES DeviceCaps);
+
+NTSTATUS
+IopSynchronousCall(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIO_STACK_LOCATION IoStackLocation,
+    _Out_ PVOID *Information);
 
 NTSTATUS
 PiIrpCancelStopDevice(
@@ -1882,16 +1315,6 @@ NTSTATUS
 PiIrpQueryDeviceRelations(
     _In_ PDEVICE_NODE DeviceNode,
     _In_ DEVICE_RELATION_TYPE Type);
-
-NTSTATUS
-PiIrpQueryResources(
-    _In_ PDEVICE_NODE DeviceNode,
-    _Out_ PCM_RESOURCE_LIST *Resources);
-
-NTSTATUS
-PiIrpQueryResourceRequirements(
-    _In_ PDEVICE_NODE DeviceNode,
-    _Out_ PIO_RESOURCE_REQUIREMENTS_LIST *Resources);
 
 NTSTATUS
 PiIrpQueryDeviceText(
@@ -1905,97 +1328,325 @@ PiIrpQueryPnPDeviceState(
     _In_ PDEVICE_NODE DeviceNode,
     _Out_ PPNP_DEVICE_STATE DeviceState);
 
-//
-// Global I/O Data
-//
-extern POBJECT_TYPE IoCompletionType;
-extern POBJECT_TYPE IopWaitCompletionPacketType;
-extern PDEVICE_NODE IopRootDeviceNode;
-extern KSPIN_LOCK IopDeviceTreeLock;
-extern ERESOURCE IopDeviceTreeResource;
-extern KMUTEX IopResourceAssignmentLock;
-#define IOP_SERVICE_ENUM_LOCK_COUNT 32
-extern KMUTEX IopServiceEnumLocks[IOP_SERVICE_ENUM_LOCK_COUNT];
-extern ULONG IopTraceLevel;
-extern GENERAL_LOOKASIDE IopMdlLookasideList;
-extern GENERIC_MAPPING IopCompletionMapping;
-extern GENERIC_MAPPING IopFileMapping;
-extern POBJECT_TYPE _IoFileObjectType;
-extern HAL_DISPATCH _HalDispatchTable;
-extern LIST_ENTRY IopErrorLogListHead;
-extern ULONG IopAutoReboot;
-extern ULONG IopNumTriageDumpDataBlocks;
-extern PVOID IopTriageDumpDataBlocks[64];
-extern IO_BUS_TYPE_GUID_LIST PnpBusTypeGuidList;
-extern PDRIVER_OBJECT IopRootDriverObject;
-extern KSPIN_LOCK IopDeviceActionLock;
-extern LIST_ENTRY IopDeviceActionRequestList;
-extern RESERVE_IRP_ALLOCATOR IopReserveIrpAllocator;
-extern BOOLEAN IoRemoteBootClient;
+NTSTATUS
+PiIrpQueryResourceRequirements(
+    _In_ PDEVICE_NODE DeviceNode,
+    _Out_ PIO_RESOURCE_REQUIREMENTS_LIST *Resources);
 
-typedef struct _IOP_IOMMU_PROVIDER
-{
-    DMA_IOMMU_INTERFACE_V1 Legacy;
-    DMA_IOMMU_INTERFACE_V3 Extended;
-} IOP_IOMMU_PROVIDER, *PIOP_IOMMU_PROVIDER;
+NTSTATUS
+PiIrpQueryResources(
+    _In_ PDEVICE_NODE DeviceNode,
+    _Out_ PCM_RESOURCE_LIST *Resources);
+
+NTSTATUS
+PiIrpQueryStopDevice(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+PiIrpStartDevice(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+PiIrpStopDevice(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+PiQueryRemoveDevice(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _Out_ PPI_QUERY_REMOVE_DATA RemoveData);
+
+VOID
+PiReleaseQueryRemoveData(
+    _Inout_ PPI_QUERY_REMOVE_DATA RemoveData);
 
 NTSTATUS
 NTAPI
-IopRegisterIommuProvider(
-    _In_ const IOP_IOMMU_PROVIDER *Provider);
-
-typedef NTSTATUS
-(NTAPI *PIOP_DIF_REGISTER_CLASS_DRIVER_PLUGIN)(
-    _In_ ULONG Version,
-    _In_opt_ PVOID Plugin,
-    _In_ ULONG Flags,
-    _In_opt_ PDRIVER_OBJECT DriverObject);
-
-typedef struct _IOP_DIF_PROVIDER
-{
-    PIOP_DIF_REGISTER_CLASS_DRIVER_PLUGIN RegisterClassDriverPlugin;
-} IOP_DIF_PROVIDER, *PIOP_DIF_PROVIDER;
+IopCreateDeviceKeyPath(
+    _In_ PCUNICODE_STRING RegistryPath,
+    _In_ ULONG CreateOptions,
+    _Out_ PHANDLE Handle);
 
 NTSTATUS
 NTAPI
-IopRegisterDifProvider(
-    _In_ const IOP_DIF_PROVIDER *Provider);
-
-typedef NTSTATUS
-(NTAPI *PIOP_KSR_ENUMERATE_CALLBACK)(
-    _In_ const GUID *MemoryId,
-    _In_ ULONGLONG MemoryLength,
-    _In_opt_ PVOID Context);
-
-typedef struct _IOP_KSR_FIRMWARE_INFORMATION IOP_KSR_FIRMWARE_INFORMATION;
-typedef const IOP_KSR_FIRMWARE_INFORMATION *PCIOP_KSR_FIRMWARE_INFORMATION;
-
-typedef struct _IOP_KSR_PROVIDER
-{
-    ULONG Size;
-    ULONG Version;
-    NTSTATUS (NTAPI *ClaimPersistedMemory)(const GUID *, ULONGLONG, PULONGLONG, ULONG, BOOLEAN, PULONG);
-    NTSTATUS (NTAPI *QueryMetadata)(const GUID *, ULONGLONG, PVOID, ULONG, PULONG);
-    VOID (NTAPI *FreePersistedMemory)(const GUID *, BOOLEAN);
-    NTSTATUS (NTAPI *PersistMemoryWithMetadata)(const GUID *, PULONGLONG, ULONG, PVOID, ULONG, PULONGLONG);
-    NTSTATUS (NTAPI *GetFirmwareInformation)(PCIOP_KSR_FIRMWARE_INFORMATION *);
-    NTSTATUS (NTAPI *EnumeratePersistedMemory)(const GUID *, PIOP_KSR_ENUMERATE_CALLBACK, PVOID);
-    NTSTATUS (NTAPI *MdlToMemoryRuns)(PMDL, PULONGLONG, ULONG, PULONG);
-} IOP_KSR_PROVIDER, *PIOP_KSR_PROVIDER;
-
-#define IOP_KSR_PROVIDER_VERSION 1
+IopCreateRegistryKeyEx(
+    _Out_ PHANDLE Handle,
+    _In_opt_ HANDLE BaseHandle,
+    _In_ PUNICODE_STRING KeyName,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_ ULONG CreateOptions,
+    _Out_opt_ PULONG Disposition);
 
 NTSTATUS
 NTAPI
-IopRegisterKsrProvider(
-    _In_ const IOP_KSR_PROVIDER *Provider);
+IopGetRegistryValue(
+    _In_ HANDLE Handle,
+    _In_ PWSTR ValueName,
+    _Out_ PKEY_VALUE_FULL_INFORMATION *Information);
 
-PVOID
+NTSTATUS
 NTAPI
-IopResolveKsrApiSetRoutine(
-    _In_ PCSTR RoutineName);
+IopOpenRegistryKeyEx(
+    PHANDLE KeyHandle,
+    HANDLE ParentKey,
+    PUNICODE_STRING Name,
+    ACCESS_MASK DesiredAccess);
 
-//
-// Inlined Functions
-//
+NTSTATUS
+NTAPI
+PnpRegMultiSzToUnicodeStrings(
+    _In_ PKEY_VALUE_FULL_INFORMATION KeyValueInformation,
+    _Out_ PUNICODE_STRING *UnicodeStringList,
+    _Out_ PULONG UnicodeStringCount);
+
+BOOLEAN
+NTAPI
+PnpRegSzToString(
+    _In_ PWCHAR RegSzData,
+    _In_ ULONG RegSzLength,
+    _Out_opt_ PUSHORT StringLength);
+
+BOOLEAN
+IopResDbCheckDescriptor(
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate,
+    _In_opt_ PDEVICE_NODE CandidateOwner,
+    _In_opt_ PVOID Claimant,
+    _Out_opt_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Conflicting);
+
+BOOLEAN
+IopResDbCheckBootDescriptor(
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate,
+    _In_opt_ PDEVICE_NODE CandidateOwner,
+    _In_opt_ PVOID Claimant);
+
+BOOLEAN
+IopResDbCheckList(
+    _In_opt_ PCM_RESOURCE_LIST ResourceList);
+
+VOID
+IopResDbEnsureSeeded(VOID);
+
+VOID
+IopResDbInitialize(VOID);
+
+VOID
+IopResDbRelease(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+IopResDbReplaceClaim(
+    _In_opt_ PDEVICE_NODE DeviceNode,
+    _In_ PVOID Claimant,
+    _In_ PCM_RESOURCE_LIST ResourceList);
+
+NTSTATUS
+IopResDbReserve(
+    _In_ PDEVICE_NODE DeviceNode,
+    _In_opt_ PCM_RESOURCE_LIST ResourceList,
+    _Out_opt_ PBOOLEAN Conflict);
+
+NTSTATUS
+NTAPI
+IopAssignDeviceResources(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+IopFilterResourceRequirements(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+NTAPI
+IopFixupResourceListWithRequirements(
+    _In_ PIO_RESOURCE_REQUIREMENTS_LIST RequirementsList,
+    _Out_ PCM_RESOURCE_LIST *ResourceList,
+    _In_opt_ PDEVICE_NODE DeviceNode,
+    _In_opt_ PVOID Claimant);
+
+VOID
+IopReleaseMessageTokens(
+    _In_opt_ PCM_RESOURCE_LIST ResourceList);
+
+VOID
+IopReleaseNewMessageVectors(
+    _In_opt_ PCM_RESOURCE_LIST ResourceList,
+    _In_ ULONG OldCount);
+
+NTSTATUS
+IopUpdateControlKeyWithResources(
+    _In_ PDEVICE_NODE DeviceNode);
+
+NTSTATUS
+PnpRootCreateDeviceObject(
+    _Out_ PDEVICE_OBJECT *DeviceObject);
+
+NTSTATUS
+PnpRootCreateInstance(
+    _In_ PCUNICODE_STRING InstancePath);
+
+NTSTATUS
+NTAPI
+PnpRootDriverEntry(
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PUNICODE_STRING RegistryPath);
+
+BOOLEAN
+PnpRootForgetDevice(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+VOID
+PnpRootInitializeDevExtension(VOID);
+
+NTSTATUS
+PnpRootRegisterDevice(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+VOID
+PnpRootRetireDevice(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+IopInitializePlugPlayServices(VOID);
+
+CODE_SEG("INIT")
+NTSTATUS
+NTAPI
+IopUpdateRootKey(VOID);
+
+VOID
+PnpInit2(VOID);
+
+BOOLEAN
+NTAPI
+PpInitSystem(VOID);
+
+VOID
+PiDevNodeAddDrivers(
+    _In_ PDEVICE_NODE DeviceNode);
+
+VOID
+PiDevNodeStateMachine(
+    _In_ PDEVICE_NODE RootNode);
+
+BOOLEAN
+PiIsRemovingRenamedStack(VOID);
+
+NTSTATUS
+PiPerformSyncDeviceAction(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ DEVICE_ACTION Action);
+
+NTSTATUS
+PiPerformSyncDeviceActionEx(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ DEVICE_ACTION Action,
+    _Out_opt_ PPI_QUERY_REMOVE_DATA RemoveData);
+
+VOID
+PiQueueDeviceAction(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ DEVICE_ACTION Action,
+    _In_opt_ PKEVENT CompletionEvent,
+    _Out_opt_ NTSTATUS *CompletionStatus);
+
+VOID
+PiQueueDeviceActionEx(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ DEVICE_ACTION Action,
+    _In_opt_ PKEVENT CompletionEvent,
+    _Out_opt_ NTSTATUS *CompletionStatus,
+    _Out_opt_ PPI_QUERY_REMOVE_DATA RemoveData);
+
+NTSTATUS
+NTAPI
+IopInitializeArbiters(VOID);
+
+BOOLEAN
+NTAPI
+IoPnPDeliverServicePowerSetting(
+    _In_ ULONG PowerNotificationCode,
+    _In_ ULONG ServiceStatusHandle,
+    _In_reads_bytes_(SettingSize) PVOID Setting,
+    _In_ ULONG SettingSize);
+
+NTSTATUS
+IopQueuePowerEvent(
+    _In_ ULONG NotificationCode,
+    _In_ ULONG NotificationData,
+    _In_reads_bytes_opt_(PayloadSize) const VOID *Payload,
+    _In_ ULONG PayloadSize,
+    _In_opt_ PLARGE_INTEGER Timeout);
+
+BOOLEAN
+IopResDbConflictsWithChosen(
+    _In_ PCM_PARTIAL_RESOURCE_DESCRIPTOR Candidate,
+    _In_opt_ PDEVICE_NODE CandidateOwner,
+    _In_reads_opt_(ChosenCount) PCM_PARTIAL_RESOURCE_DESCRIPTOR Chosen,
+    _In_ ULONG ChosenCount);
+
+NTSTATUS
+PiSetInstanceProperty(
+    _In_ HANDLE InstanceKey,
+    _In_ CONST DEVPROPKEY *PropertyKey,
+    _In_ DEVPROPTYPE Type,
+    _In_ ULONG Size,
+    _In_reads_bytes_opt_(Size) PVOID Data);
+
+NTSTATUS
+PnpRootCreateDevice(
+    _In_ PCUNICODE_STRING ServiceName,
+    _In_reads_bytes_opt_(CompatibleIdsSize) PCWSTR CompatibleIds,
+    _In_ ULONG CompatibleIdsSize,
+    _Out_ PDEVICE_OBJECT *PhysicalDeviceObject,
+    _Out_opt_ PUNICODE_STRING FullInstancePath);
+
+FORCEINLINE
+BOOLEAN
+IopIs32BitFileIo(PFILE_OBJECT FileObject, KPROCESSOR_MODE RequestorMode)
+{
+#ifdef _WIN64
+    return RequestorMode != KernelMode &&
+           FileObject != NULL &&
+           !(FileObject->Flags & FO_SYNCHRONOUS_IO) &&
+           PsGetCurrentProcessWow64Process() != NULL;
+#else
+    UNREFERENCED_PARAMETER(FileObject);
+    UNREFERENCED_PARAMETER(RequestorMode);
+    return FALSE;
+#endif
+}
+
+FORCEINLINE
+VOID
+IopWriteIoStatusBlock(PIO_STATUS_BLOCK Destination,
+                      const IO_STATUS_BLOCK *Source,
+                      BOOLEAN Is32Bit)
+{
+#ifdef _WIN64
+    if (Is32Bit)
+    {
+        PIO_STATUS_BLOCK32 IoStatusBlock32 = (PIO_STATUS_BLOCK32)Destination;
+        IoStatusBlock32->Status = Source->Status;
+        IoStatusBlock32->Information = (ULONG)Source->Information;
+        return;
+    }
+#else
+    UNREFERENCED_PARAMETER(Is32Bit);
+#endif
+    *Destination = *Source;
+}
+
+FORCEINLINE
+PIO_STATUS_BLOCK
+IopGetWow64IoStatusBlock(PIO_STATUS_BLOCK IoStatusBlock)
+{
+    PIO_STATUS_BLOCK Wow64IoStatusBlock;
+
+    ProbeForRead(IoStatusBlock, sizeof(*IoStatusBlock), sizeof(ULONG));
+    Wow64IoStatusBlock = IoStatusBlock->Pointer;
+    ProbeForWrite(Wow64IoStatusBlock, sizeof(NTSTATUS) + sizeof(ULONG), sizeof(ULONG));
+
+    return Wow64IoStatusBlock;
+}
+
 #include "io_x.h"

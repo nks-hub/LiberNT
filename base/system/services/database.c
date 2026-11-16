@@ -2738,7 +2738,8 @@ ScmStartUserModeService(PSERVICE Service,
     {
         /* User token: Run the service under the user account */
 
-        if (!CreateEnvironmentBlock(&lpEnvironment, Service->lpImage->hToken, FALSE))
+        if (!ScmCreateServiceEnvironment(ScmIsLocalSystemAccount(Service->lpImage->pszAccountName) ? NULL : Service->lpImage->hToken,
+                                         &lpEnvironment))
         {
             /* We failed, run the service with the current environment */
             DPRINT1("CreateEnvironmentBlock() failed with error %d; service '%S' will run with current environment\n",

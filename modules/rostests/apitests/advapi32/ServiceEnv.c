@@ -212,6 +212,7 @@ my_test_server(PCSTR service_nameA,
     SC_HANDLE hService = NULL;
     SERVICE_STATUS ServiceStatus;
     PCWSTR Args[] = {L"SystemProfile"};
+    SERVICE_SID_INFO SidInfo = { SERVICE_SID_TYPE_UNRESTRICTED };
     BOOL bSystemProfile;
     HKEY hKey;
     LONG lError;
@@ -272,6 +273,26 @@ my_test_server(PCSTR service_nameA,
         skip("ControlService failed with error %lu!\n", GetLastError());
         goto Cleanup;
     }
+
+    /* A service SID leaves a LocalSystem service the environment of LocalSystem */
+    if (!ChangeServiceConfig2W(hService, SERVICE_CONFIG_SERVICE_SID_INFO, &SidInfo))
+    {
+        skip("ChangeServiceConfig2W failed with error %lu!\n", GetLastError());
+        goto Cleanup;
+    }
+    if (!StartServiceW(hService, bSystemProfile ? 1 : 0, bSystemProfile ? Args : NULL))
+    {
+        skip("StartServiceW with a service SID failed with error %lu!\n", GetLastError());
+        goto Cleanup;
+    }
+    do
+    {
+        Sleep(100);
+        ZeroMemory(&ServiceStatus, sizeof(ServiceStatus));
+        res = QueryServiceStatus(hService, &ServiceStatus);
+    } while (res && ServiceStatus.dwCurrentState != SERVICE_STOPPED);
+    ok(res, "QueryServiceStatus failed: %lu\n", GetLastError());
+    ok(ServiceStatus.dwCurrentState == SERVICE_STOPPED, "ServiceStatus.dwCurrentState = %lx\n", ServiceStatus.dwCurrentState);
 
 #if 0
     trace("Service stopped. Going to restart it...\n");

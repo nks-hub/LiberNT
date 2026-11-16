@@ -35,10 +35,12 @@ FdoLocateChildDevice(
         CurrentDevice = CONTAINING_RECORD(CurrentEntry, PCI_DEVICE, ListEntry);
 
         /* If both vendor ID and device ID match, it is the same device */
+        /* The debugger's device is kept under substitute IDs, so its slot alone identifies it */
         if ((CurrentDevice->BusNumber == BusNumber) &&
-            (PciConfig->VendorID == CurrentDevice->PciConfig.VendorID) &&
-            (PciConfig->DeviceID == CurrentDevice->PciConfig.DeviceID) &&
-            (SlotNumber.u.AsULONG == CurrentDevice->SlotNumber.u.AsULONG))
+            (SlotNumber.u.AsULONG == CurrentDevice->SlotNumber.u.AsULONG) &&
+            (CurrentDevice->IsDebuggingDevice ||
+             ((PciConfig->VendorID == CurrentDevice->PciConfig.VendorID) &&
+              (PciConfig->DeviceID == CurrentDevice->PciConfig.DeviceID))))
         {
             *Device = CurrentDevice;
             DPRINT("Done\n");
@@ -63,6 +65,7 @@ FdoEnumerateDevices(
     PCI_SLOT_NUMBER SlotNumber;
     PLIST_ENTRY CurrentEntry;
     ULONG DeviceNumber;
+    ULONG DeviceCount;
     ULONG FunctionNumber;
     ULONG Bus;
     ULONG Size;
@@ -98,8 +101,17 @@ FdoEnumerateDevices(
 
     SlotNumber.u.AsULONG = 0;
 
+    DeviceCount = PCI_MAX_DEVICES;
+    if (DeviceExtension->ParentPdo != NULL)
+    {
+        UCHAR PortType = PciPdoExpressPortType(DeviceExtension->ParentPdo);
+
+        if (PortType == PciExpressRootPort || PortType == PciExpressDownstreamSwitchPort)
+            DeviceCount = 1;
+    }
+
     /* Enumerate devices on this bus */
-    for (DeviceNumber = 0; DeviceNumber < PCI_MAX_DEVICES; DeviceNumber++)
+    for (DeviceNumber = 0; DeviceNumber < DeviceCount; DeviceNumber++)
     {
         SlotNumber.u.bits.DeviceNumber = DeviceNumber;
         for (FunctionNumber = 0; FunctionNumber < PCI_MAX_FUNCTION; FunctionNumber++)
@@ -836,10 +848,14 @@ FdoPnpControl(
             }
 
             Status = FdoQueryBusRelations(DeviceObject, Irp, IrpSp);
-            IoReleaseRemoveLock(&DeviceExtension->RemoveLock, Irp);
-            Irp->IoStatus.Status = Status;
-            IoCompleteRequest(Irp, IO_NO_INCREMENT);
-            return Status;
+            if (!NT_SUCCESS(Status))
+            {
+                IoReleaseRemoveLock(&DeviceExtension->RemoveLock, Irp);
+                Irp->IoStatus.Status = Status;
+                IoCompleteRequest(Irp, IO_NO_INCREMENT);
+                return Status;
+            }
+            break;
 
         case IRP_MN_QUERY_REMOVE_DEVICE:
             /* Succeed query - don't change state yet */
@@ -912,6 +928,9 @@ FdoPnpControl(
             Status = STATUS_SUCCESS;
             break;
 
+        case IRP_MN_QUERY_INTERFACE:
+        case IRP_MN_QUERY_RESOURCES:
+        case IRP_MN_QUERY_RESOURCE_REQUIREMENTS:
         case IRP_MN_FILTER_RESOURCE_REQUIREMENTS:
             Status = Irp->IoStatus.Status;
             break;

@@ -1314,6 +1314,20 @@ IoAllocateErrorLogEntry(
   _In_ PVOID IoObject,
   _In_ UCHAR EntrySize);
 
+#if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
+#define DEVICE_WITH_IRP_EXTENSION ((PDEVICE_OBJECT) -1)
+
+_Must_inspect_result_
+_IRQL_requires_max_(DISPATCH_LEVEL)
+NTKERNELAPI
+PIRP
+NTAPI
+IoAllocateIrpEx(
+  _In_ PDEVICE_OBJECT DeviceObject,
+  _In_ CCHAR StackSize,
+  _In_ BOOLEAN ChargeQuota);
+#endif
+
 _Must_inspect_result_
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTKERNELAPI
@@ -1841,6 +1855,18 @@ IoGetDriverDirectory(
   _In_ DRIVER_DIRECTORY_TYPE DirectoryType,
   _In_ ULONG Flags,
   _Out_ PHANDLE DriverDirectoryHandle);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTKERNELAPI
+NTSTATUS
+NTAPI
+IoGetDeviceDirectory(
+  _In_ PDEVICE_OBJECT PhysicalDeviceObject,
+  _In_ DEVICE_DIRECTORY_TYPE DirectoryType,
+  _In_ ULONG Flags,
+  _In_ PVOID Reserved,
+  _Out_ PHANDLE DeviceDirectoryHandle);
 #endif
 
 #if (NTDDI_VERSION >= NTDDI_WIN8)
@@ -3187,7 +3213,7 @@ IoUninitializeWorkItem(
   _Inout_ PIO_WORKITEM IoWorkItem);
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
-NTKRNLVISTAAPI
+NTKERNELAPI
 VOID
 NTAPI
 IoQueueWorkItemEx(
@@ -3196,7 +3222,7 @@ IoQueueWorkItemEx(
   _In_ WORK_QUEUE_TYPE QueueType,
   _In_opt_ __drv_aliasesMem PVOID Context);
 
-NTKRNLVISTAAPI
+NTKERNELAPI
 IO_PRIORITY_HINT
 NTAPI
 IoGetIoPriorityHint(
@@ -3241,7 +3267,7 @@ IoRequestDeviceEjectEx(
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Must_inspect_result_
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTSTATUS
 NTAPI
 IoSetDevicePropertyData(
@@ -3255,7 +3281,7 @@ IoSetDevicePropertyData(
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Must_inspect_result_
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTSTATUS
 NTAPI
 IoGetDevicePropertyData(
@@ -3314,7 +3340,7 @@ NTAPI
 IoClearIrpExtraCreateParameter(
   _Inout_ PIRP Irp);
 
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTSTATUS
 NTAPI
 IoGetIrpExtraCreateParameter(
@@ -3459,7 +3485,7 @@ $endif (_NTDDK_)
 $if (_WDMDDK_)
 _IRQL_requires_max_(PASSIVE_LEVEL)
 _Must_inspect_result_
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTSTATUS
 NTAPI
 IoSetDeviceInterfacePropertyData(
@@ -3488,7 +3514,7 @@ IoGetDeviceInterfacePropertyData (
 $endif (_WDMDDK_)
 $if (_NTDDK_)
 
-NTKRNLVISTAAPI
+NTKERNELAPI
 VOID
 NTAPI
 IoSetMasterIrpStatus(

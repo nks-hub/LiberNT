@@ -318,7 +318,7 @@ KiRiscvCreditIdleTicks(_In_ ULONG Ticks)
     KTRAP_FRAME TrapFrame;
 
     TrapFrame.Sstatus = RISCV_SSTATUS_SPP;
-    KiUpdateRunTime(&TrapFrame, DISPATCH_LEVEL, Ticks);
+    KiUpdateIdleRunTime(&TrapFrame, Ticks);
 }
 
 DECLSPEC_NORETURN
@@ -364,6 +364,7 @@ KiIdleLoop(VOID)
             Prcb->CurrentThread = NewThread;
             NewThread->State = Running;
             KiReleasePrcbLock(Prcb);
+            KiWaitForThreadSwapOut(NewThread);
             KiSwapContext(APC_LEVEL, OldThread);
             if (KeGetCurrentIrql() > DISPATCH_LEVEL)
                 KfLowerIrql(DISPATCH_LEVEL);

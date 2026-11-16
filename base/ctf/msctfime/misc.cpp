@@ -141,9 +141,9 @@ ITfCategoryMgr *GetUIMCat(PCIC_LIBTHREAD pLibThread)
     if (pLibThread->m_pCategoryMgr)
         return pLibThread->m_pCategoryMgr;
 
-    if (FAILED(cicCoCreateInstance(CLSID_TF_CategoryMgr, NULL, CLSCTX_INPROC_SERVER,
-                                   IID_ITfCategoryMgr, (void **)&pLibThread->m_pCategoryMgr)))
+    if (FAILED(TF_CreateCategoryMgr(&pLibThread->m_pCategoryMgr)))
     {
+        pLibThread->m_pCategoryMgr = NULL;
         return NULL;
     }
     return pLibThread->m_pCategoryMgr;
@@ -171,10 +171,9 @@ HRESULT InitDisplayAttrbuteLib(PCIC_LIBTHREAD pLibThread)
         pLibThread->m_pDisplayAttrMgr = NULL;
     }
 
-    if (FAILED(cicCoCreateInstance(CLSID_TF_DisplayAttributeMgr, NULL, CLSCTX_INPROC_SERVER,
-                                   IID_ITfDisplayAttributeMgr,
-                                   (void **)&pLibThread->m_pDisplayAttrMgr)))
+    if (FAILED(TF_CreateDisplayAttributeMgr(&pLibThread->m_pDisplayAttrMgr)))
     {
+        pLibThread->m_pDisplayAttrMgr = NULL;
         return E_FAIL;
     }
 
@@ -185,7 +184,11 @@ HRESULT InitDisplayAttrbuteLib(PCIC_LIBTHREAD pLibThread)
     HRESULT hr = E_OUTOFMEMORY;
 
     ::EnterCriticalSection(&g_csLock);
-    if (pEnumGuid && !g_pPropCache)
+    if (g_pPropCache)
+    {
+        hr = S_OK;
+    }
+    else if (pEnumGuid)
     {
         g_pPropCache = new(cicNoThrow) CDispAttrPropCache();
         if (g_pPropCache)

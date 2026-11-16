@@ -62,6 +62,19 @@ void report_error(const char* msg, ...)
         MsiMessageBoxA(NULL, buffer, "MsiExec", 0, GetUserDefaultLangID(), 0);
 }
 
+#ifdef __REACTOS__
+static void report_package_error(DWORD error)
+{
+    WCHAR *message = NULL;
+
+    if (!FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_IGNORE_INSERTS,
+                        NULL, error, 0, (WCHAR *)&message, 0, NULL))
+        return;
+    MessageBoxW(NULL, message, L"Windows Installer", MB_OK | MB_ICONERROR);
+    LocalFree(message);
+}
+#endif
+
 static void ShowUsage(int ExitCode)
 {
     WCHAR msiexec_version[40];
@@ -767,6 +780,20 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 			PackageName = argvW[i];
 			StringListAppend(&property_list, L"ACTION=ADMIN");
 		}
+#ifdef __REACTOS__
+		else if(msi_option_equal(argvW[i], "norestart"))
+		{
+			StringListAppend(&property_list, L"REBOOT=ReallySuppress");
+		}
+		else if(msi_option_equal(argvW[i], "forcerestart"))
+		{
+			StringListAppend(&property_list, L"REBOOT=Force");
+		}
+		else if(msi_option_equal(argvW[i], "promptrestart"))
+		{
+			StringListAppend(&property_list, L"REBOOTPROMPT=\"\"");
+		}
+#endif
 		else if(msi_option_prefix(argvW[i], "f"))
 		{
 			int j;
@@ -1129,6 +1156,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 				ReturnCode = MsiInstallProductW(path, Properties);
 				free(path);
 			}
+#ifdef __REACTOS__
+			if (ReturnCode == ERROR_FILE_NOT_FOUND)
+				ReturnCode = ERROR_INSTALL_PACKAGE_OPEN_FAILED;
+			if ((ReturnCode == ERROR_INSTALL_PACKAGE_OPEN_FAILED || ReturnCode == ERROR_INSTALL_PACKAGE_INVALID) &&
+			    (InstallUILevel & 0x7) != INSTALLUILEVEL_NONE)
+				report_package_error(ReturnCode);
+#endif
 		}
 	}
 	else if(FunctionRepair)

@@ -272,7 +272,7 @@ MmGetVirtualForPhysical(
 {
     ULONG64 Frame = (ULONG64)PhysicalAddress.QuadPart >> PAGE_SHIFT;
 
-    if (Frame < MiSystem.Pfn.FrameCount)
+    if (MiPfnTracked(&MiSystem.Pfn, Frame))
     {
         PMI_PFN Entry = &MiSystem.Pfn.Pfn[Frame];
         ULONG64 Slot = Entry->PteAddress;
@@ -329,11 +329,18 @@ MmIsIoSpaceActive(
 
     for (Frame = First; Frame <= Last; Frame++)
     {
-        if (Frame < MiSystem.Pfn.FrameCount && MiSystem.Pfn.Pfn[Frame].State != MiPageUnusable)
+        if (MiPfnTracked(&MiSystem.Pfn, Frame) && MiSystem.Pfn.Pfn[Frame].State != MiPageUnusable)
             return FALSE;
     }
 
     return TRUE;
+}
+
+ULONG64
+MmGetPhysicalAddressLimit(VOID)
+{
+    ASSERT(MiArchDescribe()->PhysicalAddressBits < 64);
+    return 1ULL << MiArchDescribe()->PhysicalAddressBits;
 }
 
 BOOLEAN

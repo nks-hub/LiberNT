@@ -89,6 +89,9 @@ typedef struct _NETIO_RECEIVE
     PMDL Mdl;
     LIST_ENTRY ParkedEntry;
     volatile BOOLEAN InFlight;
+    BOOLEAN Posting;
+    BOOLEAN Completed;
+    BOOLEAN Repost;
     ULONG_PTR ConnInfo[(sizeof(TDI_CONNECTION_INFORMATION) + sizeof(TA_IP_ADDRESS) + sizeof(ULONG_PTR) - 1) / sizeof(ULONG_PTR)];
     DECLSPEC_ALIGN(8) UCHAR Control[64];
     UCHAR Data[NETIO_RECEIVE_SIZE];
@@ -1445,35 +1448,53 @@ NetioPostReceive(
     PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
     PDEVICE_OBJECT DeviceObject = IoGetRelatedDeviceObject(Socket->LocalAddressFile);
     PTDI_CONNECTION_INFORMATION ConnInfo = (PTDI_CONNECTION_INFORMATION)Receive->ConnInfo;
+    BOOLEAN Completed, Repost;
     KIRQL OldIrql;
 
-    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
-    if (Socket->ReceiveClosing)
+    /* tcpip completes a request from its queue inside IoCallDriver, so posting again from the completion would nest once per datagram */
+    do
     {
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        if (Socket->ReceiveClosing)
+        {
+            KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+            NetioReceiveDone(Receive);
+            return;
+        }
+        if (!NetioReceiveHasRoom(Socket))
+        {
+            /* Without a request tcpip keeps 64 KB and discards the rest, as UDP does when the receive buffer is full */
+            InsertTailList(&Socket->ReceivesParked, &Receive->ParkedEntry);
+            KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+            return;
+        }
+        ASSERT(!Receive->InFlight);
+        ASSERT(!Receive->Posting);
+
+        /* The close cancels the requests in flight once it has set ReceiveClosing, so none may be rebuilt after that */
+        IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
+        TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
+        ConnInfo->Options = Receive->Control;
+        ConnInfo->OptionsLength = sizeof(Receive->Control);
+        TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
+                                Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
+        Receive->InFlight = TRUE;
+        Receive->Posting = TRUE;
         KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+        IoCallDriver(DeviceObject, Receive->Irp);
+
+        KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+        ASSERT(Receive->Posting);
+        Receive->Posting = FALSE;
+        Completed = Receive->Completed;
+        Repost = Completed && Receive->Repost;
+        Receive->Completed = FALSE;
+        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+    } while (Repost);
+
+    if (Completed)
         NetioReceiveDone(Receive);
-        return;
-    }
-    if (!NetioReceiveHasRoom(Socket))
-    {
-        /* Without a request tcpip discards what arrives, as UDP does when the receive buffer is full */
-        InsertTailList(&Socket->ReceivesParked, &Receive->ParkedEntry);
-        KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
-        return;
-    }
-    ASSERT(!Receive->InFlight);
-
-    /* The close cancels the requests in flight once it has set ReceiveClosing, so none may be rebuilt after that */
-    IoReuseIrp(Receive->Irp, STATUS_SUCCESS);
-    TdiBuildNullConnectionInfoInPlace(ConnInfo, TDI_ADDRESS_TYPE_IP);
-    ConnInfo->Options = Receive->Control;
-    ConnInfo->OptionsLength = sizeof(Receive->Control);
-    TdiBuildReceiveDatagram(Receive->Irp, DeviceObject, Socket->LocalAddressFile, NetioReceiveComplete,
-                            Receive, Receive->Mdl, NETIO_RECEIVE_SIZE, ConnInfo, ConnInfo, 0);
-    Receive->InFlight = TRUE;
-    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
-
-    IoCallDriver(DeviceObject, Receive->Irp);
 }
 
 static VOID
@@ -1669,6 +1690,7 @@ NetioReceiveComplete(
     PNETIO_RECEIVE Receive = Context;
     PWSK_SOCKET_INTERNAL Socket = Receive->Socket;
     NTSTATUS Status = Irp->IoStatus.Status;
+    BOOLEAN Repost, Posting;
     KIRQL OldIrql;
 
     UNREFERENCED_PARAMETER(DeviceObject);
@@ -1682,19 +1704,36 @@ NetioReceiveComplete(
     {
         NetioQueueDatagram(Receive, (SIZE_T)Irp->IoStatus.Information);
         NetioIndicateQueued(Socket);
-        NetioPostReceive(Receive);
+        Repost = TRUE;
     }
     else if ((Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_PORT_UNREACHABLE) && !Socket->ReceiveClosing)
     {
         /* A receive event cannot carry the ICMP port unreachable report that tcpip fails a request with */
-        NetioPostReceive(Receive);
+        Repost = TRUE;
     }
     else
     {
         if (!Socket->ReceiveClosing)
             DPRINT1("Datagram receive failed with status 0x%08lx, receiving stops\n", Status);
-        NetioReceiveDone(Receive);
+        Repost = FALSE;
     }
+
+    KeAcquireSpinLock(&Socket->ReceiveLock, &OldIrql);
+    Posting = Receive->Posting;
+    if (Posting)
+    {
+        ASSERT(!Receive->Completed);
+        Receive->Completed = TRUE;
+        Receive->Repost = Repost;
+    }
+    KeReleaseSpinLock(&Socket->ReceiveLock, OldIrql);
+
+    if (Posting)
+        return STATUS_MORE_PROCESSING_REQUIRED;
+    if (Repost)
+        NetioPostReceive(Receive);
+    else
+        NetioReceiveDone(Receive);
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 

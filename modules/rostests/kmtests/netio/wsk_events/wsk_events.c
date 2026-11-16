@@ -8,7 +8,8 @@
  *              the limit on the datagrams a socket holds for its client,
  *              closing a socket that receives, binding while IP_PKTINFO changes,
  *              IP_PKTINFO naming a source and an interface that do not match,
- *              ICMP port unreachable reports for datagrams the socket sent
+ *              ICMP port unreachable reports for datagrams the socket sent,
+ *              datagrams that wait in the transport until the receive event is enabled
  * COPYRIGHT:  Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -36,6 +37,8 @@ static ULONG SendAddress = 0x7f000001;
 #define BURST_COUNT 256
 #define BURST_SIZE 1400
 #define LIMIT_COUNT 4096
+/* Datagrams of BURST_SIZE that fit in the 64 KB tcpip keeps for an address file without a receive request */
+#define QUEUED_COUNT 32
 /* netio holds at most this many bytes of received datagrams for a socket */
 #define RECEIVE_LIMIT (4 * 1024 * 1024)
 /* The largest datagram: netio asks tcpip for no more of them once one of this size would pass the limit */
@@ -54,6 +57,8 @@ static volatile LONG BurstErrors;
 static volatile LONG BurstHeldCount;
 static PWSK_DATAGRAM_INDICATION BurstHeld[LIMIT_COUNT];
 static SIZE_T BurstOverhead;
+static PKTHREAD BurstThread;
+static ULONG_PTR BurstStackLow, BurstStackHigh;
 
 static
 NTSTATUS
@@ -66,6 +71,12 @@ BurstReceive(
     ULONG Sequence;
     PUCHAR Data;
     LONG Index;
+
+    if (KeGetCurrentThread() == BurstThread && KeGetCurrentIrql() == PASSIVE_LEVEL)
+    {
+        BurstStackLow = min(BurstStackLow, (ULONG_PTR)&Index);
+        BurstStackHigh = max(BurstStackHigh, (ULONG_PTR)&Index);
+    }
 
     for (Indication = DataIndication; Indication != NULL; Indication = Indication->Next)
     {
@@ -1723,6 +1734,84 @@ deregister:
     WskDeregister(&Registration);
 }
 
+static
+VOID
+TestQueuedBeforeEnable(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    WSK_BUF Buffer;
+    NTSTATUS Status;
+    LONG Count, Errors;
+    ULONG_PTR Depth;
+    PUCHAR Data;
+
+    Refuse = FALSE;
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Data = ExAllocatePoolZero(NonPagedPool, BURST_SIZE, 'tEsW');
+    Buffer.Mdl = Data ? IoAllocateMdl(Data, BURST_SIZE, FALSE, FALSE, NULL) : NULL;
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 14);
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Buffer.Mdl == NULL || Receiver == NULL || Sender == NULL)
+    {
+        ok(FALSE, "Out of memory or no sockets\n");
+        goto close;
+    }
+    MmBuildMdlForNonPagedPool(Buffer.Mdl);
+    Buffer.Offset = 0;
+    Buffer.Length = BURST_SIZE;
+
+    ReceiveCount = 0;
+    BurstErrors = 0;
+    BurstHeldCount = 0;
+    BurstStackLow = MAXULONG_PTR;
+    BurstStackHigh = 0;
+    BurstMode = BurstPlain;
+    Status = SendBurst(Sender, &Buffer, Data, WSKEVENTS_PORT + 14, QUEUED_COUNT);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    /* The requests netio posts when the event is enabled find the datagrams waiting in tcpip and complete at once */
+    BurstThread = KeGetCurrentThread();
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    BurstThread = NULL;
+
+    Count = WaitReceives(QUEUED_COUNT, 2000);
+    ok(Count == QUEUED_COUNT, "%ld of %d datagrams sent before the event was enabled were indicated\n", Count, QUEUED_COUNT);
+    Errors = BurstErrors;
+    ok(Errors == 0, "%ld datagrams were indicated out of order or with a wrong length\n", Errors);
+    Depth = BurstStackLow <= BurstStackHigh ? BurstStackHigh - BurstStackLow : 0;
+    ok(Depth < PAGE_SIZE, "Later indications ran %lu bytes deeper in the stack than the first\n", (ULONG)Depth);
+
+close:
+    BurstMode = BurstOff;
+    BurstThread = NULL;
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    if (Buffer.Mdl != NULL)
+        IoFreeMdl(Buffer.Mdl);
+    if (Data != NULL)
+        ExFreePoolWithTag(Data, 'tEsW');
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
 NTSTATUS
 TestEntry(
     IN PDRIVER_OBJECT DriverObject,
@@ -1784,5 +1873,6 @@ TestMessageHandler(
     TestCloseWhileReceiving();
     TestBindWhileSettingPktInfo();
     TestPortUnreachable();
+    TestQueuedBeforeEnable();
     return STATUS_SUCCESS;
 }

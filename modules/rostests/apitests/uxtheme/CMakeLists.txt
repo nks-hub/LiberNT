@@ -1,16 +1,21 @@
 
 list(APPEND SOURCE
+    CaptionGlyphs.c
     CloseThemeData.c
     ColorPreference.c
     DrawThemeParentBackground.c
     GetThemeParseErrorInfo.c
+    MenuTheme.c
+    NonClientBorder.c
     NonClientCaption.c
     NonClientHitTest.c
     SetWindowTheme.c
     TextScaling.c
+    ThemeDpi.c
     SetThemeAppProperties.c
     ThemeRendering.c
     ThemeShellTransition.c
+    ThemeSysSize.c
     ../include/msgtrace.c
     testlist.c)
 

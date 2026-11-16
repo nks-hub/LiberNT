@@ -83,6 +83,8 @@
 #include "caps_core.h"
 #include "node_stats_core.h"
 #include "postdisplay_core.h"
+#include "vsync_power_core.h"
+#include "vidsch_policy_core.h"
 
 /* ---- WDDM DDI interface version selection ------------------------------ */
 /*
@@ -562,6 +564,7 @@ typedef struct _TDR_CONFIG
 
 extern TDR_CONFIG g_TdrConfig;
 BOOLEAN DxgkpBootLogHoldsDisplay(VOID);
+BOOLEAN DxgkpScreenLogRequested(VOID);
 
 /* Direct counters include every committed tracked submission.  The public
  * virtgpu escape path also precharges queued PREPARED work against these
@@ -703,6 +706,7 @@ struct _DXGKRNL_ADAPTER
     KMUTEX                      Level3TransitionMutex;
     volatile LONG               KmdCallsBlocked;
     volatile LONG               KmdActiveCalls;
+    volatile LONG               KmdMonitorPowerWindow;
     volatile PVOID              KmdExclusiveOwnerThread;
     volatile PVOID              KmdTransactionOwnerThread;
     volatile LONG               KmdTransactionDepth;
@@ -784,6 +788,9 @@ struct _DXGKRNL_ADAPTER
     volatile LONG               BasicDisplayUiSuppressed;
     BOOLEAN                     IsBasicDisplayFallback;
     volatile LONG               MiniportStartFailed;
+    BOOLEAN                     StartDeferred;
+    PCM_RESOURCE_LIST           DeferredResources;
+    PCM_RESOURCE_LIST           DeferredTranslatedResources;
 
     /* Serializes concurrent PnP and boot-display handover stop requests. */
     KEVENT                      AdapterStopCompletedEvent;
@@ -912,6 +919,10 @@ struct _DXGKRNL_ADAPTER
     /* Adapter-wide counters answered by D3DKMTQueryStatistics(ADAPTER). */
     volatile LONG               TdrDetectedCount;
     volatile LONG               VsyncInterruptEnabled;
+    volatile LONG               VsyncEnableDeferred;
+    DXGK_VSYNC_POWER_CORE       VsyncPower;
+    KMUTEX                      VsyncControlMutex;
+    WORK_QUEUE_ITEM             VsyncPowerWorkItem;
 
     /* Stable head fields cached from DXGKQAITYPE_DRIVERCAPS. */
     PHYSICAL_ADDRESS            HighestAcceptableAddress;
@@ -939,6 +950,7 @@ struct _DXGKRNL_ADAPTER
     BOOLEAN                     SupportMultiPlaneOverlay;
     UINT                        MaxOverlayPlanes;
     BOOLEAN                     IndependentVidPnVSyncControl;
+    BOOLEAN                     SupportContextlessPresent;
     BOOLEAN                     DisplayableSupport;
     ULONG                       DriverCapsWddmVersion;
     BOOLEAN                     SurpriseRemovalHandled;
@@ -1188,9 +1200,11 @@ struct _DXGKRNL_ADAPTER
     struct _DXGKP_DISPLAY_MODE_CACHE *DisplayModeCache;
     ULONG                       DisplayModeGeneration;
     DECLSPEC_ALIGN(8) volatile LONG64 HotPlugGeneration;
+    LONG64                      HotPlugRebuiltGeneration;
     volatile LONG               HotPlugWorkActive;
     WORK_QUEUE_ITEM             HotPlugWorkItem;
     volatile LONG               ConnectorChangePending;
+    BOOLEAN                     HotPlugDetectEnabled;
 
     /*
      * Link re-training after SetTimingsFromVidPn reports
@@ -1264,6 +1278,8 @@ struct _DXGKRNL_ADAPTER
     KTIMER                      PresentTimer;
     KDPC                        PresentDpc;
     BOOLEAN                     PresentTimerActive;
+    BOOLEAN                     PresentTimerParked;
+    ULONGLONG                   PresentTimerOrigin;
     KMUTEX                      PresentLifecycleMutex;
 
     /*
@@ -1313,6 +1329,9 @@ struct _DXGKRNL_ADAPTER
     ULONG                       TdrStuckTicks;
     ULONGLONG                   TdrLastProgressTime100ns;
     volatile LONG               TdrTimerActive;
+    volatile LONG               TdrTimerParked;
+    ULONG                       TdrIdleTicks;
+    KSPIN_LOCK                  TdrTimerLock;
     volatile LONG               TdrOwnershipUncertain;
     volatile LONG               TdrCompletionNotificationsEnabled;
     TDR_CONFIG                  TdrConfig;
@@ -1413,6 +1432,7 @@ struct _DXGKRNL_ADAPTER
     volatile LONG               SubmitDmaActiveReservations;
     KEVENT                      SubmitDmaReservationsDrainedEvent;
     volatile LONG               NextSubmissionFenceId;
+    KMUTEX                      SubmissionOrderMutex;
     volatile ULONG              LastCompletedSubmissionFenceId;
     volatile ULONG              NodeLastSubmittedFenceId[DXGK_MAX_TRACKED_NODES];
     volatile ULONG              NodeLastCompletedFenceId[DXGK_MAX_TRACKED_NODES];
@@ -2043,6 +2063,8 @@ struct _DXGKRNL_PROCESS
     /* Referenced owning process object and immutable adapter identity. */
     PEPROCESS                   Process;
     PDXGKRNL_ADAPTER            Adapter;
+    /* The adapter's paging process: same EPROCESS as the System record, own GPU VA space. */
+    BOOLEAN                     PagingProcess;
 
     /*
      * Shared adapter-handle/device ownership and serialized KMD process DDI
@@ -2325,6 +2347,9 @@ typedef struct _DXGKRNL_SYNC_OBJECT
 extern KSPIN_LOCK   DxgkAdapterGlobalListLock;
 extern LIST_ENTRY   DxgkAdapterGlobalListHead;
 
+VOID
+DxgkStartDeferredAdapters(VOID);
+
 /*
  * GDxgControlDeviceObject
  *
@@ -2583,6 +2608,14 @@ NTSTATUS
 DxgkRearmVsyncInterrupt(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
+VOID
+DxgkVsyncPowerDemand(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+VOID
+DxgkVsyncPowerIdle(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
 BOOLEAN
 DxgkAdvancedColorSourceActive(
     _In_ PDXGKRNL_ADAPTER Adapter,
@@ -2590,6 +2623,12 @@ DxgkAdvancedColorSourceActive(
 
 NTSTATUS
 DxgkAdvancedColorEscape(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _Inout_updates_bytes_(Size) PVOID Packet,
+    _In_ ULONG Size);
+
+NTSTATUS
+DxgkTargetInfoEscape(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _Inout_updates_bytes_(Size) PVOID Packet,
     _In_ ULONG Size);
@@ -2663,9 +2702,25 @@ BOOLEAN
 DxgkAcquireKmdCall(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
+BOOLEAN
+DxgkAcquireKmdCallForDispatch(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
 VOID
 DxgkReleaseKmdCall(
     _In_ PDXGKRNL_ADAPTER Adapter);
+
+FORCEINLINE
+BOOLEAN
+DxgkResetHoldsMiniport(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    PVOID Owner = InterlockedCompareExchangePointer((PVOID volatile *)&Adapter->KmdExclusiveOwnerThread, NULL, NULL);
+
+    return VidSchPolicyResetHoldsMiniport(InterlockedCompareExchange(&Adapter->TdrWorkQueued, 0, 0) != 0,
+                                          Owner,
+                                          (PVOID)PsGetCurrentThread());
+}
 
 VOID
 DxgkBeginKmdExclusive(
@@ -2678,6 +2733,14 @@ DxgkEndKmdExclusive(
 
 BOOLEAN
 DxgkBeginKmdTransaction(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+BOOLEAN
+DxgkBeginKmdTransactionAfterReset(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+BOOLEAN
+DxgkBeginKmdTransactionPastMonitorPower(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
 VOID
@@ -3109,6 +3172,10 @@ NTSTATUS
 DxgkGpuVaInitializePageTablePool(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
+NTSTATUS
+DxgkGpuVaRestorePagingProcess(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
 VOID
 DxgkGpuVaReleasePageTablePool(
     _In_ PDXGKRNL_ADAPTER Adapter);
@@ -3272,6 +3339,11 @@ NTSTATUS
 DxgkAcquireProcessRecord(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _In_ PEPROCESS Process,
+    _Out_ PDXGKRNL_PROCESS *OutProcessRecord);
+
+NTSTATUS
+DxgkAcquirePagingProcessRecord(
+    _In_ PDXGKRNL_ADAPTER Adapter,
     _Out_ PDXGKRNL_PROCESS *OutProcessRecord);
 
 NTSTATUS
@@ -3733,6 +3805,10 @@ NTSTATUS
 DxgkVidPnQueueHotPlugRebuild(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
+NTSTATUS
+DxgkVidPnQueueConnectionChangeDrain(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
 VOID
 DxgkVidPnRefreshConnectedChildEdids(
     _In_ PDXGKRNL_ADAPTER Adapter);
@@ -3819,6 +3895,18 @@ DxgkGetShadowSurface(
 
 BOOLEAN
 DxgkIsDisplayAdapter(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+BOOLEAN
+DxgkDisplayMapsDesktop(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+NTSTATUS
+DxgkDisplayDetachDesktop(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+VOID
+DxgkDisplayAbortDetach(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
 NTSTATUS
@@ -3961,6 +4049,10 @@ NTAPI
 DxgkCheckVidPnExclusiveOwnership(
     _In_ CONST D3DKMT_CHECKVIDPNEXCLUSIVEOWNERSHIP *pCheckVidPnExclusiveOwnership);
 
+BOOLEAN
+NTAPI
+DxgkVidPnAnySourceExclusivelyOwned(VOID);
+
 /* ========================================================================
  * Function prototypes — display.c  (WDDM ↔ win32ss display bridge)
  * ====================================================================== */
@@ -4095,6 +4187,14 @@ DxgkpStartPresentTimer(
 
 VOID
 DxgkpStopPresentTimer(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+BOOLEAN
+DxgkpParkPresentTimer(
+    _In_ PDXGKRNL_ADAPTER Adapter);
+
+BOOLEAN
+DxgkpResumePresentTimer(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
 /* ========================================================================
@@ -4276,7 +4376,7 @@ DxgkpWaitForFlagClear(
 }
 
 /* Tracker reservation arguments: zero-init, then set what applies.
- * SubmissionFenceId and DmaBuffer are mandatory. */
+ * DmaBuffer is mandatory; tracked submits stamp the fence after this. */
 typedef struct _DXGKRNL_TRACK_DMA_ARGS
 {
     ULONG                           SubmissionFenceId;
@@ -4856,6 +4956,7 @@ DxgkDebugInit(VOID);
 
 VOID DxgkDumpRecentKmtIoctls(VOID);
 VOID DxgkKmtReportStuckIoctls(_In_ ULONGLONG Now100ns);
+BOOLEAN DxgkKmtIoctlsInFlight(VOID);
 VOID DxgkVidMmNoteApertureOp(_In_ PDXGKRNL_ADAPTER Adapter, _In_ BOOLEAN Map, _In_ ULONG SegmentId, _In_ ULONGLONG OffsetInPages, _In_ ULONGLONG Pages, _In_opt_ HANDLE hAllocation, _In_opt_ PVOID Allocation);
 VOID DxgkVidMmDumpApertureOps(VOID);
 VOID DxgkPagingDumpRecentOps(VOID);

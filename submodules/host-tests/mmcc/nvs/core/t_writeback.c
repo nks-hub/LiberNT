@@ -33,7 +33,7 @@ WriteFrames(PVOID Context, ULONG64 Offset, ULONG Length, const ULONG *Frames, UL
 
     CHECK(MiHostIrql == 0);
     CHECK(Call < RTL_NUMBER_OF(File->Offset));
-    CHECK(PageCount > 0 && PageCount <= MI_MAX_FILE_WRITE_PAGES);
+    CHECK(PageCount > 0 && PageCount <= MI_MAX_FILE_FLUSH_PAGES);
     CHECK(Length > (PageCount - 1) * PAGE_SIZE && Length <= PageCount * PAGE_SIZE);
     CHECK(Offset + Length <= File->File.Size);
     if (File->ExtendOnWrite != 0)
@@ -302,6 +302,95 @@ WritebackConcurrentRedirty(BOOLEAN ModifiedWriter)
     WorldDestroy(&World);
 }
 
+typedef struct _PAGEFILE_REDIRTY
+{
+    TEST_WORLD *World;
+    PMI_ADDRESS_SPACE Space;
+    ULONG64 Base;
+    ULONG64 Value;
+    volatile LONG Copied;
+    volatile LONG Written;
+} PAGEFILE_REDIRTY;
+
+/* The first write's data is in the page file; a CPU faults the page back, writes and trims it before the write completes */
+static void
+PagefileWhileMapped(PVOID Context)
+{
+    PAGEFILE_REDIRTY *State = Context;
+
+    if (MI_ATOMIC_READ32(&State->Copied) != 0)
+        return;
+    MI_ATOMIC_ADD32(&State->Copied, 1);
+    while (MI_ATOMIC_READ32(&State->Written) == 0)
+        sched_yield();
+}
+
+static void *
+PagefileRedirtyWorker(PVOID Context)
+{
+    PAGEFILE_REDIRTY *State = Context;
+
+    MiHostCpu = MachineCpu = 1;
+    while (MI_ATOMIC_READ32(&State->Copied) == 0)
+        sched_yield();
+    CHECK(NT_SUCCESS(UserWrite64(State->World, 1, State->Base, State->Value)));
+    CHECK(MiTrimAddressSpace(State->Space, 1, TRUE) == 1);
+    MI_ATOMIC_ADD32(&State->Written, 1);
+    return NULL;
+}
+
+static void
+PagefileConcurrentRedirty(void)
+{
+    TEST_WORLD World;
+    MI_ADDRESS_SPACE Space;
+    PAGEFILE_REDIRTY State = { .World = &World, .Space = &Space, .Value = 0xAABBCCDDEEFF0011ULL };
+    ULONG64 Size = PAGE_SIZE, Initial = 0x1122334455667788ULL, Stored;
+    ULONG Frame;
+    MI_PTE Pte;
+    NTSTATUS Status;
+    pthread_t Worker;
+
+    WorldCreate(&World, 256, 2, 10000);
+    WorldAttachPageFile(&World, 64);
+    CHECK(NT_SUCCESS(MiAddressSpaceCreate(&World.System, &Space)));
+    WorldAttach(&World, 0, &Space);
+    WorldAttach(&World, 1, &Space);
+    CHECK(NT_SUCCESS(MiAllocateVirtualMemory(&Space, &State.Base, &Size, MI_MEM_RESERVE | MI_MEM_COMMIT,
+                                             MI_PROT_READWRITE)));
+    CHECK(NT_SUCCESS(UserWrite64(&World, 0, State.Base, Initial)));
+    CHECK(MiTrimAddressSpace(&Space, 1, TRUE) == 1);
+    World.Paging.AfterWrite = PagefileWhileMapped;
+    World.Paging.AfterWriteContext = &State;
+    MI_ASSERT(pthread_create(&Worker, NULL, PagefileRedirtyWorker, &State) == 0);
+    CHECK(MiWriteModifiedPages(&World.System, 1) == 1);
+    MI_ASSERT(pthread_join(Worker, NULL) == 0);
+    World.Paging.AfterWrite = NULL;
+
+    /* Written to while its first write was outstanding, the page is modified again, not clean */
+    CHECK(MiPfnListCount(&World.System.Pfn, MiPageModified) == 1);
+    CHECK(MiWriteModifiedPages(&World.System, 1) == 1);
+    CHECK(World.Paging.WriteCalls == 2);
+    Pte = MiArchPteRead(MiPtLookup(&Space, State.Base, NULL));
+    CHECK(MiSoftKind(Pte) == MiSoftTransition);
+    Frame = (ULONG)MiSoftValue(Pte);
+    CHECK(MiSoftKind(World.System.Pfn.Pfn[Frame].OriginalPte) == MiSoftPageFile);
+    memcpy(&Stored, World.Paging.Store + MiSoftValue(World.System.Pfn.Pfn[Frame].OriginalPte) * PAGE_SIZE,
+           sizeof(Stored));
+    CHECK(Stored == State.Value);
+    CHECK(UserRead64(&World, 0, State.Base, &Status) == State.Value);
+    CHECK(NT_SUCCESS(Status));
+
+    Size = 0;
+    CHECK(NT_SUCCESS(MiFreeVirtualMemory(&Space, &State.Base, &Size, MI_MEM_RELEASE)));
+    WorldAttach(&World, 0, NULL);
+    WorldAttach(&World, 1, NULL);
+    MiAddressSpaceDestroy(&Space);
+    CHECK(WorldCheck(&World) == 0);
+    WorldExpectClean(&World, 256);
+    WorldDestroy(&World);
+}
+
 typedef struct _PAGEFILE_PUBLICATION_TEST
 {
     TEST_WORLD *World;
@@ -364,18 +453,19 @@ TestWriteback(void)
     WRITEBACK_FILE File = { .World = &World };
     MI_FILE_OPS Ops = { .Read = TestFileOps.Read, .Write = TestFileOps.Write, .WriteFrames = WriteFrames };
     PMI_SEGMENT Segment;
-    ULONG Pages = MI_MAX_FILE_WRITE_PAGES + 3;
+    ULONG Pages = MI_MAX_FILE_FLUSH_PAGES + 3;
     ULONG64 Size = (Pages - 1) * PAGE_SIZE + 317;
     ULONG64 i;
     ULONG Calls;
 
     PagefilePublication();
+    PagefileConcurrentRedirty();
     WritebackSizeReentry();
     WritebackFailureProgress();
     WritebackPastUnwritablePages();
     WritebackConcurrentRedirty(FALSE);
     WritebackConcurrentRedirty(TRUE);
-    WorldCreate(&World, 512, 1, 100000);
+    WorldCreate(&World, 1024, 1, 100000);
     FileCreate(&File.File, Size);
     CHECK(NT_SUCCESS(MiSegmentCreate(&World.System, MiSegmentDataFile, Size, MI_PROT_READWRITE,
                                      &Ops, &File, NULL, 0, &Segment)));
@@ -384,9 +474,9 @@ TestWriteback(void)
     memset(File.File.Data, 0xCC, Size);
     CHECK(NT_SUCCESS(MiSegmentFlush(Segment, 0, Size)));
     CHECK(File.Calls == 2);
-    CHECK(File.Offset[0] == 0 && File.Pages[0] == MI_MAX_FILE_WRITE_PAGES);
-    CHECK(File.Length[0] == MI_MAX_FILE_WRITE_PAGES * PAGE_SIZE);
-    CHECK(File.Offset[1] == MI_MAX_FILE_WRITE_PAGES * PAGE_SIZE && File.Pages[1] == 3);
+    CHECK(File.Offset[0] == 0 && File.Pages[0] == MI_MAX_FILE_FLUSH_PAGES);
+    CHECK(File.Length[0] == MI_MAX_FILE_FLUSH_PAGES * PAGE_SIZE);
+    CHECK(File.Offset[1] == MI_MAX_FILE_FLUSH_PAGES * PAGE_SIZE && File.Pages[1] == 3);
     CHECK(File.Length[1] == 2 * PAGE_SIZE + 317);
     CHECK(File.Noncontiguous);
     CHECK(Segment->PagesWritten == Pages);
@@ -434,11 +524,21 @@ TestWriteback(void)
     CHECK(File.Offset[Calls + 1] == 0);
 
     Calls = File.Calls;
+    File.Redirty = FALSE;
+    CHECK(NT_SUCCESS(MiSegmentMarkDirty(Segment, 16 * PAGE_SIZE, 1)));
+    CHECK(NT_SUCCESS(MiSegmentMarkDirty(Segment, (16 + MI_MAX_FILE_WRITE_PAGES - 1) * PAGE_SIZE, 1)));
+    CHECK(NT_SUCCESS(MiSegmentMarkDirty(Segment, (16 + MI_MAX_FILE_WRITE_PAGES + 40) * PAGE_SIZE, 1)));
+    CHECK(NT_SUCCESS(MiSegmentFlush(Segment, 16 * PAGE_SIZE, (MI_MAX_FILE_WRITE_PAGES + 41) * PAGE_SIZE)));
+    CHECK(File.Calls == Calls + 2);
+    CHECK(File.Offset[Calls] == 16 * PAGE_SIZE && File.Pages[Calls] == MI_MAX_FILE_WRITE_PAGES);
+    CHECK(File.Offset[Calls + 1] == (16 + MI_MAX_FILE_WRITE_PAGES + 40) * PAGE_SIZE && File.Pages[Calls + 1] == 1);
+
+    Calls = File.Calls;
     CHECK(NT_SUCCESS(MiSegmentMarkDirty(Segment, PAGE_SIZE, 2 * PAGE_SIZE)));
     Segment->FileOps.Write = NULL;
     CHECK(MiSegmentDereferenceAndClose(Segment));
     CHECK(File.Calls == Calls + 1 && File.Pages[Calls] == 2);
-    WorldExpectClean(&World, 512);
+    WorldExpectClean(&World, 1024);
     FileDestroy(&File.File);
     WorldDestroy(&World);
 }

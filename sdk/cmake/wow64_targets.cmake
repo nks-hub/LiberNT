@@ -6,6 +6,7 @@ set(WOW64_I386_MODULES ${COMPAT_RUNTIME_MODULES}
     activeds.tlb
     atl100
     d3d8thk
+    difxapi
     dmusic
     dplayx
     dpwsockx
@@ -112,6 +113,7 @@ set(WOW64_I386_EXECUTABLES
     tree
     userinit
     utilman
+    werfault
     wglgears_runner
     where
     whoami
@@ -122,6 +124,7 @@ set(WOW64_I386_EXECUTABLES
 
 if(ENABLE_ROSTESTS)
     list(APPEND WOW64_I386_EXECUTABLES
+        kmtwow64
         user32_winetest
         win32u_apitest
         win32u_winetest)

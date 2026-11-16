@@ -83,11 +83,13 @@ CcNtFlushMap(
 
     if (NT_SUCCESS(Status) && MaximumPages == ~0u)
         CcBcbCompleteFlush(&NtMap->Map, Offset, End, Generation);
+    else if (Flushed != 0)
+        CcBcbRetireWritten(&NtMap->Map, Generation);
 
     if (Flushed != 0)
     {
-        CcDataFlushes++;
-        CcDataPages += Flushed;
+        InterlockedIncrement((volatile LONG *)&CcDataFlushes);
+        InterlockedExchangeAdd((volatile LONG *)&CcDataPages, (LONG)Flushed);
     }
 
     if (PagesFlushed != NULL)
@@ -258,8 +260,8 @@ CcRosFlushDirtyPages(
 
         if (CalledFromLazy && Flushed != 0)
         {
-            CcLazyWriteIos++;
-            CcLazyWritePages += Flushed;
+            InterlockedIncrement((volatile LONG *)&CcLazyWriteIos);
+            InterlockedExchangeAdd((volatile LONG *)&CcLazyWritePages, (LONG)Flushed);
         }
 
         Total += Flushed;
@@ -412,6 +414,40 @@ VOID
 NTAPI
 CcPfInitializePrefetcher(VOID)
 {
+}
+
+VOID
+NTAPI
+CcNtQueryDirtyPages(
+    _Out_ PULONG TotalDirtyPages,
+    _Out_ PULONG DirtyPageThreshold)
+{
+    *TotalDirtyPages = (ULONG)CC_ATOMIC_READ64(&CcNtCache.TotalDirtyPages);
+    *DirtyPageThreshold = (ULONG)CcNtCache.DirtyPageThreshold;
+}
+
+VOID
+NTAPI
+CcNtQueryCachePages(
+    _Out_ PULONG MappedPages,
+    _Out_ PULONG MaximumPages)
+{
+    LONG64 Attached = CC_ATOMIC_READ64(&CcNtCache.AttachedViews);
+
+    if (Attached < 0)
+        Attached = 0;
+    /* FIXME: the pages an attached view covers, not the resident ones the cache
+     * has no per-view count of */
+    *MappedPages = (ULONG)((ULONG64)Attached * CC_VIEW_PAGES);
+    *MaximumPages = CcNtCache.ViewCount * CC_VIEW_PAGES;
+}
+
+VOID
+NTAPI
+CcNtSetDirtyPageThreshold(
+    _In_ ULONG DirtyPageThreshold)
+{
+    CcNtCache.DirtyPageThreshold = DirtyPageThreshold;
 }
 
 #ifdef KDBG

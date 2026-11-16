@@ -43,7 +43,9 @@ add_library(ntfslib_linux STATIC
     "${NTFSLIB_ROOT}/src/filerecord/write/filedata.cpp"
     "${NTFSLIB_ROOT}/src/filerecord/write/filename.cpp"
     "${NTFSLIB_ROOT}/src/filerecord/write/move.cpp"
+    "${NTFSLIB_ROOT}/src/filerecord/write/objectid.cpp"
     "${NTFSLIB_ROOT}/src/filerecord/write/reparse.cpp"
+    "${NTFSLIB_ROOT}/src/filerecord/write/streamrename.cpp"
     "${NTFSLIB_ROOT}/src/filerecord/filerecord.cpp"
     "${NTFSLIB_ROOT}/src/filerecord/fixup.cpp"
     "${NTFSLIB_ROOT}/src/lfs/lfs.cpp"
@@ -194,6 +196,28 @@ if(BUILD_TESTING AND NTFSLIB_BUILD_FUSE)
     find_program(FAKEROOT_EXECUTABLE NAMES fakeroot)
     find_program(XXD_EXECUTABLE NAMES xxd)
     find_library(WIM_LIBRARY NAMES wim libwim.so.15)
+    set(_ntfslib_format_4k_reference "")
+    if(NTFSFIX_EXECUTABLE)
+        set(_ntfslib_format_4k_reference "${NTFSFIX_EXECUTABLE}")
+    endif()
+    add_test(
+        NAME ntfslib_linux_format_4k
+        COMMAND /bin/sh
+            "${CMAKE_CURRENT_LIST_DIR}/tests/format_4k_smoke.sh"
+            "$<TARGET_FILE:ntfslib_fuse>"
+            ${_ntfslib_format_4k_reference}
+    )
+    add_test(
+        NAME ntfslib_linux_index_record_full
+        COMMAND /bin/sh
+            "${CMAKE_CURRENT_LIST_DIR}/tests/index_record_full_smoke.sh"
+            "$<TARGET_FILE:ntfslib_fuse>"
+            "$<TARGET_FILE:ntfslib_format_image>"
+    )
+    set_tests_properties(
+        ntfslib_linux_index_record_full
+        PROPERTIES TIMEOUT 600
+    )
     if(WIM_LIBRARY)
         add_executable(ntfslib_wof_fixture
             tests/wof_fixture.cpp
@@ -298,6 +322,16 @@ if(BUILD_TESTING AND NTFSLIB_BUILD_FUSE)
             NAME ntfslib_linux_growth_write
             COMMAND /bin/sh
                 "${CMAKE_CURRENT_LIST_DIR}/tests/growth_write_smoke.sh"
+                "$<TARGET_FILE:ntfslib_fuse>"
+                "${MKNTFS_EXECUTABLE}"
+                "${NTFSCP_EXECUTABLE}"
+                "${NTFSCAT_EXECUTABLE}"
+                "${NTFSFIX_EXECUTABLE}"
+        )
+        add_test(
+            NAME ntfslib_linux_full_base_growth
+            COMMAND /bin/sh
+                "${CMAKE_CURRENT_LIST_DIR}/tests/full_base_growth_smoke.sh"
                 "$<TARGET_FILE:ntfslib_fuse>"
                 "${MKNTFS_EXECUTABLE}"
                 "${NTFSCP_EXECUTABLE}"
@@ -552,6 +586,15 @@ if(BUILD_TESTING AND NTFSLIB_BUILD_FUSE)
                 "${NTFSCP_EXECUTABLE}"
                 "${NTFSINFO_EXECUTABLE}"
                 "${NTFSFIX_EXECUTABLE}"
+        )
+        add_test(
+            NAME ntfslib_linux_dirty_log_readonly
+            COMMAND /bin/sh
+                "${CMAKE_CURRENT_LIST_DIR}/tests/dirty_log_readonly_smoke.sh"
+                "$<TARGET_FILE:ntfslib_fuse>"
+                "${MKNTFS_EXECUTABLE}"
+                "${NTFSINFO_EXECUTABLE}"
+                "${NTFSCP_EXECUTABLE}"
         )
         add_test(
             NAME ntfslib_linux_legacy_record

@@ -243,7 +243,11 @@ static DWORD chunked_fill_buffer( struct data_stream *stream, struct request *re
                 chunked_stream->buf.pos = 0;
                 ret = netconn_recv( request->netconn, chunked_stream->buf.buf, sizeof(chunked_stream->buf.buf), 0,
                                     &read_bytes );
+#ifdef __REACTOS__
+                if (ret == ERROR_SUCCESS && read_bytes)
+#else
                 if (ret == ERROR_SUCCESS)
+#endif
                     chunked_stream->buf.size += read_bytes;
                 else
                     chunked_stream->state = CHUNKED_STREAM_STATE_ERROR;
@@ -444,6 +448,20 @@ static DWORD gzip_fill_buffer( struct data_stream *stream, struct request *reque
             TRACE( "end of data\n" );
             gzip_stream->end_of_data = TRUE;
             inflateEnd( zstream );
+#ifdef __REACTOS__
+            if (gzip_stream->parent != &request->netconn_stream.data_stream)
+            {
+                while (!gzip_stream->parent->vtbl->end_of_data( gzip_stream->parent, request ))
+                {
+                    gzip_stream->buf.pos = gzip_stream->buf.size = 0;
+                    if (gzip_stream->parent->vtbl->fill_buffer( gzip_stream->parent, request, &gzip_stream->buf ))
+                        break;
+                }
+                gzip_stream->buf.pos = gzip_stream->buf.size = 0;
+                if (((struct chunked_stream *)gzip_stream->parent)->state == CHUNKED_STREAM_STATE_ERROR)
+                    ret = ERROR_WINHTTP_INVALID_SERVER_RESPONSE;
+            }
+#endif
         }
         else if (zres != Z_OK)
         {
@@ -2017,6 +2035,23 @@ static int get_receive_response_timeout( struct request *request )
     return request->receive_response_timeout;
 }
 
+#ifdef __REACTOS__
+static DWORD secure_failure_flag( DWORD error )
+{
+    switch (error)
+    {
+    case ERROR_WINHTTP_SECURE_CERT_REV_FAILED: return WINHTTP_CALLBACK_STATUS_FLAG_CERT_REV_FAILED;
+    case ERROR_WINHTTP_SECURE_INVALID_CERT: return WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CERT;
+    case ERROR_WINHTTP_SECURE_CERT_REVOKED: return WINHTTP_CALLBACK_STATUS_FLAG_CERT_REVOKED;
+    case ERROR_WINHTTP_SECURE_INVALID_CA: return WINHTTP_CALLBACK_STATUS_FLAG_INVALID_CA;
+    case ERROR_WINHTTP_SECURE_CERT_CN_INVALID: return WINHTTP_CALLBACK_STATUS_FLAG_CERT_CN_INVALID;
+    case ERROR_WINHTTP_SECURE_CERT_DATE_INVALID: return WINHTTP_CALLBACK_STATUS_FLAG_CERT_DATE_INVALID;
+    case ERROR_WINHTTP_SECURE_CERT_WRONG_USAGE: return WINHTTP_CALLBACK_STATUS_FLAG_CERT_WRONG_USAGE;
+    default: return 0;
+    }
+}
+#endif
+
 static DWORD open_connection( struct request *request )
 {
     BOOL is_secure = request->hdr.flags & WINHTTP_FLAG_SECURE;
@@ -2026,6 +2061,9 @@ static DWORD open_connection( struct request *request )
     WCHAR *addressW = NULL;
     INTERNET_PORT port;
     DWORD ret, len;
+#ifdef __REACTOS__
+    DWORD secure_failure;
+#endif
 
     if (request->netconn) goto done;
 
@@ -2159,6 +2197,14 @@ static DWORD open_connection( struct request *request )
                 request->netconn = NULL;
                 free( addressW );
                 netconn_release( netconn );
+#ifdef __REACTOS__
+                if ((secure_failure = secure_failure_flag( ret )))
+                {
+                    send_callback( &request->hdr, WINHTTP_CALLBACK_STATUS_SECURE_FAILURE, &secure_failure,
+                                   sizeof(secure_failure) );
+                    return ERROR_WINHTTP_SECURE_FAILURE;
+                }
+#endif
                 return ret;
             }
         }
@@ -2929,12 +2975,22 @@ static DWORD read_line( struct request *request, char *buffer, DWORD *len )
     return ERROR_SUCCESS;
 }
 
+#ifdef __REACTOS__
+#define MAX_REPLY_LEN   0x10000
+#else
 #define MAX_REPLY_LEN   1460
+#endif
 #define INITIAL_HEADER_BUFFER_LEN  512
 
+#ifdef __REACTOS__
+static DWORD read_reply_lines( struct request *request, char *buffer )
+#else
 static DWORD read_reply( struct request *request )
+#endif
 {
+#ifndef __REACTOS__
     char buffer[MAX_REPLY_LEN];
+#endif
     DWORD ret, buflen, len, offset, crlf_len = 2; /* lstrlenW(crlf) */
     const char *status_text, *ptr;
     WCHAR *versionW, *status_textW, *raw_headers;
@@ -3049,6 +3105,19 @@ static DWORD read_reply( struct request *request )
     TRACE("raw headers: %s\n", debugstr_w(raw_headers));
     return ret;
 }
+
+#ifdef __REACTOS__
+static DWORD read_reply( struct request *request )
+{
+    char *buffer;
+    DWORD ret;
+
+    if (!(buffer = malloc( MAX_REPLY_LEN ))) return ERROR_OUTOFMEMORY;
+    ret = read_reply_lines( request, buffer );
+    free( buffer );
+    return ret;
+}
+#endif
 
 static void record_cookies( struct request *request )
 {

@@ -6,7 +6,7 @@
  */
 
 #include <ntoskrnl.h>
-#include <reactos/riscv64/fdt.h>
+#include <libernt/fdt.h>
 #define NDEBUG
 #include <debug.h>
 
@@ -48,7 +48,6 @@ typedef enum _KI_RISCV_STARTUP_PHASE
 
 volatile ULONG KiRiscvStartupPhase;
 volatile ULONG KiRiscvStartupFailure;
-ULONG ProcessCount;
 
 C_ASSERT(sizeof(KPROCESS) <= PAGE_SIZE);
 C_ASSERT(sizeof(KTHREAD) <= PAGE_SIZE);
@@ -300,15 +299,15 @@ KiRiscvValidateLoaderBlock(
         return KiRiscvStartupInvalidSharedDataMapping;
     }
     if ((RiscvBlock->DeviceTree & (PAGE_SIZE - 1)) ||
-        (RiscvBlock->DeviceTreeSize < RISCV_FDT_HEADER_SIZE) ||
-        (RiscvBlock->DeviceTreeSize > RISCV_FDT_MAXIMUM_SIZE) ||
+        (RiscvBlock->DeviceTreeSize < FDT_HEADER_SIZE) ||
+        (RiscvBlock->DeviceTreeSize > FDT_MAXIMUM_SIZE) ||
         !KiRiscvValidateMappedRange(RiscvBlock,
                                     RiscvBlock->DeviceTree,
                                     (SIZE_T)RiscvBlock->DeviceTreeSize))
     {
         return KiRiscvStartupInvalidDeviceTreeMapping;
     }
-    if (!RiscvFdtValidateHeader(
+    if (!FdtValidateHeader(
             (PVOID)(ULONG_PTR)RiscvBlock->DeviceTree,
             (SIZE_T)RiscvBlock->DeviceTreeSize,
             &DeviceTreeSize) ||
@@ -349,6 +348,7 @@ KiRiscvSystemStartup(
     KiRiscvEnableUserCacheBlockOperations();
     KiRiscvEnableUserTimeCounter();
 
+    LoaderBlock->Process = (ULONG_PTR)&KiInitialProcess.Pcb;
     InitialProcess = (PKPROCESS)(ULONG_PTR)LoaderBlock->Process;
     InitialThread = (PKTHREAD)(ULONG_PTR)LoaderBlock->Thread;
     InitialThread->ApcState.Process = InitialProcess;
@@ -404,7 +404,6 @@ KiRiscvSystemStartup(
      * no ASID is allocated during boot-process adoption. */
     DirectoryTableBase[0] = RiscvBlock->PageTableRoot;
     DirectoryTableBase[1] = 0;
-    InitializeListHead(&KiProcessListHead);
     KeInitializeProcess(InitialProcess,
                         0,
                         MAXULONG_PTR,

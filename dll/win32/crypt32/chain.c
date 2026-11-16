@@ -2687,8 +2687,12 @@ typedef struct _CERT_CHAIN_PARA_NO_EXTRA_FIELDS {
     CERT_USAGE_MATCH RequestedUsage;
 } CERT_CHAIN_PARA_NO_EXTRA_FIELDS;
 
-static void CRYPT_VerifyChainRevocation(PCERT_CHAIN_CONTEXT chain,
- LPFILETIME pTime, HCERTSTORE hAdditionalStore,
+#ifdef __REACTOS__
+#define CHAIN_DEFAULT_ACCUMULATIVE_URL_TIMEOUT 20000
+#endif
+
+static void CRYPT_VerifyChainRevocation(const CertificateChainEngine *engine,
+ PCERT_CHAIN_CONTEXT chain, LPFILETIME pTime, HCERTSTORE hAdditionalStore,
  const CERT_CHAIN_PARA *pChainPara, DWORD chainFlags)
 {
     DWORD cContext;
@@ -2740,6 +2744,13 @@ static void CRYPT_VerifyChainRevocation(PCERT_CHAIN_CONTEXT chain,
             revocationPara.dwFreshnessTime =
              pChainPara->dwRevocationFreshnessTime;
         }
+#ifdef __REACTOS__
+        /* FIXME: Windows 11 spends 27-28 s on a single unreachable CRL URL of a chain built without a timeout; LiberNT spends the 15 s per-URL default */
+        if (!revocationPara.dwUrlRetrievalTimeout)
+            revocationPara.dwUrlRetrievalTimeout = engine->dwUrlRetrievalTimeout;
+        if (!revocationPara.dwUrlRetrievalTimeout && (chainFlags & CERT_CHAIN_REVOCATION_ACCUMULATIVE_TIMEOUT))
+            revocationPara.dwUrlRetrievalTimeout = CHAIN_DEFAULT_ACCUMULATIVE_URL_TIMEOUT;
+#endif
         for (i = 0, iContext = 0; iContext < cContext && i < chain->cChain; i++)
         {
             for (j = 0; iContext < cContext &&
@@ -2769,8 +2780,15 @@ static void CRYPT_VerifyChainRevocation(PCERT_CHAIN_CONTEXT chain,
 
                     switch (revocationStatus.dwError)
                     {
-                    case CRYPT_E_REVOCATION_OFFLINE:
+#ifdef __REACTOS__
                     case CRYPT_E_NO_REVOCATION_CHECK:
+                        error = CERT_TRUST_REVOCATION_STATUS_UNKNOWN;
+                        break;
+#endif
+                    case CRYPT_E_REVOCATION_OFFLINE:
+#ifndef __REACTOS__
+                    case CRYPT_E_NO_REVOCATION_CHECK:
+#endif
                     case CRYPT_E_NO_REVOCATION_DLL:
                     case CRYPT_E_NOT_IN_REVOCATION_DATABASE:
                         /* If the revocation status is unknown, it's assumed
@@ -2932,6 +2950,74 @@ static void dump_chain_para(const CERT_CHAIN_PARA *pChainPara)
     }
 }
 
+#ifdef __REACTOS__
+/* Microsoft Trusted Root Program NotBefore: a root distrusts what it issued
+ * after CERT_NOT_BEFORE_FILETIME_PROP_ID, for the usages listed in
+ * CERT_NOT_BEFORE_ENHKEY_USAGE_PROP_ID, or entirely when that list is absent. */
+static void CRYPT_CheckRootNotBefore(PCERT_CHAIN_CONTEXT chain,
+ const CERT_CHAIN_PARA *pChainPara)
+{
+    PCERT_SIMPLE_CHAIN simple;
+    PCERT_CHAIN_ELEMENT rootElement;
+    PCCERT_CONTEXT endCert;
+    CERT_ENHKEY_USAGE *usage;
+    BYTE *encoded;
+    FILETIME cutOff;
+    DWORD size = sizeof(cutOff), usageSize, i, j;
+    BOOL affected = FALSE;
+
+    if (!chain->cChain)
+        return;
+    simple = chain->rgpChain[chain->cChain - 1];
+    if (!simple->cElement ||
+     (simple->TrustStatus.dwErrorStatus & CERT_TRUST_IS_PARTIAL_CHAIN))
+        return;
+    rootElement = simple->rgpElement[simple->cElement - 1];
+    endCert = chain->rgpChain[0]->rgpElement[0]->pCertContext;
+    if (!CertGetCertificateContextProperty(rootElement->pCertContext,
+     CERT_NOT_BEFORE_FILETIME_PROP_ID, &cutOff, &size) || size != sizeof(cutOff))
+        return;
+    if (CompareFileTime(&endCert->pCertInfo->NotBefore, &cutOff) <= 0)
+        return;
+
+    size = 0;
+    if (!CertGetCertificateContextProperty(rootElement->pCertContext,
+     CERT_NOT_BEFORE_ENHKEY_USAGE_PROP_ID, NULL, &size))
+    {
+        /* FIXME: the trust bit Windows reports for a whole-root cut-off is not confirmed by a Windows 11 run */
+        rootElement->TrustStatus.dwErrorStatus |= CERT_TRUST_IS_UNTRUSTED_ROOT;
+        simple->TrustStatus.dwErrorStatus |= CERT_TRUST_IS_UNTRUSTED_ROOT;
+        chain->TrustStatus.dwErrorStatus |= CERT_TRUST_IS_UNTRUSTED_ROOT;
+        return;
+    }
+    if (pChainPara->cbSize < sizeof(CERT_CHAIN_PARA_NO_EXTRA_FIELDS) ||
+     !pChainPara->RequestedUsage.Usage.cUsageIdentifier)
+        return;
+    if (!(encoded = CryptMemAlloc(size)))
+        return;
+    if (CertGetCertificateContextProperty(rootElement->pCertContext,
+     CERT_NOT_BEFORE_ENHKEY_USAGE_PROP_ID, encoded, &size) &&
+     CryptDecodeObjectEx(X509_ASN_ENCODING, X509_ENHANCED_KEY_USAGE, encoded,
+     size, CRYPT_DECODE_ALLOC_FLAG, NULL, &usage, &usageSize))
+    {
+        const CERT_ENHKEY_USAGE *requested = &pChainPara->RequestedUsage.Usage;
+
+        for (i = 0; !affected && i < requested->cUsageIdentifier; i++)
+            for (j = 0; !affected && j < usage->cUsageIdentifier; j++)
+                affected = !strcmp(requested->rgpszUsageIdentifier[i],
+                 usage->rgpszUsageIdentifier[j]);
+        LocalFree(usage);
+    }
+    CryptMemFree(encoded);
+    if (affected)
+    {
+        /* FIXME: the trust bit Windows reports for a usage cut-off is not confirmed by a Windows 11 run */
+        rootElement->TrustStatus.dwErrorStatus |= CERT_TRUST_IS_NOT_VALID_FOR_USAGE;
+        chain->TrustStatus.dwErrorStatus |= CERT_TRUST_IS_NOT_VALID_FOR_USAGE;
+    }
+}
+#endif
+
 BOOL WINAPI CertGetCertificateChain(HCERTCHAINENGINE hChainEngine,
  PCCERT_CONTEXT pCertContext, LPFILETIME pTime, HCERTSTORE hAdditionalStore,
  PCERT_CHAIN_PARA pChainPara, DWORD dwFlags, LPVOID pvReserved,
@@ -2987,9 +3073,12 @@ BOOL WINAPI CertGetCertificateChain(HCERTCHAINENGINE hChainEngine,
         if (!(dwFlags & CERT_CHAIN_RETURN_LOWER_QUALITY_CONTEXTS))
             CRYPT_FreeLowerQualityChains(chain);
         pChain = (PCERT_CHAIN_CONTEXT)chain;
-        CRYPT_VerifyChainRevocation(pChain, pTime, hAdditionalStore,
+        CRYPT_VerifyChainRevocation(engine, pChain, pTime, hAdditionalStore,
          pChainPara, dwFlags);
         CRYPT_CheckUsages(pChain, pChainPara);
+#ifdef __REACTOS__
+        CRYPT_CheckRootNotBefore(pChain, pChainPara);
+#endif
         TRACE_(chain)("error status: %08lx\n",
          pChain->TrustStatus.dwErrorStatus);
         if (ppChainContext)
@@ -3069,6 +3158,39 @@ static BOOL find_chain_first_element_with_error(PCCERT_CHAIN_CONTEXT chain, DWOR
     return FALSE;
 }
 
+#ifdef __REACTOS__
+static void find_unknown_revocation(PCCERT_CHAIN_CONTEXT chain, DWORD checks,
+ PCERT_CHAIN_POLICY_STATUS status)
+{
+    DWORD i, j, ignore;
+
+    for (i = 0; i < chain->cChain; i++)
+    {
+        for (j = 0; j < chain->rgpChain[i]->cElement; j++)
+        {
+            DWORD error = chain->rgpChain[i]->rgpElement[j]->TrustStatus.dwErrorStatus;
+
+            if (!(error & CERT_TRUST_REVOCATION_STATUS_UNKNOWN))
+                continue;
+            if (!j)
+                ignore = i ? CERT_CHAIN_POLICY_IGNORE_CTL_SIGNER_REV_UNKNOWN_FLAG :
+                 CERT_CHAIN_POLICY_IGNORE_END_REV_UNKNOWN_FLAG;
+            else if (j == chain->rgpChain[i]->cElement - 1)
+                ignore = CERT_CHAIN_POLICY_IGNORE_ROOT_REV_UNKNOWN_FLAG;
+            else
+                ignore = CERT_CHAIN_POLICY_IGNORE_CA_REV_UNKNOWN_FLAG;
+            if (checks & ignore)
+                continue;
+            status->dwError = (error & CERT_TRUST_IS_OFFLINE_REVOCATION) ?
+             CRYPT_E_REVOCATION_OFFLINE : CRYPT_E_NO_REVOCATION_CHECK;
+            status->lChainIndex = i;
+            status->lElementIndex = j;
+            return;
+        }
+    }
+}
+
+#endif
 static BOOL WINAPI verify_base_policy(LPCSTR szPolicyOID,
  PCCERT_CHAIN_CONTEXT pChainContext, PCERT_CHAIN_POLICY_PARA pPolicyPara,
  PCERT_CHAIN_POLICY_STATUS pPolicyStatus)
@@ -3144,6 +3266,11 @@ static BOOL WINAPI verify_base_policy(LPCSTR szPolicyOID,
          CERT_TRUST_HAS_NOT_SUPPORTED_CRITICAL_EXT, &pPolicyStatus->lChainIndex,
          &pPolicyStatus->lElementIndex);
     }
+#ifdef __REACTOS__
+    if (!pPolicyStatus->dwError &&
+     pChainContext->TrustStatus.dwErrorStatus & CERT_TRUST_REVOCATION_STATUS_UNKNOWN)
+        find_unknown_revocation(pChainContext, checks, pPolicyStatus);
+#endif
     return TRUE;
 }
 
@@ -3210,6 +3337,19 @@ static BOOL WINAPI verify_authenticode_policy(LPCSTR szPolicyOID,
         if (isMSTestRoot)
             pPolicyStatus->dwError = CERT_E_UNTRUSTEDTESTROOT;
     }
+#ifdef __REACTOS__
+    if (ret && (pPolicyStatus->dwError == CRYPT_E_NO_REVOCATION_CHECK ||
+     pPolicyStatus->dwError == CRYPT_E_REVOCATION_OFFLINE))
+    {
+        if (!pPolicyStatus->lChainIndex && !pPolicyStatus->lElementIndex)
+            pPolicyStatus->dwError = CERT_E_REVOCATION_FAILURE;
+        else
+        {
+            pPolicyStatus->dwError = NO_ERROR;
+            pPolicyStatus->lChainIndex = pPolicyStatus->lElementIndex = -1;
+        }
+    }
+#endif
     return ret;
 }
 

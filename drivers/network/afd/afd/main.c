@@ -328,7 +328,6 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     PFILE_FULL_EA_INFORMATION EaInfo;
     PAFD_CREATE_PACKET ConnectInfo = NULL;
     //ULONG EaLength;
-    PWCHAR EaInfoValue = NULL;
     //UINT Disposition;
     UINT i;
     NTSTATUS Status = STATUS_SUCCESS;
@@ -346,13 +345,27 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     EaInfo = Irp->AssociatedIrp.SystemBuffer;
 
     if( EaInfo ) {
-        ConnectInfo = (PAFD_CREATE_PACKET)(EaInfo->EaName + EaInfo->EaNameLength + 1);
-        EaInfoValue = (PWCHAR)(((PCHAR)ConnectInfo) + sizeof(AFD_CREATE_PACKET));
+        if (EaInfo->EaValueLength < FIELD_OFFSET(AFD_CREATE_PACKET, TransportName) + sizeof(WCHAR))
+        {
+            Status = STATUS_ACCESS_VIOLATION;
+        }
+        else
+        {
+            ConnectInfo = (PAFD_CREATE_PACKET)(EaInfo->EaName + EaInfo->EaNameLength + 1);
+            if (!ConnectInfo->SizeOfTransportName ||
+                ConnectInfo->SizeOfTransportName > EaInfo->EaValueLength -
+                    FIELD_OFFSET(AFD_CREATE_PACKET, TransportName) - sizeof(WCHAR))
+                Status = STATUS_ACCESS_VIOLATION;
+            else if (ConnectInfo->SizeOfTransportName & (sizeof(WCHAR) - 1))
+                Status = STATUS_INVALID_PARAMETER;
+        }
 
-        //EaLength = sizeof(FILE_FULL_EA_INFORMATION) + EaInfo->EaNameLength + EaInfo->EaValueLength;
-
-        AFD_DbgPrint(MID_TRACE,("EaInfo: %p, EaInfoValue: %p\n",
-                                EaInfo, EaInfoValue));
+        if (!NT_SUCCESS(Status))
+        {
+            Irp->IoStatus.Status = Status;
+            IoCompleteRequest(Irp, IO_NO_INCREMENT);
+            return Status;
+        }
     }
 
     AFD_DbgPrint(MID_TRACE,("About to allocate the new FCB\n"));
@@ -381,6 +394,18 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     FCB->ReportedReceiveWindowSize = AfdReportedReceiveWindowSize;
     FCB->Send.Size = AfdSendWindowSize;
 
+    if (FCB->Flags & AFD_ENDPOINT_CONNECTIONLESS)
+    {
+        FCB->ReceiveWorkItem = IoAllocateWorkItem(DeviceObject);
+        if (!FCB->ReceiveWorkItem)
+        {
+            ExFreePoolWithTag(FCB, TAG_AFD_FCB);
+            Irp->IoStatus.Status = STATUS_NO_MEMORY;
+            IoCompleteRequest(Irp, IO_NO_INCREMENT);
+            return STATUS_NO_MEMORY;
+        }
+    }
+
     KeInitializeMutex( &FCB->Mutex, 0 );
 
     for( i = 0; i < MAX_FUNCTIONS; i++ ) {
@@ -394,25 +419,17 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     AFD_DbgPrint(MID_TRACE,("%p: Checking command channel\n", FCB));
 
     if( ConnectInfo ) {
-        PAFD_CREATE_PACKET_NT6 ConnectInfoNt6 = (PAFD_CREATE_PACKET_NT6)ConnectInfo;
         PWCHAR TransportName = ConnectInfo->TransportName;
-        ULONG SizeOfTransportName = ConnectInfo->SizeOfTransportName;
 
-        if (EaInfo->EaValueLength >= FIELD_OFFSET(AFD_CREATE_PACKET_NT6, TransportName) + sizeof(WCHAR) &&
-            ConnectInfoNt6->SizeOfTransportName ==
-            EaInfo->EaValueLength - FIELD_OFFSET(AFD_CREATE_PACKET_NT6, TransportName) - sizeof(WCHAR))
-        {
-            TransportName = ConnectInfoNt6->TransportName;
-            SizeOfTransportName = ConnectInfoNt6->SizeOfTransportName;
-        }
-
-        FCB->TdiDeviceName.Length = SizeOfTransportName;
+        FCB->TdiDeviceName.Length = ConnectInfo->SizeOfTransportName;
         FCB->TdiDeviceName.MaximumLength = FCB->TdiDeviceName.Length;
         FCB->TdiDeviceName.Buffer = ExAllocatePoolWithTag(NonPagedPool,
                                                           FCB->TdiDeviceName.Length,
                                                           TAG_AFD_TRANSPORT_ADDRESS);
 
         if( !FCB->TdiDeviceName.Buffer ) {
+            if (FCB->ReceiveWorkItem)
+                IoFreeWorkItem(FCB->ReceiveWorkItem);
             ExFreePoolWithTag(FCB, TAG_AFD_FCB);
             AFD_DbgPrint(MID_TRACE,("Could not copy target string\n"));
             Irp->IoStatus.Status = STATUS_NO_MEMORY;
@@ -447,6 +464,8 @@ AfdCreateSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         {
             ExFreePoolWithTag(FCB->TdiDeviceName.Buffer, TAG_AFD_TRANSPORT_ADDRESS);
         }
+        if (FCB->ReceiveWorkItem)
+            IoFreeWorkItem(FCB->ReceiveWorkItem);
         ExFreePoolWithTag(FCB, TAG_AFD_FCB);
         FileObject->FsContext = NULL;
     }
@@ -705,6 +724,9 @@ AfdCloseSocket(PDEVICE_OBJECT DeviceObject, PIRP Irp,
     {
         ExFreePoolWithTag(FCB->TdiDeviceName.Buffer, TAG_AFD_TRANSPORT_ADDRESS);
     }
+
+    if (FCB->ReceiveWorkItem)
+        IoFreeWorkItem(FCB->ReceiveWorkItem);
 
     ExFreePoolWithTag(FCB, TAG_AFD_FCB);
 

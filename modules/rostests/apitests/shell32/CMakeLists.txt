@@ -24,6 +24,7 @@ list(APPEND SOURCE
     Control_RunDLLW.cpp
     DragDrop.cpp
     ExtractIconEx.cpp
+    FileTypeName.cpp
     FindExecutable.cpp
     GetDisplayNameOf.cpp
     GUIDFromString.cpp
@@ -44,6 +45,8 @@ list(APPEND SOURCE
     SHGetFolderPathToken.cpp
     RealShellExecuteEx.cpp
     RecentDocs.cpp
+    RunFileDlg.cpp
+    RegItemDisplayName.cpp
     RegItemParse.cpp
     SearchFolder.cpp
     SHAppBarMessage.cpp
@@ -63,6 +66,7 @@ list(APPEND SOURCE
     #ShellExec_RunDLL.cpp # Broke on Windows
     #ShellExecCmdLine.cpp # Broke on Windows
     ShellExecuteEx.cpp
+    ShellExecuteSlash.cpp
     ShellExecuteLink.cpp
     #ShellExecuteW.cpp # Broke on Windows
     ShellHook.cpp

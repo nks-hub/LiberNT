@@ -891,6 +891,50 @@ SampGetAccountDomainInfo(PPOLICY_ACCOUNT_DOMAIN_INFO *AccountDomainInfo)
 }
 
 
+/* A database created before client editions got the performance aliases is given them, as Windows 11 clients have both */
+VOID
+SampSetupAddMissingBuiltinAliases(
+    IN HANDLE hServerKey)
+{
+    static const struct
+    {
+        ULONG RelativeId;
+        UINT NameId;
+        UINT CommentId;
+    } Aliases[] =
+    {
+        { DOMAIN_ALIAS_RID_MONITORING_USERS, IDS_ALIAS_MONITORING_USERS_NAME, IDS_ALIAS_MONITORING_USERS_COMMENT },
+        { DOMAIN_ALIAS_RID_LOGGING_USERS, IDS_ALIAS_LOGGING_USERS_NAME, IDS_ALIAS_LOGGING_USERS_COMMENT },
+    };
+    HINSTANCE hInstance = GetModuleHandleW(L"samsrv.dll");
+    HANDLE hBuiltinDomainKey = NULL;
+    HANDLE hAliasKey = NULL;
+    WCHAR szKeyName[32];
+    WCHAR szComment[256];
+    WCHAR szName[80];
+    ULONG Index;
+
+    if (!NT_SUCCESS(SampRegOpenKey(hServerKey, L"Domains\\Builtin", KEY_ALL_ACCESS, &hBuiltinDomainKey)))
+        return;
+
+    for (Index = 0; Index < ARRAYSIZE(Aliases); Index++)
+    {
+        _swprintf(szKeyName, L"Aliases\\%08lX", Aliases[Index].RelativeId);
+        if (NT_SUCCESS(SampRegOpenKey(hBuiltinDomainKey, szKeyName, KEY_READ, &hAliasKey)))
+        {
+            SampRegCloseKey(&hAliasKey);
+            continue;
+        }
+
+        SampLoadString(hInstance, Aliases[Index].NameId, szName, ARRAYSIZE(szName));
+        SampLoadString(hInstance, Aliases[Index].CommentId, szComment, ARRAYSIZE(szComment));
+        SampSetupCreateAliasAccount(hBuiltinDomainKey, szName, szComment, Aliases[Index].RelativeId);
+    }
+
+    SampRegCloseKey(&hBuiltinDomainKey);
+}
+
+
 BOOL
 SampInitializeSAM(VOID)
 {
@@ -1089,26 +1133,24 @@ SampInitializeSAM(VOID)
                                 szComment,
                                 DOMAIN_ALIAS_RID_NETWORK_CONFIGURATION_OPS);
 
-    if (SampProductType != NtProductWinNt)
-    {
-        /* Create the Performance Monitor Users alias (Server only) */
-        SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_NAME, szName, 80);
-        SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_COMMENT, szComment, 256);
+    /* Windows 11 client editions have both performance aliases as well */
+    SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_NAME, szName, 80);
+    SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_COMMENT, szComment, 256);
 
-        SampSetupCreateAliasAccount(hBuiltinDomainKey,
-                                    szName,
-                                    szComment,
-                                    DOMAIN_ALIAS_RID_MONITORING_USERS);
+    SampSetupCreateAliasAccount(hBuiltinDomainKey,
+                                szName,
+                                szComment,
+                                DOMAIN_ALIAS_RID_MONITORING_USERS);
 
-        /* Create the Performance Log Users alias (Server only) */
-        SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_NAME, szName, 80);
-        SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_COMMENT, szComment, 256);
+    SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_NAME, szName, 80);
+    SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_COMMENT, szComment, 256);
 
-        SampSetupCreateAliasAccount(hBuiltinDomainKey,
-                                    szName,
-                                    szComment,
-                                    DOMAIN_ALIAS_RID_LOGGING_USERS);
-    }
+    SampSetupCreateAliasAccount(hBuiltinDomainKey,
+                                szName,
+                                szComment,
+                                DOMAIN_ALIAS_RID_LOGGING_USERS);
+
+    /* TODO: the other builtin aliases of Windows 11 clients (RIDs 562, 568, 569, 573, 578-581, 583) */
 
     /* Add the Administrator user to the Administrators alias */
     pSid = AppendRidToSid(AccountDomainInfo->DomainSid,

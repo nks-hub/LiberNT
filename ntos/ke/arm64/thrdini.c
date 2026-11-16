@@ -226,6 +226,12 @@ KiArm64IdleDispatchNextThread(_In_ PKPRCB Prcb, _In_ BOOLEAN AdvertiseIdle)
     /* (diag) idle-switch trace removed: serial print here perturbs the SMP race. */
 
     Prcb->Sleeping = FALSE;
+    ARM64_DMB(ISH);
+    if (InterlockedAnd((PLONG)&Prcb->RequestSummary, ~IPI_DPC) & IPI_DPC)
+    {
+        KiSetDpcInterruptRequested(Prcb);
+        HalRequestSoftwareInterrupt(DISPATCH_LEVEL);
+    }
     InterlockedAnd64((PLONG64)&KiIdleSummary, (LONG64)~Prcb->SetMember);
 
     Prcb->NextThread = NULL;
@@ -235,9 +241,52 @@ KiArm64IdleDispatchNextThread(_In_ PKPRCB Prcb, _In_ BOOLEAN AdvertiseIdle)
     KiReleasePrcbLock(Prcb);
 
     ASSERT(OldThread != NULL);
+    KiWaitForThreadSwapOut(NewThread);
     KiSwapContext(APC_LEVEL, OldThread);
     if (KeGetCurrentIrql() > DISPATCH_LEVEL) KeLowerIrql(DISPATCH_LEVEL);
     return TRUE;
+}
+
+ULONG KiArm64IdlePollMicroseconds = 100;
+
+static
+BOOLEAN
+KiArm64IdleWorkPending(_In_ PKPRCB Prcb)
+{
+    return Prcb->NextThread || Prcb->DpcData[0].DpcQueueDepth || Prcb->TimerRequest ||
+           Prcb->DeferredReadyListHead.Next || KiIsDpcInterruptRequested(Prcb);
+}
+
+static
+BOOLEAN
+KiArm64IdlePoll(_In_ PKPRCB Prcb)
+{
+    ULONG64 Start, Ticks;
+    BOOLEAN Work = FALSE;
+
+    ASSERT(Prcb->Sleeping == KI_ARM64_IDLE_POLLING);
+    if (KiArm64IdlePollMicroseconds != 0)
+    {
+        Ticks = (ARM64_READ_SYSREG(CNTFRQ_EL0) * KiArm64IdlePollMicroseconds) / 1000000;
+        Start = ARM64_READ_SYSREG(CNTVCT_EL0);
+        _enable();
+        while (!(Work = (KiArm64IdleWorkPending(Prcb) || (ReadNoFence((PLONG)&Prcb->RequestSummary) & IPI_DPC))) &&
+               (ARM64_READ_SYSREG(CNTVCT_EL0) - Start < Ticks))
+        {
+            YieldProcessor();
+        }
+        _disable();
+    }
+    WriteNoFence(&Prcb->Sleeping, TRUE);
+    ARM64_DMB(ISH);
+
+    /* A sender that saw this processor polling raised no interrupt for its dispatch request */
+    if (InterlockedAnd((PLONG)&Prcb->RequestSummary, ~IPI_DPC) & IPI_DPC)
+    {
+        KiSetDpcInterruptRequested(Prcb);
+        Work = TRUE;
+    }
+    return Work || KiArm64IdleWorkPending(Prcb);
 }
 
 DECLSPEC_NORETURN
@@ -279,14 +328,12 @@ KiIdleLoop(VOID)
         /* Close the interrupt window so the work check and wfi are atomic */
         _disable();
 
-        Prcb->Sleeping = TRUE;
+        WriteNoFence(&Prcb->Sleeping, KI_ARM64_IDLE_POLLING);
         ARM64_DMB(ISH);
 
         if (Prcb->DpcData[0].DpcQueueDepth || Prcb->TimerRequest || Prcb->DeferredReadyListHead.Next ||
             KiIsDpcInterruptRequested(Prcb))
         {
-            Prcb->Sleeping = FALSE;
-
             HalClearSoftwareInterrupt(DISPATCH_LEVEL);
             KiClearDpcInterruptRequested(Prcb);
 
@@ -335,6 +382,12 @@ KiIdleLoop(VOID)
             continue;
         }
 
+        if (KiArm64IdlePoll(Prcb))
+        {
+            _enable();
+            continue;
+        }
+
         if (Prcb->SchedulerSubNode != NULL)
         {
             PKSCHEDULER_SUBNODE SubNode = (PKSCHEDULER_SUBNODE)Prcb->SchedulerSubNode;
@@ -359,9 +412,11 @@ KiIdleLoop(VOID)
         {
             ULONG64 IdleStart, IdleEnd;
 
+            KiArm64ClockArmForIdle(Prcb);
             IdleStart = ARM64_READ_SYSREG(CNTVCT_EL0);
             Prcb->PowerState.IdleFunction(&Prcb->PowerState);
             IdleEnd = ARM64_READ_SYSREG(CNTVCT_EL0);
+            KiArm64ClockResumeFromIdle(Prcb);
             _enable();
             KiArm64IdleCounterTicks[Prcb->Number] += IdleEnd - IdleStart;
         }
@@ -544,6 +599,7 @@ KiDispatchInterrupt(VOID)
             KxQueueReadyThread(OldThread, Prcb);
         }
 
+        KiWaitForThreadSwapOut(NewThread);
         KiSwapContext(APC_LEVEL, OldThread);
     }
 }

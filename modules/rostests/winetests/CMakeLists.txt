@@ -13,6 +13,8 @@ if(MSVC)
     endif()
 endif()
 
+add_compile_options(-UNDEBUG)
+
 add_subdirectory(activeds)
 add_subdirectory(advapi32)
 add_subdirectory(advpack)
@@ -237,8 +239,6 @@ add_subdirectory(xcopy)
 add_subdirectory(xinput1_3)
 add_subdirectory(xmllite)
 
-if(DLL_EXPORT_VERSION GREATER_EQUAL 0x600)
-    add_subdirectory(uiautomationcore)
-endif()
+add_subdirectory(uiautomationcore)
 
 add_subdirectory(directmanipulation)

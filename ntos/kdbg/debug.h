@@ -1,13 +1,9 @@
 /*
- * PROJECT:     ReactOS KDBG Kernel Debugger
- * LICENSE:     GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later)
- * PURPOSE:     Useful debugging macros
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Trace macros for the built-in debugger, printed through itself
  * COPYRIGHT:   Copyright 2023 Hermès Bélusca-Maïto <hermes.belusca-maito@reactos.org>
- */
-
-/*
- * NOTE: Define NDEBUG before including this header
- * to disable debugging macros.
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #pragma once
@@ -16,36 +12,17 @@
 #define __RELFILE__ __FILE__
 #endif
 
-/* Print stuff only on Debug Builds */
+#define KDB_TRACE_DISCARD(...) do { if (0) KdbPrintf(__VA_ARGS__); } while (0)
+#define KDB_TRACE(fmt, ...) KdbPrintf("(%s:%d) " fmt, __RELFILE__, __LINE__, ##__VA_ARGS__)
+
 #if DBG
-
-    /* These are always printed */
-    #define DPRINT1(fmt, ...)   \
-        KdbPrintf("(%s:%d) " fmt, __RELFILE__, __LINE__, ##__VA_ARGS__)
-
-    /* These are printed only if NDEBUG is NOT defined */
-    #ifndef NDEBUG
-        #define DPRINT(fmt, ...) \
-            KdbPrintf("(%s:%d) " fmt, __RELFILE__, __LINE__, ##__VA_ARGS__)
-    #else
-#if defined(_MSC_VER)
-        #define DPRINT  __noop
+#define DPRINT1 KDB_TRACE
 #else
-        #define DPRINT(...) do { if(0) { KdbPrintf(__VA_ARGS__); } } while(0)
+#define DPRINT1 KDB_TRACE_DISCARD
 #endif
-    #endif
 
-#else /* not DBG */
-
-    /* On non-debug builds, we never show these */
-#if defined(_MSC_VER)
-    #define DPRINT1 __noop
-    #define DPRINT  __noop
+#if DBG && !defined(NDEBUG)
+#define DPRINT KDB_TRACE
 #else
-    #define DPRINT1(...) do { if(0) { KdbPrintf(__VA_ARGS__); } } while(0)
-    #define DPRINT(...) do { if(0) { KdbPrintf(__VA_ARGS__); } } while(0)
-#endif /* _MSC_VER */
-
-#endif /* not DBG */
-
-/* EOF */
+#define DPRINT KDB_TRACE_DISCARD
+#endif

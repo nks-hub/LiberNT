@@ -20,6 +20,7 @@
 
 /* GLOBALS *******************************************************************/
 
+PVOID LdrpHeap;
 HANDLE ImageExecOptionsKey;
 HANDLE Wow64ExecOptionsKey;
 UNICODE_STRING ImageExecOptionsString = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options");
@@ -1082,8 +1083,9 @@ LdrpRunInitializeRoutines(IN PCONTEXT Context OPTIONAL)
             LdrpCurrentDllInitializer = OldInitializer;
 
             /* Mark the entry as processed */
+            /* FIXME: a module whose attach fails stays visible to the lock-free LdrLoadDll path until unloaded. */
             if (DllInitCompleted)
-                LdrEntry->Flags |= LDRP_PROCESS_ATTACH_CALLED;
+                InterlockedOr((PLONG)&LdrEntry->Flags, LDRP_PROCESS_ATTACH_CALLED);
 
             /* Fail if DLL init failed */
             if (!DllStatus)
@@ -1444,15 +1446,22 @@ LdrShutdownThread(VOID)
     LdrpFreeTls();
     RtlLeaveCriticalSection(&LdrpLoaderLock);
 
+    /* Another thread releasing an index clears this array under the PEB lock */
+    RtlAcquirePebLock();
+
     /* Check for expansion slots */
     if (Teb->TlsExpansionSlots)
     {
         /* Free expansion slots */
         RtlFreeHeap(RtlGetProcessHeap(), 0, Teb->TlsExpansionSlots);
+        Teb->TlsExpansionSlots = NULL;
     }
+    RtlReleasePebLock();
 
     RtlProcessFlsData(Teb->FlsData, 2);
     Teb->FlsData = NULL;
+
+    RtlpFreeThreadPreferredUILanguages();
 
     /* Check for Fiber data */
 #if (NTDDI_VERSION >= NTDDI_WIN7)

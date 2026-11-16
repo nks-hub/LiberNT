@@ -76,12 +76,15 @@ typedef struct _CC_CACHE
     VOID (*BcbCreated)(_Inout_ struct _CC_BCB *Bcb);
     VOID (*BcbDeleting)(_Inout_ struct _CC_BCB *Bcb);
 
+    volatile LONG64 AttachedViews;
     volatile LONG64 ViewHits;
     volatile LONG64 ViewMisses;
     volatile LONG64 ViewReclaims;
     volatile LONG64 PagesFlushed;
     volatile LONG64 FlushCalls;
 } CC_CACHE, *PCC_CACHE;
+
+#define CC_PINNED_BCB_HASH_SIZE 32
 
 typedef struct _CC_MAP
 {
@@ -114,6 +117,7 @@ typedef struct _CC_MAP
     BOOLEAN ReclaimsDraining;
     VOID (*ReclaimComplete)(PVOID Context);
     PVOID ReclaimContext;
+    struct _CC_BCB *PinnedBcbHash[CC_PINNED_BCB_HASH_SIZE];
 } CC_MAP, *PCC_MAP;
 
 C_ASSERT(FIELD_OFFSET(CC_MAP, NodeTypeCode) == 0x00);
@@ -149,6 +153,7 @@ typedef struct _CC_BCB
     ULONG64 DirtyGeneration;
     PVOID OwnBase;
     ULONG64 OwnOffset;
+    struct _CC_BCB *PinnedHashNext;
 } CC_BCB, *PCC_BCB;
 
 C_ASSERT(FIELD_OFFSET(CC_BCB, NodeTypeCode) == 0x00);
@@ -236,6 +241,7 @@ NTSTATUS CcBcbMakeResident(_Inout_ PCC_BCB Bcb, _In_ BOOLEAN SkipRead);
 NTSTATUS CcBcbSetDirty(_Inout_ PCC_BCB Bcb, _In_ ULONG64 Lsn);
 ULONG64 CcBcbBeginFlush(_Inout_ PCC_MAP Map);
 BOOLEAN CcBcbCompleteFlush(_Inout_ PCC_MAP Map, _In_ ULONG64 Start, _In_ ULONG64 End, _In_ ULONG64 Generation);
+VOID CcBcbRetireWritten(_Inout_ PCC_MAP Map, _In_ ULONG64 Generation);
 BOOLEAN CcBcbRangeBusy(_Inout_ PCC_MAP Map, _In_ ULONG64 Start, _In_ ULONG64 End);
 BOOLEAN CcBcbDirtyLsns(_Inout_ PCC_MAP Map, _Out_ PULONG64 OldestLsn, _Out_ PULONG64 NewestLsn,
                        _Out_ PULONG DirtyBcbs);

@@ -17,12 +17,27 @@
 #define BM_WINDOWS_MANAGER L"\\EFI\\Microsoft\\Boot\\bootmgfw.efi"
 #define BM_WINDOWS_STORE   L"\\EFI\\Microsoft\\Boot\\BCD"
 #define BM_WINDOWS_TITLE   L"Windows Boot Manager"
+#define BM_LIBERNT_MANAGER L"\\EFI\\LiberNT\\Boot\\bootmgfw.efi"
+#define BM_LIBERNT_STORE   L"\\EFI\\LiberNT\\Boot\\BCD"
+#define BM_LIBERNT_TITLE   L"LiberNT"
 #define BM_LIBERNT_ENTRY   L"{354fa6e5-5e45-49af-91bf-1fd2754e470a}"
 #define BM_INSTALL_IMAGE_OPTION L"INSTALLIMAGE="
 #define BM_UPDATE_STATE    L"\\EFI\\LiberNT\\Boot\\update.state"
 #define BM_UPDATE_STARTS   3
 #define BM_UPDATE_UNDO_STARTS (BM_UPDATE_STARTS * 2)
 #define BM_UPDATE_STATE_CHARS 160
+#define BM_MAX_VOLUMES     128
+#define BM_USB_SUFFIX      L" (USB)"
+#define BM_USB_TITLE       L"USB drive"
+#define BM_DISK_SUFFIX     L" (disk %lu)"
+#define BM_SUFFIX_CHARS    24
+
+typedef enum _BM_FOUND_SYSTEM
+{
+    BmFoundLiberNT,
+    BmFoundWindows,
+    BmFoundRemovable
+} BM_FOUND_SYSTEM;
 
 static const PCWSTR BmStorePaths[] =
 {
@@ -49,6 +64,14 @@ static ULONG BmCount;
 static ULONG BmToolCount;
 static ULONG BmSelected;
 static ULONG BmLiberNTEntry = MAXULONG;
+static BOOLEAN BmUsb[BM_MAX_ENTRIES];
+static ULONG BmStoreCount;
+static PVOID BmKnownVolumes[BM_MAX_VOLUMES];
+static ULONG BmKnownCount;
+static PVOID BmPassVolumes[BM_MAX_VOLUMES];
+static ULONG BmPassCount;
+static ULONG BmPassSecond = MAXULONG;
+static PULONG BmTrackedItem;
 
 static
 PVOID
@@ -83,77 +106,304 @@ BmReadStore(
 
 static
 VOID
-BmGetWindowsDescription(
+BmGetStoreDescription(
     _In_ PVOID Device,
+    _In_ BOOLEAN Windows,
     _Out_writes_z_(Chars) PWSTR Description,
     _In_ ULONG Chars)
 {
     BCD_OBJECT BootMgr, Object, Loader = {HCELL_NIL, 0};
-    WCHAR Id[BCD_ID_CHARS];
+    WCHAR Id[BCD_ID_CHARS], DefaultId[BCD_ID_CHARS];
     PVOID Store;
     ULONG Size, Index, Loaders = 0;
 
-    RtlStringCchCopyW(Description, Chars, BM_WINDOWS_TITLE);
+    RtlStringCchCopyW(Description, Chars, Windows ? BM_WINDOWS_TITLE : BM_LIBERNT_TITLE);
 
-    Store = BcdReadStoreFile(Device, BM_WINDOWS_STORE, &Size);
+    Store = BcdReadStoreFile(Device, Windows ? BM_WINDOWS_STORE : BM_LIBERNT_STORE, &Size);
     if (!Store)
         return;
 
     if (BcdOpenStore(Store, Size) && BcdOpenObject(BCD_ID_BOOTMGR, &BootMgr))
     {
+        if (!BcdGetObjectId(&BootMgr, BcdBootMgrObject_DefaultObject, 0, DefaultId))
+            DefaultId[0] = UNICODE_NULL;
+
         for (Index = 0; BcdGetObjectId(&BootMgr, BcdBootMgrObjectList_DisplayOrder, Index, Id); Index++)
         {
             if (BcdOpenObject(Id, &Object) && Object.Type == BCD_OBJECT_OSLOADER)
             {
-                Loader = Object;
+                if (Loaders == 0 || (!Windows && _wcsicmp(Id, DefaultId) == 0))
+                    Loader = Object;
                 Loaders++;
             }
         }
 
-        if (Loaders == 1)
+        if (Loaders == 1 || (!Windows && Loaders > 1))
             BcdGetString(&Loader, BcdLibraryString_Description, Description, Chars);
-        else
+        else if (Windows)
             BcdGetString(&BootMgr, BcdLibraryString_Description, Description, Chars);
     }
 
     FwFreePages(Store, Size);
+    if (BmStore)
+        BcdOpenStore(BmStore, BmStoreSize);
 }
 
 static
 BOOLEAN
-BmAddWindows(
-    _In_ PVOID Device)
+BmVolumeIn(
+    _In_ PVOID Device,
+    _In_reads_(Count) PVOID* Volumes,
+    _In_ ULONG Count)
 {
-    PBM_ENTRY Entry;
+    ULONG i;
+
+    for (i = 0; i < Count; i++)
+    {
+        if (Volumes[i] == Device)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static
+ULONG
+BmInsertEntry(
+    _In_ BOOLEAN Usb)
+{
+    ULONG Position = BmCount, i;
 
     if (BmCount >= RTL_NUMBER_OF(BmEntries))
+        return MAXULONG;
+
+    if (!Usb)
+    {
+        for (Position = BmStoreCount; Position < BmCount && !BmUsb[Position]; Position++)
+            ;
+    }
+
+    for (i = BmCount; i > Position; i--)
+    {
+        BmEntries[i] = BmEntries[i - 1];
+        BmLogos[i] = BmLogos[i - 1];
+        BmUsb[i] = BmUsb[i - 1];
+    }
+
+    if (BmSelected < BmCount && BmSelected >= Position)
+        BmSelected++;
+    if (BmTrackedItem && *BmTrackedItem >= Position)
+        (*BmTrackedItem)++;
+
+    RtlZeroMemory(&BmEntries[Position], sizeof(BmEntries[Position]));
+    RtlZeroMemory(&BmLogos[Position], sizeof(BmLogos[Position]));
+    BmUsb[Position] = Usb;
+    BmCount++;
+    ASSERT(Position >= BmStoreCount && Position < BmCount);
+    return Position;
+}
+
+static
+VOID
+BmRemoveEntry(
+    _In_ ULONG Index)
+{
+    ULONG i;
+
+    ASSERT(Index >= BmStoreCount && Index < BmCount);
+    if (FwDebugEnabled)
+        DbgPrint("Boot manager: %ls is no longer present\n", BmEntries[Index].Description);
+
+    if (BmLogos[Index].Pixels)
+        FwFree(BmLogos[Index].Pixels);
+
+    for (i = Index; i + 1 < BmCount; i++)
+    {
+        BmEntries[i] = BmEntries[i + 1];
+        BmLogos[i] = BmLogos[i + 1];
+        BmUsb[i] = BmUsb[i + 1];
+    }
+
+    BmCount--;
+    RtlZeroMemory(&BmEntries[BmCount], sizeof(BmEntries[BmCount]));
+    RtlZeroMemory(&BmLogos[BmCount], sizeof(BmLogos[BmCount]));
+    BmUsb[BmCount] = FALSE;
+
+    if (BmSelected > Index || (BmSelected == Index && Index == BmCount && Index > 0))
+        BmSelected--;
+
+    if (BmTrackedItem)
+    {
+        if (*BmTrackedItem > Index)
+            (*BmTrackedItem)--;
+        else if (*BmTrackedItem == Index && Index == BmCount)
+            *BmTrackedItem = Index > 0 ? Index - 1 : Index + 1;
+    }
+}
+
+static
+VOID
+BmTrimLabel(
+    _Inout_z_ PWSTR Label)
+{
+    SIZE_T Length = wcslen(Label);
+
+    while (Length > 0 && Label[Length - 1] == L' ')
+        Label[--Length] = UNICODE_NULL;
+}
+
+static
+VOID
+BmAppendLocation(
+    _In_ PVOID Device,
+    _In_ BOOLEAN Usb,
+    _Inout_updates_z_(Chars) PWSTR Description,
+    _In_ ULONG Chars)
+{
+    WCHAR Suffix[BM_SUFFIX_CHARS];
+    SIZE_T SuffixLength;
+    ULONG Disk;
+
+    if (Usb)
+        RtlStringCchCopyW(Suffix, RTL_NUMBER_OF(Suffix), BM_USB_SUFFIX);
+    else if (!FwGetVolumeDiskNumber(Device, &Disk) ||
+             !NT_SUCCESS(RtlStringCchPrintfW(Suffix, RTL_NUMBER_OF(Suffix), BM_DISK_SUFFIX, Disk)))
+        return;
+
+    SuffixLength = wcslen(Suffix);
+    ASSERT(SuffixLength < Chars);
+    if (wcslen(Description) + SuffixLength >= Chars)
+        Description[Chars - 1 - SuffixLength] = UNICODE_NULL;
+    RtlStringCchCatW(Description, Chars, Suffix);
+}
+
+static
+BOOLEAN
+BmAddFoundEntry(
+    _In_ PVOID Device,
+    _In_ BOOLEAN Usb,
+    _In_ BM_FOUND_SYSTEM System,
+    _In_ PCWSTR Path)
+{
+    PBM_ENTRY Entry;
+    ULONG Index;
+
+    Index = BmInsertEntry(Usb);
+    if (Index == MAXULONG)
         return FALSE;
 
-    Entry = &BmEntries[BmCount];
-    RtlZeroMemory(Entry, sizeof(*Entry));
+    Entry = &BmEntries[Index];
     Entry->FirmwareDevice = Device;
-    Entry->FirmwarePath = BM_WINDOWS_MANAGER;
-    BmGetWindowsDescription(Device, Entry->Description, RTL_NUMBER_OF(Entry->Description));
-    if (!BmLoadWindowsLogo(Device, &BmLogos[BmCount]))
-        RtlZeroMemory(&BmLogos[BmCount], sizeof(BmLogos[BmCount]));
+    Entry->FirmwarePath = Path;
+    if (System == BmFoundLiberNT)
+    {
+        Entry->FirmwareOptions = BM_START_DEFAULT_OPTION;
+        BmGetStoreDescription(Device, FALSE, Entry->Description, RTL_NUMBER_OF(Entry->Description));
+    }
+    else if (System == BmFoundWindows)
+    {
+        BmGetStoreDescription(Device, TRUE, Entry->Description, RTL_NUMBER_OF(Entry->Description));
+        if (!BmLoadWindowsLogo(Device, &BmLogos[Index]))
+            RtlZeroMemory(&BmLogos[Index], sizeof(BmLogos[Index]));
+    }
+    else
+    {
+        if (FwGetVolumeLabel(Device, Entry->Description, RTL_NUMBER_OF(Entry->Description)))
+            BmTrimLabel(Entry->Description);
+        if (Entry->Description[0] == UNICODE_NULL)
+            RtlStringCchCopyW(Entry->Description, RTL_NUMBER_OF(Entry->Description), BM_USB_TITLE);
+    }
 
-    if (BmStore)
-        BcdOpenStore(BmStore, BmStoreSize);
+    BmAppendLocation(Device, Usb, Entry->Description, RTL_NUMBER_OF(Entry->Description));
 
-    BmCount++;
+    if (FwDebugEnabled)
+        DbgPrint("Boot manager: found %ls (%ls) as entry %lu\n", Entry->Description, Path, Index + 1);
     return TRUE;
 }
 
 static
 BOOLEAN
+BmExamineVolume(
+    _In_ PVOID Device)
+{
+    PCWSTR Removable;
+    BOOLEAN Usb, Boot, Added = FALSE;
+
+    if (BmPassCount < RTL_NUMBER_OF(BmPassVolumes))
+        BmPassVolumes[BmPassCount++] = Device;
+    if (BmVolumeIn(Device, BmKnownVolumes, BmKnownCount))
+        return FALSE;
+
+    Usb = FwIsUsbVolume(Device);
+    Boot = FwIsBootVolume(Device);
+    if (!Boot && FwFileExists(Device, BM_LIBERNT_MANAGER) &&
+        BmAddFoundEntry(Device, Usb, BmFoundLiberNT, BM_LIBERNT_MANAGER))
+    {
+        Added = TRUE;
+    }
+
+    if (FwFileExists(Device, BM_WINDOWS_MANAGER) &&
+        BmAddFoundEntry(Device, Usb, BmFoundWindows, BM_WINDOWS_MANAGER))
+    {
+        Added = TRUE;
+    }
+
+    if (!Added && Usb && !Boot)
+    {
+        Removable = FwGetRemovableMediaPath();
+        if (Removable && FwFileExists(Device, Removable))
+            Added = BmAddFoundEntry(Device, Usb, BmFoundRemovable, Removable);
+    }
+
+    return Added;
+}
+
+static
+BOOLEAN
+BmEndVolumePass(VOID)
+{
+    BOOLEAN Changed = FALSE;
+    ULONG i;
+
+    for (i = BmCount; i-- > BmStoreCount;)
+    {
+        if (BmEntries[i].FirmwareDevice &&
+            !BmVolumeIn(BmEntries[i].FirmwareDevice, BmPassVolumes, BmPassCount))
+        {
+            BmRemoveEntry(i);
+            Changed = TRUE;
+        }
+    }
+
+    RtlCopyMemory(BmKnownVolumes, BmPassVolumes, BmPassCount * sizeof(BmPassVolumes[0]));
+    BmKnownCount = BmPassCount;
+    BmPassCount = 0;
+    BmPassSecond = ArcGetTime()->Second;
+    return Changed;
+}
+
+static
+BOOLEAN
 BmScanStep(
-    _Out_ PBOOLEAN Added)
+    _Out_ PBOOLEAN Changed)
 {
     PVOID Device;
     BOOLEAN More;
 
-    More = FwScanFileVolumes(BM_WINDOWS_MANAGER, &BmScan, &Device);
-    *Added = Device && BmAddWindows(Device);
+    *Changed = FALSE;
+    if (BmScan.State == FwVolumeScanDone)
+    {
+        if (ArcGetTime()->Second == BmPassSecond)
+            return FALSE;
+
+        RtlZeroMemory(&BmScan, sizeof(BmScan));
+        BmScan.State = FwVolumeScanVolumes;
+    }
+
+    More = FwScanFileVolumes(NULL, &BmScan, &Device);
+    if (Device && BmExamineVolume(Device))
+        *Changed = TRUE;
+    if (!More && BmEndVolumePass())
+        *Changed = TRUE;
     return More;
 }
 
@@ -161,10 +411,10 @@ static
 VOID
 BmFinishScan(VOID)
 {
-    BOOLEAN Added;
+    BOOLEAN Changed;
 
-    while (BmScanStep(&Added))
-        ;
+    while (BmScan.State != FwVolumeScanDone)
+        BmScanStep(&Changed);
 }
 
 static
@@ -191,7 +441,8 @@ BmBuildMenu(VOID)
     {
         BmMenuName(BmEntries[i].Description, BmNames[i]);
         BmMenuNames[i] = BmNames[i];
-        BmMenuIcons[i] = !BmEntries[i].FirmwareDevice ? UiMenuIconLiberNT :
+        BmMenuIcons[i] = (!BmEntries[i].FirmwareDevice ||
+                          _wcsicmp(BmEntries[i].FirmwarePath, BM_LIBERNT_MANAGER) == 0) ? UiMenuIconLiberNT :
                          BmLogos[i].Pixels ? UiMenuIconImage : UiMenuIconDesktop;
         BmMenuImages[i] = BmLogos[i].Pixels ? &BmLogos[i] : NULL;
     }
@@ -210,20 +461,18 @@ BmMenuIdle(
     IN OUT PUI_MENU_INFO MenuInfo,
     OUT PBOOLEAN Changed)
 {
-    ULONG Entries;
-    BOOLEAN More, Added;
+    BOOLEAN More, Updated;
 
     *Changed = FALSE;
     if (MenuInfo->MenuItemList != BmMenuNames)
         return FALSE;
 
-    Entries = MenuInfo->MenuItemCount - BM_EXTRA_ITEMS;
-    More = BmScanStep(&Added);
-    if (Added)
+    BmTrackedItem = &MenuInfo->SelectedMenuItem;
+    More = BmScanStep(&Updated);
+    BmTrackedItem = NULL;
+    if (Updated)
     {
         BmBuildMenu();
-        if (MenuInfo->SelectedMenuItem >= Entries)
-            MenuInfo->SelectedMenuItem += BmCount - Entries;
         MenuInfo->MenuItemCount = BmCount + BM_EXTRA_ITEMS;
         *Changed = TRUE;
     }
@@ -310,6 +559,12 @@ BmStartSelectedApplication(
     BM_STARTUP Undo;
     BOOLEAN Cancelled;
     ULONG Starts;
+
+    if (Startup->Profile != 0 && !FwDebugEnabled)
+    {
+        FwDebugEnable();
+        FwDebugAnnounce("LiberNT Boot Manager", TRUE);
+    }
 
     if (BmIsUpdateEntry(Entry))
     {
@@ -597,6 +852,7 @@ BmRunMenu(
         return;
     }
 
+    /* TODO: the text menu does not list drives plugged in while it is shown */
     BmFinishScan();
     BmRunTextMenu(Timeout);
 }
@@ -621,6 +877,20 @@ BmGetTimeout(VOID)
 }
 
 static
+BOOLEAN
+BmStartDefaultRequested(VOID)
+{
+    PCWSTR Options;
+    ULONG Chars;
+    const ULONG Length = RTL_NUMBER_OF(BM_START_DEFAULT_OPTION) - 1;
+
+    Options = FwGetLoadOptions(&Chars);
+    return Options && Chars >= Length &&
+           _wcsnicmp(Options, BM_START_DEFAULT_OPTION, Length) == 0 &&
+           (Chars == Length || Options[Length] == UNICODE_NULL);
+}
+
+static
 VOID
 BmDebugEntries(
     _In_ ULONG Default,
@@ -629,7 +899,7 @@ BmDebugEntries(
 {
     ULONG i;
 
-    if (!DBG)
+    if (!FwDebugEnabled)
         return;
 
     DbgPrint("BCD store %ls: %lu entries, %lu tools, timeout %ld s\n", BmStorePath, BmCount, BmToolCount, Timeout);
@@ -643,6 +913,8 @@ VOID
 BlMain(VOID)
 {
     BM_STARTUP Startup;
+    BCD_OBJECT BootMgr;
+    BOOLEAN Debug;
     PVOID Store;
     ULONG Size, Default = 0, DefaultTool = MAXULONG, i;
     LONG Timeout;
@@ -658,10 +930,18 @@ BlMain(VOID)
     }
     else
     {
+        if (!FwDebugEnabled && BcdOpenObject(BCD_ID_BOOTMGR, &BootMgr) &&
+            BcdGetBoolean(&BootMgr, BcdLibraryBoolean_DebuggerEnabled, &Debug) && Debug)
+        {
+            FwDebugEnable();
+            FwDebugAnnounce("LiberNT Boot Manager", TRUE);
+        }
+
         BmStore = Store;
         BmStoreSize = Size;
         BmGetDescription(BmTitle, RTL_NUMBER_OF(BmTitle));
         BmCount = BmEnumerateEntries(BmEntries, RTL_NUMBER_OF(BmEntries), &Default);
+        BmStoreCount = BmCount;
         if (BmCount == 0)
             FwPrint(L"The Boot Configuration Data store has no operating system entry.\r\n");
 
@@ -694,8 +974,10 @@ BlMain(VOID)
         BmStartSelectedApplication(&BmTools[DefaultTool], &Startup);
         Timeout = -1;
     }
-    else if (Timeout == 0)
+    else if (Timeout == 0 || BmStartDefaultRequested())
     {
+        if (FwDebugEnabled && Timeout != 0)
+            DbgPrint("Boot manager: started by another boot manager, starting entry %lu\n", Default + 1);
         RtlZeroMemory(&Startup, sizeof(Startup));
         BmStartSelectedApplication(&BmEntries[Default], &Startup);
         Timeout = -1;

@@ -12,6 +12,7 @@ DBG_DEFAULT_CHANNEL(UserKbd);
 
 BYTE gafAsyncKeyState[256 * 2 / 8]; // 2 bits per key
 static BYTE gafAsyncKeyStateRecentDown[256 / 8]; // 1 bit per key
+static BYTE gafRawKeyState[256 * 2 / 8]; // 2 bits per key
 static PKEYBOARD_INDICATOR_TRANSLATION gpKeyboardIndicatorTrans = NULL;
 static KEYBOARD_INDICATOR_PARAMETERS gIndicators = {0, 0};
 KEYBOARD_ATTRIBUTES gKeyboardInfo;
@@ -49,6 +50,7 @@ InitKeyboardImpl(VOID)
 {
     RtlZeroMemory(&gafAsyncKeyState, sizeof(gafAsyncKeyState));
     RtlZeroMemory(&gafAsyncKeyStateRecentDown, sizeof(gafAsyncKeyStateRecentDown));
+    RtlZeroMemory(&gafRawKeyState, sizeof(gafRawKeyState));
     // Clear and set default information.
     RtlZeroMemory(&gKeyboardInfo, sizeof(gKeyboardInfo));
     gKeyboardInfo.KeyboardIdentifier.Type = 4; /* AT-101 */
@@ -752,7 +754,7 @@ NtUserGetAsyncKeyState(INT Key)
         return (SHORT)0x8000;
 
     UserEnterShared();
-    UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
+    BOOLEAN bDom0 = UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
 
     if (IS_KEY_DOWN(gafAsyncKeyState, Key))
         wRet |= 0x8000; // If down, windows returns 0x8000.
@@ -760,7 +762,7 @@ NtUserGetAsyncKeyState(INT Key)
         wRet |= 0x1;
     gafAsyncKeyStateRecentDown[Key / 8] &= ~(1 << (Key % 8));
 
-    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE);
+    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE, bDom0);
     UserLeave();
 
     TRACE("Leave NtUserGetAsyncKeyState, ret=%u\n", wRet);
@@ -799,8 +801,8 @@ co_CallLowLevelKeyboardHook(WORD wVk, WORD wScanCode, DWORD dwFlags, BOOL bInjec
 {
     KBDLLHOOKSTRUCT KbdHookData;
     UINT uMsg;
-    BOOL bAltDown = (wSimpleVk == VK_MENU) ? bIsSimpleDown : IS_KEY_DOWN(gafAsyncKeyState, VK_MENU);
-    BOOL bCtrlDown = (wSimpleVk == VK_CONTROL) ? bIsSimpleDown : IS_KEY_DOWN(gafAsyncKeyState, VK_CONTROL);
+    BOOL bAltDown = (wSimpleVk == VK_MENU) ? bIsSimpleDown : IS_KEY_DOWN(gafRawKeyState, VK_MENU);
+    BOOL bCtrlDown = (wSimpleVk == VK_CONTROL) ? bIsSimpleDown : IS_KEY_DOWN(gafRawKeyState, VK_CONTROL);
 
     KbdHookData.vkCode = wVk;
     KbdHookData.scanCode = wScanCode;
@@ -932,7 +934,6 @@ IntLanguageToggle(
     PWND pWnd;
     PTHREADINFO pti;
     PKL pkl;
-    WPARAM wParam = 0;
 
     if (!pFocusQueue)
     {
@@ -953,10 +954,7 @@ IntLanguageToggle(
     else if (nKeyState == INPUTLANGCHANGE_BACKWARD)
         pkl = IntGetNextKL(pkl, FALSE, bSameLang);
 
-    if (gSystemFS & pkl->dwFontSigs)
-        wParam |= INPUTLANGCHANGE_SYSCHARSET;
-
-    UserPostMessage(UserHMGetHandle(pWnd), WM_INPUTLANGCHANGEREQUEST, wParam, (LPARAM)pkl->hkl);
+    IntSetForegroundKeyboardLayout(pkl->hkl);
 }
 
 /* Check Language Toggle by [Left Alt]+Shift or Ctrl+Shift */
@@ -1263,19 +1261,22 @@ ProcessKeyEvent(WORD wVk, WORD wScanCode, DWORD dwFlags, BOOL bInjected, DWORD d
     bIsSimpleDown = bIsDown || IS_KEY_DOWN(gafAsyncKeyState, wVk2);
     bStateOnly = (!bIsDown && bIsSimpleDown && wVk2 != wSimpleVk);
 
-    if (bIsDown)
-    {
-        /* Update keyboard LEDs */
-        IntKeyboardUpdateLeds(wSimpleVk,
-                              wScanCode);
-    }
+    SET_KEY_DOWN(gafRawKeyState, IntFixVk(wSimpleVk, bExt), bIsDown);
+    SET_KEY_DOWN(gafRawKeyState, wSimpleVk, bIsDown || IS_KEY_DOWN(gafRawKeyState, wVk2));
 
     /* Call WH_KEYBOARD_LL hook */
     if (co_CallLowLevelKeyboardHook((wVk == VK_SHIFT || wVk == VK_CONTROL || wVk == VK_MENU) ? IntFixVk(wVk, wVk != VK_SHIFT && bExt) : wVk,
                                     wScanCode, dwFlags, bInjected, dwTime, dwExtraInfo, wSimpleVk, bIsSimpleDown))
     {
         ERR("Kbd msg dropped by WH_KEYBOARD_LL hook\n");
-        bPostMsg = FALSE;
+        return TRUE;
+    }
+
+    if (bIsDown)
+    {
+        /* Update keyboard LEDs */
+        IntKeyboardUpdateLeds(wSimpleVk,
+                              wScanCode);
     }
 
     UpdateAsyncKeyState(wSimpleVk, bIsSimpleDown);
@@ -1919,7 +1920,7 @@ NtUserToUnicodeEx(
     RtlZeroMemory(pwszBuff, sizeof(WCHAR) * cchBuff);
 
     UserEnterShared();
-    UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
+    BOOLEAN bDom1 = UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
 
     if (dwhkl)
         pKl = UserHklToKbl(dwhkl);
@@ -1959,7 +1960,7 @@ NtUserToUnicodeEx(
         SetLastNtError(Status);
     }
 
-    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE);
+    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE, bDom1);
     UserLeave();
     TRACE("Leave NtUserSetKeyboardState, ret=%i\n", iRet);
     return iRet;

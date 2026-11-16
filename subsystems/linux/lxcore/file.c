@@ -525,6 +525,8 @@ LxFdClose(
     if (File == NULL)
         return -LX_EBADF;
 
+    if (Process->RecordLocks)
+        LxRecordLocksClosed(Process, File);
     LxFileDereference(File);
     return 0;
 }
@@ -548,6 +550,8 @@ LxFdCloseOnExec(
         }
         ExReleaseFastMutex(&Process->Lock);
 
+        if ((File != NULL) && Process->RecordLocks)
+            LxRecordLocksClosed(Process, File);
         if (File != NULL)
             LxFileDereference(File);
     }
@@ -1213,15 +1217,19 @@ LxNtSeek(
 
     if (File->Directory)
     {
-        if ((Whence != LX_SEEK_SET) || (Offset != 0))
-            return (Whence == LX_SEEK_CUR) && (Offset == 0) ? File->DirOffset : -LX_EINVAL;
+        if ((Whence == LX_SEEK_CUR) && (Offset == 0))
+            return (LONG64)File->DirOffset + File->DirSkip;
+        if ((Whence != LX_SEEK_SET) || (Offset < 0))
+            return -LX_EINVAL;
+        /* A position is the count of entries before it: the scan starts over and drops that many */
         KeWaitForSingleObject(&File->Lock, Executive, KernelMode, FALSE, NULL);
         File->DirRestart = TRUE;
         File->DirEnd = FALSE;
         File->DirBufferPos = File->DirBufferUsed = 0;
         File->DirOffset = 0;
+        File->DirSkip = Offset;
         KeSetEvent(&File->Lock, IO_NO_INCREMENT, FALSE);
-        return 0;
+        return Offset;
     }
 
     switch (Whence)
@@ -1386,6 +1394,16 @@ LxNtGetdents(
         }
 
         Entry = (PFILE_ID_FULL_DIR_INFORMATION)(File->DirBuffer + File->DirBufferPos);
+        if (File->DirSkip > 0)
+        {
+            File->DirSkip--;
+            File->DirOffset++;
+            if (Entry->NextEntryOffset != 0)
+                File->DirBufferPos += Entry->NextEntryOffset;
+            else
+                File->DirBufferPos = File->DirBufferUsed;
+            continue;
+        }
         LxUnicodeDecodeLinuxName(Entry->FileName, Entry->FileNameLength / sizeof(WCHAR));
         if (!NT_SUCCESS(RtlUnicodeToUTF8N(Name, 1023, &NameLength, Entry->FileName, Entry->FileNameLength)))
             NameLength = 0;

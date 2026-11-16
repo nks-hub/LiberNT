@@ -45,7 +45,8 @@ SptiFreeIrpContext(
     {
         if (Irp->MdlAddress)
         {
-            MmUnlockPages(Irp->MdlAddress);
+            if (Irp->MdlAddress->MdlFlags & MDL_PAGES_LOCKED)
+                MmUnlockPages(Irp->MdlAddress);
             IoFreeMdl(Irp->MdlAddress);
         }
         Irp->MdlAddress = NULL;
@@ -166,6 +167,7 @@ CODE_SEG("PAGE")
 NTSTATUS
 SptiCallDriver(
     _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP OriginalIrp,
     _In_ PPASSTHROUGH_IRP_CONTEXT IrpContext)
 {
     PIRP Irp = IrpContext->Irp;
@@ -173,8 +175,9 @@ SptiCallDriver(
     NTSTATUS Status;
 
     PAGED_CODE();
+    ASSERT(OriginalIrp != Irp);
 
-    SptiInitializeOutputBuffer(Irp);
+    SptiInitializeOutputBuffer(OriginalIrp);
 
     // TODO: Send the IRP in an asynchronous way (do not block the user app thread)
     KeInitializeEvent(&Event, NotificationEvent, FALSE);
@@ -843,7 +846,7 @@ SptiHandleAtaPassthru(
     if (!NT_SUCCESS(Status))
         goto Cleanup;
 
-    Status = SptiCallDriver(DeviceObject, IrpContext);
+    Status = SptiCallDriver(DeviceObject, Irp, IrpContext);
 
     Srb = &IrpContext->Srb;
 
@@ -945,7 +948,7 @@ SptiHandleScsiPassthru(
     if (!NT_SUCCESS(Status))
         goto Cleanup;
 
-    Status = SptiCallDriver(DeviceObject, IrpContext);
+    Status = SptiCallDriver(DeviceObject, Irp, IrpContext);
 
     Srb = &IrpContext->Srb;
 
@@ -954,6 +957,8 @@ SptiHandleScsiPassthru(
      * This SRB status is usually set on an underrun and means success in that case.
      */
     if (SRB_STATUS(Srb->SrbStatus) == SRB_STATUS_DATA_OVERRUN)
+        Status = STATUS_SUCCESS;
+    else if (SRB_STATUS(Srb->SrbStatus) == SRB_STATUS_ERROR && Srb->ScsiStatus != SCSISTAT_GOOD)
         Status = STATUS_SUCCESS;
 
     if (Srb->SrbStatus & SRB_STATUS_AUTOSENSE_VALID)

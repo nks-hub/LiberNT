@@ -72,6 +72,9 @@ PspRunCreateProcessNotifyRoutines(
         Info = &CreateInfo;
     }
 
+    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
+    KeEnterCriticalRegion();
+
     for (Slot = 0; Slot < PSP_MAX_CREATE_PROCESS_NOTIFY; Slot++)
     {
         Block = ExReferenceCallBackBlock(&PspProcessNotifyRoutine[Slot]);
@@ -86,6 +89,8 @@ PspRunCreateProcessNotifyRoutines(
 
         ExDereferenceCallBackBlock(&PspProcessNotifyRoutine[Slot], Block);
     }
+
+    KeLeaveCriticalRegion();
 }
 
 FORCEINLINE

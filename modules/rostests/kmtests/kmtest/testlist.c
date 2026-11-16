@@ -51,6 +51,7 @@ KMT_TESTFUNC Test_IoReadWrite;
 KMT_TESTFUNC Test_ExCpuSetInformation;
 KMT_TESTFUNC Test_ExHandleInformation;
 KMT_TESTFUNC Test_ExHandleListChurn;
+KMT_TESTFUNC Test_PsNotifyApc;
 KMT_TESTFUNC Test_PsThreadCpuSets;
 KMT_TESTFUNC Test_KdBreakRequest;
 KMT_TESTFUNC Test_KdDebugService;
@@ -153,6 +154,7 @@ const KMT_TEST TestList[] =
     { "ExCpuSetInformation",          Test_ExCpuSetInformation },
     { "ExHandleInformation",          Test_ExHandleInformation },
     { "ExHandleListChurn",            Test_ExHandleListChurn },
+    { "PsNotifyApc",                  Test_PsNotifyApc },
     { "PsThreadCpuSets",              Test_PsThreadCpuSets },
     { "-KdBreakRequest",              Test_KdBreakRequest },
     { "KdDebugService",               Test_KdDebugService },

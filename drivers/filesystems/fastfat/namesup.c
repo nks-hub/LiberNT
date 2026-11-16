@@ -530,7 +530,7 @@ Return Value:
 
     if (Fcb->FullFileName.Buffer == NULL) {
 
-        UNICODE_STRING _SEH2_VOLATILE Lfn;
+        UNICODE_STRING Lfn;
         PFCB TmpFcb = Fcb;
         PFCB StopFcb;
         PWCHAR TmpBuffer;
@@ -599,7 +599,7 @@ Return Value:
 
                 FatGetUnicodeNameFromFcb( IrpContext,
                                           TmpFcb,
-                                          (PUNICODE_STRING)&Lfn );
+                                          &Lfn );
 
                 TmpBuffer -= Lfn.Length / sizeof(WCHAR);
 
@@ -766,7 +766,7 @@ Return Value:
         BOOLEAN TrySuggestedShortName;
 
         PDIRENT Dirent;
-        PBCB _SEH2_VOLATILE Bcb = NULL;
+        PBCB Bcb = NULL;
         ULONG ByteOffset;
         NTSTATUS Status;
 
@@ -825,7 +825,7 @@ Return Value:
                                           Parent,
                                           ShortName,
                                           &Dirent,
-                                          (PBCB *)&Bcb,
+                                          &Bcb,
                                           (PVBO)&ByteOffset );
 
                 if (Bcb == NULL) {

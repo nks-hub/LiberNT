@@ -102,11 +102,7 @@ Return Value:
     ULONG WriteByteCount;
     ULONG OriginalByteCount;
 
-#ifdef __REACTOS__
-    BOOLEAN _SEH2_VOLATILE ReleaseFile = TRUE;
-#else
     BOOLEAN ReleaseFile = TRUE;
-#endif
 
     CD_IO_CONTEXT LocalIoContext;
 

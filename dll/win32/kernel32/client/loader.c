@@ -428,6 +428,68 @@ BasepIsMissingPrivateDll(IN LPCWSTR lpLibFileName,
     return TRUE;
 }
 
+static
+BOOLEAN
+BasepIsKnownDll(IN PUNICODE_STRING DllName)
+{
+    UNICODE_STRING SectionName;
+    OBJECT_ATTRIBUTES ObjectAttributes;
+    WCHAR Buffer[MAX_PATH + 32];
+    HANDLE Section;
+    NTSTATUS Status;
+    USHORT Index;
+    BOOLEAN GotExtension = FALSE;
+
+    ASSERT(DllName->Length >= sizeof(WCHAR));
+
+    for (Index = 0; Index < DllName->Length / sizeof(WCHAR); Index++)
+    {
+        ASSERT(DllName->Buffer[Index] != L'\\' && DllName->Buffer[Index] != L'/');
+        if (DllName->Buffer[Index] == L'.')
+            GotExtension = TRUE;
+    }
+
+    RtlInitEmptyUnicodeString(&SectionName, Buffer, sizeof(Buffer));
+    Status = RtlAppendUnicodeToString(&SectionName, NtCurrentTeb()->WowTebOffset ? L"\\KnownDlls32\\" : L"\\KnownDlls\\");
+    if (NT_SUCCESS(Status))
+        Status = RtlAppendUnicodeStringToString(&SectionName, DllName);
+    if (NT_SUCCESS(Status) && !GotExtension)
+        Status = RtlAppendUnicodeToString(&SectionName, L".dll");
+    if (!NT_SUCCESS(Status))
+        return FALSE;
+
+    InitializeObjectAttributes(&ObjectAttributes, &SectionName, OBJ_CASE_INSENSITIVE, NULL, NULL);
+    Status = NtOpenSection(&Section, SECTION_QUERY, &ObjectAttributes);
+    if (!NT_SUCCESS(Status))
+        return FALSE;
+
+    NtClose(Section);
+    return TRUE;
+}
+
+static
+NTSTATUS
+BasepLoadDllWithoutSearch(IN PULONG DllCharacteristics,
+                          IN PUNICODE_STRING DllName,
+                          OUT PVOID *BaseAddress)
+{
+    NTSTATUS Status;
+
+    *BaseAddress = NULL;
+
+    Status = LdrGetDllHandleEx(0, NULL, NULL, DllName, BaseAddress);
+    if (NT_SUCCESS(Status))
+    {
+        ASSERT(*BaseAddress != NULL);
+        return Status;
+    }
+
+    if (!BasepIsKnownDll(DllName))
+        return STATUS_INVALID_PARAMETER;
+
+    return LdrLoadDll(NULL, DllCharacteristics, DllName, BaseAddress);
+}
+
 /*
  * @implemented
  */
@@ -439,8 +501,8 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
                DWORD dwFlags)
 {
     UNICODE_STRING DllName;
-    HINSTANCE _SEH2_VOLATILE hInst;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    HINSTANCE hInst;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PWSTR SearchPath;
     ULONG DllCharacteristics = 0;
     DWORD SearchFlags;
@@ -498,27 +560,35 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
                              LOAD_LIBRARY_SEARCH_SYSTEM32 |
                              LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
 
-    if ((dwFlags & LOAD_WITH_ALTERED_SEARCH_PATH) && SearchFlags)
-    {
-        BaseSetLastNTError(STATUS_INVALID_PARAMETER);
-        if (FreeString) RtlFreeUnicodeString(&DllName);
-        return NULL;
-    }
-
     if (!SearchFlags)
-    {
         SearchFlags = BaseDefaultDllDirectoriesFlags;
-        if ((dwFlags & LOAD_WITH_ALTERED_SEARCH_PATH) && SearchFlags) SearchFlags |= LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
-    }
+    if ((dwFlags & LOAD_WITH_ALTERED_SEARCH_PATH) && SearchFlags)
+        SearchFlags |= LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
 
     if (SearchFlags & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR)
     {
         PathType = RtlDetermineDosPathNameType_U(DllName.Buffer);
         if (PathType != RtlPathTypeRooted && PathType != RtlPathTypeDriveAbsolute && PathType != RtlPathTypeUncAbsolute && PathType != RtlPathTypeLocalDevice)
         {
-            BaseSetLastNTError(STATUS_INVALID_PARAMETER);
+            /* Windows still returns a loaded module or a KnownDLL for a bare name */
+            if (PathType == RtlPathTypeRelative &&
+                !wcschr(DllName.Buffer, L'\\') && !wcschr(DllName.Buffer, L'/') &&
+                !(dwFlags & (LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE | LOAD_LIBRARY_AS_IMAGE_RESOURCE)))
+            {
+                Status = BasepLoadDllWithoutSearch(&DllCharacteristics, &DllName, (PVOID*)&hInst);
+            }
+            else
+            {
+                Status = STATUS_INVALID_PARAMETER;
+            }
+
             if (FreeString) RtlFreeUnicodeString(&DllName);
-            return NULL;
+            if (!NT_SUCCESS(Status))
+            {
+                BaseSetLastNTError(Status);
+                return NULL;
+            }
+            return hInst;
         }
     }
 
@@ -543,7 +613,7 @@ LoadLibraryExW(LPCWSTR lpLibFileName,
             if (!NT_SUCCESS(Status))
             {
                 /* It's not loaded yet - so load it up */
-                Status = BasepLoadLibraryAsDatafile(SearchPath, DllName.Buffer, dwFlags, (HMODULE *)&hInst);
+                Status = BasepLoadLibraryAsDatafile(SearchPath, DllName.Buffer, dwFlags, &hInst);
             }
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -848,7 +918,7 @@ HMODULE
 WINAPI
 GetModuleHandleForUnicodeString(PUNICODE_STRING ModuleName)
 {
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     PVOID Module;
     LPWSTR DllPath;
 

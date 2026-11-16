@@ -94,8 +94,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -557,10 +557,10 @@ Return Value:
     PFCB NextFcb;
 
     PDIRENT Dirent;
-    PBCB _SEH2_VOLATILE DirentBcb = NULL;
+    PBCB DirentBcb = NULL;
 
-    NTSTATUS _SEH2_VOLATILE Status;
-    NTSTATUS _SEH2_VOLATILE ReturnStatus = STATUS_SUCCESS;
+    NTSTATUS Status;
+    NTSTATUS ReturnStatus = STATUS_SUCCESS;
 
     BOOLEAN ClearWriteThroughOnExit = FALSE;
     BOOLEAN ClearWaitOnExit = FALSE;
@@ -673,7 +673,7 @@ Return Value:
                                               Fcb,
                                               FALSE,
                                               &Dirent,
-                                              (PBCB *)&DirentBcb );
+                                              &DirentBcb );
 
 
                     CorrectedFileSize = Fcb->Header.FileSize.LowPart;
@@ -823,12 +823,12 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE Bcb;
-    PVOID _SEH2_VOLATILE DontCare;
-    IO_STATUS_BLOCK _SEH2_VOLATILE Iosb;
-    LARGE_INTEGER _SEH2_VOLATILE Offset;
+    PBCB Bcb;
+    PVOID DontCare;
+    IO_STATUS_BLOCK Iosb;
+    LARGE_INTEGER Offset;
 
-    NTSTATUS _SEH2_VOLATILE ReturnStatus = STATUS_SUCCESS;
+    NTSTATUS ReturnStatus = STATUS_SUCCESS;
 
     PAGED_CODE();
 
@@ -898,16 +898,16 @@ Return Value:
             _SEH2_TRY {
 
                 if (CcPinRead( Vcb->VirtualVolumeFile,
-                               (PLARGE_INTEGER)&Offset,
+                               &Offset,
                                PAGE_SIZE,
                                PIN_WAIT | PIN_IF_BCB,
-                               (PVOID *)&Bcb,
-                               (PVOID *)&DontCare )) {
+                               &Bcb,
+                               &DontCare )) {
 
                     CcSetDirtyPinnedData( Bcb, NULL );
                     CcRepinBcb( Bcb );
                     CcUnpinData( Bcb );
-                    CcUnpinRepinnedBcb( Bcb, TRUE, (PIO_STATUS_BLOCK)&Iosb );
+                    CcUnpinRepinnedBcb( Bcb, TRUE, &Iosb );
 
                     if (!NT_SUCCESS(Iosb.Status)) {
 
@@ -933,16 +933,16 @@ Return Value:
         _SEH2_TRY {
 
             if (CcPinRead( Vcb->VirtualVolumeFile,
-                           (PLARGE_INTEGER)&Offset,
+                           &Offset,
                            FatBytesPerFat( &Vcb->Bpb ),
                            PIN_WAIT | PIN_IF_BCB,
-                           (PVOID *)&Bcb,
-                           (PVOID *)&DontCare )) {
+                           &Bcb,
+                           &DontCare )) {
 
                 CcSetDirtyPinnedData( Bcb, NULL );
                 CcRepinBcb( Bcb );
                 CcUnpinData( Bcb );
-                CcUnpinRepinnedBcb( Bcb, TRUE, (PIO_STATUS_BLOCK)&Iosb );
+                CcUnpinRepinnedBcb( Bcb, TRUE, &Iosb );
 
                 if (!NT_SUCCESS(Iosb.Status)) {
 

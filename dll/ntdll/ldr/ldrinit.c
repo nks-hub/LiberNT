@@ -20,6 +20,7 @@
 
 /* GLOBALS *******************************************************************/
 
+PVOID LdrpHeap;
 HANDLE ImageExecOptionsKey;
 HANDLE Wow64ExecOptionsKey;
 UNICODE_STRING ImageExecOptionsString = RTL_CONSTANT_STRING(L"\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options");
@@ -851,8 +852,8 @@ LdrpRunInitializeRoutines(IN PCONTEXT Context OPTIONAL)
     RTL_CALLER_ALLOCATED_ACTIVATION_CONTEXT_STACK_FRAME_EXTENDED ActCtx;
     ULONG BreakOnDllLoad;
     PTEB OldTldTeb;
-    BOOLEAN _SEH2_VOLATILE DllStatus = FALSE;
-    BOOLEAN _SEH2_VOLATILE DllInitCompleted;
+    BOOLEAN DllStatus = FALSE;
+    BOOLEAN DllInitCompleted;
 
     DPRINT("LdrpRunInitializeRoutines() called for %wZ (%p/%p)\n",
         &LdrpImageEntry->BaseDllName,
@@ -1082,8 +1083,9 @@ LdrpRunInitializeRoutines(IN PCONTEXT Context OPTIONAL)
             LdrpCurrentDllInitializer = OldInitializer;
 
             /* Mark the entry as processed */
+            /* FIXME: a module whose attach fails stays visible to the lock-free LdrLoadDll path until unloaded. */
             if (DllInitCompleted)
-                LdrEntry->Flags |= LDRP_PROCESS_ATTACH_CALLED;
+                InterlockedOr((PLONG)&LdrEntry->Flags, LDRP_PROCESS_ATTACH_CALLED);
 
             /* Fail if DLL init failed */
             if (!DllStatus)
@@ -1444,15 +1446,22 @@ LdrShutdownThread(VOID)
     LdrpFreeTls();
     RtlLeaveCriticalSection(&LdrpLoaderLock);
 
+    /* Another thread releasing an index clears this array under the PEB lock */
+    RtlAcquirePebLock();
+
     /* Check for expansion slots */
     if (Teb->TlsExpansionSlots)
     {
         /* Free expansion slots */
         RtlFreeHeap(RtlGetProcessHeap(), 0, Teb->TlsExpansionSlots);
+        Teb->TlsExpansionSlots = NULL;
     }
+    RtlReleasePebLock();
 
     RtlProcessFlsData(Teb->FlsData, 2);
     Teb->FlsData = NULL;
+
+    RtlpFreeThreadPreferredUILanguages();
 
     /* Check for Fiber data */
 #if (NTDDI_VERSION >= NTDDI_WIN7)
@@ -1529,7 +1538,7 @@ LdrpGrowThreadTlsVector(
 {
     PLDRP_TLS_DATA TlsData;
     PLIST_ENTRY Link;
-    PVOID * _SEH2_VOLATILE OldVector, *NewVector;
+    PVOID *OldVector, *NewVector;
     SIZE_T OldBytes;
     ULONG OldCount, TlsIndex;
     NTSTATUS Status;
@@ -3591,7 +3600,7 @@ LdrpInit(PCONTEXT Context,
 {
     LARGE_INTEGER Timeout;
     PTEB Teb = NtCurrentTeb();
-    NTSTATUS _SEH2_VOLATILE Status, LoaderStatus = STATUS_SUCCESS;
+    NTSTATUS Status, LoaderStatus = STATUS_SUCCESS;
     MEMORY_BASIC_INFORMATION MemoryBasicInfo;
     PPEB Peb = NtCurrentPeb();
     BOOLEAN Redirected;
@@ -3789,7 +3798,7 @@ RtlpUserThreadStart(
     _In_ PVOID StartAddress,
     _In_ PVOID Parameter)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     StartAddress = LdrpGetThreadStartAddress(StartAddress);
 

@@ -832,7 +832,7 @@ CmpTransCopyKey(
     if (NT_SUCCESS(Status) && Source->Security != HCELL_NIL)
     {
         CmpLockHiveSecurity(Hive);
-        Status = CmpCopyKeySecurity(Hive, Source->Security, Hive, Storage, &Anchors[Storage], &SecurityCell);
+        Status = CmpCopyKeySecurity(Hive, SourceCell, Hive, Storage, &Anchors[Storage], &SecurityCell);
         CmpUnlockHiveSecurity(Hive);
         if (NT_SUCCESS(Status))
         {
@@ -1788,7 +1788,7 @@ CmpTransEnumerateValueKey(
     PKEY_VALUE_BASIC_INFORMATION Information;
     ULONG Real, Visible = 0, Needed;
     UoWActionType ActionType;
-    NTSTATUS _SEH2_VOLATILE Status, FormatStatus;
+    NTSTATUS Status, FormatStatus;
     UNICODE_STRING Name;
     PLIST_ENTRY Entry;
     PCM_TRANS Trans;
@@ -1842,7 +1842,7 @@ CmpTransEnumerateValueKey(
                                          KeyValueInformation,
                                          Length,
                                          ResultLength,
-                                         (PNTSTATUS)&FormatStatus);
+                                         &FormatStatus);
         if (ActionType == UoWDeleteValue)
         {
             continue;

@@ -422,7 +422,7 @@ NTAPI
 SmpApiLoop(IN PVOID Parameter)
 {
     HANDLE SmApiPort = (HANDLE)Parameter;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     PSMP_CLIENT_CONTEXT ClientContext;
     PSM_API_MSG ReplyMsg = NULL;
     SM_API_MSG RequestMsg;

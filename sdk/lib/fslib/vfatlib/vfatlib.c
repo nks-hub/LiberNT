@@ -535,7 +535,7 @@ VfatChkdsk(
     BOOLEAN salvage_files;
     ULONG free_clusters;
     DOS_FS fs;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     WCHAR DriveLetter[2] = L"0";
 
     UNREFERENCED_PARAMETER(pUnknown1);

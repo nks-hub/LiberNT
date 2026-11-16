@@ -250,25 +250,54 @@ BOOL
 WINAPI
 HeapSummary(HANDLE hHeap,
             DWORD dwFlags,
-            PVOID Summary)
+            LPHEAP_SUMMARY lpSummary)
 {
+    RTL_HEAP_WALK_ENTRY Entry;
+    SIZE_T Allocated = 0;
+    SIZE_T Committed = 0;
+    SIZE_T UnCommitted = 0;
     NTSTATUS Status;
-    RTL_HEAP_USAGE Usage;
 
-    /* Fill in the length information */
-    Usage.Length = sizeof(Usage);
+    UNREFERENCED_PARAMETER(dwFlags);
 
-    /* Call RTL. Gone in Vista, so commented out */
-    Status = STATUS_NOT_IMPLEMENTED; //RtlUsageHeap(hHeap, dwFlags, &Usage);
-    if (!NT_SUCCESS(Status))
+    if (lpSummary->cb != sizeof(*lpSummary))
     {
-        /* We failed */
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    if (!RtlLockHeap(hHeap))
+    {
+        BaseSetLastNTError(STATUS_INVALID_PARAMETER);
+        return FALSE;
+    }
+
+    RtlZeroMemory(&Entry, sizeof(Entry));
+    while (NT_SUCCESS(Status = RtlWalkHeap(hHeap, &Entry)))
+    {
+        if (Entry.Flags & RTL_HEAP_ENTRY_BUSY)
+        {
+            Allocated += Entry.DataSize;
+        }
+        else if (Entry.Flags & RTL_HEAP_ENTRY_REGION)
+        {
+            Committed += Entry.Segment.CommittedSize;
+            UnCommitted += Entry.Segment.UnCommittedSize;
+        }
+    }
+
+    RtlUnlockHeap(hHeap);
+
+    if (Status != STATUS_NO_MORE_ENTRIES)
+    {
         BaseSetLastNTError(Status);
         return FALSE;
     }
 
-    /* FIXME: Summary == Usage?! */
-    RtlCopyMemory(Summary, &Usage, sizeof(Usage));
+    lpSummary->cbAllocated = Allocated;
+    lpSummary->cbCommitted = Committed;
+    lpSummary->cbReserved = Committed + UnCommitted;
+    lpSummary->cbMaxReserve = lpSummary->cbReserved;
     return TRUE;
 }
 
@@ -572,7 +601,7 @@ GlobalFlags(HGLOBAL hMem)
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     HANDLE Handle = NULL;
     ULONG Flags = 0;
-    UINT _SEH2_VOLATILE uFlags = GMEM_INVALID_HANDLE;
+    UINT uFlags = GMEM_INVALID_HANDLE;
 
     /* Start by locking the heap */
     RtlLockHeap(BaseHeap);
@@ -658,7 +687,7 @@ GlobalFlags(HGLOBAL hMem)
  */
 HGLOBAL
 NTAPI
-GlobalFree(HGLOBAL _SEH2_VOLATILE hMem)
+GlobalFree(HGLOBAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     LPVOID Ptr;
@@ -756,7 +785,7 @@ HGLOBAL
 NTAPI
 GlobalHandle(LPCVOID pMem)
 {
-    HANDLE _SEH2_VOLATILE Handle = NULL;
+    HANDLE Handle = NULL;
     ULONG Flags;
 
     /* Lock the heap */
@@ -767,7 +796,7 @@ GlobalHandle(LPCVOID pMem)
         if (!RtlGetUserInfoHeap(BaseHeap,
                                 HEAP_NO_SERIALIZE,
                                 (PVOID)pMem,
-                                (PVOID *)&Handle,
+                                &Handle,
                                 &Flags))
         {
             /* RTL Heap Manager does not know about this heap */
@@ -807,7 +836,7 @@ NTAPI
 GlobalLock(HGLOBAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
-    LPVOID _SEH2_VOLATILE Ptr = NULL;
+    LPVOID Ptr = NULL;
 
     /* Check if this was a simple allocated heap entry */
     if (!((ULONG_PTR)hMem & BASE_HEAP_IS_HANDLE_ENTRY))
@@ -1145,7 +1174,7 @@ GlobalSize(HGLOBAL hMem)
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     PVOID Handle = NULL;
     ULONG Flags = 0;
-    SIZE_T _SEH2_VOLATILE dwSize = MAXULONG_PTR;
+    SIZE_T dwSize = MAXULONG_PTR;
 
     /* Lock the heap */
     RtlLockHeap(BaseHeap);
@@ -1243,7 +1272,7 @@ NTAPI
 GlobalUnlock(HGLOBAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
-    BOOL _SEH2_VOLATILE RetVal = TRUE;
+    BOOL RetVal = TRUE;
 
     /* Check if this was a simple allocated heap entry */
     if (!((ULONG_PTR)hMem & BASE_HEAP_IS_HANDLE_ENTRY)) return RetVal;
@@ -1579,7 +1608,7 @@ LocalFlags(HLOCAL hMem)
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
     HANDLE Handle = NULL;
     ULONG Flags = 0;
-    UINT _SEH2_VOLATILE uFlags = LMEM_INVALID_HANDLE;
+    UINT uFlags = LMEM_INVALID_HANDLE;
 
     /* Start by locking the heap */
     RtlLockHeap(BaseHeap);
@@ -1889,7 +1918,7 @@ NTAPI
 LocalUnlock(HLOCAL hMem)
 {
     PBASE_HEAP_HANDLE_ENTRY HandleEntry;
-    BOOL _SEH2_VOLATILE RetVal = TRUE;
+    BOOL RetVal = TRUE;
 
     /* Check if this was a simple allocated heap entry */
     if (!((ULONG_PTR)hMem & BASE_HEAP_IS_HANDLE_ENTRY))

@@ -74,8 +74,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -176,7 +176,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PIO_STACK_LOCATION IrpSp;
 
@@ -187,11 +187,11 @@ Return Value:
     PFCB Fcb;
     PCCB Ccb;
 
-    BOOLEAN _SEH2_VOLATILE SendUnlockNotification = FALSE;
+    BOOLEAN SendUnlockNotification = FALSE;
 
     PSHARE_ACCESS ShareAccess;
 
-    PLARGE_INTEGER _SEH2_VOLATILE TruncateSize = NULL;
+    PLARGE_INTEGER TruncateSize = NULL;
     LARGE_INTEGER LocalTruncateSize;
 
     BOOLEAN AcquiredVcb = FALSE;

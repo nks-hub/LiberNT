@@ -87,7 +87,7 @@ AlpcpWriteInformation(
     _Out_opt_ PULONG ReturnLength,
     _In_ KPROCESSOR_MODE PreviousMode)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     if (PreviousMode != KernelMode)
     {
@@ -388,17 +388,17 @@ NtAlpcQueryInformation(
     _In_ ULONG Length,
     _Out_opt_ PULONG ReturnLength)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
     PALPC_PORT Port;
     ALPC_BASIC_INFORMATION Basic;
     ALPC_SERVER_SESSION_INFORMATION Session;
     PALPC_PORT Peer;
     PEPROCESS Process;
-    PSID _SEH2_VOLATILE Sid = NULL;
+    PSID Sid = NULL;
     PTOKEN Token;
     PTOKEN_USER UserInfo;
-    ULONG _SEH2_VOLATILE ReferenceCount = 0;
+    ULONG ReferenceCount = 0;
 
     PAGED_CODE();
 
@@ -442,7 +442,7 @@ NtAlpcQueryInformation(
                         ProbeForWriteUlong(ReturnLength);
                         *ReturnLength = 0;
                     }
-                    Status = SepCaptureSid(PortInformation, PreviousMode, PagedPool, TRUE, (PSID *)&Sid);
+                    Status = SepCaptureSid(PortInformation, PreviousMode, PagedPool, TRUE, &Sid);
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {
@@ -565,11 +565,11 @@ NtAlpcSetInformation(
     NTSTATUS Status;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
     PALPC_PORT Port;
-    ALPC_PORT_ASSOCIATE_COMPLETION_PORT _SEH2_VOLATILE Associate = {0};
-    ALPC_PORT_ATTRIBUTES _SEH2_VOLATILE Attributes = {0};
-    ALPC_PORT_COMPLETION_LIST_INFORMATION _SEH2_VOLATILE CompletionListInformation;
-    ALPC_PORT_MESSAGE_ZONE_INFORMATION _SEH2_VOLATILE MessageZoneInformation;
-    ULONG _SEH2_VOLATILE ConcurrencyCount = 0;
+    ALPC_PORT_ASSOCIATE_COMPLETION_PORT Associate = {0};
+    ALPC_PORT_ATTRIBUTES Attributes = {0};
+    ALPC_PORT_COMPLETION_LIST_INFORMATION CompletionListInformation;
+    ALPC_PORT_MESSAGE_ZONE_INFORMATION MessageZoneInformation;
+    ULONG ConcurrencyCount = 0;
     PVOID CallbackObject = NULL, OldCallbackObject;
     PVOID CompletionPort = NULL, OldCompletionPort;
 
@@ -702,7 +702,7 @@ NtAlpcSetInformation(
                 CompletionListInformation =
                     *(PALPC_PORT_COMPLETION_LIST_INFORMATION)PortInformation;
             }
-            Status = AlpcpRegisterCompletionList(Port, (PALPC_PORT_COMPLETION_LIST_INFORMATION)&CompletionListInformation, PreviousMode);
+            Status = AlpcpRegisterCompletionList(Port, &CompletionListInformation, PreviousMode);
             break;
 
         case AlpcAdjustCompletionListConcurrencyCountInformation:
@@ -1108,8 +1108,8 @@ AlpcpOpenSender(
     NTSTATUS Status;
     KPROCESSOR_MODE PreviousMode = KeGetPreviousMode();
     PALPC_PORT Port = NULL;
-    PORT_MESSAGE _SEH2_VOLATILE Header;
-    OBJECT_ATTRIBUTES _SEH2_VOLATILE CapturedAttributes = {0};
+    PORT_MESSAGE Header;
+    OBJECT_ATTRIBUTES CapturedAttributes = {0};
     ALPC_PORT_MESSAGE32 Header32;
     PKALPC_MESSAGE Pending;
     PVOID SenderObject = NULL;
@@ -1136,7 +1136,7 @@ AlpcpOpenSender(
             {
                 ProbeForRead(PortMessage, sizeof(Header32), sizeof(ULONG));
                 Header32 = *(volatile ALPC_PORT_MESSAGE32 *)PortMessage;
-                RtlZeroMemory((void *)&Header, sizeof(Header));
+                RtlZeroMemory(&Header, sizeof(Header));
                 Header.u1.s1.DataLength = Header32.DataLength;
                 Header.u1.s1.TotalLength = Header32.TotalLength;
                 Header.u2.s2.Type = Header32.Type;
@@ -1168,7 +1168,7 @@ AlpcpOpenSender(
     }
 
     AlpcpAcquirePortLock(Port);
-    Pending = AlpcpFindMessageForQuery(Port, (PPORT_MESSAGE)&Header);
+    Pending = AlpcpFindMessageForQuery(Port, &Header);
     if (!Pending)
     {
         Status = STATUS_REQUEST_CANCELED;

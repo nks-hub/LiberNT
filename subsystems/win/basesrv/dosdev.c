@@ -99,7 +99,7 @@ IsGlobalSymbolicLink(HANDLE LinkHandle,
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     DWORD ReturnLength;
     UNICODE_STRING GlobalString;
-    OBJECT_NAME_INFORMATION NameInfo, *_SEH2_VOLATILE PNameInfo;
+    OBJECT_NAME_INFORMATION NameInfo, *PNameInfo;
 
     /* We need both parameters */
     if (LinkHandle == 0 || IsGlobal == NULL)
@@ -479,10 +479,10 @@ AddBSMRequest(LONG DriveLetter,
 
 CSR_API(BaseSrvDefineDosDevice)
 {
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     PBASE_DEFINE_DOS_DEVICE DefineDosDeviceRequest = &((PBASE_API_MESSAGE)ApiMessage)->Data.DefineDosDeviceRequest;
     OBJECT_ATTRIBUTES ObjectAttributes;
-    HANDLE _SEH2_VOLATILE LinkHandle;
+    HANDLE LinkHandle;
     UNICODE_STRING DeviceName = {0};
     UNICODE_STRING LinkTarget = {0};
     ULONG Length;
@@ -492,12 +492,12 @@ CSR_API(BaseSrvDefineDosDevice)
     PSID WorldSid;
     PWSTR lpBuffer;
     WCHAR Letter;
-    SHORT _SEH2_VOLATILE AbsLetter = 0;
-    BOOLEAN _SEH2_VOLATILE DriveLetter = FALSE;
+    SHORT AbsLetter = 0;
+    BOOLEAN DriveLetter = FALSE;
     BOOLEAN RemoveDefinition;
     BOOLEAN HandleTarget;
-    BOOLEAN _SEH2_VOLATILE Broadcast = FALSE;
-    BOOLEAN _SEH2_VOLATILE IsGlobal = FALSE;
+    BOOLEAN Broadcast = FALSE;
+    BOOLEAN IsGlobal = FALSE;
     ULONG CchLengthLeft;
     ULONG CchLength;
     ULONG TargetLength;
@@ -513,7 +513,7 @@ CSR_API(BaseSrvDefineDosDevice)
         UCHAR Buffer[256];
     } Dacl;
     ACCESS_MASK AccessMask;
-    LUID _SEH2_VOLATILE CallerLuid;
+    LUID CallerLuid;
     WCHAR * CurrentPtr;
     WCHAR CurrentChar;
     PWSTR OrigPtr;
@@ -634,7 +634,7 @@ CSR_API(BaseSrvDefineDosDevice)
          */
         if (DriveLetter)
         {
-            Status = GetCallerLuid((PLUID)&CallerLuid);
+            Status = GetCallerLuid(&CallerLuid);
             if (NT_SUCCESS(Status))
             {
                 Broadcast = TRUE;
@@ -642,7 +642,7 @@ CSR_API(BaseSrvDefineDosDevice)
         }
 
         /* Now, open the device */
-        Status = NtOpenSymbolicLinkObject((PHANDLE)&LinkHandle,
+        Status = NtOpenSymbolicLinkObject(&LinkHandle,
                                           DELETE | SYMBOLIC_LINK_QUERY,
                                           &ObjectAttributes);
 
@@ -713,7 +713,7 @@ CSR_API(BaseSrvDefineDosDevice)
             if (BaseStaticServerData->LUIDDeviceMapsEnabled)
             {
                 /* Check if that's global link */
-                Status = IsGlobalSymbolicLink(LinkHandle, (PBOOLEAN)&IsGlobal);
+                Status = IsGlobalSymbolicLink(LinkHandle, &IsGlobal);
                 if (!NT_SUCCESS(Status))
                 {
                     _SEH2_LEAVE;
@@ -1029,7 +1029,7 @@ CSR_API(BaseSrvDefineDosDevice)
         }
 
         /* (Re)Create the symbolic link/device */
-        Status = NtCreateSymbolicLinkObject((PHANDLE)&LinkHandle,
+        Status = NtCreateSymbolicLinkObject(&LinkHandle,
                                             SYMBOLIC_LINK_ALL_ACCESS,
                                             &ObjectAttributes,
                                             &LinkTarget);
@@ -1086,11 +1086,11 @@ CSR_API(BaseSrvDefineDosDevice)
             /* If that's a global drive, broadcast as system */
             if (IsGlobal)
             {
-                RtlCopyLuid((PLUID)&CallerLuid, &SystemLuid);
+                RtlCopyLuid(&CallerLuid, &SystemLuid);
             }
 
             /* Broadcast the event */
-            AddBSMRequest(AbsLetter, RemoveDefinition, (PLUID)&CallerLuid);
+            AddBSMRequest(AbsLetter, RemoveDefinition, &CallerLuid);
 
             /*
              * If we removed drive, and the drive was shadowing a global one
@@ -1100,7 +1100,7 @@ CSR_API(BaseSrvDefineDosDevice)
             {
                 if (CheckForGlobalDriveLetter(AbsLetter))
                 {
-                    AddBSMRequest(AbsLetter, FALSE, (PLUID)&CallerLuid);
+                    AddBSMRequest(AbsLetter, FALSE, &CallerLuid);
                 }
             }
         }

@@ -3299,14 +3299,14 @@ wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR lpCmdLine, INT nCmd
         return 0;
     }
 
-    MSG _SEH2_VOLATILE msg;
+    MSG msg;
     _SEH2_TRY
     {
         // Main loop
-        while (GetMessageW((LPMSG)&msg, NULL, 0, 0))
+        while (GetMessageW(&msg, NULL, 0, 0))
         {
-            TranslateMessage((const MSG *)&msg);
-            DispatchMessageW((const MSG *)&msg);
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)

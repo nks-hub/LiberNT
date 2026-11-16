@@ -42,7 +42,7 @@ IntTID2PTI(HANDLE id)
 {
    NTSTATUS Status;
    PETHREAD Thread;
-   PTHREADINFO _SEH2_VOLATILE pti;
+   PTHREADINFO pti;
    Status = PsLookupThreadByThreadId(id, &Thread);
    if (!NT_SUCCESS(Status))
    {
@@ -158,6 +158,7 @@ GetControlColor(
 {
     HBRUSH hBrush;
 
+    ASSERT(UserIsEnteredExclusive());
     if (!pwndParent) pwndParent = pwnd;
 
     if ( pwndParent->head.pti->ppi != PsGetCurrentProcessWin32Process())
@@ -195,7 +196,7 @@ NtUserGetControlBrush(
    PWND pwnd;
    HBRUSH hBrush = NULL;
 
-   UserEnterShared();
+   UserEnterExclusive();
    if ( (pwnd = UserGetWindowObject(hwnd)) &&
        ((ctlType - WM_CTLCOLORMSGBOX) < CTLCOLOR_MAX) &&
         hdc )
@@ -220,7 +221,7 @@ NtUserGetControlColor(
    PWND pwnd, pwndParent = NULL;
    HBRUSH hBrush = NULL;
 
-   UserEnterShared();
+   UserEnterExclusive();
    if ( (pwnd = UserGetWindowObject(hwnd)) &&
        ((CtlMsg - WM_CTLCOLORMSGBOX) < CTLCOLOR_MAX) &&
         hdc )

@@ -126,8 +126,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -207,8 +207,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -261,8 +261,8 @@ Return Value:
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 FatCommonQueryVolumeInfo (
-    IN PIRP_CONTEXT _SEH2_VOLATILE IrpContext,
-    IN PIRP _SEH2_VOLATILE Irp
+    IN PIRP_CONTEXT IrpContext,
+    IN PIRP Irp
     )
 
 /*++
@@ -283,7 +283,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
 
     PVCB Vcb;
@@ -294,7 +294,7 @@ Return Value:
     FS_INFORMATION_CLASS FsInformationClass;
     PVOID Buffer;
 
-    BOOLEAN _SEH2_VOLATILE WeAcquiredVcb = FALSE;
+    BOOLEAN WeAcquiredVcb = FALSE;
 
     PAGED_CODE();
 
@@ -460,7 +460,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
 
     PVCB Vcb;
@@ -1023,7 +1023,7 @@ Return Value:
     NTSTATUS Status;
 
     PDIRENT Dirent;
-    PBCB _SEH2_VOLATILE DirentBcb = NULL;
+    PBCB DirentBcb = NULL;
     ULONG ByteOffset;
 
     WCHAR TmpBuffer[11];
@@ -1175,7 +1175,7 @@ Return Value:
             FatLocateVolumeLabel( IrpContext,
                                   Vcb,
                                   &Dirent,
-                                  (PBCB *)&DirentBcb,
+                                  &DirentBcb,
                                   (PVBO)&ByteOffset );
 
             //
@@ -1195,7 +1195,7 @@ Return Value:
                                               Vcb->RootDcb,
                                               ByteOffset,
                                               sizeof(DIRENT),
-                                              (PBCB *)&DirentBcb,
+                                              &DirentBcb,
 #ifndef __REACTOS__
                                               &Dirent,
 #else
@@ -1252,7 +1252,7 @@ Return Value:
             FatLocateVolumeLabel( IrpContext,
                                   Vcb,
                                   &Dirent,
-                                  (PBCB *)&DirentBcb,
+                                  &DirentBcb,
                                   (PVBO)&ByteOffset );
 
             //

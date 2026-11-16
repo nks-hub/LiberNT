@@ -743,8 +743,8 @@ GetMessageStringFromDll(
     IN va_list* Arguments OPTIONAL)
 {
     HMODULE hLibrary;
-    DWORD _SEH2_VOLATILE dwLength = 0;
-    LPWSTR _SEH2_VOLATILE lpMsgBuf = NULL;
+    DWORD dwLength = 0;
+    LPWSTR lpMsgBuf = NULL;
 
     hLibrary = LoadLibraryExW(lpMessageDll, NULL,
                               /* LOAD_LIBRARY_AS_IMAGE_RESOURCE | */ LOAD_LIBRARY_AS_DATAFILE);

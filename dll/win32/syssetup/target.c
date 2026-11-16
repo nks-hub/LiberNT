@@ -761,7 +761,7 @@ TargetRegistrationCallback(
 static VOID
 RegisterTargetComponents(VOID)
 {
-    TARGET_REGISTRATION _SEH2_VOLATILE Registration;
+    TARGET_REGISTRATION Registration;
 
     Registration.DefaultContext = SetupInitDefaultQueueCallback(NULL);
 
@@ -775,7 +775,7 @@ RegisterTargetComponents(VOID)
                                          NULL,
                                          0,
                                          TargetRegistrationCallback,
-                                         (PVOID)&Registration,
+                                         &Registration,
                                          NULL,
                                          NULL))
         {
@@ -1224,6 +1224,8 @@ ConfigureTargetSystem(
         if (!NT_SUCCESS(Status))
             return RtlNtStatusToDosError(Status);
     }
+    CreateMachineGuid();
+    CreateSystemIdSeed(TRUE);
 
     ReportTargetPhase(5);
     RegisterTargetComponents();

@@ -34,6 +34,7 @@
 #include "present.h"
 #include "pnp.h"
 #include <reactos/rddm/rxgkadvcolor.h>
+#include <reactos/rddm/rxgktarget.h>
 #include <reactos/rddm/rxgkmonitor.h>
 #include "caps_core.h"
 #include "paging_core.h"
@@ -1552,7 +1553,7 @@ DxgkpInvokeQueryInterface(
     _In_ PVOID MiniportDeviceContext,
     _Inout_ PQUERY_INTERFACE QueryInterface)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY
     {
@@ -1573,7 +1574,7 @@ DxgkpInvokeQueryFeatureSupport(
     _In_ PVOID Context,
     INOUT_PDXGKARG_QUERYFEATURESUPPORT QueryFeatureSupport)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     _SEH2_TRY
     {
@@ -2092,7 +2093,7 @@ DxgkpValidateAllocationListForIoctl(
     _In_ UINT AllocationCount)
 {
     UINT i;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     if (AllocationCount == 0)
         return STATUS_SUCCESS;
@@ -2608,7 +2609,7 @@ static NTSTATUS DxgkpCaptureDeviceName(_In_ PCWSTR Source, _In_ KPROCESSOR_MODE 
         return STATUS_INVALID_PARAMETER;
     for (Index = 0; Index < DestinationCount; ++Index)
     {
-        WCHAR _SEH2_VOLATILE Character = L'\0';
+        WCHAR Character = L'\0';
         NTSTATUS Status = STATUS_SUCCESS;
 
         _SEH2_TRY
@@ -2946,7 +2947,7 @@ DxgkpQueryPhysicalAdapterPnpKey(
     HANDLE Key = NULL;
     UINT Capacity;
     UINT Cch;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     if (Query->PhysicalAdapterIndex != 0 || CchDest == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -3268,7 +3269,7 @@ DxgkpQueryMiniportUmdPrivate(
     PDXGKRNL_PROCESS ProcessRecord = NULL;
     DXGKARG_QUERYADAPTERINFO QueryArgs;
     PVOID InputData;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     PAGED_CODE();
 
@@ -3771,7 +3772,7 @@ DxgkpQueryAdapterInfoCaptured(
         case KMTQAITYPE_UMDRIVERNAME:
         {
             D3DKMT_UMDFILENAMEINFO *pDriverName;
-            D3DKMT_UMDFILENAMEINFO _SEH2_VOLATILE DriverName;
+            D3DKMT_UMDFILENAMEINFO DriverName;
             NTSTATUS Status;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
@@ -3801,7 +3802,7 @@ DxgkpQueryAdapterInfoCaptured(
                                                  DxgkpIsWow64Caller() ? L"UserModeDriverNameWow"
                                                                       : L"UserModeDriverName",
                                                 (ULONG)DriverName.Version,
-                                                (PWSTR)DriverName.UmdFileName,
+                                                DriverName.UmdFileName,
                                                 ARRAYSIZE(DriverName.UmdFileName));
             if (!NT_SUCCESS(Status))
             {
@@ -4075,7 +4076,7 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_QUERY_GPUMMU_CAPS:
         {
-            D3DKMT_QUERY_GPUMMU_CAPS _SEH2_VOLATILE Query;
+            D3DKMT_QUERY_GPUMMU_CAPS Query;
 
             /*
              * Not gated on the reported version.  Windows answers this query
@@ -4104,7 +4105,7 @@ DxgkpQueryAdapterInfoCaptured(
                 DXGKP_QUERY_RETURN(STATUS_INVALID_PARAMETER);
             if (!Adapter->GpuMmuCapsValid)
                 DXGKP_QUERY_RETURN(STATUS_NOT_SUPPORTED);
-            RtlZeroMemory((void *)&Query.Caps, sizeof(Query.Caps));
+            RtlZeroMemory(&Query.Caps, sizeof(Query.Caps));
             Query.Caps.Flags.ReadOnlyMemorySupported = Adapter->GpuMmuCaps.ReadOnlyMemorySupported;
             Query.Caps.Flags.NoExecuteMemorySupported = Adapter->GpuMmuCaps.NoExecuteMemorySupported;
             Query.Caps.Flags.CacheCoherentMemorySupported = Adapter->GpuMmuCaps.CacheCoherentMemorySupported;
@@ -4302,9 +4303,9 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_NODEMETADATA:
         {
-            D3DKMT_NODEMETADATA _SEH2_VOLATILE Metadata;
+            D3DKMT_NODEMETADATA Metadata;
             PDXGKDDI_GET_NODE_METADATA GetNodeMetadata;
-            NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+            NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Metadata))
@@ -4330,12 +4331,12 @@ DxgkpQueryAdapterInfoCaptured(
                 DXGKP_QUERY_RETURN(STATUS_NOT_SUPPORTED);
             if (!DxgkAcquireKmdCall(Adapter))
                 DXGKP_QUERY_RETURN(STATUS_DEVICE_NOT_READY);
-            RtlZeroMemory((void *)&Metadata.NodeData, sizeof(Metadata.NodeData));
+            RtlZeroMemory(&Metadata.NodeData, sizeof(Metadata.NodeData));
             _SEH2_TRY
             {
                 Status = GetNodeMetadata(Adapter->MiniportDeviceContext,
                                          Metadata.NodeOrdinalAndAdapterIndex & 0xFFFF,
-                                         (DXGKARG_GETNODEMETADATA *)&Metadata.NodeData);
+                                         &Metadata.NodeData);
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {
@@ -4359,7 +4360,7 @@ DxgkpQueryAdapterInfoCaptured(
 
         case KMTQAITYPE_NODEPERFDATA:
         {
-            D3DKMT_NODE_PERFDATA _SEH2_VOLATILE Request = {0};
+            D3DKMT_NODE_PERFDATA Request = {0};
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
                 pQueryAdapterInfo->PrivateDriverDataSize < sizeof(Request))
@@ -4844,7 +4845,7 @@ DxgkpQueryAdapterInfoCaptured(
          */
         case KMTQAITYPE_PHYSICALADAPTERDEVICEIDS:
         {
-            D3DKMT_QUERY_DEVICE_IDS _SEH2_VOLATILE Query;
+            D3DKMT_QUERY_DEVICE_IDS Query;
             NTSTATUS IdStatus;
 
             if (pQueryAdapterInfo->pPrivateDriverData == NULL ||
@@ -4863,7 +4864,7 @@ DxgkpQueryAdapterInfoCaptured(
             _SEH2_END;
             if (Query.PhysicalAdapterIndex != 0)
                 DXGKP_QUERY_RETURN(STATUS_INVALID_PARAMETER);
-            IdStatus = DxgkpQueryAdapterDeviceIds(Adapter, (D3DKMT_DEVICE_IDS *)&Query.DeviceIds);
+            IdStatus = DxgkpQueryAdapterDeviceIds(Adapter, &Query.DeviceIds);
             if (!NT_SUCCESS(IdStatus))
                 DXGKP_QUERY_RETURN(IdStatus);
             _SEH2_TRY
@@ -6077,7 +6078,7 @@ DxgkUnlock(
 {
     PDXGKRNL_ADAPTER UnlockAdapter;
     PDXGKRNL_DEVICE  UnlockDevice;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     UINT ui;
 
     if (pUnlock == NULL)
@@ -6221,12 +6222,14 @@ DxgkpEscapeCaptured(
         }
     }
 
-    /* The advanced colour state of an output is dxgkrnl's own; it never
-     * reaches the miniport. */
-    if ((UINT)pEscape->Type == RXGK_ESCAPE_ADVANCED_COLOR)
+    /* The advanced colour state and the target of an output are dxgkrnl's
+     * own; they never reach the miniport. */
+    if ((UINT)pEscape->Type == RXGK_ESCAPE_ADVANCED_COLOR ||
+        (UINT)pEscape->Type == RXGK_ESCAPE_TARGET_INFO)
     {
-        Status = DxgkAdvancedColorEscape(Adapter, pEscape->pPrivateDriverData,
-                                         pEscape->PrivateDriverDataSize);
+        Status = ((UINT)pEscape->Type == RXGK_ESCAPE_ADVANCED_COLOR) ?
+            DxgkAdvancedColorEscape(Adapter, pEscape->pPrivateDriverData, pEscape->PrivateDriverDataSize) :
+            DxgkTargetInfoEscape(Adapter, pEscape->pPrivateDriverData, pEscape->PrivateDriverDataSize);
         goto Cleanup;
     }
 
@@ -6536,7 +6539,7 @@ DxgkpQueryScanLine(
 {
     PDXGKDDI_GET_SCAN_LINE GetScanLine;
     DXGKARG_GETSCANLINE GetScanLineArgs;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     PAGED_CODE();
     GetScanLine = DXGK_CB_FULL(Adapter, DxgkDdiGetScanLine);
@@ -6582,6 +6585,10 @@ DxgkCheckOcclusion(
      * matching Win11 for a shown top-level window. (Was STATUS_NOT_SUPPORTED,
      * which failed the displayext occlusion parity test.)
      */
+    /* TODO: with more than one display output Windows 11 reports a window unoccluded while one output is exclusively owned (gdi32 driver test) */
+    if (DxgkVidPnAnySourceExclusivelyOwned())
+        return STATUS_GRAPHICS_PRESENT_OCCLUDED;
+
     return STATUS_SUCCESS;
 }
 
@@ -7206,7 +7213,7 @@ DxgkpQueryMiniportPerfData(
     UINT Selector;
     PVOID Result;
     ULONG OutputSize;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     PAGED_CODE();
 
@@ -8253,7 +8260,7 @@ DxgkpSetGammaRampCore(
     SIZE_T RampSize = 0;
     SIZE_T Index;
     BOOLEAN Found = FALSE;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     PAGED_CODE();
 
@@ -8862,7 +8869,7 @@ DxgkOfferAllocations(
     PDXGKRNL_DEVICE Device;
     PDXGKP_RESOURCE_ALLOCATION_SNAPSHOT ResourceSnapshots = NULL;
     UINT ResourceAllocationCount = 0;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -8964,7 +8971,7 @@ DxgkReclaimAllocations(
     PDXGKRNL_DEVICE Device;
     PDXGKP_RESOURCE_ALLOCATION_SNAPSHOT ResourceSnapshots = NULL;
     UINT ResourceAllocationCount = 0;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     if (pData == NULL)
         return STATUS_INVALID_PARAMETER;
@@ -9610,30 +9617,6 @@ DxgkSignalSynchronizationObject2(
     }
     PayloadValue = (SignalFlags & DXGK_CONTEXT_SYNC_ENQUEUE_CPU_EVENT) != 0 ? (UINT64)(ULONG_PTR)pData->CpuEventHandle : pData->Fence.FenceValue;
     Status = DxgkContextOrderAdmitSignal(Contexts, ContextCount, DxgkContextSyncOperationSignal2, pData->ObjectHandleArray, pData->ObjectCount, SignalFlags, PayloadValue, NULL, UserMode);
-    if (Status == STATUS_DEVICE_BUSY &&
-        (SignalFlags & DXGK_CONTEXT_SYNC_ENQUEUE_CPU_EVENT) != 0)
-    {
-        ULONGLONG Deadline = KeQueryInterruptTime() +
-            (ULONGLONG)VIDSCH_CONTEXT_BACKPRESSURE_MS * 10000ULL;
-
-        /* A full stream must not turn a completion notification into a
-         * permanent polling fallback. Failed broadcast admission publishes
-         * no markers. Wait with no admission/miniport lock held, then retry
-         * the entire broadcast atomically, retaining the referenced contexts.
-         * Another submitter can consume the room, so share one deadline. */
-        do
-        {
-            for (CompareIndex = 0; CompareIndex < ContextCount; ++CompareIndex)
-            {
-                Status = DxgkContextOrderWaitForRoom(Contexts[CompareIndex], Deadline);
-                if (!NT_SUCCESS(Status))
-                    goto Cleanup;
-            }
-            Status = DxgkContextOrderAdmitSignal(Contexts, ContextCount,
-                DxgkContextSyncOperationSignal2, pData->ObjectHandleArray,
-                pData->ObjectCount, SignalFlags, PayloadValue, NULL, UserMode);
-        } while (Status == STATUS_DEVICE_BUSY && KeQueryInterruptTime() < Deadline);
-    }
 
 Cleanup:
     while (ContextCount != 0)
@@ -11963,6 +11946,19 @@ DxgkpKmtEnterInFlight(
     return NULL;
 }
 
+BOOLEAN
+DxgkKmtIoctlsInFlight(VOID)
+{
+    ULONG Index;
+
+    for (Index = 0; Index < DXGKP_KMT_INFLIGHT_SLOTS; Index++)
+    {
+        if (DxgkpKmtInFlight[Index].Thread != NULL)
+            return TRUE;
+    }
+    return FALSE;
+}
+
 /* DISPATCH_LEVEL, from the TDR tick. */
 VOID
 DxgkKmtReportStuckIoctls(
@@ -12050,7 +12046,7 @@ DxgkpDispatchBufferedIoctlWorker(
     ULONG   IoControlCode = KmtRequest->IoControlCode;
     ULONG   MinimumLevel;
     KPROCESSOR_MODE EmbeddedBufferMode = KmtRequest->Internal ? KernelMode : KmtRequest->RequestorMode;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     MinimumLevel = DxgkpKmtIoctlMinimumConfiguredLevel(IoControlCode);
     if (MinimumLevel == 0 || REACTOS_WDDM_TARGET_LEVEL < MinimumLevel)
@@ -14845,6 +14841,8 @@ DxgkpDispatchBufferedIoctlWorker(
 
             if (!KmtRequest->Internal || KmtRequest->RequestorMode != KernelMode)
                 return STATUS_ACCESS_DENIED;
+
+            DxgkStartDeferredAdapters();
             if (InputLength < DXGKRNL_INTERFACE_EXCHANGE_IN_LEGACY_SIZE ||
                 SystemBuffer == NULL)
                 return STATUS_BUFFER_TOO_SMALL;

@@ -56,13 +56,13 @@ APIENTRY
 NtGdiCreateColorSpace(
     IN PLOGCOLORSPACEEXW pLogColorSpace)
 {
-    LOGCOLORSPACEEXW _SEH2_VOLATILE Safelcs;
+    LOGCOLORSPACEEXW Safelcs;
     NTSTATUS Status = STATUS_SUCCESS;
 
     _SEH2_TRY
     {
         ProbeForRead( pLogColorSpace, sizeof(LOGCOLORSPACEEXW), 1);
-        RtlCopyMemory((void *)&Safelcs, pLogColorSpace, sizeof(LOGCOLORSPACEEXW));
+        RtlCopyMemory(&Safelcs, pLogColorSpace, sizeof(LOGCOLORSPACEEXW));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -76,7 +76,7 @@ NtGdiCreateColorSpace(
         return NULL;
     }
 
-    return IntGdiCreateColorSpace((PLOGCOLORSPACEEXW)&Safelcs);
+    return IntGdiCreateColorSpace(&Safelcs);
 }
 
 BOOL

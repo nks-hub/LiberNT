@@ -2407,7 +2407,13 @@ QueryServiceConfigA(SC_HANDLE hService,
     }
     else
     {
-        lpConfigPtr = lpServiceConfig;
+        /* The RPC reply fills all cbBufSize bytes, but the caller's buffer only has to hold the configuration. */
+        lpConfigPtr = HeapAlloc(GetProcessHeap(), 0, cbBufSize);
+        if (lpConfigPtr == NULL)
+        {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
         dwBufferSize = cbBufSize;
     }
 
@@ -2427,8 +2433,18 @@ QueryServiceConfigA(SC_HANDLE hService,
     if (dwError != ERROR_SUCCESS)
     {
         TRACE("RQueryServiceConfigA() failed (Error %lu)\n", dwError);
+        if (lpConfigPtr != &ServiceConfig)
+            HeapFree(GetProcessHeap(), 0, lpConfigPtr);
         SetLastError(dwError);
         return FALSE;
+    }
+
+    if (lpConfigPtr != &ServiceConfig)
+    {
+        ASSERT(*pcbBytesNeeded >= sizeof(QUERY_SERVICE_CONFIGA) && *pcbBytesNeeded <= dwBufferSize);
+        RtlCopyMemory(lpServiceConfig, lpConfigPtr, min(*pcbBytesNeeded, dwBufferSize));
+        HeapFree(GetProcessHeap(), 0, lpConfigPtr);
+        lpConfigPtr = lpServiceConfig;
     }
 
     /* Adjust the pointers */
@@ -2490,7 +2506,13 @@ QueryServiceConfigW(SC_HANDLE hService,
     }
     else
     {
-        lpConfigPtr = lpServiceConfig;
+        /* The RPC reply fills all cbBufSize bytes, but the caller's buffer only has to hold the configuration. */
+        lpConfigPtr = HeapAlloc(GetProcessHeap(), 0, cbBufSize);
+        if (lpConfigPtr == NULL)
+        {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
         dwBufferSize = cbBufSize;
     }
 
@@ -2510,8 +2532,18 @@ QueryServiceConfigW(SC_HANDLE hService,
     if (dwError != ERROR_SUCCESS)
     {
         TRACE("RQueryServiceConfigW() failed (Error %lu)\n", dwError);
+        if (lpConfigPtr != &ServiceConfig)
+            HeapFree(GetProcessHeap(), 0, lpConfigPtr);
         SetLastError(dwError);
         return FALSE;
+    }
+
+    if (lpConfigPtr != &ServiceConfig)
+    {
+        ASSERT(*pcbBytesNeeded >= sizeof(QUERY_SERVICE_CONFIGW) && *pcbBytesNeeded <= dwBufferSize);
+        RtlCopyMemory(lpServiceConfig, lpConfigPtr, min(*pcbBytesNeeded, dwBufferSize));
+        HeapFree(GetProcessHeap(), 0, lpConfigPtr);
+        lpConfigPtr = lpServiceConfig;
     }
 
     /* Adjust the pointers */

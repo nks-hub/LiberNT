@@ -15,9 +15,7 @@
 #define NDEBUG
 #include <debug.h>
 
-#if DBG
 DEBUG_CHANNEL(kernel32file);
-#endif
 
 /* FUNCTIONS ****************************************************************/
 
@@ -428,7 +426,7 @@ CopyFileExW(IN LPCWSTR lpExistingFileName,
             IN DWORD dwCopyFlags)
 {
     BOOL Ret = FALSE;
-    HANDLE _SEH2_VOLATILE ExistingHandle, NewHandle;
+    HANDLE ExistingHandle, NewHandle;
 
     ExistingHandle = INVALID_HANDLE_VALUE;
     NewHandle = INVALID_HANDLE_VALUE;
@@ -442,8 +440,8 @@ CopyFileExW(IN LPCWSTR lpExistingFileName,
                                pbCancel,
                                dwCopyFlags,
                                0,
-                               (LPHANDLE)&ExistingHandle,
-                               (LPHANDLE)&NewHandle);
+                               &ExistingHandle,
+                               &NewHandle);
     }
     _SEH2_FINALLY
     {
@@ -493,7 +491,7 @@ PrivCopyFileExW(IN LPCWSTR lpExistingFileName,
                 IN DWORD dwCopyFlags)
 {
     BOOL Ret = FALSE;
-    HANDLE _SEH2_VOLATILE ExistingHandle, NewHandle;
+    HANDLE ExistingHandle, NewHandle;
 
     ExistingHandle = INVALID_HANDLE_VALUE;
     NewHandle = INVALID_HANDLE_VALUE;
@@ -514,8 +512,8 @@ PrivCopyFileExW(IN LPCWSTR lpExistingFileName,
                                pbCancel,
                                dwCopyFlags & BASEP_COPY_PUBLIC_MASK,
                                dwCopyFlags & BASEP_COPY_BASEP_MASK,
-                               (LPHANDLE)&ExistingHandle,
-                               (LPHANDLE)&NewHandle);
+                               &ExistingHandle,
+                               &NewHandle);
     }
     _SEH2_FINALLY
     {

@@ -46,6 +46,20 @@ target_compile_definitions(iodeviceobject_drv PRIVATE KMT_STANDALONE_DRIVER)
 add_rostests_file(TARGET iodeviceobject_drv)
 
 #
+# IoIs32bitProcess
+#
+list(APPEND IOIS32BITPROCESS_DRV_SOURCE
+    ../kmtest_drv/kmtest_standalone.c
+    IoIs32bitProcess_drv.c)
+
+add_library(iois32bitprocess_drv MODULE ${IOIS32BITPROCESS_DRV_SOURCE})
+set_module_type(iois32bitprocess_drv kernelmodedriver)
+target_link_libraries(iois32bitprocess_drv kmtest_printf ${PSEH_LIB})
+add_importlibs(iois32bitprocess_drv ntoskrnl hal)
+target_compile_definitions(iois32bitprocess_drv PRIVATE KMT_STANDALONE_DRIVER)
+add_rostests_file(TARGET iois32bitprocess_drv)
+
+#
 # IoAddDeviceUnload
 #
 add_library(ioadddeviceunload_drv MODULE IoAddDeviceUnload_drv.c)
@@ -61,6 +75,22 @@ set_module_type(kmtbootimg kernelmodedriver)
 add_importlibs(kmtbootimg ntoskrnl hal)
 add_cd_file(TARGET kmtbootimg DESTINATION reactos/system32/drivers FOR all)
 add_registry_inf(IoBootDriverKey_reg.inf)
+
+#
+# IoFilterRequirements
+#
+add_library(iofilterrequirements_drv MODULE IoFilterRequirements_drv.c)
+set_module_type(iofilterrequirements_drv kernelmodedriver)
+add_importlibs(iofilterrequirements_drv ntoskrnl hal)
+add_rostests_file(TARGET iofilterrequirements_drv)
+
+#
+# IoRemoveChild
+#
+add_library(ioremovechild_drv MODULE IoRemoveChild_drv.c)
+set_module_type(ioremovechild_drv kernelmodedriver)
+add_importlibs(ioremovechild_drv ntoskrnl hal)
+add_rostests_file(TARGET ioremovechild_drv)
 
 #
 # IoHelper

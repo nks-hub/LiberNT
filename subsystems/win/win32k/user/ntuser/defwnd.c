@@ -771,7 +771,7 @@ IntDefWindowProc(
                 if (Ansi)
                 {
                     PCHAR outbuf = (PCHAR)lParam;
-                    ULONG _SEH2_VOLATILE Length = 0;
+                    ULONG Length = 0;
 
                     _SEH2_TRY
                     {
@@ -779,7 +779,7 @@ IntDefWindowProc(
                         {
                             RtlUnicodeToMultiByteN(outbuf,
                                                    wParam - 1,
-                                                   (PULONG)&Length,
+                                                   &Length,
                                                    buf,
                                                    Wnd->strName.Length);
                         }
@@ -813,9 +813,9 @@ IntDefWindowProc(
 
       case WM_SETTEXT:
       {
-            UNICODE_STRING _SEH2_VOLATILE UnicodeString = {0};
+            UNICODE_STRING UnicodeString = {0};
             ANSI_STRING AnsiString;
-            NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+            NTSTATUS Status = STATUS_SUCCESS;
             PCWSTR Text = (PCWSTR)lParam;
 
             if (Ansi)
@@ -823,7 +823,7 @@ IntDefWindowProc(
                 _SEH2_TRY
                 {
                     RtlInitAnsiString(&AnsiString, (PCSZ)lParam);
-                    Status = RtlAnsiStringToUnicodeString((PUNICODE_STRING)&UnicodeString,
+                    Status = RtlAnsiStringToUnicodeString(&UnicodeString,
                                                           &AnsiString,
                                                           TRUE);
                 }
@@ -842,7 +842,7 @@ IntDefWindowProc(
 
             lResult = DefSetText(Wnd, Text);
             if (UnicodeString.Buffer)
-                RtlFreeUnicodeString((PUNICODE_STRING)&UnicodeString);
+                RtlFreeUnicodeString(&UnicodeString);
 
             if (!lResult)
                 break;
@@ -1559,7 +1559,7 @@ IntDefWindowProc(
          {
             case HCBT_MOVESIZE:
             {
-               RECTL _SEH2_VOLATILE rt;
+               RECTL rt;
 
                if (lParam)
                {
@@ -1569,7 +1569,7 @@ IntDefWindowProc(
                                    sizeof(RECT),
                                    1);
 
-                      RtlCopyMemory((void *)&rt,
+                      RtlCopyMemory(&rt,
                                     (PVOID)lParam,
                                     sizeof(RECT));
                   }

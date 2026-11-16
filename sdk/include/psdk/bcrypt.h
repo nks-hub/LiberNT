@@ -506,6 +506,8 @@ typedef struct _BCRYPT_KEY_DATA_BLOB_HEADER
 #define KDF_HKDF_SALT           0x13
 #define KDF_HKDF_INFO           0x14
 
+#define KDF_USE_SECRET_AS_HMAC_KEY_FLAG 0x1
+
 typedef struct _BCryptBuffer
 {
     ULONG cbBuffer;

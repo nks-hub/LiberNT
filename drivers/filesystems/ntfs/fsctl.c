@@ -727,7 +727,7 @@ NTSTATUS
 GetVolumeBitmap(PDEVICE_EXTENSION DeviceExt,
                 PIRP Irp)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION Stack;
     PVOLUME_BITMAP_BUFFER BitmapBuffer;
     LONGLONG StartingLcn;

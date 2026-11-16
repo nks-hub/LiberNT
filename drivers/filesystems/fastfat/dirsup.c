@@ -233,7 +233,7 @@ Return Value:
     VBO DeletedHint;
     ULONG ByteOffset;
 
-    PBCB _SEH2_VOLATILE Bcb = NULL;
+    PBCB Bcb = NULL;
     PDIRENT Dirent = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -410,7 +410,7 @@ Return Value:
                                               ParentDirectory,
                                               UnusedVbo,
                                               1,
-                                              (PBCB *)&Bcb,
+                                              &Bcb,
                                               &Buffer,
                                               FALSE,
                                               TRUE,
@@ -443,7 +443,7 @@ Return Value:
             FatReadDirent( IrpContext,
                            ParentDirectory,
                            ByteOffset - sizeof(DIRENT),
-                           (PBCB *)&Bcb,
+                           &Bcb,
                            &Dirent,
                            &Status );
 
@@ -466,7 +466,7 @@ Return Value:
                                   ParentDirectory,
                                   ByteOffset - sizeof(DIRENT),
                                   sizeof(DIRENT),
-                                  (PBCB *)&Bcb );
+                                  &Bcb );
 
                 Dirent->FileName[0] = FAT_DIRENT_DELETED;
 
@@ -503,7 +503,7 @@ Return Value:
             FatReadDirent( IrpContext,
                            ParentDirectory,
                            ByteOffset + i*sizeof(DIRENT),
-                           (PBCB *)&Bcb,
+                           &Bcb,
                            &Dirent,
                            &Status );
 
@@ -818,7 +818,7 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE Bcb = NULL;
+    PBCB Bcb = NULL;
     PDIRENT Dirent = NULL;
     NTSTATUS DontCare;
     ULONG Offset;
@@ -900,7 +900,7 @@ Return Value:
                                               FcbOrDcb->ParentDcb,
                                               Offset,
                                               sizeof(DIRENT),
-                                              (PBCB *)&Bcb,
+                                              &Bcb,
                                               (PVOID *)&Dirent,
                                               FALSE,
                                               TRUE,
@@ -1028,7 +1028,7 @@ Retrn Value:
 {
     CCB Ccb;
     PDIRENT Dirent;
-    PBCB _SEH2_VOLATILE DirentBcb = NULL;
+    PBCB DirentBcb = NULL;
     VBO DirentByteOffset;
     BOOLEAN Result = FALSE;
     ULONG Flags = 0;
@@ -1052,7 +1052,7 @@ Retrn Value:
                          0,
                          &Flags,
                          &Dirent,
-                         (PBCB *)&DirentBcb,
+                         &DirentBcb,
                          &DirentByteOffset,
                          NULL,
                          LfnTmp,
@@ -1135,7 +1135,7 @@ Return Value:
     UCHAR NameBuffer[12];
 
     BOOLEAN UpcasedLfnValid = FALSE;
-    UNICODE_STRING _SEH2_VOLATILE UpcasedLfn = {0};
+    UNICODE_STRING UpcasedLfn = {0};
     WCHAR LocalLfnBuffer[32];
 
 
@@ -1630,10 +1630,10 @@ Return Value:
                     //  We need a buffer.  Try to avoid doing an allocation.
                     //
 
-                    FatEnsureStringBufferEnough( (PVOID)&UpcasedLfn,
+                    FatEnsureStringBufferEnough( &UpcasedLfn,
                                                  LongFileName->Length);
 
-                    Status = RtlUpcaseUnicodeString( (PUNICODE_STRING)&UpcasedLfn,
+                    Status = RtlUpcaseUnicodeString( &UpcasedLfn,
                                                      LongFileName,
                                                      FALSE );
 
@@ -1654,7 +1654,7 @@ Return Value:
                 if (Ccb->ContainsWildCards) {
 
                     if (FsRtlIsNameInExpression( &Ccb->UnicodeQueryTemplate,
-                                                 (PUNICODE_STRING)&UpcasedLfn,
+                                                 &UpcasedLfn,
                                                  TRUE,
                                                  NULL )) {
 
@@ -1664,7 +1664,7 @@ Return Value:
                 } else {
 
                     if (FsRtlAreNamesEqual( &Ccb->UnicodeQueryTemplate,
-                                            (PCUNICODE_STRING)&UpcasedLfn,
+                                            &UpcasedLfn,
                                             BooleanFlagOn( Ccb->Flags, CCB_FLAG_QUERY_TEMPLATE_MIXED ),
                                             NULL )) {
 
@@ -1703,7 +1703,7 @@ GetNextDirent:
 
     } _SEH2_FINALLY {
 
-        FatFreeStringBuffer( (PVOID)&UpcasedLfn );
+        FatFreeStringBuffer( &UpcasedLfn );
 
 
     } _SEH2_END;
@@ -2068,7 +2068,7 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE Bcb;
+    PBCB Bcb;
     ULONG ByteOffset;
     PDIRENT Dirent = NULL;
 
@@ -2109,7 +2109,7 @@ Return Value:
             FatReadDirent( IrpContext,
                            Dcb,
                            ByteOffset,
-                           (PBCB *)&Bcb,
+                           &Bcb,
                            &Dirent,
                            &Status );
 
@@ -2631,7 +2631,7 @@ Return Value:
     BOOLEAN UpdateDirent = FALSE;
 
     PDIRENT Dirent;
-    PBCB _SEH2_VOLATILE DirentBcb = NULL;
+    PBCB DirentBcb = NULL;
     ULONG NotifyFilter = 0;
     FAT_TIME_STAMP CurrentFatTime = {0};
 
@@ -2742,7 +2742,7 @@ Return Value:
                                           FcbOrDcb,
                                           FALSE,
                                           &Dirent,
-                                          (PBCB *)&DirentBcb );
+                                          &DirentBcb );
 
                 if (UpdateLastWriteTime || UpdateLastAccessTime) {
 
@@ -3109,7 +3109,7 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE Bcb = NULL;
+    PBCB Bcb = NULL;
     PDIRENT Dirent = NULL;
     NTSTATUS Status = STATUS_SUCCESS;
 
@@ -3153,7 +3153,7 @@ Return Value:
             FatReadDirent( IrpContext,
                            Dcb,
                            UnusedVbo,
-                           (PBCB *)&Bcb,
+                           &Bcb,
                            &Dirent,
                            &Status );
 
@@ -3332,27 +3332,27 @@ Return Value:
 
 {
     ULONG SavedIrpContextFlag;
-    PLIST_ENTRY _SEH2_VOLATILE Links;
+    PLIST_ENTRY Links;
     ULONG ReturnValue = 0;
-    PFCB _SEH2_VOLATILE Fcb;
+    PFCB Fcb;
 
-    PBCB _SEH2_VOLATILE Bcb = NULL;
+    PBCB Bcb = NULL;
     PDIRENT Dirent = NULL;
-    UNICODE_STRING _SEH2_VOLATILE Lfn = {0,0,NULL};
+    UNICODE_STRING Lfn = {0,0,NULL};
 
-    LARGE_MCB _SEH2_VOLATILE Mcb;
-    BOOLEAN _SEH2_VOLATILE McbInitialized = FALSE;
+    LARGE_MCB Mcb;
+    BOOLEAN McbInitialized = FALSE;
     BOOLEAN InvalidateFcbs = FALSE;
 
     PUCHAR Directory = NULL;
     PUCHAR UnusedDirents;
-    PUCHAR _SEH2_VOLATILE UnusedDirentBuffer = NULL;
+    PUCHAR UnusedDirentBuffer = NULL;
     PUCHAR UsedDirents;
-    PUCHAR _SEH2_VOLATILE UsedDirentBuffer = NULL;
+    PUCHAR UsedDirentBuffer = NULL;
 
-    PBCB * _SEH2_VOLATILE Bcbs = NULL;
-    ULONG _SEH2_VOLATILE Page;
-    ULONG _SEH2_VOLATILE PagesPinned = 0;
+    PBCB *Bcbs = NULL;
+    ULONG Page;
+    ULONG PagesPinned = 0;
 
     ULONG DcbSize;
     ULONG TotalBytesAllocated = 0;
@@ -3439,7 +3439,7 @@ Return Value:
         //  holes are free dirents.
         //
 
-        FsRtlInitializeLargeMcb( (PLARGE_MCB)&Mcb, PagedPool );
+        FsRtlInitializeLargeMcb( &Mcb, PagedPool );
 
         McbInitialized = TRUE;
 
@@ -3451,10 +3451,10 @@ Return Value:
                              QueryOffset,
                              NULL,
                              &Dirent,
-                             (PBCB *)&Bcb,
+                             &Bcb,
                              (PVBO)&FoundOffset,
                              NULL,
-                             (PUNICODE_STRING)&Lfn,
+                             &Lfn,
                              NULL );
 
             if (Dirent != NULL) {
@@ -3478,7 +3478,7 @@ Return Value:
 #ifdef _MSC_VER
 #pragma prefast( suppress:28931, "needed for debug build" )
 #endif
-                Result = FsRtlAddLargeMcbEntry( (PLARGE_MCB)&Mcb,
+                Result = FsRtlAddLargeMcbEntry( &Mcb,
                                                 LfnByteOffset,
                                                 LfnByteOffset,
                                                 BytesUsed );
@@ -3570,7 +3570,7 @@ Return Value:
             }
         }
 
-        TotalRuns = FsRtlNumberOfRunsInLargeMcb( (PLARGE_MCB)&Mcb );
+        TotalRuns = FsRtlNumberOfRunsInLargeMcb( &Mcb );
 
         for (Run = 0; Run < TotalRuns; Run++) {
 
@@ -3580,7 +3580,7 @@ Return Value:
 #ifdef _MSC_VER
 #pragma prefast( suppress:28931, "needed for debug build" )
 #endif
-            Result = FsRtlGetNextLargeMcbEntry( (PLARGE_MCB)&Mcb,
+            Result = FsRtlGetNextLargeMcbEntry( &Mcb,
                                                 Run,
                                                 &Vbo,
                                                 &Lbo,
@@ -3688,8 +3688,8 @@ Return Value:
              Links != &Dcb->Specific.Dcb.ParentDcbQueue;
              Links = Links->Flink) {
 
-            PBCB _SEH2_VOLATILE TmpBcb = NULL;
-            ULONG _SEH2_VOLATILE TmpOffset = 0;
+            PBCB TmpBcb = NULL;
+            ULONG TmpOffset = 0;
             PDIRENT TmpDirent = NULL;
             ULONG PreviousLfnSpread;
 
@@ -3714,7 +3714,7 @@ Return Value:
                                               Dcb,
                                               &Fcb->ShortName.Name.Oem,
                                               &TmpDirent,
-                                              (PBCB *)&TmpBcb,
+                                              &TmpBcb,
                                               (PVBO)&TmpOffset );
 
                 } _SEH2_EXCEPT(FsRtlIsNtstatusExpected(_SEH2_GetExceptionCode()) ?
@@ -3749,7 +3749,7 @@ Return Value:
         //
 
         if (McbInitialized) {
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&Mcb );
+            FsRtlUninitializeLargeMcb( &Mcb );
         }
 
         if (Lfn.Buffer) {

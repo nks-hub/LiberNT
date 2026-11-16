@@ -25,7 +25,7 @@ KsAcquireResetValue(
     OUT KSRESET* ResetValue)
 {
     PIO_STACK_LOCATION IoStack;
-    KSRESET* _SEH2_VOLATILE Value;
+    KSRESET* Value;
     NTSTATUS Status = STATUS_SUCCESS;
 
     /* get current irp stack */

@@ -84,8 +84,8 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE EaBcb = NULL;
-    BOOLEAN _SEH2_VOLATILE LockedEaFcb = FALSE;
+    PBCB EaBcb = NULL;
+    BOOLEAN LockedEaFcb = FALSE;
     EA_RANGE EaSetRange;
 
     PAGED_CODE();
@@ -131,7 +131,7 @@ Return Value:
         FatGetEaFile( IrpContext,
                       Vcb,
                       &EaDirent,
-                      (PBCB *)&EaBcb,
+                      &EaBcb,
                       FALSE,
                       FALSE );
 
@@ -234,8 +234,8 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE EaBcb = NULL;
-    BOOLEAN _SEH2_VOLATILE LockedEaFcb = FALSE;
+    PBCB EaBcb = NULL;
+    BOOLEAN LockedEaFcb = FALSE;
     EA_RANGE EaSetRange;
 
     PAGED_CODE();
@@ -280,7 +280,7 @@ Return Value:
         FatGetEaFile( IrpContext,
                       Vcb,
                       &EaDirent,
-                      (PBCB *)&EaBcb,
+                      &EaBcb,
                       FALSE,
                       FALSE );
 
@@ -391,10 +391,10 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE EaBcb;
-    BOOLEAN _SEH2_VOLATILE LockedEaFcb;
+    PBCB EaBcb;
+    BOOLEAN LockedEaFcb;
 
-    PEA_SET_HEADER _SEH2_VOLATILE EaSetHeader = NULL;
+    PEA_SET_HEADER EaSetHeader = NULL;
     EA_RANGE EaSetRange;
 
     PAGED_CODE();
@@ -533,7 +533,7 @@ Return Value:
             }
 
             FatAppendPackedEa( IrpContext,
-                               (PEA_SET_HEADER *)&EaSetHeader,
+                               &EaSetHeader,
                                &PackedEasLength,
                                &AllocationLength,
                                FullEa,
@@ -568,7 +568,7 @@ Return Value:
             FatGetEaFile( IrpContext,
                           Vcb,
                           &EaDirent,
-                          (PBCB *)&EaBcb,
+                          &EaBcb,
                           TRUE,
                           TRUE );
 
@@ -690,8 +690,8 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE EaBcb;
-    BOOLEAN _SEH2_VOLATILE LockedEaFcb;
+    PBCB EaBcb;
+    BOOLEAN LockedEaFcb;
 
     PAGED_CODE();
 
@@ -720,7 +720,7 @@ Return Value:
         FatGetEaFile( IrpContext,
                       Vcb,
                       &EaDirent,
-                      (PBCB *)&EaBcb,
+                      &EaBcb,
                       FALSE,
                       TRUE );
 
@@ -837,14 +837,14 @@ Return Value:
 --*/
 
 {
-    PFILE_OBJECT _SEH2_VOLATILE EaStreamFile = NULL;
+    PFILE_OBJECT EaStreamFile = NULL;
     EA_RANGE EaFileRange;
 
-    BOOLEAN _SEH2_VOLATILE UnwindLockedEaFcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindLockedRootDcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindAllocatedDiskSpace = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindEaDirentCreated = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindUpdatedSizes = FALSE;
+    BOOLEAN UnwindLockedEaFcb = FALSE;
+    BOOLEAN UnwindLockedRootDcb = FALSE;
+    BOOLEAN UnwindAllocatedDiskSpace = FALSE;
+    BOOLEAN UnwindEaDirentCreated = FALSE;
+    BOOLEAN UnwindUpdatedSizes = FALSE;
 
     PAGED_CODE();
 
@@ -1584,18 +1584,18 @@ Return Value:
     ULONG CbList;
     LARGE_INTEGER FileOffset;
 
-    LARGE_MCB _SEH2_VOLATILE DataMcb;
-    BOOLEAN _SEH2_VOLATILE UnwindInitializeDataMcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindSplitData = FALSE;
+    LARGE_MCB DataMcb;
+    BOOLEAN UnwindInitializeDataMcb = FALSE;
+    BOOLEAN UnwindSplitData = FALSE;
 
-    LARGE_MCB _SEH2_VOLATILE TailMcb;
-    BOOLEAN _SEH2_VOLATILE UnwindInitializeTailMcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindSplitTail = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindMergeTail = FALSE;
+    LARGE_MCB TailMcb;
+    BOOLEAN UnwindInitializeTailMcb = FALSE;
+    BOOLEAN UnwindSplitTail = FALSE;
+    BOOLEAN UnwindMergeTail = FALSE;
 
-    BOOLEAN _SEH2_VOLATILE UnwindModifiedEaHeader = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindCacheValues = FALSE;
-    ULONG _SEH2_VOLATILE UnwindPrevFileSize = 0;
+    BOOLEAN UnwindModifiedEaHeader = FALSE;
+    BOOLEAN UnwindCacheValues = FALSE;
+    ULONG UnwindPrevFileSize = 0;
 
     ULONG EaOffsetVbo;
     USHORT EaOffsetIndex;
@@ -1609,7 +1609,7 @@ Return Value:
     PEA_FILE_HEADER EaHeader;
     USHORT EaHeaderBaseIndex;
 
-    ULONG _SEH2_VOLATILE EaSetVbo = 0;
+    ULONG EaSetVbo = 0;
     ULONG EaSetLength;
     EA_RANGE EaSetRange;
     PEA_SET_HEADER EaSet;
@@ -1838,7 +1838,7 @@ Return Value:
         //
 
         {
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&DataMcb, PagedPool );
+            FsRtlInitializeLargeMcb( &DataMcb, PagedPool );
 
             UnwindInitializeDataMcb = TRUE;
 
@@ -1846,28 +1846,28 @@ Return Value:
                                 Vcb,
                                 &EaFcb->Mcb,
                                 EaSetVbo,
-                                (PLARGE_MCB)&DataMcb );
+                                &DataMcb );
 
             UnwindSplitData = TRUE;
 
             if (EaSetLength + EaSetVbo != EaFcb->Header.FileSize.LowPart) {
 
-                FsRtlInitializeLargeMcb( (PLARGE_MCB)&TailMcb, PagedPool );
+                FsRtlInitializeLargeMcb( &TailMcb, PagedPool );
 
                 UnwindInitializeTailMcb = TRUE;
 
                 FatSplitAllocation( IrpContext,
                                     Vcb,
-                                    (PLARGE_MCB)&DataMcb,
+                                    &DataMcb,
                                     EaSetLength,
-                                    (PLARGE_MCB)&TailMcb );
+                                    &TailMcb );
 
                 UnwindSplitTail = TRUE;
 
                 FatMergeAllocation( IrpContext,
                                     Vcb,
                                     &EaFcb->Mcb,
-                                    (PLARGE_MCB)&TailMcb );
+                                    &TailMcb );
 
                 UnwindMergeTail = TRUE;
             }
@@ -1980,7 +1980,7 @@ Return Value:
 
         FatDeallocateDiskSpace( IrpContext,
                                 Vcb,
-                                (PLARGE_MCB)&DataMcb,
+                                &DataMcb,
                                 FALSE );
 
     } _SEH2_FINALLY {
@@ -2027,7 +2027,7 @@ Return Value:
                                     Vcb,
                                     &EaFcb->Mcb,
                                     EaSetVbo,
-                                    (PLARGE_MCB)&TailMcb );
+                                    &TailMcb );
             }
 
             //
@@ -2039,8 +2039,8 @@ Return Value:
 
                 FatMergeAllocation( IrpContext,
                                     Vcb,
-                                    (PLARGE_MCB)&DataMcb,
-                                    (PLARGE_MCB)&TailMcb );
+                                    &DataMcb,
+                                    &TailMcb );
             }
 
             //
@@ -2054,7 +2054,7 @@ Return Value:
                 FatMergeAllocation( IrpContext,
                                     Vcb,
                                     &EaFcb->Mcb,
-                                    (PLARGE_MCB)&DataMcb );
+                                    &DataMcb );
             }
         }
 
@@ -2072,12 +2072,12 @@ Return Value:
 
         if (UnwindInitializeDataMcb) {
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&DataMcb );
+            FsRtlUninitializeLargeMcb( &DataMcb );
         }
 
         if (UnwindInitializeTailMcb) {
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&TailMcb );
+            FsRtlUninitializeLargeMcb( &TailMcb );
         }
 
         DebugTrace(-1, Dbg, "FatDeleteEaSet -> Exit\n", 0);
@@ -2093,7 +2093,7 @@ VOID
 FatAddEaSet (
     IN PIRP_CONTEXT IrpContext,
     IN PVCB Vcb,
-    IN ULONG _SEH2_VOLATILE EaSetLength,
+    IN ULONG EaSetLength,
     IN PBCB EaBcb,
     OUT PDIRENT EaDirent,
     OUT PUSHORT EaHandle,
@@ -2145,38 +2145,38 @@ Return Value:
     PEA_FILE_HEADER EaHeader;
 
     EA_RANGE EaOffsetRange;
-    ULONG _SEH2_VOLATILE EaNewOffsetVbo = 0;
+    ULONG EaNewOffsetVbo = 0;
     USHORT EaOffsetIndex;
     ULONG EaOffsetTableSize;
     PUSHORT EaOffsetTable;
 
     ULONG EaSetClusterOffset;
-    ULONG _SEH2_VOLATILE EaSetVbo = 0;
+    ULONG EaSetVbo = 0;
     USHORT EaSetClusterCount;
     PEA_SET_HEADER EaSet;
 
     PFILE_OBJECT VirtualEaFile = Vcb->VirtualEaFile;
     PFCB EaFcb = Vcb->EaFcb;
 
-    LARGE_MCB _SEH2_VOLATILE EaSetMcb;
-    BOOLEAN _SEH2_VOLATILE UnwindInitializedEaSetMcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindAllocatedNewAllocation = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindMergedNewEaSet = FALSE;
+    LARGE_MCB EaSetMcb;
+    BOOLEAN UnwindInitializedEaSetMcb = FALSE;
+    BOOLEAN UnwindAllocatedNewAllocation = FALSE;
+    BOOLEAN UnwindMergedNewEaSet = FALSE;
 
-    LARGE_MCB _SEH2_VOLATILE EaOffsetMcb;
-    BOOLEAN _SEH2_VOLATILE UnwindInitializedOffsetMcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindSplitNewAllocation = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindMergedNewOffset = FALSE;
+    LARGE_MCB EaOffsetMcb;
+    BOOLEAN UnwindInitializedOffsetMcb = FALSE;
+    BOOLEAN UnwindSplitNewAllocation = FALSE;
+    BOOLEAN UnwindMergedNewOffset = FALSE;
 
-    LARGE_MCB _SEH2_VOLATILE EaTailMcb;
-    BOOLEAN _SEH2_VOLATILE UnwindInitializedTailMcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindSplitTail = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindMergedTail = FALSE;
+    LARGE_MCB EaTailMcb;
+    BOOLEAN UnwindInitializedTailMcb = FALSE;
+    BOOLEAN UnwindSplitTail = FALSE;
+    BOOLEAN UnwindMergedTail = FALSE;
 
-    LARGE_MCB _SEH2_VOLATILE EaInitialEaMcb;
-    BOOLEAN _SEH2_VOLATILE UnwindInitializedInitialEaMcb = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindSplitInitialEa = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindMergedInitialEa = FALSE;
+    LARGE_MCB EaInitialEaMcb;
+    BOOLEAN UnwindInitializedInitialEaMcb = FALSE;
+    BOOLEAN UnwindSplitInitialEa = FALSE;
+    BOOLEAN UnwindMergedInitialEa = FALSE;
 
     USHORT NewEaIndex;
     PUSHORT NextEaOffset;
@@ -2185,12 +2185,12 @@ Return Value:
     LARGE_INTEGER FileOffset;
     ULONG Count;
 
-    ULONG _SEH2_VOLATILE UnwindPrevFileSize = 0;
-    BOOLEAN _SEH2_VOLATILE UnwindCacheValues = FALSE;
+    ULONG UnwindPrevFileSize = 0;
+    BOOLEAN UnwindCacheValues = FALSE;
 
     BOOLEAN TailExists = FALSE;
     BOOLEAN AddedOffsetTableCluster = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindPurgeCacheMap = FALSE;
+    BOOLEAN UnwindPurgeCacheMap = FALSE;
 
     PAGED_CODE();
 
@@ -2391,7 +2391,7 @@ Return Value:
             FatRaiseStatus( IrpContext, STATUS_INSUFFICIENT_RESOURCES );
         }
 
-        FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaSetMcb, PagedPool );
+        FsRtlInitializeLargeMcb( &EaSetMcb, PagedPool );
 
         UnwindInitializedEaSetMcb = TRUE;
 
@@ -2400,7 +2400,7 @@ Return Value:
                               0,
                               &NewAllocation,
                               FALSE,
-                              (PLARGE_MCB)&EaSetMcb );
+                              &EaSetMcb );
 
         UnwindAllocatedNewAllocation = TRUE;
 
@@ -2408,15 +2408,15 @@ Return Value:
 
         if (AddedOffsetTableCluster) {
 
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaOffsetMcb, PagedPool );
+            FsRtlInitializeLargeMcb( &EaOffsetMcb, PagedPool );
 
             UnwindInitializedOffsetMcb = TRUE;
 
             FatSplitAllocation( IrpContext,
                                 Vcb,
-                                (PLARGE_MCB)&EaSetMcb,
+                                &EaSetMcb,
                                 EaSetLength,
-                                (PLARGE_MCB)&EaOffsetMcb );
+                                &EaOffsetMcb );
 
             UnwindSplitNewAllocation = TRUE;
         }
@@ -2494,7 +2494,7 @@ Return Value:
 
         if (TailExists) {
 
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaTailMcb, PagedPool );
+            FsRtlInitializeLargeMcb( &EaTailMcb, PagedPool );
 
             UnwindInitializedTailMcb = TRUE;
 
@@ -2502,7 +2502,7 @@ Return Value:
                                 Vcb,
                                 &EaFcb->Mcb,
                                 EaSetVbo,
-                                (PLARGE_MCB)&EaTailMcb );
+                                &EaTailMcb );
 
             UnwindSplitTail = TRUE;
         }
@@ -2515,7 +2515,7 @@ Return Value:
         if (AddedOffsetTableCluster
             && EaSetVbo != EaNewOffsetVbo) {
 
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaInitialEaMcb, PagedPool );
+            FsRtlInitializeLargeMcb( &EaInitialEaMcb, PagedPool );
 
             UnwindInitializedInitialEaMcb = TRUE;
 
@@ -2523,7 +2523,7 @@ Return Value:
                                 Vcb,
                                 &EaFcb->Mcb,
                                 EaNewOffsetVbo,
-                                (PLARGE_MCB)&EaInitialEaMcb );
+                                &EaInitialEaMcb );
 
             UnwindSplitInitialEa = TRUE;
         }
@@ -2548,10 +2548,10 @@ Return Value:
             FatMergeAllocation( IrpContext,
                                 Vcb,
                                 &EaFcb->Mcb,
-                                (PLARGE_MCB)&EaOffsetMcb );
+                                &EaOffsetMcb );
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaOffsetMcb );
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaOffsetMcb, PagedPool );
+            FsRtlUninitializeLargeMcb( &EaOffsetMcb );
+            FsRtlInitializeLargeMcb( &EaOffsetMcb, PagedPool );
 
             UnwindMergedNewOffset = TRUE;
         }
@@ -2565,10 +2565,10 @@ Return Value:
             FatMergeAllocation( IrpContext,
                                 Vcb,
                                 &EaFcb->Mcb,
-                                (PLARGE_MCB)&EaInitialEaMcb );
+                                &EaInitialEaMcb );
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaInitialEaMcb );
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaInitialEaMcb, PagedPool );
+            FsRtlUninitializeLargeMcb( &EaInitialEaMcb );
+            FsRtlInitializeLargeMcb( &EaInitialEaMcb, PagedPool );
 
             UnwindMergedInitialEa = TRUE;
         }
@@ -2591,10 +2591,10 @@ Return Value:
         FatMergeAllocation( IrpContext,
                             Vcb,
                             &EaFcb->Mcb,
-                            (PLARGE_MCB)&EaSetMcb );
+                            &EaSetMcb );
 
-        FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaSetMcb );
-        FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaSetMcb, PagedPool );
+        FsRtlUninitializeLargeMcb( &EaSetMcb );
+        FsRtlInitializeLargeMcb( &EaSetMcb, PagedPool );
 
         UnwindMergedNewEaSet = TRUE;
 
@@ -2607,10 +2607,10 @@ Return Value:
             FatMergeAllocation( IrpContext,
                                 Vcb,
                                 &EaFcb->Mcb,
-                                (PLARGE_MCB)&EaTailMcb );
+                                &EaTailMcb );
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaTailMcb );
-            FsRtlInitializeLargeMcb( (PLARGE_MCB)&EaTailMcb, PagedPool );
+            FsRtlUninitializeLargeMcb( &EaTailMcb );
+            FsRtlInitializeLargeMcb( &EaTailMcb, PagedPool );
 
             UnwindMergedTail = TRUE;
         }
@@ -2835,7 +2835,7 @@ Return Value:
                                     Vcb,
                                     &EaFcb->Mcb,
                                     NewTailPosition,
-                                    (PLARGE_MCB)&EaTailMcb );
+                                    &EaTailMcb );
             }
 
             //
@@ -2848,7 +2848,7 @@ Return Value:
                                     Vcb,
                                     &EaFcb->Mcb,
                                     EaSetVbo,
-                                    (PLARGE_MCB)&EaSetMcb );
+                                    &EaSetMcb );
             }
 
             //
@@ -2861,7 +2861,7 @@ Return Value:
                                     Vcb,
                                     &EaFcb->Mcb,
                                     EaNewOffsetVbo + BytesPerCluster,
-                                    (PLARGE_MCB)&EaInitialEaMcb );
+                                    &EaInitialEaMcb );
             }
 
             //
@@ -2874,7 +2874,7 @@ Return Value:
                                     Vcb,
                                     &EaFcb->Mcb,
                                     EaNewOffsetVbo,
-                                    (PLARGE_MCB)&EaOffsetMcb );
+                                    &EaOffsetMcb );
             }
 
             //
@@ -2884,7 +2884,7 @@ Return Value:
 
             if (UnwindSplitInitialEa) {
 
-                FatMergeAllocation( IrpContext, Vcb, &EaFcb->Mcb, (PLARGE_MCB)&EaInitialEaMcb );
+                FatMergeAllocation( IrpContext, Vcb, &EaFcb->Mcb, &EaInitialEaMcb );
             }
 
             //
@@ -2894,7 +2894,7 @@ Return Value:
 
             if (UnwindSplitTail) {
 
-                FatMergeAllocation( IrpContext, Vcb, &EaFcb->Mcb, (PLARGE_MCB)&EaTailMcb );
+                FatMergeAllocation( IrpContext, Vcb, &EaFcb->Mcb, &EaTailMcb );
             }
 
             //
@@ -2915,14 +2915,14 @@ Return Value:
 
             if (UnwindSplitNewAllocation) {
 
-                FatDeallocateDiskSpace( IrpContext, Vcb, (PLARGE_MCB)&EaOffsetMcb, FALSE );
+                FatDeallocateDiskSpace( IrpContext, Vcb, &EaOffsetMcb, FALSE );
             }
 
             //
             //  Deallocate the disk space.
             //
 
-            FatDeallocateDiskSpace( IrpContext, Vcb, (PLARGE_MCB)&EaSetMcb, FALSE );
+            FatDeallocateDiskSpace( IrpContext, Vcb, &EaSetMcb, FALSE );
         }
 
         //
@@ -2938,22 +2938,22 @@ Return Value:
 
         if (UnwindInitializedEaSetMcb) {
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaSetMcb );
+            FsRtlUninitializeLargeMcb( &EaSetMcb );
         }
 
         if (UnwindInitializedOffsetMcb) {
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaOffsetMcb );
+            FsRtlUninitializeLargeMcb( &EaOffsetMcb );
         }
 
         if (UnwindInitializedTailMcb) {
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaTailMcb );
+            FsRtlUninitializeLargeMcb( &EaTailMcb );
         }
 
         if (UnwindInitializedInitialEaMcb) {
 
-            FsRtlUninitializeLargeMcb( (PLARGE_MCB)&EaInitialEaMcb );
+            FsRtlUninitializeLargeMcb( &EaInitialEaMcb );
         }
 
         DebugTrace(-1, Dbg, "FatAddEaSet ->  Exit\n", 0);

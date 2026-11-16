@@ -170,6 +170,7 @@ UserCreateWinstaDirectory(VOID)
     ULONG SessionId;
     OBJECT_ATTRIBUTES ObjectAttributes;
     WCHAR wstrWindowStationsDir[MAX_PATH];
+    PSECURITY_DESCRIPTOR DirectorySd;
     PUSER_SESSION Session = UserGetCurrentSession();
 
     if (!Session)
@@ -197,12 +198,17 @@ UserCreateWinstaDirectory(VOID)
             return STATUS_INSUFFICIENT_RESOURCES;
     }
 
+    Status = IntCreateWinstaDirectorySecurity(&DirectorySd);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
     InitializeObjectAttributes(&ObjectAttributes,
                                &Session->WinStaDirName,
                                OBJ_KERNEL_HANDLE,
                                NULL,
-                               NULL);
+                               DirectorySd);
     Status = ZwCreateDirectoryObject(&Session->WinStaDir, DIRECTORY_CREATE_OBJECT, &ObjectAttributes);
+    IntFreeSecurityBuffer(DirectorySd);
     if (!NT_SUCCESS(Status))
         ERR("Could not create %wZ directory (Status 0x%X)\n", &Session->WinStaDirName, Status);
     else
@@ -273,6 +279,7 @@ IntWinStaObjectParse(
 {
     PWIN32_PARSEMETHOD_PARAMETERS ParseParameters = Parameters;
     PUNICODE_STRING RemainingName = ParseParameters->RemainingName;
+    NTSTATUS Status;
 
     /* Assume we don't find anything */
     *ParseParameters->Object = NULL;
@@ -286,6 +293,13 @@ IntWinStaObjectParse(
             /* Fail */
             return STATUS_OBJECT_TYPE_MISMATCH;
         }
+
+        Status = IntCheckParsedObjectAccess(ParseParameters->ParseObject,
+                                            ExWindowStationObjectType,
+                                            ParseParameters->AccessState,
+                                            ParseParameters->AccessMode);
+        if (!NT_SUCCESS(Status))
+            return Status;
 
         /* Reference the window station and return */
         ObReferenceObject(ParseParameters->ParseObject);
@@ -462,6 +476,12 @@ co_IntInitializeDesktopGraphics(VOID)
     /* Update the SERVERINFO */
     gpsi->aiSysMet[SM_CXSCREEN] = gpmdev->ppdevGlobal->gdiinfo.ulHorzRes;
     gpsi->aiSysMet[SM_CYSCREEN] = gpmdev->ppdevGlobal->gdiinfo.ulVertRes;
+
+    /* A desktop made before the display existed still has the 640x480 InitMetrics gave it */
+    pdesk = IntGetActiveDesktop();
+    if (pdesk != NULL)
+        co_IntShowDesktop(pdesk, gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN], FALSE);
+
     gpsi->Planes        = NtGdiGetDeviceCaps(ScreenDeviceContext, PLANES);
     gpsi->BitsPixel     = NtGdiGetDeviceCaps(ScreenDeviceContext, BITSPIXEL);
     gpsi->BitCount      = gpsi->Planes * gpsi->BitsPixel;
@@ -496,8 +516,8 @@ co_IntInitializeDesktopGraphics(VOID)
 
     /* Show the desktop */
     pdesk = IntGetActiveDesktop();
-    ASSERT(pdesk);
-    co_IntShowDesktop(pdesk, gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN], TRUE);
+    if (pdesk != NULL)
+        co_IntShowDesktop(pdesk, gpsi->aiSysMet[SM_CXSCREEN], gpsi->aiSysMet[SM_CYSCREEN], TRUE);
 
     /* HACK: display wallpaper on all secondary displays */
     {
@@ -521,13 +541,17 @@ co_IntInitializeDesktopGraphics(VOID)
 VOID FASTCALL
 IntEndDesktopGraphics(VOID)
 {
+    PDESKTOP pdesk;
+
     if (NULL != ScreenDeviceContext)
     {  // No need to allocate a new dcattr.
         GreSetDCOwner(ScreenDeviceContext, GDI_OBJ_HMGR_POWNED);
         GreDeleteObject(ScreenDeviceContext);
         ScreenDeviceContext = NULL;
     }
-    IntHideDesktop(IntGetActiveDesktop());
+    pdesk = IntGetActiveDesktop();
+    if (pdesk != NULL)
+        IntHideDesktop(pdesk);
     IntDestroyPrimarySurface();
 }
 
@@ -820,6 +844,7 @@ IntCreateWindowStation(
     HWINSTA hWinSta;
     PWINSTATION_OBJECT WindowStation;
     PUSER_SESSION Session = UserGetCurrentSession();
+    BOOLEAN DefaultSecurity;
 
     TRACE("IntCreateWindowStation called\n");
 
@@ -844,6 +869,16 @@ IntCreateWindowStation(
     /*
      * No existing window station found, try to create a new one.
      */
+
+    _SEH2_TRY
+    {
+        DefaultSecurity = (ObjectAttributes->SecurityDescriptor == NULL);
+    }
+    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
+    {
+        _SEH2_YIELD(return _SEH2_GetExceptionCode());
+    }
+    _SEH2_END;
 
     /* Create the window station object */
     Status = ObCreateObject(AccessMode,
@@ -920,6 +955,13 @@ IntCreateWindowStation(
         return Status;
     }
 
+    if (DefaultSecurity && Session && Session->WinStaDir)
+    {
+        Status = IntInheritWinstaSecurity(WindowStation, Session->WinStaDir);
+        if (!NT_SUCCESS(Status))
+            ERR("Failed to give window station '%wZ' its inherited security, Status 0x%08lx\n", ObjectAttributes->ObjectName, Status);
+    }
+
     // FIXME! TODO: Add this new window station to a linked list
 
     if (Session && Session->InputWindowStation == WindowStation)
@@ -992,7 +1034,7 @@ BuildUserModeWindowStationName(
     OUT PUNICODE_STRING* WindowStationName,
     OUT PUNICODE_STRING* TebStaticUnicodeString)
 {
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     SIZE_T MemSize;
 
     LUID CallerLuid;
@@ -1118,12 +1160,12 @@ NtUserCreateWindowStation(
     DWORD Unknown5,
     DWORD Unknown6)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     HWINSTA hWinSta = NULL;
-    OBJECT_ATTRIBUTES _SEH2_VOLATILE LocalObjectAttributes;
-    PUNICODE_STRING _SEH2_VOLATILE WindowStationName = NULL;
-    PUNICODE_STRING _SEH2_VOLATILE TebStaticUnicodeString = NULL;
-    KPROCESSOR_MODE _SEH2_VOLATILE OwnerMode = UserMode;
+    OBJECT_ATTRIBUTES LocalObjectAttributes;
+    PUNICODE_STRING WindowStationName = NULL;
+    PUNICODE_STRING TebStaticUnicodeString = NULL;
+    KPROCESSOR_MODE OwnerMode = UserMode;
 
     TRACE("NtUserCreateWindowStation called\n");
 
@@ -1158,9 +1200,9 @@ NtUserCreateWindowStation(
         {
             /* No, build the new window station name */
             Status = BuildUserModeWindowStationName(ObjectAttributes,
-                                                    (POBJECT_ATTRIBUTES)&LocalObjectAttributes,
-                                                    (PUNICODE_STRING *)&WindowStationName,
-                                                    (PUNICODE_STRING *)&TebStaticUnicodeString);
+                                                    &LocalObjectAttributes,
+                                                    &WindowStationName,
+                                                    &TebStaticUnicodeString);
             if (!NT_SUCCESS(Status))
             {
                 ERR("BuildUserModeWindowStationName() failed, Status 0x%08lx\n", Status);
@@ -1213,7 +1255,7 @@ NtUserCreateWindowStation(
     FreeUserModeWindowStationName(WindowStationName,
                                   TebStaticUnicodeString,
                                   (OwnerMode == KernelMode ? ObjectAttributes : NULL),
-                                  (POBJECT_ATTRIBUTES)&LocalObjectAttributes);
+                                  &LocalObjectAttributes);
 
     if (!NT_SUCCESS(Status))
     {
@@ -1254,12 +1296,12 @@ NtUserOpenWindowStation(
     IN POBJECT_ATTRIBUTES ObjectAttributes,
     IN ACCESS_MASK dwDesiredAccess)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     HWINSTA hWinSta = NULL;
-    OBJECT_ATTRIBUTES _SEH2_VOLATILE LocalObjectAttributes;
-    PUNICODE_STRING _SEH2_VOLATILE WindowStationName = NULL;
-    PUNICODE_STRING _SEH2_VOLATILE TebStaticUnicodeString = NULL;
-    KPROCESSOR_MODE _SEH2_VOLATILE OwnerMode = UserMode;
+    OBJECT_ATTRIBUTES LocalObjectAttributes;
+    PUNICODE_STRING WindowStationName = NULL;
+    PUNICODE_STRING TebStaticUnicodeString = NULL;
+    KPROCESSOR_MODE OwnerMode = UserMode;
 
     TRACE("NtUserOpenWindowStation called\n");
 
@@ -1315,9 +1357,9 @@ NtUserOpenWindowStation(
         {
             /* No, build the new window station name */
             Status = BuildUserModeWindowStationName(ObjectAttributes,
-                                                    (POBJECT_ATTRIBUTES)&LocalObjectAttributes,
-                                                    (PUNICODE_STRING *)&WindowStationName,
-                                                    (PUNICODE_STRING *)&TebStaticUnicodeString);
+                                                    &LocalObjectAttributes,
+                                                    &WindowStationName,
+                                                    &TebStaticUnicodeString);
             if (!NT_SUCCESS(Status))
             {
                 ERR("BuildUserModeWindowStationName() failed, Status 0x%08lx\n", Status);
@@ -1363,7 +1405,7 @@ NtUserOpenWindowStation(
     FreeUserModeWindowStationName(WindowStationName,
                                   TebStaticUnicodeString,
                                   (OwnerMode == KernelMode ? ObjectAttributes : NULL),
-                                  (POBJECT_ATTRIBUTES)&LocalObjectAttributes);
+                                  &LocalObjectAttributes);
 
     if (!NT_SUCCESS(Status))
     {
@@ -2382,7 +2424,7 @@ NtUserSetWindowStationUser(
     BOOL Ret = FALSE;
     NTSTATUS Status;
     PWINSTATION_OBJECT WindowStation = NULL;
-    LUID _SEH2_VOLATILE luidUser;
+    LUID luidUser;
 
     UserEnterExclusive();
 

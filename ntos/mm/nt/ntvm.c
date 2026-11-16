@@ -50,6 +50,18 @@ MmQuerySystemCommitCharge(
     return Committed;
 }
 
+VOID
+NTAPI
+MmQueryPageListCounts(
+    _Out_ PMM_PAGE_LIST_COUNTS Counts)
+{
+    Counts->Zeroed = (PFN_NUMBER)MiPfnListCount(&MiSystem.Pfn, MiPageZeroed);
+    Counts->Free = (PFN_NUMBER)MiPfnListCount(&MiSystem.Pfn, MiPageFree);
+    Counts->Standby = (PFN_NUMBER)MiPfnListCount(&MiSystem.Pfn, MiPageStandby);
+    Counts->Modified = (PFN_NUMBER)MiPfnListCount(&MiSystem.Pfn, MiPageModified);
+    Counts->Bad = (PFN_NUMBER)MiPfnListCount(&MiSystem.Pfn, MiPageBad);
+}
+
 NTSTATUS
 MiReferenceTargetProcess(
     _In_ HANDLE ProcessHandle,
@@ -232,7 +244,7 @@ MiDynamicCodeBlocked(
     Thread = PsGetCurrentThread();
     return !(THREAD_TO_PROCESS(Thread) == Process &&
              Process->MitigationFlagsValues.DisableDynamicCodeAllowOptOut &&
-             ReadAcquire(&Thread->DynamicCodeOptOut));
+             (ReadAcquire((volatile LONG *)&Thread->CrossThreadFlags) & CT_DISABLE_DYNAMIC_CODE_OPT_OUT_BIT));
 }
 
 static
@@ -1430,7 +1442,7 @@ MiCopyChunk(
     _In_ KPROCESSOR_MODE Mode,
     _Out_ PSIZE_T Copied)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     KAPC_STATE ApcState;
     volatile SIZE_T Done = 0;
     BOOLEAN Remote = Process != PsGetCurrentProcess();
@@ -1893,7 +1905,8 @@ MiLockUnlockVirtualMemory(
         }
 
         MI_RW_ACQUIRE_EXCLUSIVE(&Space->Lock);
-        MiLockRangeRemove(Space, Start, End);
+        if (!NT_SUCCESS(MiLockRangeRemove(Space, Start, End)))
+            Status = STATUS_INSUFFICIENT_RESOURCES;
         MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
     }
 
@@ -2047,7 +2060,7 @@ NtResetWriteWatch(
 static NTSTATUS
 MiCaptureAweCount(PULONG_PTR NumberOfPages, PULONG Count)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     ULONG_PTR Value;
 
     *Count = 0;
@@ -2107,7 +2120,7 @@ NtAllocateUserPhysicalPages(
     Status = MiCaptureAweCount(NumberOfPages, &Count);
     if (!NT_SUCCESS(Status))
         return Status;
-    Count = min(Count, MiSystem.Pfn.FrameCount);
+    Count = min(Count, MiSystem.Pfn.FrameCount - MiSystem.Pfn.FirstFrame);
     Frames = ExAllocatePoolWithTag(NonPagedPool, (SIZE_T)Count * sizeof(*Frames), 'aAmM');
     if (Frames == NULL)
         return STATUS_INSUFFICIENT_RESOURCES;

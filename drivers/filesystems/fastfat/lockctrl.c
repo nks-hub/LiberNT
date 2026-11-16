@@ -61,8 +61,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -162,7 +162,7 @@ Return Value:
 --*/
 
 {
-    BOOLEAN _SEH2_VOLATILE Results = FALSE;
+    BOOLEAN Results = FALSE;
     PVCB Vcb;
     PFCB Fcb;
     PCCB Ccb;
@@ -294,7 +294,7 @@ Return Value:
 --*/
 
 {
-    BOOLEAN _SEH2_VOLATILE Results = FALSE;
+    BOOLEAN Results = FALSE;
     PVCB Vcb;
     PFCB Fcb;
     PCCB Ccb;
@@ -407,7 +407,7 @@ Return Value:
 --*/
 
 {
-    BOOLEAN _SEH2_VOLATILE Results = FALSE;
+    BOOLEAN Results = FALSE;
     PVCB Vcb;
     PFCB Fcb;
     PCCB Ccb;
@@ -523,7 +523,7 @@ Return Value:
 --*/
 
 {
-    BOOLEAN _SEH2_VOLATILE Results = FALSE;
+    BOOLEAN Results = FALSE;
     PVCB Vcb;
     PFCB Fcb;
     PCCB Ccb;
@@ -630,7 +630,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
 
     TYPE_OF_OPEN TypeOfOpen;
@@ -639,7 +639,7 @@ Return Value:
     PFCB Fcb;
     PCCB Ccb;
 
-    BOOLEAN _SEH2_VOLATILE OplockPostIrp = FALSE;
+    BOOLEAN OplockPostIrp = FALSE;
 
     PAGED_CODE();
 

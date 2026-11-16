@@ -26,15 +26,6 @@ Abstract:
 #pragma alloc_text(PAGE, CdVerifyVcb)
 #endif
 
-#ifdef __REACTOS__
-_Requires_lock_held_(_Global_critical_region_)
-NTSTATUS
-CdPerformVerify (
-    _Inout_ PIRP_CONTEXT _SEH2_VOLATILE IrpContext,
-    _Inout_ PIRP _SEH2_VOLATILE Irp,
-    _In_ PDEVICE_OBJECT DeviceToVerify
-    )
-#else
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 CdPerformVerify (
@@ -42,7 +33,6 @@ CdPerformVerify (
     _Inout_ PIRP Irp,
     _In_ PDEVICE_OBJECT DeviceToVerify
     )
-#endif
 
 /*++
 
@@ -68,11 +58,7 @@ Return Value:
 
 {
     PVCB Vcb;
-#ifdef __REACTOS__
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
-#else
     NTSTATUS Status = STATUS_SUCCESS;
-#endif
     PIO_STACK_LOCATION IrpSp;
 
     ASSERT_IRP_CONTEXT( IrpContext );

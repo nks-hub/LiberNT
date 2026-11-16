@@ -32,7 +32,7 @@
 
 static PVIDEO_WIN32K_CALLOUT Win32kCallout = NULL;
 static HANDLE InbvThreadHandle = NULL;
-static BOOLEAN InbvMonitoring = FALSE;
+static volatile BOOLEAN InbvMonitoring = FALSE;
 
 /* PRIVATE FUNCTIONS **********************************************************/
 
@@ -569,7 +569,7 @@ IntVideoPortResetDisplayParametersEx(
     _In_ ULONG Rows,
     _In_ BOOLEAN CalledByInbv)
 {
-    BOOLEAN _SEH2_VOLATILE Success = TRUE; // Suppose we don't need to perform a full reset.
+    BOOLEAN Success = TRUE; // Suppose we don't need to perform a full reset.
     KIRQL OldIrql;
     PLIST_ENTRY PrevEntry, Entry;
     PVIDEO_PORT_DEVICE_EXTENSION DeviceExtension;

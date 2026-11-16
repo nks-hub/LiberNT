@@ -1710,7 +1710,7 @@ NtUserEndPaint(HWND hWnd, CONST PAINTSTRUCT* pUnsafePs)
 {
    NTSTATUS Status = STATUS_SUCCESS;
    PWND Window;
-   PAINTSTRUCT _SEH2_VOLATILE Ps;
+   PAINTSTRUCT Ps;
    USER_REFERENCE_ENTRY Ref;
    BOOL Ret = FALSE;
 
@@ -1727,7 +1727,7 @@ NtUserEndPaint(HWND hWnd, CONST PAINTSTRUCT* pUnsafePs)
    _SEH2_TRY
    {
       ProbeForRead(pUnsafePs, sizeof(*pUnsafePs), 1);
-      RtlCopyMemory((void *)&Ps, pUnsafePs, sizeof(PAINTSTRUCT));
+      RtlCopyMemory(&Ps, pUnsafePs, sizeof(PAINTSTRUCT));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {
@@ -1739,7 +1739,7 @@ NtUserEndPaint(HWND hWnd, CONST PAINTSTRUCT* pUnsafePs)
       goto Cleanup; // Return FALSE
    }
 
-   Ret = IntEndPaint(Window, (PPAINTSTRUCT)&Ps);
+   Ret = IntEndPaint(Window, &Ps);
 
 Cleanup:
    if (Window) UserDerefObjectCo(Window);
@@ -1800,7 +1800,7 @@ BOOL APIENTRY
 NtUserFlashWindowEx(IN PFLASHWINFO pfwi)
 {
    PWND pWnd;
-   FLASHWINFO _SEH2_VOLATILE finfo = {0};
+   FLASHWINFO finfo = {0};
    BOOL Ret = FALSE;
 
    UserEnterExclusive();
@@ -1808,7 +1808,7 @@ NtUserFlashWindowEx(IN PFLASHWINFO pfwi)
    _SEH2_TRY
    {
       ProbeForRead(pfwi, sizeof(FLASHWINFO), 1);
-      RtlCopyMemory((void *)&finfo, pfwi, sizeof(FLASHWINFO));
+      RtlCopyMemory(&finfo, pfwi, sizeof(FLASHWINFO));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {
@@ -1825,7 +1825,7 @@ NtUserFlashWindowEx(IN PFLASHWINFO pfwi)
       goto Exit;
    }
 
-   Ret = IntFlashWindowEx(pWnd, (PFLASHWINFO)&finfo);
+   Ret = IntFlashWindowEx(pWnd, &finfo);
 
 Exit:
    UserLeave();
@@ -2071,7 +2071,7 @@ NtUserRedrawWindow(
    HRGN hrgnUpdate,
    UINT flags)
 {
-   RECTL _SEH2_VOLATILE SafeUpdateRect;
+   RECTL SafeUpdateRect;
    PWND Wnd;
    BOOL Ret = FALSE;
    USER_REFERENCE_ENTRY Ref;
@@ -2091,7 +2091,7 @@ NtUserRedrawWindow(
       _SEH2_TRY
       {
           ProbeForRead(lprcUpdate, sizeof(RECTL), 1);
-          RtlCopyMemory((void *)&SafeUpdateRect, lprcUpdate, sizeof(RECTL));
+          RtlCopyMemory(&SafeUpdateRect, lprcUpdate, sizeof(RECTL));
       }
       _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
       {
@@ -2154,7 +2154,7 @@ NtUserRedrawWindow(
    UserRefObjectCo(Wnd, &Ref);
 
    Ret = co_UserRedrawWindow( Wnd,
-                              lprcUpdate ? (const RECTL *)&SafeUpdateRect : NULL,
+                              lprcUpdate ? &SafeUpdateRect : NULL,
                               RgnUpdate,
                               flags);
 
@@ -2467,9 +2467,9 @@ NtUserDrawCaptionTemp(
    UINT uFlags)
 {
    PWND pWnd = NULL;
-   UNICODE_STRING _SEH2_VOLATILE SafeStr = {0};
+   UNICODE_STRING SafeStr = {0};
    NTSTATUS Status = STATUS_SUCCESS;
-   RECTL _SEH2_VOLATILE SafeRect;
+   RECTL SafeRect;
    BOOL Ret;
 
    UserEnterExclusive();
@@ -2486,7 +2486,7 @@ NtUserDrawCaptionTemp(
    _SEH2_TRY
    {
       ProbeForRead(lpRc, sizeof(RECTL), sizeof(ULONG));
-      RtlCopyMemory((void *)&SafeRect, lpRc, sizeof(RECTL));
+      RtlCopyMemory(&SafeRect, lpRc, sizeof(RECTL));
       if (str != NULL)
       {
          SafeStr = ProbeForReadUnicodeString(str);
@@ -2512,10 +2512,10 @@ NtUserDrawCaptionTemp(
    }
 
    if (str != NULL)
-      Ret = UserDrawCaption(pWnd, hDC, (RECTL *)&SafeRect, hFont, hIcon, (PUNICODE_STRING)&SafeStr, uFlags);
+      Ret = UserDrawCaption(pWnd, hDC, &SafeRect, hFont, hIcon, &SafeStr, uFlags);
    else
    {
-      if ( RECTL_bIsEmptyRect((const RECTL *)&SafeRect) && hFont == 0 && hIcon == 0 )
+      if ( RECTL_bIsEmptyRect(&SafeRect) && hFont == 0 && hIcon == 0 )
       {
          Ret = TRUE;
          if (uFlags & DC_DRAWCAPTIONMD)
@@ -2531,7 +2531,7 @@ NtUserDrawCaptionTemp(
             goto Exit;
          }
       }
-      Ret = UserDrawCaption(pWnd, hDC, (RECTL *)&SafeRect, hFont, hIcon, NULL, uFlags);
+      Ret = UserDrawCaption(pWnd, hDC, &SafeRect, hFont, hIcon, NULL, uFlags);
    }
 Exit:
    UserLeave();

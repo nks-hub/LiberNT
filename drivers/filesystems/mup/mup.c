@@ -598,9 +598,9 @@ BuildAndSubmitIrp(PIRP Irp,
                   PMUP_CCB Ccb,
                   PMUP_MIC MasterIoContext)
 {
-    PMDL _SEH2_VOLATILE Mdl;
+    PMDL Mdl;
     PIRP LowerIrp;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     PIO_STACK_LOCATION Stack;
     PDEVICE_OBJECT DeviceObject;
     PFORWARDED_IO_CONTEXT FwdCtxt;
@@ -766,7 +766,7 @@ MupForwardIoRequest(PDEVICE_OBJECT DeviceObject,
     NTSTATUS Status;
     PLIST_ENTRY Entry;
     PMUP_CCB FcbListCcb;
-    BOOLEAN _SEH2_VOLATILE CcbLockAcquired;
+    BOOLEAN CcbLockAcquired;
     PMUP_MIC MasterIoContext;
     PIO_STACK_LOCATION Stack;
 
@@ -1085,7 +1085,7 @@ RegisterUncProvider(PDEVICE_OBJECT DeviceObject,
     BOOLEAN New;
     PMUP_FCB Fcb;
     PMUP_CCB Ccb;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PLIST_ENTRY Entry;
     PIO_STACK_LOCATION Stack;
     IO_STATUS_BLOCK IoStatusBlock;
@@ -1242,7 +1242,7 @@ NTAPI
 MupFsControl(PDEVICE_OBJECT DeviceObject,
              PIRP Irp)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION Stack;
 
     Stack = IoGetCurrentIrpStackLocation(Irp);
@@ -1342,17 +1342,17 @@ BroadcastOpen(PIRP Irp)
     PMUP_FCB Fcb;
     HANDLE Handle;
     PLIST_ENTRY Entry;
-    PMUP_CCB _SEH2_VOLATILE Ccb = NULL;
-    PMUP_UNC _SEH2_VOLATILE UncProvider;
+    PMUP_CCB Ccb = NULL;
+    PMUP_UNC UncProvider;
     UNICODE_STRING FullPath;
     PFILE_OBJECT FileObject;
     PIO_STACK_LOCATION Stack;
-    NTSTATUS _SEH2_VOLATILE Status, LastFailed;
+    NTSTATUS Status, LastFailed;
     ULONG TotalLength, LastOrder;
     IO_STATUS_BLOCK IoStatusBlock;
     OBJECT_ATTRIBUTES ObjectAttributes;
     OBJECT_HANDLE_INFORMATION HandleInfo;
-    BOOLEAN _SEH2_VOLATILE Locked, Referenced, CcbInitialized;
+    BOOLEAN Locked, Referenced, CcbInitialized;
 
     Fcb = MupCreateFcb();
     if (Fcb == NULL)
@@ -1876,17 +1876,17 @@ CreateRedirectedFile(PIRP Irp,
     WCHAR Cur;
     PWSTR Name;
     PIRP QueryIrp;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     PMUP_PFX Prefix;
     PLIST_ENTRY Entry;
-    PMUP_UNC _SEH2_VOLATILE UncProvider;
+    PMUP_UNC UncProvider;
     PIO_STACK_LOCATION Stack;
     LARGE_INTEGER CurrentTime;
-    PMUP_MQC _SEH2_VOLATILE MasterQueryContext;
+    PMUP_MQC MasterQueryContext;
     PQUERY_PATH_CONTEXT QueryContext;
     PQUERY_PATH_REQUEST QueryPathRequest;
     PUNICODE_PREFIX_TABLE_ENTRY TableEntry;
-    BOOLEAN _SEH2_VOLATILE Locked, Referenced, BreakOnFirst;
+    BOOLEAN Locked, Referenced, BreakOnFirst;
 
     /* We cannot open a file without a name */
     if (FileObject->FileName.Length == 0)
@@ -2201,7 +2201,7 @@ NTAPI
 MupCreate(PDEVICE_OBJECT DeviceObject,
           PIRP Irp)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION Stack;
     PFILE_OBJECT FileObject, RelatedFileObject;
 
@@ -2285,7 +2285,7 @@ MupCleanup(PDEVICE_OBJECT DeviceObject,
     ULONG Type;
     PMUP_FCB Fcb;
     PMUP_CCB Ccb;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION Stack;
 
     /* If DFS is enabled, check if that's for DFS and is so relay */
@@ -2407,7 +2407,7 @@ MupClose(PDEVICE_OBJECT DeviceObject,
 {
     PMUP_FCB Fcb;
     PMUP_CCB Ccb;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION Stack;
 
     /* If DFS is enabled, check if that's for DFS and is so relay */

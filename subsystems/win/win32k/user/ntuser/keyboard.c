@@ -754,7 +754,7 @@ NtUserGetAsyncKeyState(INT Key)
         return (SHORT)0x8000;
 
     UserEnterShared();
-    UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
+    BOOLEAN bDom0 = UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
 
     if (IS_KEY_DOWN(gafAsyncKeyState, Key))
         wRet |= 0x8000; // If down, windows returns 0x8000.
@@ -762,7 +762,7 @@ NtUserGetAsyncKeyState(INT Key)
         wRet |= 0x1;
     gafAsyncKeyStateRecentDown[Key / 8] &= ~(1 << (Key % 8));
 
-    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE);
+    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE, bDom0);
     UserLeave();
 
     TRACE("Leave NtUserGetAsyncKeyState, ret=%u\n", wRet);
@@ -934,7 +934,6 @@ IntLanguageToggle(
     PWND pWnd;
     PTHREADINFO pti;
     PKL pkl;
-    WPARAM wParam = 0;
 
     if (!pFocusQueue)
     {
@@ -955,10 +954,7 @@ IntLanguageToggle(
     else if (nKeyState == INPUTLANGCHANGE_BACKWARD)
         pkl = IntGetNextKL(pkl, FALSE, bSameLang);
 
-    if (gSystemFS & pkl->dwFontSigs)
-        wParam |= INPUTLANGCHANGE_SYSCHARSET;
-
-    UserPostMessage(UserHMGetHandle(pWnd), WM_INPUTLANGCHANGEREQUEST, wParam, (LPARAM)pkl->hkl);
+    IntSetForegroundKeyboardLayout(pkl->hkl);
 }
 
 /* Check Language Toggle by [Left Alt]+Shift or Ctrl+Shift */
@@ -1924,7 +1920,7 @@ NtUserToUnicodeEx(
     RtlZeroMemory(pwszBuff, sizeof(WCHAR) * cchBuff);
 
     UserEnterShared();
-    UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
+    BOOLEAN bDom1 = UserDomainLockExclusive(DLT_ASYNCKEYSTATE);
 
     if (dwhkl)
         pKl = UserHklToKbl(dwhkl);
@@ -1964,7 +1960,7 @@ NtUserToUnicodeEx(
         SetLastNtError(Status);
     }
 
-    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE);
+    UserDomainUnlockExclusive(DLT_ASYNCKEYSTATE, bDom1);
     UserLeave();
     TRACE("Leave NtUserSetKeyboardState, ret=%i\n", iRet);
     return iRet;
@@ -1980,7 +1976,7 @@ APIENTRY
 NtUserGetKeyNameText(LONG lParam, LPWSTR lpString, int cchSize)
 {
     PTHREADINFO pti;
-    DWORD _SEH2_VOLATILE i, dwRet = 0;
+    DWORD i, dwRet = 0;
     SIZE_T cchKeyName;
     WORD wScanCode = (lParam >> 16) & 0xFF;
     BOOL bExtKey = (HIWORD(lParam) & KF_EXTENDED) ? TRUE : FALSE;

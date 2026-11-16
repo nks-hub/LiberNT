@@ -1,245 +1,151 @@
 /*
-* PROJECT:         ReactOS Kernel
-* LICENSE:         GPL - See COPYING in the top level directory
-* FILE:            ntoskrnl/include/internal/ps_x.h
-* PURPOSE:         Internal Inlined Functions for the Process Manager
-* PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
-*                  Thomas Weidenmueller (w3seek@reactos.org)
-*/
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Process manager inline helpers: flags, notify routines, locks
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright Thomas Weidenmueller <w3seek@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
 
-//
-// Extract Quantum Settings from the Priority Separation Mask
-//
-#define PspPrioritySeparationFromMask(Mask)                 \
-    ((Mask) & 3)
+#define PspPrioritySeparationFromMask(Mask) ((Mask) & 0x03)
+#define PspQuantumTypeFromMask(Mask) ((Mask) & 0x0C)
+#define PspQuantumLengthFromMask(Mask) ((Mask) & 0x30)
 
-#define PspQuantumTypeFromMask(Mask)                        \
-    ((Mask) & 12)
-
-#define PspQuantumLengthFromMask(Mask)                      \
-    ((Mask) & 48)
-
-//
-// Cross Thread Flag routines
-//
-#define PspSetCrossThreadFlag(Thread, Flag)                 \
-    InterlockedOr((PLONG)&Thread->CrossThreadFlags, Flag)
-#define PspClearCrossThreadFlag(Thread, Flag)               \
-    InterlockedAnd((PLONG)&Thread->CrossThreadFlags, ~Flag)
-
-//
-// Process flag routines
-//
-#define PspSetProcessFlag(Process, Flag) \
-    InterlockedOr((PLONG)&Process->Flags, Flag)
-#define PspClearProcessFlag(Process, Flag) \
-    InterlockedAnd((PLONG)&Process->Flags, ~Flag)
-
-FORCEINLINE
-VOID
-PspRunCreateThreadNotifyRoutines(IN PETHREAD CurrentThread,
-                                 IN BOOLEAN Create)
-{
-    ULONG i;
-
-    /* Check if we have registered routines */
-    if (PspThreadNotifyRoutineCount)
-    {
-        /* Loop callbacks */
-        for (i = 0; i < PSP_MAX_CREATE_THREAD_NOTIFY; i++)
-        {
-            /* Do the callback */
-            ExDoCallBack(&PspThreadNotifyRoutine[i],
-                         CurrentThread->Cid.UniqueProcess,
-                         CurrentThread->Cid.UniqueThread,
-                         (PVOID)(ULONG_PTR)Create);
-        }
-    }
-}
-
-FORCEINLINE
-VOID
-PspRunCreateProcessNotifyRoutines(IN PEPROCESS CurrentProcess,
-                                  IN BOOLEAN Create)
-{
-    ULONG i;
-    PEX_CALLBACK_ROUTINE_BLOCK CallBack;
-    PEX_CALLBACK_FUNCTION Routine;
-    PS_CREATE_NOTIFY_INFO CreateInfo;
-    PPS_CREATE_NOTIFY_INFO pCreateInfo = NULL;
-
-    /* Check if we have registered routines */
-    if (!PspProcessNotifyRoutineCount) return;
-
-    /*
-     * Build the extended create-notify info once; only Ex callbacks consume it,
-     * and only on process creation (it is NULL on process exit).
-     */
-    if (Create)
-    {
-        RtlZeroMemory(&CreateInfo, sizeof(CreateInfo));
-        CreateInfo.Size = sizeof(CreateInfo);
-        CreateInfo.ParentProcessId = CurrentProcess->InheritedFromUniqueProcessId;
-        CreateInfo.CreatingThreadId = PsGetCurrentThread()->Cid;
-        CreateInfo.CreationStatus = STATUS_SUCCESS;
-        if (CurrentProcess->SeAuditProcessCreationInfo.ImageFileName)
-        {
-            CreateInfo.ImageFileName =
-                &CurrentProcess->SeAuditProcessCreationInfo.ImageFileName->Name;
-            CreateInfo.FileOpenNameAvailable = TRUE;
-        }
-        pCreateInfo = &CreateInfo;
-    }
-
-    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
-    KeEnterCriticalRegion();
-
-    /* Loop callbacks */
-    for (i = 0; i < PSP_MAX_CREATE_PROCESS_NOTIFY; i++)
-    {
-        CallBack = ExReferenceCallBackBlock(&PspProcessNotifyRoutine[i]);
-        if (!CallBack) continue;
-
-        Routine = ExGetCallBackBlockRoutine(CallBack);
-        if (ExGetCallBackBlockContext(CallBack))
-        {
-            PCREATE_PROCESS_NOTIFY_ROUTINE_EX ExRoutine = (PCREATE_PROCESS_NOTIFY_ROUTINE_EX)Routine;
-            ExRoutine(CurrentProcess, CurrentProcess->UniqueProcessId, pCreateInfo);
-        }
-        else
-        {
-            /* Legacy callback. */
-            ((PCREATE_PROCESS_NOTIFY_ROUTINE)Routine)(
-                CurrentProcess->InheritedFromUniqueProcessId,
-                CurrentProcess->UniqueProcessId,
-                Create);
-        }
-
-        ExDereferenceCallBackBlock(&PspProcessNotifyRoutine[i], CallBack);
-    }
-
-    KeLeaveCriticalRegion();
-}
-
-FORCEINLINE
-VOID
-PspRunLoadImageNotifyRoutines(PUNICODE_STRING FullImageName,
-                              HANDLE ProcessId,
-                              PIMAGE_INFO ImageInfo)
-{
-    ULONG i;
-
-    /* Loop the notify routines */
-    for (i = 0; i < PSP_MAX_LOAD_IMAGE_NOTIFY; ++ i)
-    {
-        /* Do the callback */
-        ExDoCallBack(&PspLoadImageNotifyRoutine[i],
-                     FullImageName,
-                     ProcessId,
-                     ImageInfo);
-    }
-}
-
-FORCEINLINE
-VOID
-PspRunLegoRoutine(IN PKTHREAD Thread)
-{
-    /* Call it */
-    if (PspLegoNotifyRoutine) PspLegoNotifyRoutine(Thread);
-}
-
-FORCEINLINE
-VOID
-PspLockProcessSecurityShared(IN PEPROCESS Process)
-{
-    /* Enter a Critical Region */
-    KeEnterCriticalRegion();
-
-    /* Lock the Process */
-    ExAcquirePushLockShared(&Process->ProcessLock);
-}
-
-FORCEINLINE
-VOID
-PspUnlockProcessSecurityShared(IN PEPROCESS Process)
-{
-    /* Unlock the Process */
-    ExReleasePushLockShared(&Process->ProcessLock);
-
-    /* Leave Critical Region */
-    KeLeaveCriticalRegion();
-}
-
-FORCEINLINE
-VOID
-PspLockProcessSecurityExclusive(IN PEPROCESS Process)
-{
-    /* Enter a Critical Region */
-    KeEnterCriticalRegion();
-
-    /* Lock the Process */
-    ExAcquirePushLockExclusive(&Process->ProcessLock);
-}
-
-FORCEINLINE
-VOID
-PspUnlockProcessSecurityExclusive(IN PEPROCESS Process)
-{
-    /* Unlock the Process */
-    ExReleasePushLockExclusive(&Process->ProcessLock);
-
-    /* Leave Critical Region */
-    KeLeaveCriticalRegion();
-}
-
-FORCEINLINE
-VOID
-PspLockThreadSecurityShared(IN PETHREAD Thread)
-{
-    /* Enter a Critical Region */
-    KeEnterCriticalRegion();
-
-    /* Lock the Thread */
-    ExAcquirePushLockShared(&Thread->ThreadLock);
-}
-
-FORCEINLINE
-VOID
-PspUnlockThreadSecurityShared(IN PETHREAD Thread)
-{
-    /* Unlock the Thread */
-    ExReleasePushLockShared(&Thread->ThreadLock);
-
-    /* Leave Critical Region */
-    KeLeaveCriticalRegion();
-}
-
-FORCEINLINE
-VOID
-PspLockThreadSecurityExclusive(IN PETHREAD Thread)
-{
-    /* Enter a Critical Region */
-    KeEnterCriticalRegion();
-
-    /* Lock the Thread */
-    ExAcquirePushLockExclusive(&Thread->ThreadLock);
-}
-
-FORCEINLINE
-VOID
-PspUnlockThreadSecurityExclusive(IN PETHREAD Thread)
-{
-    /* Unlock the Process */
-    ExReleasePushLockExclusive(&Thread->ThreadLock);
-
-    /* Leave Critical Thread */
-    KeLeaveCriticalRegion();
-}
+#define PspSetCrossThreadFlag(Thread, Flag) InterlockedOr((PLONG)&(Thread)->CrossThreadFlags, (Flag))
+#define PspClearCrossThreadFlag(Thread, Flag) InterlockedAnd((PLONG)&(Thread)->CrossThreadFlags, ~(Flag))
+#define PspSetProcessFlag(Process, Flag) InterlockedOr((PLONG)&(Process)->Flags, (Flag))
+#define PspClearProcessFlag(Process, Flag) InterlockedAnd((PLONG)&(Process)->Flags, ~(Flag))
 
 FORCEINLINE
 PEPROCESS
 _PsGetCurrentProcess(VOID)
 {
-    /* Get the current process */
     return (PEPROCESS)KeGetCurrentThread()->ApcState.Process;
 }
+
+FORCEINLINE
+VOID
+PspRunCreateThreadNotifyRoutines(
+    _In_ PETHREAD Thread,
+    _In_ BOOLEAN Create)
+{
+    ULONG Slot;
+
+    if (PspThreadNotifyRoutineCount == 0)
+        return;
+
+    for (Slot = 0; Slot < PSP_MAX_CREATE_THREAD_NOTIFY; Slot++)
+    {
+        ExDoCallBack(&PspThreadNotifyRoutine[Slot], Thread->Cid.UniqueProcess, Thread->Cid.UniqueThread,
+                     (PVOID)(ULONG_PTR)Create);
+    }
+}
+
+FORCEINLINE
+VOID
+PspRunCreateProcessNotifyRoutines(
+    _In_ PEPROCESS Process,
+    _In_ BOOLEAN Create)
+{
+    PS_CREATE_NOTIFY_INFO CreateInfo;
+    PPS_CREATE_NOTIFY_INFO Info = NULL;
+    PEX_CALLBACK_ROUTINE_BLOCK Block;
+    PVOID Routine;
+    ULONG Slot;
+
+    if (PspProcessNotifyRoutineCount == 0)
+        return;
+
+    /* Only the extended routines get it, and only for a process being created */
+    if (Create)
+    {
+        RtlZeroMemory(&CreateInfo, sizeof(CreateInfo));
+        CreateInfo.Size = sizeof(CreateInfo);
+        CreateInfo.ParentProcessId = Process->InheritedFromUniqueProcessId;
+        CreateInfo.CreatingThreadId = PsGetCurrentThread()->Cid;
+        CreateInfo.CreationStatus = STATUS_SUCCESS;
+        if (Process->SeAuditProcessCreationInfo.ImageFileName != NULL)
+        {
+            CreateInfo.ImageFileName = &Process->SeAuditProcessCreationInfo.ImageFileName->Name;
+            CreateInfo.FileOpenNameAvailable = TRUE;
+        }
+        Info = &CreateInfo;
+    }
+
+    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
+    KeEnterCriticalRegion();
+
+    for (Slot = 0; Slot < PSP_MAX_CREATE_PROCESS_NOTIFY; Slot++)
+    {
+        Block = ExReferenceCallBackBlock(&PspProcessNotifyRoutine[Slot]);
+        if (Block == NULL)
+            continue;
+
+        Routine = (PVOID)ExGetCallBackBlockRoutine(Block);
+        if (ExGetCallBackBlockContext(Block) != NULL)
+            ((PCREATE_PROCESS_NOTIFY_ROUTINE_EX)Routine)(Process, Process->UniqueProcessId, Info);
+        else
+            ((PCREATE_PROCESS_NOTIFY_ROUTINE)Routine)(Process->InheritedFromUniqueProcessId, Process->UniqueProcessId, Create);
+
+        ExDereferenceCallBackBlock(&PspProcessNotifyRoutine[Slot], Block);
+    }
+
+    KeLeaveCriticalRegion();
+}
+
+FORCEINLINE
+VOID
+PspRunLoadImageNotifyRoutines(
+    _In_opt_ PUNICODE_STRING FullImageName,
+    _In_ HANDLE ProcessId,
+    _In_ PIMAGE_INFO ImageInfo)
+{
+    ULONG Slot;
+
+    for (Slot = 0; Slot < PSP_MAX_LOAD_IMAGE_NOTIFY; Slot++)
+        ExDoCallBack(&PspLoadImageNotifyRoutine[Slot], FullImageName, ProcessId, ImageInfo);
+}
+
+FORCEINLINE
+VOID
+PspRunLegoRoutine(
+    _In_ PKTHREAD Thread)
+{
+    if (PspLegoNotifyRoutine != NULL)
+        PspLegoNotifyRoutine(Thread);
+}
+
+FORCEINLINE
+VOID
+PspLockSecurity(
+    _Inout_ PEX_PUSH_LOCK Lock,
+    _In_ BOOLEAN Exclusive)
+{
+    KeEnterCriticalRegion();
+    if (Exclusive)
+        ExAcquirePushLockExclusive(Lock);
+    else
+        ExAcquirePushLockShared(Lock);
+}
+
+FORCEINLINE
+VOID
+PspUnlockSecurity(
+    _Inout_ PEX_PUSH_LOCK Lock,
+    _In_ BOOLEAN Exclusive)
+{
+    if (Exclusive)
+        ExReleasePushLockExclusive(Lock);
+    else
+        ExReleasePushLockShared(Lock);
+    KeLeaveCriticalRegion();
+}
+
+#define PspLockProcessSecurityShared(Process) PspLockSecurity(&(Process)->ProcessLock, FALSE)
+#define PspUnlockProcessSecurityShared(Process) PspUnlockSecurity(&(Process)->ProcessLock, FALSE)
+#define PspLockProcessSecurityExclusive(Process) PspLockSecurity(&(Process)->ProcessLock, TRUE)
+#define PspUnlockProcessSecurityExclusive(Process) PspUnlockSecurity(&(Process)->ProcessLock, TRUE)
+#define PspLockThreadSecurityShared(Thread) PspLockSecurity(&(Thread)->ThreadLock, FALSE)
+#define PspUnlockThreadSecurityShared(Thread) PspUnlockSecurity(&(Thread)->ThreadLock, FALSE)
+#define PspLockThreadSecurityExclusive(Thread) PspLockSecurity(&(Thread)->ThreadLock, TRUE)
+#define PspUnlockThreadSecurityExclusive(Thread) PspUnlockSecurity(&(Thread)->ThreadLock, TRUE)

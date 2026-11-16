@@ -104,8 +104,8 @@ ObpCaptureBoundaryDescriptor(
     _Out_ POBJECT_BOUNDARY_DESCRIPTOR *Captured)
 {
     OBJECT_BOUNDARY_DESCRIPTOR Header;
-    POBJECT_BOUNDARY_DESCRIPTOR _SEH2_VOLATILE Copy = NULL;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    POBJECT_BOUNDARY_DESCRIPTOR Copy = NULL;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     *Captured = NULL;
     if (!UserDescriptor) return STATUS_INVALID_PARAMETER;
@@ -176,7 +176,9 @@ ObpCheckBoundaryAccess(
         }
         else if (Entry->EntryType == OBNS_IL)
         {
-            Rid = *RtlSubAuthoritySid(Sid, *RtlSubAuthorityCountSid(Sid) - 1);
+            Rid = (*RtlSubAuthorityCountSid(Sid) != 0) ?
+                  *RtlSubAuthoritySid(Sid, *RtlSubAuthorityCountSid(Sid) - 1) :
+                  SECURITY_MANDATORY_UNTRUSTED_RID;
             if (SepGetTokenIntegrityRid(Token) < Rid)
                 Status = STATUS_ACCESS_DENIED;
         }

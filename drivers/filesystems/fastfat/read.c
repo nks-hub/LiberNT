@@ -95,7 +95,7 @@ FatOverflowPagingFileRead (
 //
 
 #define CollectReadStats(VCB,OPEN_TYPE,BYTE_COUNT) {                                         \
-    PFILESYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors].Common; \
+    PFILESYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors].Common; \
     if (((OPEN_TYPE) == UserFileOpen)) {                                                     \
         Stats->UserFileReads += 1;                                                           \
         Stats->UserFileReadBytes += (ULONG)(BYTE_COUNT);                                     \
@@ -148,10 +148,10 @@ Return Value:
 
 {
     PFCB Fcb = NULL;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
-    BOOLEAN _SEH2_VOLATILE TopLevel = FALSE;
+    BOOLEAN TopLevel = FALSE;
 
     DebugTrace(+1, Dbg, "FatFsdRead\n", 0);
 
@@ -844,7 +844,7 @@ Return Value:
             //  Virtual volume file open -- increment performance counters.
             //
 
-            Vcb->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors].Common.MetaDataDiskReads += 1;
+            Vcb->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors].Common.MetaDataDiskReads += 1;
 
         }
 

@@ -2235,7 +2235,7 @@ RemoveFontResourceExA(
         return FALSE;
 
     WCHAR szBuff[MAX_PATH];
-    PWSTR _SEH2_VOLATILE FilenameW = NULL;
+    PWSTR FilenameW = NULL;
 
     _SEH2_TRY
     {

@@ -988,7 +988,7 @@ NtQueryWnfStateData(PCWNF_STATE_NAME StateName,
     PVOID Snapshot = NULL;
     ULONG CallerSize = 0;
     ULONG Required = 0;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     UNREFERENCED_PARAMETER(ExplicitScope);
 

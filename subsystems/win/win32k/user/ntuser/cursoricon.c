@@ -370,9 +370,10 @@ IntRemoveCursorFromList(
             /* Remove it from the list */
             (*ppcur) = pcur->pcurNext;
 
+            pcur->CURSORF_flags &= ~CURSORF_LINKED;
+
             /* Dereference it */
             UserDereferenceObject(pcur);
-            pcur->CURSORF_flags &= ~CURSORF_LINKED;
             return;
         }
     }
@@ -1026,7 +1027,7 @@ NtUserGetCursorInfo(
     PSYSTEM_CURSORINFO CurInfo;
     NTSTATUS Status = STATUS_SUCCESS;
     PCURICON_OBJECT CurIcon;
-    BOOL _SEH2_VOLATILE Ret = FALSE;
+    BOOL Ret = FALSE;
 
     TRACE("Enter NtUserGetCursorInfo\n");
     UserEnterShared();
@@ -1130,7 +1131,7 @@ APIENTRY
 NtUserClipCursor(
     RECTL *prcl)
 {
-    RECTL _SEH2_VOLATILE rclLocal;
+    RECTL rclLocal;
     BOOL bResult;
 
     if (prcl)
@@ -1148,7 +1149,7 @@ NtUserClipCursor(
         }
         _SEH2_END
 
-        prcl = (RECTL *)&rclLocal;
+        prcl = &rclLocal;
     }
 
     UserEnterExclusive();
@@ -1247,7 +1248,7 @@ NtUserFindExistingCursorIcon(
     PCURICON_OBJECT CurIcon;
     HICON Ret = NULL;
     UNICODE_STRING ustrModuleSafe, ustrRsrcSafe;
-    FINDEXISTINGCURICONPARAM _SEH2_VOLATILE paramSafe;
+    FINDEXISTINGCURICONPARAM paramSafe;
     NTSTATUS Status;
     PPROCESSINFO pProcInfo = PsGetCurrentProcessWin32Process();
     RTL_ATOM atomModName;
@@ -1257,7 +1258,7 @@ NtUserFindExistingCursorIcon(
     _SEH2_TRY
     {
         ProbeForRead(param, sizeof(*param), 1);
-        RtlCopyMemory((void *)&paramSafe, param, sizeof(paramSafe));
+        RtlCopyMemory(&paramSafe, param, sizeof(paramSafe));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {

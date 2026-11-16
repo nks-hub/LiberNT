@@ -37,6 +37,7 @@
 #include "present.h"
 #include "presenttrace.h"
 #include "vidpn.h"
+#include "display_core.h"
 #include "pnp.h"
 #include "d3dkmt.h"
 #include <ntddvdeo.h>
@@ -46,6 +47,7 @@
 #include <reactos/dwmframe.h>
 #include <reactos/rddm/rxgkpresent.h>
 #include <reactos/rddm/rxgkadvcolor.h>
+#include <reactos/rddm/rxgktarget.h>
 
 /* TAG_DXGK_DISPLAY is now in dxgkrnl_private.h */
 
@@ -115,6 +117,8 @@ static ULONG g_DisplayDeviceNumber = 0;
 static BOOLEAN g_DisplayInitialModePending;
 static PVOID g_DisplayWin32kPhysDisp;
 static PVIDEO_WIN32K_CALLOUT g_DisplayWin32kCallout;
+static PEPROCESS g_DisplayWin32kProcess;
+static KSPIN_LOCK g_DisplayWin32kProcessLock;
 static volatile LONG g_PresentShadowTraceCount = 0;
 static volatile LONG g_PresentDirtyTraceCount = 0;
 static volatile LONG g_ScanoutCopyCount = 0;
@@ -240,16 +244,35 @@ DxgkpDisplayRefreshWin32k(VOID)
 {
     VIDEO_WIN32K_CALLBACKS_PARAMS Params;
     PVIDEO_WIN32K_CALLOUT Callout;
+    PEPROCESS Process;
+    KAPC_STATE ApcState;
+    BOOLEAN Attach;
+    KIRQL OldIrql;
 
     PAGED_CODE();
 
-    Callout = (PVIDEO_WIN32K_CALLOUT)InterlockedCompareExchangePointer((PVOID *)&g_DisplayWin32kCallout, NULL, NULL);
+    KeAcquireSpinLock(&g_DisplayWin32kProcessLock, &OldIrql);
+    Callout = g_DisplayWin32kCallout;
+    Process = g_DisplayWin32kProcess;
+    if (Callout != NULL && Process != NULL)
+        ObReferenceObject(Process);
+    KeReleaseSpinLock(&g_DisplayWin32kProcessLock, OldIrql);
     if (Callout == NULL)
         return;
+    ASSERT(Process != NULL);
+
     RtlZeroMemory(&Params, sizeof(Params));
     Params.CalloutType = VideoDxgkMonitorEventCallout;
     Params.PhysDisp = g_DisplayWin32kPhysDisp;
+
+    /* The callout is session-space code: it is only mapped in a process of the session that registered it */
+    Attach = (Process != PsGetCurrentProcess());
+    if (Attach)
+        KeStackAttachProcess((PRKPROCESS)Process, &ApcState);
     Callout(&Params);
+    if (Attach)
+        KeUnstackDetachProcess(&ApcState);
+    ObDereferenceObject(Process);
 }
 
 VOID
@@ -1210,7 +1233,7 @@ DxgkpReportTargetColorimetry(
     DXGK_COLORIMETRY Colorimetry;
     PLIST_ENTRY Entry;
     KIRQL OldIrql;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     if (Adapter->MiniportContext == NULL || Adapter->MiniportContext->UseDodLayout)
         return;
@@ -1476,6 +1499,8 @@ DxgkpAdvancedColorFindLocked(
 {
     ULONG Index;
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     for (Index = 0; Index < Adapter->AdvancedColorCount; Index++)
     {
         if (Adapter->AdvancedColor[Index].TargetId == TargetId)
@@ -1491,6 +1516,8 @@ DxgkpAdvancedColorRecordLocked(
     _In_ D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId)
 {
     LONG Index = DxgkpAdvancedColorFindLocked(Adapter, TargetId);
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     if (Index < 0 && Adapter->AdvancedColorCount < DXGKP_ADVANCED_COLOR_TARGETS)
     {
@@ -1784,6 +1811,114 @@ DxgkAdvancedColorEscape(
     return Status;
 }
 
+/*
+ * DxgkTargetInfoEscape
+ *
+ * RXGK_ESCAPE_TARGET_INFO: the first target a VidPN source drives in the
+ * committed topology, with its connector type, its connector instance among
+ * the adapter's targets of that type and the monitor's base EDID block.
+ * PASSIVE_LEVEL.
+ */
+NTSTATUS
+DxgkTargetInfoEscape(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _Inout_updates_bytes_(Size) PVOID Buffer,
+    _In_ ULONG Size)
+{
+    static const UCHAR EdidHeader[8] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+    RXGK_TARGET_INFO_PACKET *Packet = (RXGK_TARGET_INFO_PACKET *)Buffer;
+    D3DDDI_VIDEO_PRESENT_TARGET_ID TargetId = D3DDDI_ID_UNINITIALIZED;
+    PDXGK_CHILD_PDO_EXTENSION Target = NULL;
+    D3DKMDT_HVIDPN hVidPn;
+    PDXGKP_VIDPN VidPn;
+    PLIST_ENTRY Entry;
+    ULONG SameType = 0;
+    ULONG Instance = 0;
+    KIRQL OldIrql;
+    SIZE_T PathIndex;
+
+    PAGED_CODE();
+
+    if (Size != sizeof(*Packet) || Packet->Size != sizeof(*Packet) ||
+        Packet->Version != RXGK_TARGET_INFO_VERSION_1 ||
+        Packet->VidPnSourceId >= Adapter->NumberOfVideoPresentSources)
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    (VOID)KeWaitForSingleObject(&Adapter->VidPnMutex, Executive, KernelMode, FALSE, NULL);
+    hVidPn = Adapter->VidPnCommitted ? (D3DKMDT_HVIDPN)Adapter->VidPn : NULL;
+    if (hVidPn != NULL && !DxgkVidPnReference(hVidPn))
+        hVidPn = NULL;
+    KeReleaseMutex(&Adapter->VidPnMutex, FALSE);
+    if (hVidPn == NULL)
+        return STATUS_GRAPHICS_PATH_NOT_IN_TOPOLOGY;
+    VidPn = (PDXGKP_VIDPN)hVidPn;
+    for (PathIndex = 0; PathIndex < VidPn->NumPaths; PathIndex++)
+    {
+        if (VidPn->Paths[PathIndex].VidPnSourceId == Packet->VidPnSourceId)
+        {
+            TargetId = VidPn->Paths[PathIndex].VidPnTargetId;
+            break;
+        }
+    }
+    DxgkVidPnDestroy(hVidPn);
+    if (TargetId == D3DDDI_ID_UNINITIALIZED)
+        return STATUS_GRAPHICS_PATH_NOT_IN_TOPOLOGY;
+
+    Packet->VidPnTargetId = TargetId;
+    Packet->OutputTechnology = (UINT32)D3DKMDT_VOT_OTHER;
+    Packet->ConnectorInstance = 0;
+    Packet->Flags = 0;
+    Packet->Reserved = 0;
+    RtlZeroMemory(Packet->Edid, sizeof(Packet->Edid));
+
+    KeAcquireSpinLock(&Adapter->ChildListLock, &OldIrql);
+    for (Entry = Adapter->ChildListHead.Flink; Entry != &Adapter->ChildListHead; Entry = Entry->Flink)
+    {
+        PDXGK_CHILD_PDO_EXTENSION Child = CONTAINING_RECORD(Entry, DXGK_CHILD_PDO_EXTENSION, ListEntry);
+
+        if (Child->Present && Child->Descriptor.ChildDeviceType == TypeVideoOutput &&
+            Child->Descriptor.ChildUid == TargetId)
+        {
+            Target = Child;
+            break;
+        }
+    }
+    if (Target != NULL)
+    {
+        D3DKMDT_VIDEO_OUTPUT_TECHNOLOGY Technology =
+            Target->Descriptor.ChildCapabilities.Type.VideoOutput.InterfaceTechnology;
+
+        for (Entry = Adapter->ChildListHead.Flink; Entry != &Adapter->ChildListHead; Entry = Entry->Flink)
+        {
+            PDXGK_CHILD_PDO_EXTENSION Child = CONTAINING_RECORD(Entry, DXGK_CHILD_PDO_EXTENSION, ListEntry);
+
+            if (!Child->Present || Child->Joined || Child->Descriptor.ChildDeviceType != TypeVideoOutput ||
+                Child->Descriptor.ChildCapabilities.Type.VideoOutput.InterfaceTechnology != Technology)
+            {
+                continue;
+            }
+            SameType++;
+            if (Child == Target)
+                Instance = SameType;
+        }
+        ASSERT(Target->Joined || Instance != 0);
+        Packet->OutputTechnology = (UINT32)Technology;
+        Packet->ConnectorInstance = SameType > 1 ? Instance : 0;
+        if (Target->Connected)
+            Packet->Flags |= RXGK_TARGET_INFO_CONNECTED;
+        if (Target->Connected && Target->EdidValid &&
+            RtlCompareMemory(Target->Edid, EdidHeader, sizeof(EdidHeader)) == sizeof(EdidHeader))
+        {
+            RtlCopyMemory(Packet->Edid, Target->Edid, sizeof(Packet->Edid));
+            Packet->Flags |= RXGK_TARGET_INFO_EDID;
+        }
+    }
+    KeReleaseSpinLock(&Adapter->ChildListLock, OldIrql);
+    return STATUS_SUCCESS;
+}
+
 /* Same timing, compared field by field (the structure has padding). */
 static BOOLEAN
 DxgkpSignalInfoEqual(
@@ -1908,7 +2043,7 @@ DxgkpDisplayCommitVidPnCandidateWithTarget(
     _In_opt_ CONST D3DKMDT_VIDEO_SIGNAL_INFO *RequestedTarget,
     _Out_ PDXGKP_DISPLAY_COMMIT_RESULT Result)
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PDXGKP_VIDPN VidPn;
     SIZE_T i;
     BOOLEAN ForceDodPresentOnlyPath;
@@ -2404,6 +2539,9 @@ DxgkpDisplayCommitVidPnCandidateWithTarget(
          */
         if (Adapter->MiniportContext != NULL &&
             Adapter->MiniportContext->IsDisplayOnlyDriver &&
+            DxgkVidPnCoreDisplayOnlyTakesLargestSource(
+                VidPn->TargetModeSets[ActiveTargetIndex] != NULL ?
+                    VidPn->TargetModeSets[ActiveTargetIndex]->NumModes : 0) &&
             VidPn->SourceModeSets[ActiveSourceId] != NULL &&
             VidPn->SourceModeSets[ActiveSourceId]->NumModes > 0)
         {
@@ -2536,6 +2674,10 @@ DxgkpDisplayCommitVidPnCandidateWithTarget(
             BOOLEAN FoundSource = FALSE;
             SIZE_T BestSourceIndex = (SIZE_T)-1;
             ULONGLONG BestSourceScore = ~0ULL;
+            ULONG PinnedFormatRank = MAXULONG;
+
+            C_ASSERT(DXGK_VIDPN_CORE_FORMAT_A8R8G8B8 == D3DDDIFMT_A8R8G8B8);
+            C_ASSERT(DXGK_VIDPN_CORE_FORMAT_X8R8G8B8 == D3DDDIFMT_X8R8G8B8);
             for (i = 0; i < SrcSet->NumModes; i++)
             {
                 if (!PreferClosestPostSourceMode &&
@@ -2544,14 +2686,22 @@ DxgkpDisplayCommitVidPnCandidateWithTarget(
                     (UINT)SrcSet->Modes[i].Format.Graphics.PrimSurfSize.cx == DesiredWidth &&
                     (UINT)SrcSet->Modes[i].Format.Graphics.PrimSurfSize.cy == DesiredHeight)
                 {
-                    SrcSet->PinnedModeId = SrcSet->Modes[i].Id;
-                    SourceWidth = SrcSet->Modes[i].Format.Graphics.PrimSurfSize.cx;
-                    SourceHeight = SrcSet->Modes[i].Format.Graphics.PrimSurfSize.cy;
-                    FoundSource = TRUE;
-                    DXGKRNL_TRACE("DxgkpCommitVidPnToMiniport: pinned source mode id=%u "
-                                  "(%ux%u)\n", SrcSet->PinnedModeId,
-                                  SourceWidth, SourceHeight);
-                    break;
+                    ULONG FormatRank = DxgkVidPnCoreSourceFormatRank((ULONG)SrcSet->Modes[i].Format.Graphics.PixelFormat);
+
+                    if (FormatRank < PinnedFormatRank)
+                    {
+                        PinnedFormatRank = FormatRank;
+                        SrcSet->PinnedModeId = SrcSet->Modes[i].Id;
+                        SourceWidth = SrcSet->Modes[i].Format.Graphics.PrimSurfSize.cx;
+                        SourceHeight = SrcSet->Modes[i].Format.Graphics.PrimSurfSize.cy;
+                        FoundSource = TRUE;
+                        DXGKRNL_TRACE("DxgkpCommitVidPnToMiniport: pinned source mode id=%u "
+                                      "(%ux%u)\n", SrcSet->PinnedModeId,
+                                      SourceWidth, SourceHeight);
+                    }
+                    if (FormatRank == 0)
+                        break;
+                    continue;
                 }
 
                 if (Adapter->PostDisplayWidth > 0 && Adapter->PostDisplayHeight > 0)
@@ -2902,8 +3052,7 @@ DxgkpDisplayCommitVidPnCandidateWithTarget(
             /* The driver queued connection changes.  The rebuild worker
              * drains them through DxgkDdiQueryConnectionChange only when
              * this is set; otherwise it rebuilds from stale state. */
-            InterlockedExchange(&Adapter->ConnectorChangePending, 1);
-            (VOID)DxgkVidPnQueueHotPlugRebuild(Adapter);
+            (VOID)DxgkVidPnQueueConnectionChangeDrain(Adapter);
         }
 
         {
@@ -3180,6 +3329,8 @@ DxgkpDisplayCommitVidPnWhileSharedPrimaryLocked(
     if (Adapter == NULL)
         return STATUS_INVALID_PARAMETER;
     DxgkpBeginSharedSurfaceMutationLocked(Adapter);
+    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
+
     (VOID)KeWaitForSingleObject(&Adapter->VidPnMutex, Executive, KernelMode, FALSE, NULL);
     hVidPn = (D3DKMDT_HVIDPN)Adapter->VidPn;
     if (!DxgkVidPnReference(hVidPn))
@@ -3338,7 +3489,7 @@ DxgkpCallMiniportShadowPresent(
     PDXGKDDI_QUERY_INTERFACE QueryInterfaceCallback = NULL;
     QUERY_INTERFACE QueryInterface;
     BOOLEAN InterfaceAcquired = FALSE;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     *Handled = FALSE;
     RtlZeroMemory(&PresentInterface, sizeof(PresentInterface));
@@ -3491,6 +3642,14 @@ DxgkpPresentSourceRects(
         Status = STATUS_UNSUCCESSFUL;
         goto Cleanup;
     }
+    if (!SharedSurface.VidPnCommitted)
+    {
+        /* A shared primary belongs to a source in a VidPN path; a detached desktop has none, so its shadow is the desktop. */
+        ASSERT(SharedSurface.HeadlessDesktop);
+        Status = STATUS_SUCCESS;
+        goto Cleanup;
+    }
+    ASSERT(!SharedSurface.HeadlessDesktop);
 
     if (Count > DXGK_DIRTY_RECT_SLOTS)
     {
@@ -3612,7 +3771,10 @@ DxgkpPresentSourceRects(
     {
         /* A full miniport without the private extension (or a DOD without
          * PresentDisplayOnly) retains the generic firmware-GOP fallback. */
-        for (i = 0; i < DirtyCount; i++)
+        for (i = 0;
+             DxgkPostDisplayCoreFirmwareScanout(Adapter->MiniportContext->IsDisplayOnlyDriver, SharedSurface.VidPnCommitted) &&
+             i < DirtyCount;
+             i++)
         {
             Status = DxgkpBlitShadowToGop(Adapter,
                                           &SharedSurface,
@@ -3760,6 +3922,8 @@ DxgkpPresentTimerDpc(
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     if (Adapter == NULL || InterlockedCompareExchange(&Adapter->SharedSurfaceAvailable, 0, 0) == 0 || !Adapter->PresentTimerActive || Adapter->FunctionalDeviceObject == NULL)
         return;
 
@@ -3802,6 +3966,8 @@ DxgkpStartPresentTimer(
         KeInitializeTimer(&Adapter->PresentTimer);
         KeInitializeDpc(&Adapter->PresentDpc, DxgkpPresentTimerDpc, Adapter);
         DueTime.QuadPart = -(LONGLONG)PeriodMs * 10000LL;
+        Adapter->PresentTimerOrigin = KeQueryInterruptTime() + (ULONGLONG)PeriodMs * 10000ULL;
+        Adapter->PresentTimerParked = FALSE;
         KeSetTimerEx(&Adapter->PresentTimer,
                      DueTime,
                      PeriodMs,
@@ -3834,6 +4000,9 @@ DxgkpStopPresentTimer(
     {
         /* Clear the active flag before draining an in-flight timer DPC. */
         Adapter->PresentTimerActive = FALSE;
+        if (Adapter->PresentTimerParked)
+            DxgkVsyncPowerCoreSetSaved(&Adapter->VsyncPower, FALSE);
+        Adapter->PresentTimerParked = FALSE;
         KeCancelTimer(&Adapter->PresentTimer);
 
         KeFlushQueuedDpcs();
@@ -3841,6 +4010,47 @@ DxgkpStopPresentTimer(
 
     DXGKRNL_TRACE("DxgkpStopPresentTimer: stopped\n");
     KeReleaseMutex(&Adapter->PresentLifecycleMutex, FALSE);
+}
+
+BOOLEAN
+DxgkpParkPresentTimer(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    BOOLEAN Parked = FALSE;
+
+    PAGED_CODE();
+    (VOID)KeWaitForSingleObject(&Adapter->PresentLifecycleMutex, Executive, KernelMode, FALSE, NULL);
+    if (Adapter->PresentTimerActive && !Adapter->PresentTimerParked)
+    {
+        KeCancelTimer(&Adapter->PresentTimer);
+        Adapter->PresentTimerParked = TRUE;
+        Parked = TRUE;
+    }
+    KeReleaseMutex(&Adapter->PresentLifecycleMutex, FALSE);
+    return Parked;
+}
+
+BOOLEAN
+DxgkpResumePresentTimer(
+    _In_ PDXGKRNL_ADAPTER Adapter)
+{
+    const ULONGLONG Period100ns = 16ULL * 10000ULL;
+    LARGE_INTEGER DueTime;
+    BOOLEAN WasParked;
+
+    PAGED_CODE();
+    (VOID)KeWaitForSingleObject(&Adapter->PresentLifecycleMutex, Executive, KernelMode, FALSE, NULL);
+    WasParked = Adapter->PresentTimerParked;
+    if (WasParked && Adapter->PresentTimerActive)
+    {
+        DueTime.QuadPart = -(LONGLONG)DxgkVsyncPowerCoreResumeDue(KeQueryInterruptTime(),
+                                                                  Adapter->PresentTimerOrigin,
+                                                                  Period100ns);
+        KeSetTimerEx(&Adapter->PresentTimer, DueTime, 16, &Adapter->PresentDpc);
+    }
+    Adapter->PresentTimerParked = FALSE;
+    KeReleaseMutex(&Adapter->PresentLifecycleMutex, FALSE);
+    return WasParked;
 }
 
 /* ========================================================================
@@ -3865,6 +4075,10 @@ DxgkpPointerBridgeSupported(
     NTSTATUS Status;
 
     if (Adapter == NULL || Adapter->MiniportContext == NULL)
+        return FALSE;
+
+    /* The pointer DDIs address a source of the committed VidPN; a detached desktop has none, so it keeps the software cursor */
+    if (!*(volatile BOOLEAN *)&Adapter->VidPnCommitted || *(volatile BOOLEAN *)&Adapter->HeadlessDesktop)
         return FALSE;
 
     if (Adapter->PointerCapsQueried)
@@ -3912,7 +4126,7 @@ DxgkpPointerBridgeSetPosition(
 {
     PDXGKDDI_SET_POINTER_POSITION PfnSetPosition;
     DXGKARG_SETPOINTERPOSITION PositionArgs;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     PfnSetPosition = DXGK_CB(Adapter, DxgkDdiSetPointerPosition);
     if (PfnSetPosition == NULL)
@@ -3959,7 +4173,7 @@ DxgkpPointerBridgeSetShape(
     PDXGKDDI_SET_POINTER_SHAPE PfnSetShape;
     DXGKARG_SETPOINTERSHAPE ShapeArgs;
     ULONG RequiredSize;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     PfnSetShape = DXGK_CB(Adapter, DxgkDdiSetPointerShape);
     if (PfnSetShape == NULL)
@@ -3992,7 +4206,7 @@ DxgkpPointerBridgeSetShape(
     ShapeArgs.Flags.Color = 1;
     ShapeArgs.Width = Attributes->Width;
     ShapeArgs.Height = Attributes->Height;
-    ShapeArgs.Pitch = Attributes->WidthInBytes;
+    ShapeArgs.Pitch = DxgkDisplayCorePackPointerRows(Attributes->Pixels, Attributes->Width, Attributes->Height, Attributes->WidthInBytes);
     ShapeArgs.VidPnSourceId = 0;
     ShapeArgs.pPixels = Attributes->Pixels;
     /* The display driver already offset Column/Row by the hot spot. */
@@ -4027,6 +4241,90 @@ DxgkpPointerBridgeSetShape(
     Adapter->PointerVisible = (Attributes->Enable != 0);
 
     return DxgkpPointerBridgeSetPosition(Adapter);
+}
+
+/* DISPLAY_DEVICE.StateFlags of a monitor (wingdi.h DISPLAY_DEVICE_ACTIVE, DISPLAY_DEVICE_ATTACHED). */
+#define DXGKP_MONITOR_STATE_ACTIVE      0x00000001UL
+#define DXGKP_MONITOR_STATE_ATTACHED    0x00000002UL
+
+/*
+ * The monitors on the targets the GDI display's source drives in the
+ * committed topology, as a pool array ended by a NULL pdo; each pdo is
+ * referenced for the caller.  PASSIVE_LEVEL.
+ */
+static NTSTATUS
+DxgkpEnumMonitorPdos(
+    _In_opt_ PDXGKRNL_ADAPTER Adapter,
+    _Outptr_ PVIDEO_MONITOR_DEVICE *Monitors)
+{
+    D3DDDI_VIDEO_PRESENT_TARGET_ID Targets[DXGKP_MAX_PATHS];
+    PVIDEO_MONITOR_DEVICE Array;
+    D3DKMDT_HVIDPN hVidPn = NULL;
+    PDXGKP_VIDPN VidPn;
+    ULONG TargetCount = 0;
+    ULONG Count = 0;
+    ULONG Index;
+    KIRQL OldIrql;
+    SIZE_T PathIndex;
+
+    PAGED_CODE();
+
+    *Monitors = NULL;
+    if (Adapter != NULL)
+    {
+        (VOID)KeWaitForSingleObject(&Adapter->VidPnMutex, Executive, KernelMode, FALSE, NULL);
+        hVidPn = Adapter->VidPnCommitted ? (D3DKMDT_HVIDPN)Adapter->VidPn : NULL;
+        if (hVidPn != NULL && !DxgkVidPnReference(hVidPn))
+            hVidPn = NULL;
+        KeReleaseMutex(&Adapter->VidPnMutex, FALSE);
+    }
+    if (hVidPn != NULL)
+    {
+        VidPn = (PDXGKP_VIDPN)hVidPn;
+        for (PathIndex = 0; PathIndex < VidPn->NumPaths && TargetCount < RTL_NUMBER_OF(Targets); PathIndex++)
+        {
+            if (VidPn->Paths[PathIndex].VidPnSourceId == VidPn->Paths[0].VidPnSourceId)
+                Targets[TargetCount++] = VidPn->Paths[PathIndex].VidPnTargetId;
+        }
+        DxgkVidPnDestroy(hVidPn);
+    }
+
+    Array = ExAllocatePoolZero(PagedPool, (TargetCount + 1) * sizeof(VIDEO_MONITOR_DEVICE), TAG_DXGK_DISPLAY);
+    if (Array == NULL)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    if (TargetCount != 0)
+    {
+        KeAcquireSpinLock(&Adapter->ChildListLock, &OldIrql);
+        for (Index = 0; Index < TargetCount; Index++)
+        {
+            PLIST_ENTRY Entry;
+
+            for (Entry = Adapter->ChildListHead.Flink; Entry != &Adapter->ChildListHead; Entry = Entry->Flink)
+            {
+                PDXGK_CHILD_PDO_EXTENSION Child = CONTAINING_RECORD(Entry, DXGK_CHILD_PDO_EXTENSION, ListEntry);
+
+                if (!Child->Present || !Child->Connected || Child->DeviceObject == NULL ||
+                    Child->Descriptor.ChildDeviceType != TypeVideoOutput ||
+                    Child->Descriptor.ChildUid != Targets[Index])
+                {
+                    continue;
+                }
+                ObReferenceObject(Child->DeviceObject);
+                Array[Count].pdo = Child->DeviceObject;
+                Array[Count].flag = DXGKP_MONITOR_STATE_ACTIVE | DXGKP_MONITOR_STATE_ATTACHED;
+                Array[Count].HwID = Child->Descriptor.ChildUid;
+                Array[Count].Internal =
+                    Child->Descriptor.ChildCapabilities.Type.VideoOutput.InterfaceTechnology == D3DKMDT_VOT_INTERNAL;
+                Count++;
+                break;
+            }
+        }
+        KeReleaseSpinLock(&Adapter->ChildListLock, OldIrql);
+    }
+    ASSERT(Count <= TargetCount);
+    ASSERT(Array[Count].pdo == NULL);
+    *Monitors = Array;
+    return STATUS_SUCCESS;
 }
 
 /* ========================================================================
@@ -4074,8 +4372,19 @@ DxgkpDisplayDispatch(
                 Callbacks->DualviewFlags = 0;
                 if (Irp->RequestorMode == KernelMode && Callbacks->Callout != NULL)
                 {
+                    PEPROCESS Process = IoGetCurrentProcess();
+                    PEPROCESS Previous;
+                    KIRQL OldIrql;
+
+                    ObReferenceObject(Process);
+                    KeAcquireSpinLock(&g_DisplayWin32kProcessLock, &OldIrql);
                     g_DisplayWin32kPhysDisp = Callbacks->PhysDisp;
+                    Previous = g_DisplayWin32kProcess;
+                    g_DisplayWin32kProcess = Process;
                     InterlockedExchangePointer((PVOID *)&g_DisplayWin32kCallout, (PVOID)Callbacks->Callout);
+                    KeReleaseSpinLock(&g_DisplayWin32kProcessLock, OldIrql);
+                    if (Previous != NULL)
+                        ObDereferenceObject(Previous);
                 }
                 BytesReturned = sizeof(VIDEO_WIN32K_CALLBACKS);
                 Status = STATUS_SUCCESS;
@@ -4092,9 +4401,7 @@ DxgkpDisplayDispatch(
             /*
              * win32ss calls this to get a POINTER to an array of
              * VIDEO_MONITOR_DEVICE structures.  The output buffer is
-             * &pMonitorDevices (a pointer-sized slot).  We allocate
-             * a pool array with a single NULL-pdo terminator entry
-             * and write its address into the output buffer.
+             * &pMonitorDevices (a pointer-sized slot).
              *
              * The caller (EngpUpdateMonitorDevices) will iterate until
              * it finds pdo==NULL, then free the array with ExFreePool.
@@ -4106,25 +4413,11 @@ DxgkpDisplayDispatch(
             {
                 PVIDEO_MONITOR_DEVICE MonArray;
 
-                /* Allocate a single-entry array (just the NULL terminator) */
-                MonArray = ExAllocatePoolZero(PagedPool,
-                                             sizeof(VIDEO_MONITOR_DEVICE),
-                                             TAG_DXGK_DISPLAY);
-                if (MonArray != NULL)
+                Status = DxgkpEnumMonitorPdos(g_DisplayAdapter, &MonArray);
+                if (NT_SUCCESS(Status))
                 {
-                    /* NULL pdo terminator = 0 monitors */
-                    MonArray[0].pdo = NULL;
-                    MonArray[0].flag = 0;
-                    MonArray[0].HwID = 0;
-
-                    /* Write the pointer to the array into the output buffer */
                     *(PVIDEO_MONITOR_DEVICE *)Irp->AssociatedIrp.SystemBuffer = MonArray;
-                    BytesReturned = sizeof(PVOID);  /* sizeof the pointer written */
-                    Status = STATUS_SUCCESS;
-                }
-                else
-                {
-                    Status = STATUS_INSUFFICIENT_RESOURCES;
+                    BytesReturned = sizeof(PVOID);
                 }
             }
             else
@@ -4152,7 +4445,8 @@ DxgkpDisplayDispatch(
                 {
                     DxgkVidPnDestroyDisplayModeCache(g_DisplayAdapter);
                     Status = DxgkVidPnQueryVideoModes(g_DisplayAdapter, NULL, 0, &NumModes->NumModes, FALSE);
-                    if (!NT_SUCCESS(Status) && !g_DisplayAdapter->MiniportContext->IsDisplayOnlyDriver)
+                    if (!NT_SUCCESS(Status) && !g_DisplayAdapter->MiniportContext->IsDisplayOnlyDriver &&
+                        !DxgkResetHoldsMiniport(g_DisplayAdapter))
                         break;
                 }
                 if (!NT_SUCCESS(Status))
@@ -4195,7 +4489,8 @@ DxgkpDisplayDispatch(
                                 &ModeCount, Stack->Parameters.DeviceIoControl.IoControlCode == IOCTL_VIDEO_QUERY_CURRENT_MODE);
                     if (NT_SUCCESS(Status))
                         BytesReturned = ModeCount * sizeof(*ModeInfo);
-                    if (NT_SUCCESS(Status) || !g_DisplayAdapter->MiniportContext->IsDisplayOnlyDriver)
+                    if (NT_SUCCESS(Status) ||
+                        (!g_DisplayAdapter->MiniportContext->IsDisplayOnlyDriver && !DxgkResetHoldsMiniport(g_DisplayAdapter)))
                         break;
                 }
                 DxgkpSnapshotCommittedDisplayState(g_DisplayAdapter, &CommittedWidth, &CommittedHeight, NULL);

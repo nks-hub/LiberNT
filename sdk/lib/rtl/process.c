@@ -28,7 +28,7 @@ RtlpQueryEnvironmentSize(
     ULONG_PTR BaseAddress, EnvironmentAddress;
     SIZE_T MaximumSize, MaximumLength, Offset, Index;
     NTSTATUS Status;
-    BOOLEAN _SEH2_VOLATILE Found = FALSE;
+    BOOLEAN Found = FALSE;
 
     if (!Environment || !EnvironmentSize)
         return STATUS_INVALID_PARAMETER;
@@ -264,7 +264,7 @@ RtlCreateUserProcess(IN PUNICODE_STRING ImageFileName,
                      IN HANDLE ExceptionPort OPTIONAL,
                      OUT PRTL_USER_PROCESS_INFORMATION ProcessInfo)
 {
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     OBJECT_ATTRIBUTES ObjectAttributes;
     DPRINT("RtlCreateUserProcess: %wZ\n", ImageFileName);
 
@@ -376,6 +376,10 @@ RtlCreateUserProcess(IN PUNICODE_STRING ImageFileName,
             DPRINT1("NtCreateUserProcess failed, Status=0x%lx\n", Status);
             return Status;
         }
+
+        /* The image's file and section come back as our handles; nothing here keeps them */
+        if (CreateInfo.SuccessState.FileHandle) NtClose(CreateInfo.SuccessState.FileHandle);
+        if (CreateInfo.SuccessState.SectionHandle) NtClose(CreateInfo.SuccessState.SectionHandle);
 
         return STATUS_SUCCESS;
     }

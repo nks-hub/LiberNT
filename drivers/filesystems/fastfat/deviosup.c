@@ -28,7 +28,7 @@ Abstract:
 #define Dbg                              (DEBUG_TRACE_DEVIOSUP)
 
 #define CollectDiskIoStats(VCB,FUNCTION,IS_USER_IO,COUNT) {                                    \
-    PFILESYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors].Common;   \
+    PFILESYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors].Common;   \
     if (IS_USER_IO) {                                                                          \
         if ((FUNCTION) == IRP_MJ_WRITE) {                                                      \
             Stats->UserDiskWrites += (COUNT);                                                  \
@@ -967,7 +967,7 @@ Return Value:
     if (!FlagOn(Irp->Flags, IRP_PAGING_IO)) {
 
         PFILE_SYSTEM_STATISTICS Stats =
-            &FcbOrDcb->Vcb->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors];
+            &FcbOrDcb->Vcb->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors];
 
         if (IrpContext->MajorFunction == IRP_MJ_READ) {
             Stats->Fat.NonCachedReads += 1;
@@ -1114,7 +1114,7 @@ Return Value:
         } else {
 
             PFILE_SYSTEM_STATISTICS Stats =
-                &FcbOrDcb->Vcb->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors];
+                &FcbOrDcb->Vcb->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors];
 
             if (IrpContext->MajorFunction == IRP_MJ_READ) {
                 Stats->Fat.NonCachedDiskReads += 1;
@@ -1678,7 +1678,7 @@ Return Value:
 --*/
 
 {
-    PIRP _SEH2_VOLATILE Irp;
+    PIRP Irp;
     PIO_STACK_LOCATION IrpSp;
     PMDL Mdl;
     BOOLEAN Wait;
@@ -1688,9 +1688,9 @@ Return Value:
     ULONG Length = 0;
 #endif
 
-    ULONG _SEH2_VOLATILE UnwindRunCount = 0;
+    ULONG UnwindRunCount = 0;
 
-    BOOLEAN _SEH2_VOLATILE ExceptionExpected = TRUE;
+    BOOLEAN ExceptionExpected = TRUE;
 
     PAGED_CODE();
 
@@ -2550,7 +2550,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PFAT_IO_CONTEXT Context = Contxt;
     PIRP MasterIrp = Context->MasterIrp;
     BOOLEAN PostRequest = FALSE;
@@ -3141,7 +3141,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PFAT_IO_CONTEXT Context = Contxt;
     BOOLEAN PostRequest = FALSE;

@@ -1193,8 +1193,8 @@ VOID FASTCALL IntLinkHwnd(PWND Wnd, HWND hWndPrev)
         }
         else
         {
-            if (WndInsertAfter->spwndNext &&
-                (WndInsertAfter->spwndNext->ExStyle & WS_EX_TOPMOST))
+            if (Wnd->spwndNext &&
+                (Wnd->spwndNext->ExStyle & WS_EX_TOPMOST))
             {
                 Wnd->ExStyle |= WS_EX_TOPMOST;
             }
@@ -1632,25 +1632,28 @@ VOID FASTCALL IntFreeHwndList(PWINDOWLIST pwlTarget)
 }
 
 static VOID FASTCALL
-IntRemoveImeWindowsFromList(PWINDOWLIST pwl)
+IntMoveImeWindowsToEnd(PWINDOWLIST pwl)
 {
-    HWND *phwnd;
+    HWND *phwnd, *phwndEnd = pwl->phwndLast;
+    HWND hwnd;
 
-    for (phwnd = pwl->ahwnd; phwnd < pwl->phwndLast;)
+    for (phwnd = pwl->ahwnd; phwnd < phwndEnd;)
     {
         PWND Window = ValidateHwndNoErr(*phwnd);
 
-        if (!Window ||
+        if (!Window || !Window->spwndParent || !UserIsDesktopWindow(Window->spwndParent) ||
             (Window->fnid != FNID_IME && !IS_WND_IMELIKE(Window)))
         {
             ++phwnd;
             continue;
         }
 
+        hwnd = *phwnd;
         RtlMoveMemory(phwnd,
                       phwnd + 1,
-                      (SIZE_T)(pwl->phwndLast - phwnd) * sizeof(*phwnd));
-        --pwl->phwndLast;
+                      (SIZE_T)(pwl->phwndLast - phwnd - 1) * sizeof(*phwnd));
+        pwl->phwndLast[-1] = hwnd;
+        --phwndEnd;
     }
 }
 
@@ -1686,7 +1689,6 @@ NtUserBuildHwndList(
    PTHREADINFO pti = NULL;
    PWINDOWLIST pwl = NULL, pwlMessage = NULL;
    PWND Parent = NULL, Start = NULL;
-   BOOLEAN TopLevelThreadQuery = FALSE;
    ULONG Count, MessageCount = 0, Required;
    HWND Terminator = HWND_TERMINATOR;
 
@@ -1694,7 +1696,7 @@ NtUserBuildHwndList(
        return STATUS_INVALID_PARAMETER;
 
    UserEnterShared();
-   UserDomainLockExclusive(DLT_DESKTOP);
+   BOOLEAN bDom0 = UserDomainLockExclusive(DLT_DESKTOP);
 
    if (dwThreadId)
    {
@@ -1795,8 +1797,6 @@ NtUserBuildHwndList(
             goto Quit;
          }
       }
-
-      TopLevelThreadQuery = (pti != NULL);
    }
    else
    {
@@ -1838,15 +1838,9 @@ NtUserBuildHwndList(
       }
    }
 
-   /* Per-thread IME, IME UI, and their STA helper windows are implementation details. */
-   if (TopLevelThreadQuery)
-   {
-      IntRemoveImeWindowsFromList(pwl);
-      if (pwlMessage)
-      {
-         IntRemoveImeWindowsFromList(pwlMessage);
-      }
-   }
+   IntMoveImeWindowsToEnd(pwl);
+   if (pwlMessage)
+      IntMoveImeWindowsToEnd(pwlMessage);
 
    Count = (ULONG)(pwl->phwndLast - pwl->ahwnd);
    if (pwlMessage)
@@ -1907,7 +1901,7 @@ Quit:
    if (Thread)
       ObDereferenceObject(Thread);
    SetLastNtError(Status);
-   UserDomainUnlockExclusive(DLT_DESKTOP);
+   UserDomainUnlockExclusive(DLT_DESKTOP, bDom0);
    UserLeave();
    return Status;
 }
@@ -2436,15 +2430,14 @@ Error:
    return NULL;
 }
 
-/* An IME-like window is created directly below the first owner that is not IME-like. */
-/* FIXME: an IME UI window created after its owner was shown lands below the default IME window on Windows */
+/* The default IME window is created directly below the first owner that is not IME-like. */
 static HWND FASTCALL
 IntImeLikeInsertAfter(PWND Window, HWND hwndInsertAfter)
 {
    PWND Owner = Window->spwndOwner;
    UINT Depth = 0;
 
-   if (hwndInsertAfter != HWND_TOP || !IS_WND_IMELIKE(Window))
+   if (hwndInsertAfter != HWND_TOP || Window->pcls->atomClassName != gpsi->atomSysClass[ICLS_IME])
       return hwndInsertAfter;
    while (Owner && IS_WND_IMELIKE(Owner) && Depth++ < 64)
       Owner = Owner->spwndOwner;
@@ -2991,7 +2984,7 @@ ProbeAndCaptureLargeString(
     OUT PLARGE_STRING plstrSafe,
     IN PLARGE_STRING plstrUnsafe)
 {
-    LARGE_STRING _SEH2_VOLATILE lstrTemp = {0};
+    LARGE_STRING lstrTemp = {0};
     PVOID pvBuffer = NULL;
 
     _SEH2_TRY
@@ -3545,10 +3538,10 @@ NtUserFindWindowEx(HWND hwndParent,
                    DWORD dwUnknown)
 {
    PWND Parent, ChildAfter;
-   UNICODE_STRING _SEH2_VOLATILE ClassName = {0}, WindowName = {0};
-   HWND _SEH2_VOLATILE Desktop, Ret = NULL;
+   UNICODE_STRING ClassName = {0}, WindowName = {0};
+   HWND Desktop, Ret = NULL;
    BOOL DoMessageWnd = FALSE;
-   RTL_ATOM _SEH2_VOLATILE ClassAtom = (RTL_ATOM)0;
+   RTL_ATOM ClassAtom = (RTL_ATOM)0;
 
    TRACE("Enter NtUserFindWindowEx\n");
    UserEnterShared();
@@ -3572,8 +3565,8 @@ NtUserFindWindowEx(HWND hwndParent,
                    _SEH2_LEAVE;
                }
 
-               if (!IntGetAtomFromStringOrAtom((PUNICODE_STRING)&ClassName,
-                                               (RTL_ATOM *)&ClassAtom))
+               if (!IntGetAtomFromStringOrAtom(&ClassName,
+                                               &ClassAtom))
                {
                    EngSetLastError(ERROR_CANNOT_FIND_WND_CLASS);
                    _SEH2_LEAVE;
@@ -3681,7 +3674,7 @@ NtUserFindWindowEx(HWND hwndParent,
                 ustr.MaximumLength = (USHORT)min(TopLevelWindow->strName.MaximumLength, MAXUSHORT);
                 WindowMatches = !CheckWindowName ||
                                 (TopLevelWindow->strName.Length < 0xFFFF &&
-                                 !RtlCompareUnicodeString((PCUNICODE_STRING)&WindowName, &ustr, TRUE));
+                                 !RtlCompareUnicodeString(&WindowName, &ustr, TRUE));
                 ClassMatches = (ClassAtom == (RTL_ATOM)0) ||
                                ClassAtom == TopLevelWindow->pcls->atomNVClassName;
 
@@ -3691,7 +3684,7 @@ NtUserFindWindowEx(HWND hwndParent,
                    break;
                 }
 
-                if (IntFindWindow(TopLevelWindow, NULL, ClassAtom, (PUNICODE_STRING)&WindowName))
+                if (IntFindWindow(TopLevelWindow, NULL, ClassAtom, &WindowName))
                 {
                    /* window returns the handle of the top-level window, in case it found
                       the child window */
@@ -3706,7 +3699,7 @@ NtUserFindWindowEx(HWND hwndParent,
        else
        {
           TRACE("FindWindowEx: Not Desktop Parent!\n");
-          Ret = IntFindWindow(Parent, ChildAfter, ClassAtom, (PUNICODE_STRING)&WindowName);
+          Ret = IntFindWindow(Parent, ChildAfter, ClassAtom, &WindowName);
        }
 
        if (Ret == NULL && DoMessageWnd)
@@ -3715,7 +3708,7 @@ NtUserFindWindowEx(HWND hwndParent,
 
           if((MsgWindows = UserGetWindowObject(IntGetMessageWindow())))
           {
-             Ret = IntFindWindow(MsgWindows, ChildAfter, ClassAtom, (PUNICODE_STRING)&WindowName);
+             Ret = IntFindWindow(MsgWindows, ChildAfter, ClassAtom, &WindowName);
           }
        }
    }
@@ -4034,7 +4027,7 @@ NtUserGetListBoxInfo(
    PWND Wnd;
    PPROCESSINFO ppi;
    BOOL NotSameppi = FALSE;
-   DWORD _SEH2_VOLATILE Ret = 0;
+   DWORD Ret = 0;
 
    TRACE("Enter NtUserGetListBoxInfo\n");
    UserEnterShared();
@@ -4970,9 +4963,9 @@ BOOL APIENTRY
 NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
 {
    PWND Wnd;
-   LARGE_STRING _SEH2_VOLATILE SafeText;
+   LARGE_STRING SafeText;
    UNICODE_STRING UnicodeString;
-   BOOL _SEH2_VOLATILE Ret = TRUE;
+   BOOL Ret = TRUE;
 
    TRACE("Enter NtUserDefSetText\n");
 
@@ -4993,7 +4986,7 @@ NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
          return FALSE;
    }
    else
-      RtlZeroMemory((void *)&SafeText, sizeof(SafeText));
+      RtlZeroMemory(&SafeText, sizeof(SafeText));
 
    UserEnterExclusive();
 
@@ -5015,7 +5008,7 @@ NtUserDefSetText(HWND hWnd, PLARGE_STRING WindowText)
             ProbeForRead(SafeText.Buffer, SafeText.Length, sizeof(CHAR));
          else
             ProbeForRead(SafeText.Buffer, SafeText.Length, sizeof(WCHAR));
-         Ret = RtlLargeStringToUnicodeString(&UnicodeString, (PLARGE_STRING)&SafeText);
+         Ret = RtlLargeStringToUnicodeString(&UnicodeString, &SafeText);
       }
       _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
       {

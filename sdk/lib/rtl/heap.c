@@ -32,6 +32,10 @@
 #define HEAP_INITIAL_COMMIT_ALIGN (0x400 * sizeof(PVOID))
 #define HEAP_MAX_GROW_SIZE 0xFD0000
 
+C_ASSERT(FIELD_OFFSET(HEAP, FreeHints) + HEAP_FREE_HINT_COUNT * sizeof(PLIST_ENTRY) +
+         (ROUND_UP(HEAP_FREE_HINT_COUNT, RTL_BITS_OF(ULONG)) / RTL_BITS_OF(ULONG)) * sizeof(ULONG) +
+         sizeof(HEAP_LOCK) + HEAP_LFH_USAGE_SLOTS * sizeof(USHORT) + 2 * HEAP_ENTRY_SIZE <= PAGE_SIZE);
+
 /* Bitmaps stuff */
 
 /* How many least significant bits are clear */
@@ -267,7 +271,7 @@ RtlpInitializeHeap(OUT PHEAP Heap,
     ASSERT(!(Flags & HEAP_NO_SERIALIZE) || (Lock == NULL));  /* HEAP_NO_SERIALIZE => no lock */
 
     /* Make sure we're not doing stupid things */
-    FreeHintCount = 0x80;
+    FreeHintCount = HEAP_FREE_HINT_COUNT;
     /* Start out with the size of a plain Heap header + our hints of free entries + the bitmap */
     HeaderSize = FIELD_OFFSET(HEAP, FreeHints[FreeHintCount])
                  + (ROUND_UP(FreeHintCount, RTL_BITS_OF(ULONG)) / RTL_BITS_OF(ULONG)) * sizeof(ULONG);
@@ -2420,7 +2424,7 @@ RtlpIsValidBusyEntry(PHEAP Heap, PHEAP_ENTRY HeapEntry)
 {
     PHEAP_SEGMENT Segment;
     PHEAP_ENTRY Neighbor;
-    BOOLEAN _SEH2_VOLATILE Valid = FALSE;
+    BOOLEAN Valid = FALSE;
 
     _SEH2_TRY
     {
@@ -2572,6 +2576,7 @@ BOOLEAN NTAPI RtlFreeHeap(
                                      &BlockSize,
                                      MEM_RELEASE);
 
+        /* TODO: in user mode, flush the secure memory cache and retry when the block is secured memory */
         if (!NT_SUCCESS(Status))
         {
             DPRINT1("HEAP: Failed releasing memory with Status 0x%08X. Heap %p, ptr %p, base address %p\n",
@@ -4040,28 +4045,6 @@ BOOLEAN NTAPI RtlValidateHeap(
 /*
  * @unimplemented
  */
-NTSTATUS NTAPI
-RtlEnumProcessHeaps(PHEAP_ENUMERATION_ROUTINE HeapEnumerationRoutine,
-                    PVOID lParam)
-{
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-/*
- * @unimplemented
- */
-BOOLEAN NTAPI
-RtlValidateProcessHeaps(VOID)
-{
-    UNIMPLEMENTED;
-    return TRUE;
-}
-
-
-/*
- * @unimplemented
- */
 BOOLEAN NTAPI
 RtlZeroHeap(
     IN PVOID HeapHandle,
@@ -4535,8 +4518,8 @@ RtlWalkHeap(IN HANDLE HeapHandle,
     PHEAP Heap = HeapHandle;
     PRTL_HEAP_WALK_ENTRY WalkEntry = HeapEntry;
     RTL_HEAP_WALK_ENTRY Entry;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_INVALID_HANDLE;
-    BOOLEAN _SEH2_VOLATILE Locked = FALSE;
+    NTSTATUS Status = STATUS_INVALID_HANDLE;
+    BOOLEAN Locked = FALSE;
 
     if (!HeapEntry)
         return STATUS_INVALID_PARAMETER;
@@ -4614,7 +4597,7 @@ RtlQueryHeapInformation(HANDLE HeapHandle,
 {
     volatile HEAP *Heap = HeapHandle;
     ULONG Compatibility;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     if (HeapInformationClass != HeapCompatibilityInformation)
         return STATUS_INVALID_PARAMETER;
@@ -4708,22 +4691,6 @@ RtlMultipleFreeHeap(IN PVOID HeapHandle,
     }
 
     return Index;
-}
-
-/*
- * Info:
- * - https://securityxploded.com/enumheaps.php
- * - https://evilcodecave.wordpress.com/2009/04/14/rtlqueryprocessheapinformation-as-anti-dbg-trick/
- */
-struct _DEBUG_BUFFER;
-
-NTSTATUS
-NTAPI
-RtlQueryProcessHeapInformation(
-    IN struct _DEBUG_BUFFER *DebugBuffer)
-{
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
 }
 
 /* EOF */

@@ -148,7 +148,7 @@ KspPropertyHandler(
     PKSPROPERTY_ITEM PropertyItem;
     PKSPROPERTY_SET Set;
     PIO_STACK_LOCATION IoStack;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     PFNKSHANDLER PropertyHandler = NULL;
     ULONG Index, InputBufferLength, OutputBufferLength, TotalSize;
     LPGUID Guid;

@@ -844,8 +844,10 @@ test_SystemPropertyTypes(DEVINST DevInst)
     static const WCHAR Guid[] = L"{4C6E7453-7754-4465-7669-636554657374}";
     ULONG Flags = 0, After = 0, Value = 0x5a, Size, AfterSize;
     DEVPROPTYPE Type = DEVPROP_TYPE_EMPTY, AfterType = DEVPROP_TYPE_EMPTY;
-    WCHAR Read[64];
+    WCHAR Read[64], Path[ARRAYSIZE(L"SYSTEM\\CurrentControlSet\\Enum\\") + MAX_DEVICE_ID_LEN];
     CONFIGRET Cr, AfterCr;
+    LONG Error = ERROR_SUCCESS;
+    HKEY Key;
 
     Size = sizeof(Flags);
     Cr = CM_Get_DevNode_PropertyW(DevInst, &DEVPKEY_Device_ConfigFlags, &Type, (PBYTE)&Flags, &Size, 0);
@@ -872,6 +874,17 @@ test_SystemPropertyTypes(DEVINST DevInst)
     ok(Cr == CR_INVALID_DATA, "Setting UpperFilters from a string returned CR %lu\n", Cr);
     Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_PDOName, DEVPROP_TYPE_UINT32, (const BYTE *)&Value, sizeof(Value), 0);
     ok(Cr == CR_INVALID_DATA, "Setting PDOName from a UINT32 returned CR %lu\n", Cr);
+
+    Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_Class, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
+    ok(Cr == CR_INVALID_PROPERTY, "Setting Class returned CR %lu\n", Cr);
+    lstrcpyW(Path, L"SYSTEM\\CurrentControlSet\\Enum\\");
+    if (CM_Get_Device_IDW(DevInst, Path + lstrlenW(Path), MAX_DEVICE_ID_LEN, 0) == CR_SUCCESS &&
+        RegOpenKeyExW(HKEY_LOCAL_MACHINE, Path, 0, KEY_QUERY_VALUE, &Key) == ERROR_SUCCESS)
+    {
+        Error = RegQueryValueExW(Key, L"Class", NULL, NULL, NULL, NULL);
+        RegCloseKey(Key);
+    }
+    ok(Error == ERROR_FILE_NOT_FOUND, "The instance key of %S holds a Class value or cannot be read (error %ld)\n", Path, Error);
 
     Cr = CM_Set_DevNode_PropertyW(DevInst, &DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING, (const BYTE *)Name, sizeof(Name), 0);
     ok(Cr == CR_SUCCESS, "Setting FriendlyName returned CR %lu\n", Cr);

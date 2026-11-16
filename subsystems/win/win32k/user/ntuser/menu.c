@@ -2767,7 +2767,7 @@ static void FASTCALL MENU_DrawMenuItem(PWND Wnd, PMENU Menu, PWND WndOwner, HDC 
         }
     }
     else
-        FillRect( hdc, &rect, IntGetSysColorBrush(bkgnd) );
+        FillRect( hdc, &rect, Menu->hbrBack ? Menu->hbrBack : IntGetSysColorBrush(bkgnd) );
 
     IntGdiSetBkMode( hdc, TRANSPARENT );
 
@@ -3159,14 +3159,21 @@ IntDrawMenuBarTemp(PWND pWnd, HDC hDC, LPRECT Rect, PMENU pMenu, HFONT Font)
 
   Rect->bottom = Rect->top + pMenu->cyMenu;
 
-  FillRect(hDC, Rect, IntGetSysColorBrush(flat_menu ? COLOR_MENUBAR : COLOR_MENU));
+  if (pMenu->hbrBack)
+  {
+      FillRect(hDC, Rect, pMenu->hbrBack);
+  }
+  else
+  {
+      FillRect(hDC, Rect, IntGetSysColorBrush(flat_menu ? COLOR_MENUBAR : COLOR_MENU));
 
-  NtGdiSelectPen(hDC, NtGdiGetStockObject(DC_PEN));
-  IntSetDCPenColor(hDC, MENU_Themed(pMenu) ?
-                        MENU_MixColor(IntGetSysColor(COLOR_MENUBAR), IntGetSysColor(COLOR_MENUTEXT), 14) :
-                        IntGetSysColor(COLOR_3DFACE));
-  GreMoveTo(hDC, Rect->left, Rect->bottom - 1, NULL);
-  NtGdiLineTo(hDC, Rect->right, Rect->bottom - 1);
+      NtGdiSelectPen(hDC, NtGdiGetStockObject(DC_PEN));
+      IntSetDCPenColor(hDC, MENU_Themed(pMenu) ?
+                            MENU_MixColor(IntGetSysColor(COLOR_MENUBAR), IntGetSysColor(COLOR_MENUTEXT), 14) :
+                            IntGetSysColor(COLOR_3DFACE));
+      GreMoveTo(hDC, Rect->left, Rect->bottom - 1, NULL);
+      NtGdiLineTo(hDC, Rect->right, Rect->bottom - 1);
+  }
 
   if (pMenu->cItems == 0)
   {
@@ -6366,7 +6373,7 @@ NtUserGetTitleBarInfo(
     PTITLEBARINFO bti)
 {
     PWND WindowObject;
-    TITLEBARINFO _SEH2_VOLATILE bartitleinfo;
+    TITLEBARINFO bartitleinfo;
     BOOLEAN retValue = FALSE;
 
     TRACE("Enter NtUserGetTitleBarInfo\n");
@@ -6383,7 +6390,7 @@ NtUserGetTitleBarInfo(
     _SEH2_TRY
     {
         ProbeForRead(bti, sizeof(TITLEBARINFO), 1);
-        RtlCopyMemory((void *)&bartitleinfo, bti, sizeof(TITLEBARINFO));
+        RtlCopyMemory(&bartitleinfo, bti, sizeof(TITLEBARINFO));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6393,20 +6400,20 @@ NtUserGetTitleBarInfo(
     _SEH2_END
 
     /* Get the tile bar info */
-    retValue = intGetTitleBarInfo(WindowObject, (PTITLEBARINFO)&bartitleinfo);
+    retValue = intGetTitleBarInfo(WindowObject, &bartitleinfo);
     if (!retValue)
     {
         // intGetTitleBarInfo() set LastError.
         goto Exit;
     }
     if (UserDpiIsVirtualCaller())
-        UserDpiRectToLogical((PRECT)&bartitleinfo.rcTitleBar);
+        UserDpiRectToLogical(&bartitleinfo.rcTitleBar);
 
     /* Copy local buffer back to user mode buffer */
     _SEH2_TRY
     {
         ProbeForWrite(bti, sizeof(TITLEBARINFO), 1);
-        RtlCopyMemory(bti, (const void *)&bartitleinfo, sizeof(TITLEBARINFO));
+        RtlCopyMemory(bti, &bartitleinfo, sizeof(TITLEBARINFO));
     }
     _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
     {
@@ -6865,7 +6872,7 @@ NtUserDrawMenuBarTemp(
 {
    PMENU Menu;
    PWND Window;
-   RECT _SEH2_VOLATILE Rect;
+   RECT Rect;
    NTSTATUS Status = STATUS_SUCCESS;
    DWORD Ret = 0;
 
@@ -6887,7 +6894,7 @@ NtUserDrawMenuBarTemp(
    _SEH2_TRY
    {
       ProbeForRead(pRect, sizeof(RECT), sizeof(ULONG));
-      RtlCopyMemory((void *)&Rect, pRect, sizeof(RECT));
+      RtlCopyMemory(&Rect, pRect, sizeof(RECT));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {
@@ -6901,7 +6908,7 @@ NtUserDrawMenuBarTemp(
       goto Exit; // Return 0
    }
 
-   Ret = IntDrawMenuBarTemp(Window, hDC, (LPRECTL)&Rect, Menu, hFont);
+   Ret = IntDrawMenuBarTemp(Window, hDC, &Rect, Menu, hFont);
 
 Exit:
    UserLeave();
@@ -7269,7 +7276,7 @@ NtUserTrackPopupMenuEx(
 {
     PMENU menu;
     PWND pWnd;
-    TPMPARAMS _SEH2_VOLATILE tpm;
+    TPMPARAMS tpm;
     BOOL Ret = FALSE;
     USER_REFERENCE_ENTRY WndRef, MenuRef;
 
@@ -7323,12 +7330,12 @@ NtUserTrackPopupMenuEx(
         x = UserDpiToPhysical(x);
         y = UserDpiToPhysical(y);
         if (lptpm)
-            UserDpiRectToPhysical((PRECT)&tpm.rcExclude);
+            UserDpiRectToPhysical(&tpm.rcExclude);
     }
 
     UserRefObjectCo(pWnd, &WndRef);
     UserRefObjectCo(menu, &MenuRef);
-    Ret = IntTrackPopupMenuEx(menu, fuFlags, x, y, pWnd, (lptpm ? (const TPMPARAMS *)&tpm : NULL));
+    Ret = IntTrackPopupMenuEx(menu, fuFlags, x, y, pWnd, (lptpm ? &tpm : NULL));
     UserDerefObjectCo(menu);
     UserDerefObjectCo(pWnd);
 

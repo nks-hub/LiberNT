@@ -134,7 +134,7 @@ AdjustWindowRectEx(LPRECT lpRect,
 		   BOOL bMenu,
 		   DWORD dwExStyle)
 {
-   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
+   BOOL Hook, Ret = FALSE;
 
    LoadUserApiHook();
 
@@ -180,7 +180,7 @@ AdjustWindowRect(LPRECT lpRect,
 BOOL WINAPI
 DrawCaption(HWND hWnd, HDC hDC, LPCRECT lprc, UINT uFlags)
 {
-   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
+   BOOL Hook, Ret = FALSE;
 
    LoadUserApiHook();
 

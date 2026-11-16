@@ -226,8 +226,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -307,8 +307,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -468,9 +468,7 @@ Return Value:
             //
 
             if (FileInformationClass == FileNameInformation ||
-#if (NTDDI_VERSION >= NTDDI_VISTA)
                 FileInformationClass == FileNormalizedNameInformation ||
-#endif
                 FileInformationClass == FileAllInformation ) {
 
                 if (!FatAcquireExclusiveVcb( IrpContext, Vcb )) {
@@ -585,12 +583,10 @@ Return Value:
                 FatQueryNameInfo( IrpContext, Fcb, Ccb, FALSE, Buffer, &Length );
                 break;
 
-#if (NTDDI_VERSION >= NTDDI_VISTA)
             case FileNormalizedNameInformation:
 
                 FatQueryNameInfo( IrpContext, Fcb, Ccb, TRUE, Buffer, &Length );
                 break;
-#endif
 
             case FileAlternateNameInformation:
 
@@ -1358,7 +1354,7 @@ Return Value:
 --*/
 
 {
-    PBCB _SEH2_VOLATILE Bcb;
+    PBCB Bcb;
 
     PAGED_CODE();
 
@@ -1967,12 +1963,12 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
 
     PFILE_BASIC_INFORMATION Buffer;
 
     PDIRENT Dirent;
-    PBCB _SEH2_VOLATILE DirentBcb;
+    PBCB DirentBcb;
 
     FAT_TIME_STAMP CreationTime = {0};
     UCHAR CreationMSec = 0;
@@ -2056,7 +2052,7 @@ Return Value:
                                   Fcb,
                                   FALSE,
                                   &Dirent,
-                                  (PBCB *)&DirentBcb );
+                                  &DirentBcb );
         //
         //  Check if the user specified a non-zero creation time
         //
@@ -2769,24 +2765,24 @@ Return Value:
 
     DIRENT Dirent;
 
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     OEM_STRING OldOemName;
     OEM_STRING NewOemName;
     UCHAR OemNameBuffer[24*2];
 
-    PBCB _SEH2_VOLATILE DotDotBcb;
-    PBCB _SEH2_VOLATILE NewDirentBcb;
-    PBCB _SEH2_VOLATILE OldDirentBcb;
-    PBCB _SEH2_VOLATILE SecondPageBcb;
-    PBCB _SEH2_VOLATILE TargetDirentBcb;
+    PBCB DotDotBcb;
+    PBCB NewDirentBcb;
+    PBCB OldDirentBcb;
+    PBCB SecondPageBcb;
+    PBCB TargetDirentBcb;
 
     PDCB TargetDcb = NULL;
     PDCB OldParentDcb;
 
     PDIRENT DotDotDirent = NULL;
     PDIRENT FirstPageDirent = NULL;
-    PDIRENT _SEH2_VOLATILE NewDirent = NULL;
+    PDIRENT NewDirent = NULL;
     PDIRENT OldDirent = NULL;
     PDIRENT SecondPageDirent = NULL;
     PDIRENT ShortDirent = NULL;
@@ -3340,7 +3336,7 @@ Return Value:
                              0,
                              &Flags,
                              &TargetDirent,
-                             (PBCB *)&TargetDirentBcb,
+                             &TargetDirentBcb,
                              (PVBO)&TargetDirentOffset,
                              NULL,
                              &TargetLfn,
@@ -3527,7 +3523,7 @@ Return Value:
             //  Capture a copy of the source dirent.
             //
 
-            FatGetDirentFromFcbOrDcb( IrpContext, Fcb, FALSE, &OldDirent, (PBCB *)&OldDirentBcb );
+            FatGetDirentFromFcbOrDcb( IrpContext, Fcb, FALSE, &OldDirent, &OldDirentBcb );
 
             Dirent = *OldDirent;
 
@@ -3611,7 +3607,7 @@ Return Value:
                                           TargetDcb,
                                           NewOffset,
                                           sizeof(DIRENT),
-                                          (PBCB *)&NewDirentBcb,
+                                          &NewDirentBcb,
 #ifndef __REACTOS__
                                           &NewDirent,
 #else
@@ -3619,7 +3615,7 @@ Return Value:
 #endif
                                           FALSE,
                                           TRUE,
-                                          (PNTSTATUS)&Status );
+                                          &Status );
 
             NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -3641,7 +3637,7 @@ Return Value:
                                               TargetDcb,
                                               SecondPageOffset,
                                               sizeof(DIRENT),
-                                              (PBCB *)&SecondPageBcb,
+                                              &SecondPageBcb,
 #ifndef __REACTOS__
                                               &SecondPageDirent,
 #else
@@ -3649,7 +3645,7 @@ Return Value:
 #endif
                                               FALSE,
                                               TRUE,
-                                              (PNTSTATUS)&Status );
+                                              &Status );
 
                 NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -3842,7 +3838,7 @@ Return Value:
                                               Fcb,
                                               sizeof(DIRENT),
                                               sizeof(DIRENT),
-                                              (PBCB *)&DotDotBcb,
+                                              &DotDotBcb,
 #ifndef __REACTOS__
                                               &DotDotDirent,
 #else
@@ -3850,7 +3846,7 @@ Return Value:
 #endif
                                               FALSE,
                                               TRUE,
-                                              (PNTSTATUS)&Status );
+                                              &Status );
 
                 NT_ASSERT( NT_SUCCESS( Status ) );
 
@@ -4150,12 +4146,12 @@ Return Value:
     ULONG NewAllocationSize = 0;
     ULONG HeaderSize = 0;
 
-    BOOLEAN _SEH2_VOLATILE FileSizeTruncated = FALSE;
+    BOOLEAN FileSizeTruncated = FALSE;
     BOOLEAN CacheMapInitialized = FALSE;
-    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
-    ULONG _SEH2_VOLATILE OriginalFileSize = 0;
-    ULONG _SEH2_VOLATILE OriginalValidDataLength = 0;
-    ULONG _SEH2_VOLATILE OriginalValidDataToDisk = 0;
+    BOOLEAN ResourceAcquired = FALSE;
+    ULONG OriginalFileSize = 0;
+    ULONG OriginalValidDataLength = 0;
+    ULONG OriginalValidDataToDisk = 0;
 
     PAGED_CODE();
 
@@ -4445,18 +4441,18 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PFILE_END_OF_FILE_INFORMATION Buffer;
 
     ULONG NewFileSize = 0;
-    ULONG _SEH2_VOLATILE InitialFileSize = 0;
-    ULONG _SEH2_VOLATILE InitialValidDataLength = 0;
-    ULONG _SEH2_VOLATILE InitialValidDataToDisk = 0;
+    ULONG InitialFileSize = 0;
+    ULONG InitialValidDataLength = 0;
+    ULONG InitialValidDataToDisk = 0;
 
-    BOOLEAN _SEH2_VOLATILE CacheMapInitialized = FALSE;
-    BOOLEAN _SEH2_VOLATILE UnwindFileSizes = FALSE;
-    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
+    BOOLEAN CacheMapInitialized = FALSE;
+    BOOLEAN UnwindFileSizes = FALSE;
+    BOOLEAN ResourceAcquired = FALSE;
 
 
     PAGED_CODE();
@@ -4843,12 +4839,12 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     PFILE_VALID_DATA_LENGTH_INFORMATION Buffer;
 
     ULONG NewValidDataLength;
-    BOOLEAN _SEH2_VOLATILE ResourceAcquired = FALSE;
+    BOOLEAN ResourceAcquired = FALSE;
 
     PAGED_CODE();
 
@@ -5004,9 +5000,9 @@ FatRenameEAs (
     IN POEM_STRING OldOemName
     )
 {
-    BOOLEAN _SEH2_VOLATILE LockedEaFcb = FALSE;
+    BOOLEAN LockedEaFcb = FALSE;
 
-    PBCB _SEH2_VOLATILE EaBcb = NULL;
+    PBCB EaBcb = NULL;
     PDIRENT EaDirent;
     EA_RANGE EaSetRange;
     PEA_SET_HEADER EaSetHeader;
@@ -5035,7 +5031,7 @@ FatRenameEAs (
             FatGetEaFile( IrpContext,
                           Vcb,
                           &EaDirent,
-                          (PBCB *)&EaBcb,
+                          &EaBcb,
                           FALSE,
                           FALSE );
 

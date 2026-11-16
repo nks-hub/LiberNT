@@ -58,7 +58,7 @@ BasepGetMuiConfig(
     PIMAGE_RESOURCE_DATA_ENTRY Entry;
     PUCHAR Data;
     ULONG Size, Offset, Length;
-    BOOL _SEH2_VOLATILE Result = FALSE;
+    BOOL Result = FALSE;
 
     RtlZeroMemory(Config, sizeof(*Config));
 
@@ -669,7 +669,7 @@ BasepCollectResDirectory(
     PIMAGE_RESOURCE_DIRECTORY Root, Directory;
     PIMAGE_RESOURCE_DIRECTORY_ENTRY Entries;
     const IMAGE_RESOURCE_DIR_STRING_U *String;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     ULONG Index;
 
     Status = LdrFindResourceDirectory_U(Module, NULL, 0, &Root);

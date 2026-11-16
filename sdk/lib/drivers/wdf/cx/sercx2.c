@@ -2061,25 +2061,49 @@ SerCx2DdiPioTransmitPurgeFifoComplete(
 static
 VOID
 NTAPI
-SerCx2DdiPioInitializeTransactionComplete(
+SerCx2DdiPioTransmitInitializeTransactionComplete(
     _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
-    _In_ WDFOBJECT Object,
+    _In_ SERCX2PIOTRANSMIT PioTransmit,
     _In_ BOOLEAN InitSuccess)
 {
     UNREFERENCED_PARAMETER(ClientGlobals);
-    UNREFERENCED_PARAMETER(Object);
+    UNREFERENCED_PARAMETER(PioTransmit);
     UNREFERENCED_PARAMETER(InitSuccess);
 }
 
 static
 VOID
 NTAPI
-SerCx2DdiPioCleanupTransactionComplete(
+SerCx2DdiPioReceiveInitializeTransactionComplete(
     _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
-    _In_ WDFOBJECT Object)
+    _In_ SERCX2PIORECEIVE PioReceive,
+    _In_ BOOLEAN InitSuccess)
 {
     UNREFERENCED_PARAMETER(ClientGlobals);
-    UNREFERENCED_PARAMETER(Object);
+    UNREFERENCED_PARAMETER(PioReceive);
+    UNREFERENCED_PARAMETER(InitSuccess);
+}
+
+static
+VOID
+NTAPI
+SerCx2DdiPioTransmitCleanupTransactionComplete(
+    _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
+    _In_ SERCX2PIOTRANSMIT PioTransmit)
+{
+    UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(PioTransmit);
+}
+
+static
+VOID
+NTAPI
+SerCx2DdiPioReceiveCleanupTransactionComplete(
+    _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
+    _In_ SERCX2PIORECEIVE PioReceive)
+{
+    UNREFERENCED_PARAMETER(ClientGlobals);
+    UNREFERENCED_PARAMETER(PioReceive);
 }
 
 static
@@ -2088,11 +2112,11 @@ NTAPI
 SerCx2DdiSaveReceiveFifoOnD0Exit(
     _In_ PSERCX_DRIVER_GLOBALS ClientGlobals,
     _In_ SERCX2PIORECEIVE PioReceive,
-    _In_ ULONG BytesToSave)
+    _In_ ULONG FifoSize)
 {
     UNREFERENCED_PARAMETER(ClientGlobals);
     UNREFERENCED_PARAMETER(PioReceive);
-    UNREFERENCED_PARAMETER(BytesToSave);
+    UNREFERENCED_PARAMETER(FifoSize);
 }
 
 
@@ -2603,10 +2627,10 @@ static PVOID SerCx2Functions[SercxFunctionTableNumEntries] =
     SerCx2DdiSystemDmaCleanupTransactionComplete,
     SerCx2DdiSystemDmaCleanupTransactionComplete,
     SerCx2DdiSystemDmaReceiveNewDataNotification,
-    SerCx2DdiPioInitializeTransactionComplete,
-    SerCx2DdiPioInitializeTransactionComplete,
-    SerCx2DdiPioCleanupTransactionComplete,
-    SerCx2DdiPioCleanupTransactionComplete,
+    SerCx2DdiPioTransmitInitializeTransactionComplete,
+    SerCx2DdiPioReceiveInitializeTransactionComplete,
+    SerCx2DdiPioTransmitCleanupTransactionComplete,
+    SerCx2DdiPioReceiveCleanupTransactionComplete,
     SerCx2DdiPioTransmitReady,
     SerCx2DdiPioReceiveReady,
     SerCx2DdiSaveReceiveFifoOnD0Exit,

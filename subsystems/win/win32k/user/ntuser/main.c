@@ -374,11 +374,11 @@ ExitProcessCallback(PEPROCESS Process)
     IntCompositionCleanupProcess(Process);
     IntDCompositionCleanupProcess(ppiCurrent);
 
+    /* Cleanup USER info, which still uses the GDI objects of its windows */
+    UserProcessDestroy(Process);
+
     /* Cleanup GDI info */
     GdiProcessDestroy(Process);
-
-    /* Cleanup USER info */
-    UserProcessDestroy(Process);
 
     /* The process is dying */
     PsSetProcessWin32Process(Process, NULL, ppiCurrent);
@@ -569,7 +569,7 @@ IntIsGuiImage(
     _In_ PEPROCESS Process)
 {
     PIMAGE_NT_HEADERS pNtHeaders;
-    BOOL _SEH2_VOLATILE bGui = FALSE;
+    BOOL bGui = FALSE;
 
     if (!Process->Peb || !Process->SectionBaseAddress)
         return FALSE;
@@ -855,7 +855,7 @@ InitThreadCallback(PETHREAD Thread)
         Status = co_IntClientThreadSetup();
         if (!NT_SUCCESS(Status))
         {
-            ERR_CH(UserThread, "ClientThreadSetup failed with Status 0x%08lx\n", Status);
+            WARN_CH(UserThread, "ClientThreadSetup failed with Status 0x%08lx\n", Status);
             goto error;
         }
         TRACE_CH(UserThread, "co_IntClientThreadSetup succeeded!\n");
@@ -869,7 +869,7 @@ InitThreadCallback(PETHREAD Thread)
     return STATUS_SUCCESS;
 
 error:
-    ERR_CH(UserThread, "InitThreadCallback failed! Freeing pti 0x%p for TID:0x%lx\n",
+    WARN_CH(UserThread, "InitThreadCallback failed! Freeing pti 0x%p for TID:0x%lx\n",
            ptiCurrent, HandleToUlong(Thread->Cid.UniqueThread));
     ExitThreadCallback(Thread);
     return Status;
@@ -1109,6 +1109,7 @@ DriverUnload(IN PDRIVER_OBJECT DriverObject)
     // TODO: Do more cleanup!
 
     FreeFontSupport();
+    IntCompositionUnload();
     if (gpDisplaySession)
     {
         ResetCsrApiPort(gpDisplaySession);

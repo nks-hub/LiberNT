@@ -83,6 +83,19 @@ SampRepairDomainSecurity(VOID)
     SampRegCloseKey(&ServerKeyHandle);
 }
 
+static
+VOID
+SampRepairBuiltinAliases(VOID)
+{
+    HANDLE ServerKeyHandle = NULL;
+
+    if (!NT_SUCCESS(SampRegOpenKey(SamKeyHandle, L"SAM", KEY_ALL_ACCESS, &ServerKeyHandle)))
+        return;
+
+    SampSetupAddMissingBuiltinAliases(ServerKeyHandle);
+    SampRegCloseKey(&ServerKeyHandle);
+}
+
 NTSTATUS
 SampInitDatabase(VOID)
 {
@@ -101,6 +114,7 @@ SampInitDatabase(VOID)
     }
 
     SampRepairDomainSecurity();
+    SampRepairBuiltinAliases();
 
     TRACE("SampInitDatabase() done\n");
 
@@ -372,7 +386,7 @@ SampValidateDbObject(SAMPR_HANDLE Handle,
                      PSAM_DB_OBJECT *DbObject)
 {
     PSAM_DB_OBJECT LocalObject = (PSAM_DB_OBJECT)Handle;
-    BOOLEAN _SEH2_VOLATILE bValid = FALSE;
+    BOOLEAN bValid = FALSE;
 
     _SEH2_TRY
     {

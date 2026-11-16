@@ -1,44 +1,29 @@
 /*
- * PROJECT:     ReactOS Kernel
- * LICENSE:     MIT (https://spdx.org/licenses/MIT)
- * PURPOSE:     Boot stack switching for x64
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later),
+ *              with portions under MIT (https://spdx.org/licenses/MIT)
+ * PURPOSE:     Move the boot processor onto its kernel boot stack
  * COPYRIGHT:   Copyright 2010 Timo Kreuzer <timo.kreuzer@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES ******************************************************************/
 
 #include <asm.inc>
 #include <ksamd64.inc>
 
 EXTERN KiSystemStartupBootStack:PROC
 
-/* GLOBALS *******************************************************************/
-
-
-/* FUNCTIONS *****************************************************************/
-
 .code64
 
-/**
- * VOID
- * KiSwitchToBootStack(
- *     IN ULONG_PTR InitialStack<rcx>)
- */
 PUBLIC KiSwitchToBootStack
 .PROC KiSwitchToBootStack
-
-    /* Setup the new stack */
     mov ax, HEX(18)
     mov ss, ax
     mov rsp, rcx
-    // Note: 8 bytes extra to compensate for the missing return address on
-    // the stack. On function entry the stack is unaligned by 8!!
-    sub rsp, HEX(308) // FIXME
+    /* The frame starts 8 bytes off, as if a return address had been pushed */
+    sub rsp, HEX(308)
     .ENDPROLOG
 
     jmp KiSystemStartupBootStack
-
 .ENDP
 
 END
-

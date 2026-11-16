@@ -574,10 +574,11 @@ LdrFindEntryForAddress(
     _Out_ PLDR_DATA_TABLE_ENTRY *Module)
 {
     PLIST_ENTRY ListHead, NextEntry;
-    PLDR_DATA_TABLE_ENTRY LdrEntry;
+    PLDR_DATA_TABLE_ENTRY LdrEntry, Found = NULL;
     PIMAGE_NT_HEADERS NtHeader;
     PPEB_LDR_DATA Ldr = NtCurrentPeb()->Ldr;
     ULONG_PTR DllBase, DllEnd;
+    BOOLEAN Shared;
 
     DPRINT("LdrFindEntryForAddress(Address %p)\n", Address);
 
@@ -607,32 +608,36 @@ LdrFindEntryForAddress(
         }
     }
 
-    /* Loop the module list */
-    ListHead = &Ldr->InMemoryOrderModuleList;
-    NextEntry = ListHead->Flink;
-    while (NextEntry != ListHead)
+    Shared = !LdrpOwnsLoaderLock();
+    if (Shared)
+        RtlAcquireSRWLockShared(&LdrpModuleDatatableLock);
+
+    if (!LdrpFindImageByAddress(Address, &Found))
     {
-        /* Get the entry and NT Headers */
-        LdrEntry = CONTAINING_RECORD(NextEntry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
-        NtHeader = RtlImageNtHeader(LdrEntry->DllBase);
-        if (NtHeader)
+        /* Loop the module list */
+        ListHead = &Ldr->InMemoryOrderModuleList;
+        for (NextEntry = ListHead->Flink; (NextEntry != ListHead) && (Found == NULL); NextEntry = NextEntry->Flink)
         {
-            /* Get the Image Base */
+            /* Get the entry and NT Headers */
+            LdrEntry = CONTAINING_RECORD(NextEntry, LDR_DATA_TABLE_ENTRY, InMemoryOrderLinks);
+            NtHeader = RtlImageNtHeader(LdrEntry->DllBase);
+            if (NtHeader == NULL)
+                continue;
+
             DllBase = (ULONG_PTR)LdrEntry->DllBase;
             DllEnd = DllBase + NtHeader->OptionalHeader.SizeOfImage;
-
-            /* Check if they match */
-            if (((ULONG_PTR)Address >= DllBase) &&
-                ((ULONG_PTR)Address < DllEnd))
-            {
-                /* Return it */
-                *Module = LdrEntry;
-                return STATUS_SUCCESS;
-            }
-
-            /* Next Entry */
-            NextEntry = NextEntry->Flink;
+            if (((ULONG_PTR)Address >= DllBase) && ((ULONG_PTR)Address < DllEnd))
+                Found = LdrEntry;
         }
+    }
+
+    if (Shared)
+        RtlReleaseSRWLockShared(&LdrpModuleDatatableLock);
+
+    if (Found != NULL)
+    {
+        *Module = Found;
+        return STATUS_SUCCESS;
     }
 
     /* Nothing found */
@@ -1046,7 +1051,7 @@ LdrVerifyImageMatchesChecksum(
     HANDLE SectionHandle;
     SIZE_T ViewSize;
     PVOID ViewBase;
-    BOOLEAN _SEH2_VOLATILE Result = FALSE, NoActualCheck;
+    BOOLEAN Result = FALSE, NoActualCheck;
     NTSTATUS Status;
     PVOID ImportName;
     ULONG Size;
@@ -1186,7 +1191,7 @@ LdrQueryProcessModuleInformationEx(
     PLIST_ENTRY Entry, InitEntry;
     PLDR_DATA_TABLE_ENTRY Module, InitModule;
     PRTL_PROCESS_MODULE_INFORMATION ModulePtr = NULL;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     ULONG UsedSize = FIELD_OFFSET(RTL_PROCESS_MODULES, Modules);
     ANSI_STRING AnsiString;
     PCHAR p;
@@ -1327,7 +1332,7 @@ LdrEnumerateLoadedModules(
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     NTSTATUS Status;
     ULONG_PTR Cookie;
-    BOOLEAN _SEH2_VOLATILE Stop = FALSE;
+    BOOLEAN Stop = FALSE;
 
     /* Check parameters */
     if ((ReservedFlag) || !(EnumProc)) return STATUS_INVALID_PARAMETER;
@@ -1347,7 +1352,7 @@ LdrEnumerateLoadedModules(
         /* Call the enumeration proc inside SEH */
         _SEH2_TRY
         {
-            EnumProc(LdrEntry, Context, (BOOLEAN *)&Stop);
+            EnumProc(LdrEntry, Context, &Stop);
         }
         _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
         {
@@ -1742,6 +1747,7 @@ LdrUnloadDll(
 
         /* Remove it from the list */
         RtlAcquireSRWLockExclusive(&LdrpModuleDatatableLock);
+        LdrpRemoveImageRange(CurrentEntry);
         RemoveEntryList(&CurrentEntry->InLoadOrderLinks);
         LdrpLoadedDllHandleCache = NULL;
         LdrpGetModuleHandleCache = NULL;
@@ -1771,11 +1777,9 @@ LdrUnloadDll(
             DPRINT1("LDR: Unmapping [%ws]\n", LdrEntry->BaseDllName.Buffer);
         }
 
-#if (_WIN32_WINNT >= _WIN32_WINNT_VISTA) || (DLL_EXPORT_VERSION >= _WIN32_WINNT_VISTA)
         /* Send shutdown notification */
         if (CurrentEntry->Flags & LDRP_LOAD_NOTIFICATIONS_SENT)
             LdrpSendDllNotifications(CurrentEntry, LDR_DLL_NOTIFICATION_REASON_UNLOADED);
-#endif
 
         /* Check if this is a .NET executable */
         CorImageData = RtlImageDirectoryEntryToData(LdrEntry->DllBase,
@@ -1985,7 +1989,7 @@ LdrGetDllFullName(PVOID hModule, UNICODE_STRING *FullDllName)
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     PLIST_ENTRY ListHead, NextEntry;
     PPEB Peb = NtCurrentPeb();
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_DLL_NOT_FOUND;
+    NTSTATUS Status = STATUS_DLL_NOT_FOUND;
     UNICODE_STRING Name;
     BOOLEAN Shared, Found = FALSE;
 

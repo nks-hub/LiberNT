@@ -841,7 +841,7 @@ LsapValidateDbObject(LSAPR_HANDLE Handle,
                      PLSA_DB_OBJECT *DbObject)
 {
     PLSA_DB_OBJECT LocalObject = (PLSA_DB_OBJECT)Handle;
-    BOOLEAN _SEH2_VOLATILE bValid = FALSE;
+    BOOLEAN bValid = FALSE;
 
     _SEH2_TRY
     {

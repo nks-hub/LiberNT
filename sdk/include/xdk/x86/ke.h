@@ -215,9 +215,12 @@ $if (_NTDDK_)
 
 #define PAUSE_PROCESSOR YieldProcessor();
 
-#define KERNEL_STACK_SIZE                   12288
-#define KERNEL_LARGE_STACK_SIZE             61440
-#define KERNEL_LARGE_STACK_COMMIT           12288
+#ifndef KERNEL_STACK_SCALE
+#define KERNEL_STACK_SCALE 1
+#endif
+#define KERNEL_STACK_SIZE                   (12288 * KERNEL_STACK_SCALE)
+#define KERNEL_LARGE_STACK_SIZE             (61440 * KERNEL_STACK_SCALE)
+#define KERNEL_LARGE_STACK_COMMIT           (12288 * KERNEL_STACK_SCALE)
 
 #define SIZE_OF_80387_REGISTERS   80
 
@@ -340,7 +343,7 @@ KeGetPcr(VOID)
 }
 #endif
 
-#if (NTDDI_VERSION >= NTDDI_WIN7) && defined(NT_PROCESSOR_GROUPS)
+#if (NTDDI_VERSION >= NTDDI_WIN7)
 _CRT_DEPRECATE_TEXT("KeGetCurrentProcessorNumber is deprecated. Use KeGetCurrentProcessorNumberEx or KeGetCurrentProcessorIndex instead.")
 #endif
 FORCEINLINE

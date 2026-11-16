@@ -62,7 +62,7 @@ Return Value:
 --*/
 
 {
-    BOOLEAN _SEH2_VOLATILE Result;
+    BOOLEAN Result;
 
     DebugTrace(+1, Dbg, "FatCheckFileAccess\n", 0);
     DebugTrace( 0, Dbg, "DirentAttributes = %8lx\n", DirentAttributes);

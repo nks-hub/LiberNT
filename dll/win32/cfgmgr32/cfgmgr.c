@@ -644,7 +644,7 @@ BOOL
 IsValidRangeList(
     _In_opt_ PINTERNAL_RANGE_LIST pRangeList)
 {
-    BOOL _SEH2_VOLATILE bValid = TRUE;
+    BOOL bValid = TRUE;
 
     if (pRangeList == NULL)
         return FALSE;
@@ -668,7 +668,7 @@ BOOL
 IsValidLogConf(
     _In_opt_ PLOG_CONF_INFO pLogConfInfo)
 {
-    BOOL _SEH2_VOLATILE bValid = TRUE;
+    BOOL bValid = TRUE;
 
     if (pLogConfInfo == NULL)
         return FALSE;
@@ -692,7 +692,7 @@ BOOL
 IsValidResDes(
     _In_opt_ PRES_DES_INFO pResDesInfo)
 {
-    BOOL _SEH2_VOLATILE bValid = TRUE;
+    BOOL bValid = TRUE;
 
     if (pResDesInfo == NULL)
         return FALSE;
@@ -716,7 +716,7 @@ BOOL
 IsValidConflictData(
     _In_opt_ PCONFLICT_DATA pConflictData)
 {
-    BOOL _SEH2_VOLATILE bValid = TRUE;
+    BOOL bValid = TRUE;
 
     if (pConflictData == NULL)
         return FALSE;
@@ -942,6 +942,8 @@ CmpHandleNotifyCallback(
     PDEV_BROADCAST_HANDLE pHandle = (PDEV_BROADCAST_HANDLE)pHeader;
     PHANDLE_NOTIFY_EVENT pEvent;
     HDEVNOTIFY hHandleNotify = pHandle->dbch_hdevnotify;
+    DWORD_PTR Result = TRUE;
+    HWND hWindow;
 
     pEvent = HeapAlloc(GetProcessHeap(), 0, FIELD_OFFSET(HANDLE_NOTIFY_EVENT, Header) + pHeader->dbch_size);
     if (pEvent == NULL)
@@ -951,6 +953,28 @@ CmpHandleNotifyCallback(
     pEvent->dwEventType = dwEventType;
     CopyMemory(&pEvent->Header, pHeader, pHeader->dbch_size);
     ((PDEV_BROADCAST_HANDLE)&pEvent->Header)->dbch_hdevnotify = (HDEVNOTIFY)hContext;
+
+    /* A query is answered by the window itself: BROADCAST_QUERY_DENY keeps the device */
+    if (dwEventType == DBT_DEVICEQUERYREMOVE)
+    {
+        EnterCriticalSection(&HandleNotifyLock);
+        hWindow = CmpFindHandleNotifyWindow(pEvent->pNotifyData, hHandleNotify);
+        LeaveCriticalSection(&HandleNotifyLock);
+
+        if (hWindow != NULL &&
+            !SendMessageTimeoutW(hWindow,
+                                 WM_DEVICECHANGE,
+                                 (WPARAM)dwEventType,
+                                 (LPARAM)&pEvent->Header,
+                                 SMTO_ABORTIFHUNG,
+                                 2000,
+                                 &Result))
+        {
+            Result = TRUE;
+        }
+        HeapFree(GetProcessHeap(), 0, pEvent);
+        return (Result == BROADCAST_QUERY_DENY) ? BROADCAST_QUERY_DENY : TRUE;
+    }
 
     EnterCriticalSection(&HandleNotifyLock);
     if (CmpFindHandleNotifyWindow(pEvent->pNotifyData, hHandleNotify) == NULL)

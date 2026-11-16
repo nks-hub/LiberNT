@@ -382,7 +382,7 @@ Return Value:
     PCLOSE_CONTEXT CloseContext;
     PVCB CurrentVcb = NULL;
     PVCB LastVcb = NULL;
-    BOOLEAN _SEH2_VOLATILE FreeContext = FALSE;
+    BOOLEAN FreeContext = FALSE;
     BOOLEAN TopLevel = FALSE;
 
     ULONG LoopsWithVcbHeld = 0;
@@ -873,7 +873,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PDCB ParentDcb;
     BOOLEAN RecursiveClose;
     BOOLEAN LocalVcbDeleted;

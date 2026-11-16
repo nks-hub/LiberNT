@@ -367,6 +367,8 @@ Ndis6FilterChainFindLocked(
 {
     PLIST_ENTRY Entry;
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     for (Entry = FirstEntry;
          Entry != &Ext->FilterModuleList;
          Entry = WalkDown ? Entry->Flink : Entry->Blink)
@@ -382,6 +384,30 @@ Ndis6FilterChainFindLocked(
     }
 
     return NULL;
+}
+
+NDIS_MEDIUM
+Ndis6AdapterProtocolMedium(
+    _In_ PNDIS6_ADAPTER_EXT Ext)
+{
+    NDIS_MEDIUM Medium;
+    PLIST_ENTRY Entry;
+    KIRQL OldIrql;
+
+    ASSERT(Ext != NULL);
+    Medium = Ext->GeneralAttrs.MediaType;
+
+    KeAcquireSpinLock(&Ext->FilterModuleListLock, &OldIrql);
+    for (Entry = Ext->FilterModuleList.Blink; Entry != &Ext->FilterModuleList; Entry = Entry->Blink)
+    {
+        PNDIS6_FILTER_MODULE Module = CONTAINING_RECORD(Entry, NDIS6_FILTER_MODULE, ListEntry);
+
+        ASSERT(Module->Signature == NDIS6_FILTER_MODULE_SIGNATURE);
+        if (Module->LowerMedium == Medium)
+            Medium = Module->UpperMedium;
+    }
+    KeReleaseSpinLock(&Ext->FilterModuleListLock, OldIrql);
+    return Medium;
 }
 
 /* The returned module owns one rundown reference. Detach marks the module
@@ -2543,6 +2569,8 @@ Ndis6FilterOidFindCancelTargetLocked(
     PNDIS6_FILTER_OID_FRAME Frame;
     PNDIS6_FILTER_OID_FRAME SourceFrame = NULL;
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     if (SourceModule == NULL)
     {
         Frame = Context->Top;
@@ -2582,6 +2610,8 @@ Ndis6FilterOidFindChildFrameLocked(
     _In_ PNDIS6_FILTER_OID_FRAME Parent)
 {
     PNDIS6_FILTER_OID_FRAME Frame;
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
 
     for (Frame = Context->Top;
          Frame != NULL;
@@ -2762,6 +2792,9 @@ Ndis6FilterOidFrameForwardedRequestMatchesLocked(
     PNDIS6_FILTER_OID_FRAME TargetFrame;
 
     TargetFrame = Ndis6FilterOidFindChildFrameLocked(Context, SourceFrame);
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     if (TargetFrame != NULL)
         return TargetFrame->RequestId == RequestId;
 

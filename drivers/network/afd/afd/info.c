@@ -49,7 +49,7 @@ AfdTryApplyPendingReceiveWindow(PAFD_FCB FCB)
 NTSTATUS NTAPI
 AfdGetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
             PIO_STACK_LOCATION IrpSp ) {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PAFD_INFO InfoReq = LockRequest(Irp, IrpSp, TRUE, NULL);
     PFILE_OBJECT FileObject = IrpSp->FileObject;
     PAFD_FCB FCB = FileObject->FsContext;
@@ -137,7 +137,7 @@ AfdGetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
 NTSTATUS NTAPI
 AfdSetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
             PIO_STACK_LOCATION IrpSp ) {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PAFD_INFO InfoReq = LockRequest(Irp, IrpSp, FALSE, NULL);
     PFILE_OBJECT FileObject = IrpSp->FileObject;
     PAFD_FCB FCB = FileObject->FsContext;
@@ -167,7 +167,8 @@ AfdSetInfo( PDEVICE_OBJECT DeviceObject, PIRP Irp,
                         UINT PreviousReportedSize = FCB->ReportedReceiveWindowSize;
 
                         FCB->Recv.Size = InfoReq->Information.Ulong;
-                        FCB->ReportedReceiveWindowSize = InfoReq->Information.Ulong;
+                        if (InfoReq->Information.Ulong > 0 && InfoReq->Information.Ulong < 0xFFFF)
+                            FCB->ReportedReceiveWindowSize = InfoReq->Information.Ulong;
                         Status = AfdRearmDatagram(FCB);
                         if (!NT_SUCCESS(Status))
                         {

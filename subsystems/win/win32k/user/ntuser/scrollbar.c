@@ -1229,9 +1229,9 @@ NtUserSBGetParms(
   LPSCROLLINFO lpsi)
 {
    PWND Window;
-   SCROLLINFO _SEH2_VOLATILE psi;
+   SCROLLINFO psi;
    BOOL Ret = FALSE;
-   SBDATA _SEH2_VOLATILE SBDataSafe;
+   SBDATA SBDataSafe;
    USER_REFERENCE_ENTRY Ref;
 
    TRACE("Enter NtUserGetScrollInfo\n");
@@ -1240,11 +1240,11 @@ NtUserSBGetParms(
    _SEH2_TRY
    {
       ProbeForWrite(lpsi, sizeof(SCROLLINFO), 1);
-      RtlCopyMemory((void *)&psi, lpsi, sizeof(SCROLLINFO));
+      RtlCopyMemory(&psi, lpsi, sizeof(SCROLLINFO));
       if (pSBData)
       {
          ProbeForRead(pSBData, sizeof(SBDATA), 1);
-         RtlCopyMemory((void *)&SBDataSafe, pSBData, sizeof(SBDATA));
+         RtlCopyMemory(&SBDataSafe, pSBData, sizeof(SBDATA));
       }
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
@@ -1273,16 +1273,16 @@ NtUserSBGetParms(
       if (pKernelSBData)
          SBDataSafe = *pKernelSBData;
       else
-         RtlZeroMemory((void *)&SBDataSafe, sizeof(SBDataSafe));
+         RtlZeroMemory(&SBDataSafe, sizeof(SBDataSafe));
    }
 
    UserRefObjectCo(Window, &Ref);
-   Ret = co_IntGetScrollInfo(Window, fnBar, (PSBDATA)&SBDataSafe, (LPSCROLLINFO)&psi);
+   Ret = co_IntGetScrollInfo(Window, fnBar, &SBDataSafe, &psi);
    UserDerefObjectCo(Window);
 
    _SEH2_TRY
    {
-      RtlCopyMemory(lpsi, (const void *)&psi, sizeof(SCROLLINFO));
+      RtlCopyMemory(lpsi, &psi, sizeof(SCROLLINFO));
    }
    _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
    {

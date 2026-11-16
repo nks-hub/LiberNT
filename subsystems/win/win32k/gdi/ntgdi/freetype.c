@@ -8361,8 +8361,8 @@ IntExtTextOutW(
     }
 
     IntLPtoDP(dc, &Start, 1);
-    RealXStart64 = ((LONGLONG)Start.x + dc->ptlDCOrig.x) << 6;
-    RealYStart64 = ((LONGLONG)Start.y + dc->ptlDCOrig.y) << 6;
+    RealXStart64 = ((LONGLONG)Start.x + dc->ptlDCOrig.x) * 64;
+    RealYStart64 = ((LONGLONG)Start.y + dc->ptlDCOrig.y) * 64;
 
     MaskRect.left = 0;
     MaskRect.top = 0;
@@ -8903,11 +8903,11 @@ NtGdiExtTextOutW(
 {
     BOOL Result = FALSE;
     NTSTATUS Status = STATUS_SUCCESS;
-    RECTL _SEH2_VOLATILE SafeRect;
+    RECTL SafeRect;
     BYTE LocalBuffer[STACK_TEXT_BUFFER_SIZE];
     PVOID Buffer = LocalBuffer;
-    LPCWSTR _SEH2_VOLATILE SafeString = NULL;
-    PINT _SEH2_VOLATILE SafeDx = NULL;
+    LPCWSTR SafeString = NULL;
+    PINT SafeDx = NULL;
     ULONG BufSize, StringSize, DxSize = 0;
     const UINT ValidOptions = ETO_OPAQUE | ETO_CLIPPED | ETO_GLYPH_INDEX |
                               ETO_RTLREADING | ETO_NUMERICSLOCAL |
@@ -9012,7 +9012,7 @@ NtGdiExtTextOutW(
                             XStart,
                             YStart,
                             fuOptions,
-                            (PRECTL)&SafeRect,
+                            &SafeRect,
                             SafeString,
                             Count,
                             SafeDx,

@@ -322,7 +322,7 @@ NTSTATUS
 FatProcessException (
     IN PIRP_CONTEXT IrpContext,
     IN PIRP Irp,
-    IN NTSTATUS _SEH2_VOLATILE ExceptionCode
+    IN NTSTATUS ExceptionCode
     )
 
 /*++
@@ -349,7 +349,7 @@ Return Value:
     PVCB Vcb;
     PIO_STACK_LOCATION IrpSp;
     FAT_VOLUME_STATE TransitionState = VolumeDirty;
-    ULONG _SEH2_VOLATILE SavedFlags = 0;
+    ULONG SavedFlags = 0;
 
     PAGED_CODE();
 
@@ -424,11 +424,7 @@ Return Value:
         //
 
         if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_RECURSIVE_CALL) &&
-#if (NTDDI_VERSION >= NTDDI_VISTA)
             (((ExceptionCode == STATUS_VERIFY_REQUIRED) && KeAreAllApcsDisabled()) ||
-#else
-            (((ExceptionCode == STATUS_VERIFY_REQUIRED) && (KeGetCurrentIrql() >= APC_LEVEL)) ||
-#endif
              (ExceptionCode == STATUS_CANT_WAIT))) {
 
             ExceptionCode = FatFsdPostRequest( IrpContext, Irp );

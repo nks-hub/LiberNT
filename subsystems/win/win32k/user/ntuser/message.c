@@ -224,7 +224,7 @@ MsgMemorySize(PMSGMEMORY MsgMemoryEntry, WPARAM wParam, LPARAM lParam)
     CREATESTRUCTW *Cs;
     PLARGE_STRING WindowName;
     PUNICODE_STRING ClassName;
-    UINT _SEH2_VOLATILE Size = 0;
+    UINT Size = 0;
 
     /* A number of pointer messages explicitly permit a null lParam. Do not
      * turn those into a callback buffer backed by address zero. */
@@ -623,7 +623,7 @@ CopyMsgToKernelMem(MSG *KernelModeMsg, MSG *UserModeMsg, PMSGMEMORY MsgMemoryEnt
                 MDICREATESTRUCTW Mdi;
                 MDICREATESTRUCTW *CapturedMdi = KernelMem;
                 PBYTE Data = (PBYTE)(CapturedMdi + 1);
-                SIZE_T _SEH2_VOLATILE ClassBytes = 0, TitleBytes = 0;
+                SIZE_T ClassBytes = 0, TitleBytes = 0;
 
                 Status = MmCopyFromCaller(&Mdi,
                                           (PVOID)UserModeMsg->lParam,
@@ -1263,6 +1263,8 @@ co_IntPeekMessage( PMSG Msg,
     BOOL Hit = FALSE;
 
     pti = PsGetCurrentThreadWin32Thread();
+
+    co_IntSyncForegroundKeyboardLayout(pti);
 
     RemoveMessages = RemoveMsg & PM_REMOVE;
     ProcessMask = HIWORD(RemoveMsg);
@@ -2442,11 +2444,11 @@ IntGetQueueStatus(DWORD Changes)
        Low  word, types of messages that have been added to the queue and that
                   are still in the queue
      */
-    UserDomainLockExclusive(DLT_QUEUE);
+    BOOLEAN bDom0 = UserDomainLockExclusive(DLT_QUEUE);
     Result = MAKELONG(pti->pcti->fsChangeBits & Changes, pti->pcti->fsWakeBits & Changes);
 
     pti->pcti->fsChangeBits &= ~Changes;
-    UserDomainUnlockExclusive(DLT_QUEUE);
+    UserDomainUnlockExclusive(DLT_QUEUE, bDom0);
 
     return Result;
 }
@@ -3078,7 +3080,7 @@ static NTSTATUS
 IntCaptureAnsiString(_In_ PCSZ Source, _Out_ PUNICODE_STRING Destination)
 {
     ANSI_STRING AnsiString;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
 
     RtlZeroMemory(Destination, sizeof(*Destination));
     _SEH2_TRY
@@ -3515,7 +3517,7 @@ NtUserMessageCall( HWND hWnd,
         break;
     case FNID_BROADCASTSYSTEMMESSAGE:
         {
-            BROADCASTPARM _SEH2_VOLATILE parm, *_SEH2_VOLATILE retparam;
+            BROADCASTPARM parm, *retparam;
             DWORD_PTR RetVal = 0;
 
             if (ResultInfo)
@@ -3523,7 +3525,7 @@ NtUserMessageCall( HWND hWnd,
                 _SEH2_TRY
                 {
                     ProbeForWrite((PVOID)ResultInfo, sizeof(BROADCASTPARM), 1);
-                    RtlCopyMemory((void *)&parm, (PVOID)ResultInfo, sizeof(BROADCASTPARM));
+                    RtlCopyMemory(&parm, (PVOID)ResultInfo, sizeof(BROADCASTPARM));
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {
@@ -3829,13 +3831,13 @@ NtUserMessageCall( HWND hWnd,
         break;
     case FNID_SENDMESSAGECALLBACK:
         {
-            CALL_BACK_INFO _SEH2_VOLATILE CallBackInfo;
+            CALL_BACK_INFO CallBackInfo;
             ULONG_PTR uResult;
 
             _SEH2_TRY
             {
                 ProbeForRead((PVOID)ResultInfo, sizeof(CALL_BACK_INFO), 1);
-                RtlCopyMemory((void *)&CallBackInfo, (PVOID)ResultInfo, sizeof(CALL_BACK_INFO));
+                RtlCopyMemory(&CallBackInfo, (PVOID)ResultInfo, sizeof(CALL_BACK_INFO));
             }
             _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
             {
@@ -3859,7 +3861,7 @@ NtUserMessageCall( HWND hWnd,
         break;
     case FNID_SENDMESSAGE:
         {
-            BOOL _SEH2_VOLATILE Allowed = TRUE;
+            BOOL Allowed = TRUE;
 
             if (Msg == WM_DRAWITEM)
             {
@@ -3908,15 +3910,14 @@ NtUserMessageCall( HWND hWnd,
     case FNID_SENDMESSAGEFF:
     case FNID_SENDMESSAGEWTOOPTION:
         {
-            DOSENDMESSAGE _SEH2_VOLATILE dsm;
-            PDOSENDMESSAGE pdsm = (PDOSENDMESSAGE)ResultInfo;
+            DOSENDMESSAGE dsm, *pdsm = (PDOSENDMESSAGE)ResultInfo;
             LRESULT MessageResult;
             if (ResultInfo)
             {
                 _SEH2_TRY
                 {
                     ProbeForRead(pdsm, sizeof(DOSENDMESSAGE), 1);
-                    RtlCopyMemory((void *)&dsm, pdsm, sizeof(DOSENDMESSAGE));
+                    RtlCopyMemory(&dsm, pdsm, sizeof(DOSENDMESSAGE));
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {
@@ -3927,7 +3928,7 @@ NtUserMessageCall( HWND hWnd,
 
             if (pdsm)
             {
-                Ret = co_IntDoSendMessage(hWnd, Msg, wParam, lParam, (PDOSENDMESSAGE)&dsm);
+                Ret = co_IntDoSendMessage(hWnd, Msg, wParam, lParam, &dsm);
                 MessageResult = dsm.Result;
                 dsm.Result = Ret;
                 lResult = MessageResult;
@@ -3943,7 +3944,7 @@ NtUserMessageCall( HWND hWnd,
                 _SEH2_TRY
                 {
                     ProbeForWrite(pdsm, sizeof(DOSENDMESSAGE), 1);
-                    RtlCopyMemory(pdsm, (const void *)&dsm, sizeof(DOSENDMESSAGE));
+                    RtlCopyMemory(pdsm, &dsm, sizeof(DOSENDMESSAGE));
                 }
                 _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
                 {

@@ -593,6 +593,8 @@ TmpRollbackDpc(
     UNREFERENCED_PARAMETER(SystemArgument1);
     UNREFERENCED_PARAMETER(SystemArgument2);
 
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
     ExInitializeWorkItem(&Transaction->RollbackWorkItem, TmpRollbackWorker, Transaction);
     ExQueueWorkItem(&Transaction->RollbackWorkItem, DelayedWorkQueue);
 }
@@ -681,7 +683,7 @@ NtCreateTransaction(
     _In_opt_ PUNICODE_STRING Description)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    LARGE_INTEGER _SEH2_VOLATILE SafeTimeout;
+    LARGE_INTEGER SafeTimeout;
     UNICODE_STRING SafeDescription;
     PKTRANSACTION Transaction;
     BOOLEAN UowPresent;
@@ -1074,7 +1076,7 @@ NtSetInformationTransaction(
     _In_ ULONG TransactionInformationLength)
 {
     KPROCESSOR_MODE PreviousMode = ExGetPreviousMode();
-    TRANSACTION_PROPERTIES_INFORMATION _SEH2_VOLATILE Properties;
+    TRANSACTION_PROPERTIES_INFORMATION Properties;
     PKTRANSACTION Transaction;
     NTSTATUS Status;
     PAGED_CODE();
@@ -1095,7 +1097,7 @@ NtSetInformationTransaction(
         {
             ProbeForRead(TransactionInformation, TransactionInformationLength, sizeof(ULONG));
         }
-        RtlCopyMemory((void *)&Properties,
+        RtlCopyMemory(&Properties,
                       TransactionInformation,
                       FIELD_OFFSET(TRANSACTION_PROPERTIES_INFORMATION, Description));
     }

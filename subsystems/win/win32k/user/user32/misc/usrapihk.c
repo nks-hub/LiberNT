@@ -317,7 +317,7 @@ BOOL
 WINAPI
 MDIRedrawFrame(HWND hWnd, DWORD flags)
 {
-   BOOL _SEH2_VOLATILE Hook, Ret = FALSE;
+   BOOL Hook, Ret = FALSE;
 
    LoadUserApiHook();
 

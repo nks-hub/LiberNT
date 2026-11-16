@@ -1165,7 +1165,7 @@ IntCreateClass(IN CONST WNDCLASSEXW* lpwcx,
     RTL_ATOM Atom, verAtom;
     WNDPROC WndProc;
     PWSTR pszMenuName = NULL;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     TRACE("lpwcx=%p ClassName=%wZ MenuName=%wZ dwFlags=%08x Desktop=%p pi=%p\n",
         lpwcx, ClassName, MenuName, dwFlags, Desktop, pi);
@@ -1782,9 +1782,9 @@ UserGetClassName(IN PCLS Class,
 {
     NTSTATUS Status = STATUS_SUCCESS;
     WCHAR szStaticTemp[32];
-    PWSTR _SEH2_VOLATILE szTemp = NULL;
+    PWSTR szTemp = NULL;
     ULONG BufLen = sizeof(szStaticTemp);
-    INT _SEH2_VOLATILE Ret = 0;
+    INT Ret = 0;
 
     /* Note: Accessing the buffer in ClassName may raise an exception! */
 
@@ -2382,6 +2382,7 @@ IntQueuePendingArrowClass(PCLS Class)
         gapclsPendingArrow = NewArray;
         gcclsPendingArrow = NewCount;
     }
+    ASSERT(UserIsEnteredExclusive());
     gapclsPendingArrow[gnclsPendingArrow++] = Class;
 }
 
@@ -2561,8 +2562,8 @@ NtUserRegisterClassExWOW(
  *   Atom identifying the new class
  */
 {
-    WNDCLASSEXW _SEH2_VOLATILE CapturedClassInfo = {0};
-    UNICODE_STRING _SEH2_VOLATILE CapturedName = {0}, CapturedMenuName = {0}, CapturedVersion = {0};
+    WNDCLASSEXW CapturedClassInfo = {0};
+    UNICODE_STRING CapturedName = {0}, CapturedMenuName = {0}, CapturedVersion = {0};
     RTL_ATOM Ret = (RTL_ATOM)0;
     PPROCESSINFO ppi = GetW32ProcessInfo();
     BOOL Exception = FALSE;
@@ -2595,7 +2596,7 @@ NtUserRegisterClassExWOW(
         ProbeForRead(lpwcx,
                      sizeof(WNDCLASSEXW),
                      sizeof(ULONG));
-        RtlCopyMemory((void *)&CapturedClassInfo,
+        RtlCopyMemory(&CapturedClassInfo,
                       lpwcx,
                       sizeof(WNDCLASSEXW));
 
@@ -2685,10 +2686,10 @@ InvalidParameter:
     if (!Exception)
     {
         /* Register the class */
-        Ret = UserRegisterClass((const WNDCLASSEXW *)&CapturedClassInfo,
-                                (PUNICODE_STRING)&CapturedName,
-                                (PUNICODE_STRING)&CapturedVersion,
-                                (PUNICODE_STRING)&CapturedMenuName,
+        Ret = UserRegisterClass(&CapturedClassInfo,
+                                &CapturedName,
+                                &CapturedVersion,
+                                &CapturedMenuName,
                                 fnID,
                                 Flags);
     }
@@ -2712,7 +2713,7 @@ IntNtUserSetClassLongPtr(HWND hWnd,
 {
     PPROCESSINFO pi;
     PWND Window;
-    ULONG_PTR _SEH2_VOLATILE Ret = 0;
+    ULONG_PTR Ret = 0;
 
     UserEnterExclusive();
 
@@ -2890,7 +2891,7 @@ NtUserGetClassInfo(
     RTL_ATOM ClassAtom = 0;
     PPROCESSINFO ppi;
     LPWSTR pszMenuName = NULL;
-    BOOL _SEH2_VOLATILE Ret = TRUE;
+    BOOL Ret = TRUE;
     NTSTATUS Status;
 
     _SEH2_TRY
@@ -2990,7 +2991,7 @@ NtUserGetClassName (IN HWND hWnd,
 {
     PWND Window;
     UNICODE_STRING CapturedClassName;
-    INT _SEH2_VOLATILE iCls, Ret = 0;
+    INT iCls, Ret = 0;
     RTL_ATOM Atom = 0;
 
     UserEnterShared();
@@ -3000,7 +3001,7 @@ NtUserGetClassName (IN HWND hWnd,
     {
         if (Real && Window->fnid && Window->fnid != FNID_MESSAGEWND && !(Window->fnid & FNID_DESTROY))
         {
-           if (LookupFnIdToiCls(Window->fnid, (int *)&iCls))
+           if (LookupFnIdToiCls(Window->fnid, &iCls))
            {
               Atom = gpsi->atomSysClass[iCls];
            }

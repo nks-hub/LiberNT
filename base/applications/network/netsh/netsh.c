@@ -63,7 +63,11 @@ MergeStrings(
 
     nLength = 0;
     for (i = 0; i < nCount; i++)
+    {
         nLength += wcslen(pszStringArray[i]);
+        if (wcspbrk(pszStringArray[i], L" \t") != NULL)
+            nLength += 2;
+    }
 
     if (nLength > 0)
         nLength += nCount; /* Space characters and terminating zero */
@@ -76,7 +80,16 @@ MergeStrings(
     {
         if (i != 0)
             wcscat(pszOutString, L" ");
-        wcscat(pszOutString, pszStringArray[i]);
+        if (wcspbrk(pszStringArray[i], L" \t") != NULL)
+        {
+            wcscat(pszOutString, L"\"");
+            wcscat(pszOutString, pszStringArray[i]);
+            wcscat(pszOutString, L"\"");
+        }
+        else
+        {
+            wcscat(pszOutString, pszStringArray[i]);
+        }
     }
 
     return pszOutString;

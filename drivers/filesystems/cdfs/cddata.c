@@ -253,22 +253,14 @@ Return Value:
 
 {
     THREAD_CONTEXT ThreadContext = {0};
-#ifdef __REACTOS__
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
-#else
     PIRP_CONTEXT IrpContext = NULL;
-#endif
     BOOLEAN Wait;
 
 #ifdef CD_SANITY
     PVOID PreviousTopLevel;
 #endif
 
-#ifdef __REACTOS__
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-#else
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
-#endif
 
 #if DBG
 
@@ -620,15 +612,6 @@ Return Value:
 
 
 
-#ifdef __REACTOS__
-_Requires_lock_held_(_Global_critical_region_)
-NTSTATUS
-CdProcessException (
-    _In_opt_ PIRP_CONTEXT IrpContext,
-    _Inout_ PIRP Irp,
-    _In_ NTSTATUS _SEH2_VOLATILE ExceptionCode
-    )
-#else
 _Requires_lock_held_(_Global_critical_region_)
 NTSTATUS
 CdProcessException (
@@ -636,7 +619,6 @@ CdProcessException (
     _Inout_ PIRP Irp,
     _In_ NTSTATUS ExceptionCode
     )
-#endif
 
 /*++
 

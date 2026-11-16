@@ -486,6 +486,8 @@ DxgkMarkAdapterDevicesStoppedLocked(
 {
     PLIST_ENTRY Link;
 
+    ASSERT(Adapter == NULL || Adapter->AdapterMutex.OwnerThread == KeGetCurrentThread());
+
     /* Caller owns AdapterMutex so the terminal transition and the complete
      * device-list snapshot are one admission boundary. */
     if (Adapter == NULL)
@@ -716,9 +718,13 @@ DxgkpWaitForContextReferences(
 static PDXGKRNL_PROCESS
 DxgkpFindProcessRecordLocked(
     _In_ PDXGKRNL_ADAPTER Adapter,
-    _In_ PEPROCESS Process)
+    _In_ PEPROCESS Process,
+    _In_ BOOLEAN PagingProcess)
 {
     PLIST_ENTRY Entry;
+
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+    ASSERT(!PagingProcess || Process == PsInitialSystemProcess);
 
     for (Entry = DxgkProcessListHead.Flink;
          Entry != &DxgkProcessListHead;
@@ -730,7 +736,8 @@ DxgkpFindProcessRecordLocked(
                               GlobalProcessListEntry);
 
         if (ProcessRecord->Process == Process &&
-            ProcessRecord->Adapter == Adapter)
+            ProcessRecord->Adapter == Adapter &&
+            ProcessRecord->PagingProcess == PagingProcess)
         {
             return ProcessRecord;
         }
@@ -807,10 +814,11 @@ DxgkpFreeProcessRecordStorage(
     ExFreePoolWithTag(ProcessRecord, TAG_DXGK_PROCESS);
 }
 
-NTSTATUS
-DxgkAcquireProcessRecord(
+static NTSTATUS
+DxgkpAcquireProcessRecordKind(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _In_ PEPROCESS Process,
+    _In_ BOOLEAN PagingProcess,
     _Out_ PDXGKRNL_PROCESS *OutProcessRecord)
 {
     PDXGKRNL_PROCESS Candidate;
@@ -834,7 +842,7 @@ DxgkAcquireProcessRecord(
             return STATUS_PROCESS_IS_TERMINATING;
 
         ExAcquireFastMutex(&DxgkProcessListLock);
-        Existing = DxgkpFindProcessRecordLocked(Adapter, Process);
+        Existing = DxgkpFindProcessRecordLocked(Adapter, Process, PagingProcess);
         if (Existing != NULL)
         {
             AcquireResult =
@@ -909,6 +917,7 @@ DxgkAcquireProcessRecord(
         RtlZeroMemory(Candidate, sizeof(*Candidate));
         Candidate->Process = Process;
         Candidate->Adapter = Adapter;
+        Candidate->PagingProcess = PagingProcess;
         DxgkProcessLifetimeInitialize(&Candidate->Lifetime,
                                       CurrentThread);
         KeInitializeEvent(&Candidate->LifetimeEvent,
@@ -933,7 +942,7 @@ DxgkAcquireProcessRecord(
             ExFreePoolWithTag(Candidate, TAG_DXGK_PROCESS);
             return STATUS_PROCESS_IS_TERMINATING;
         }
-        Existing = DxgkpFindProcessRecordLocked(Adapter, Process);
+        Existing = DxgkpFindProcessRecordLocked(Adapter, Process, PagingProcess);
         if (Existing != NULL)
         {
             ExReleaseFastMutex(&DxgkProcessListLock);
@@ -991,6 +1000,23 @@ DxgkAcquireProcessRecord(
 }
 
 NTSTATUS
+DxgkAcquireProcessRecord(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ PEPROCESS Process,
+    _Out_ PDXGKRNL_PROCESS *OutProcessRecord)
+{
+    return DxgkpAcquireProcessRecordKind(Adapter, Process, FALSE, OutProcessRecord);
+}
+
+NTSTATUS
+DxgkAcquirePagingProcessRecord(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _Out_ PDXGKRNL_PROCESS *OutProcessRecord)
+{
+    return DxgkpAcquireProcessRecordKind(Adapter, PsInitialSystemProcess, TRUE, OutProcessRecord);
+}
+
+NTSTATUS
 DxgkReferenceProcessRecordByAdapter(
     _In_ PDXGKRNL_ADAPTER Adapter,
     _In_ PEPROCESS Process,
@@ -1004,7 +1030,7 @@ DxgkReferenceProcessRecordByAdapter(
 
     *OutProcessRecord = NULL;
     ExAcquireFastMutex(&DxgkProcessListLock);
-    ProcessRecord = DxgkpFindProcessRecordLocked(Adapter, Process);
+    ProcessRecord = DxgkpFindProcessRecordLocked(Adapter, Process, FALSE);
     if (ProcessRecord != NULL &&
         ProcessRecord->Lifetime.State == DxgkProcessLifetimeReady)
     {
@@ -1504,11 +1530,10 @@ DxgkCreatePagingSystemContext(
         return Status;
     }
 
-    Status = DxgkAcquireProcessRecord(Adapter,
-                                      PsInitialSystemProcess,
-                                      &ProcessRecord);
+    Status = DxgkAcquirePagingProcessRecord(Adapter, &ProcessRecord);
     if (!NT_SUCCESS(Status))
         return Status;
+    ASSERT(ProcessRecord->PagingProcess);
 
     Device = ExAllocatePoolWithTag(NonPagedPool,
                                    sizeof(*Device),
@@ -2047,11 +2072,11 @@ DxgkpCreateDevice(
     PDXGKRNL_ADAPTER     Adapter;
     PDXGKRNL_DEVICE      Device;
     DXGKARG_CREATEDEVICE CreateDeviceArg;
-    DXGK_DEVICEINFO      _SEH2_VOLATILE LegacyDeviceInfo;
+    DXGK_DEVICEINFO      LegacyDeviceInfo;
     DXGK_DEVICE_WORK_TERMINAL_STATE WorkTerminal;
     NTSTATUS             Status;
     BOOLEAN              KmdTransactionStarted = FALSE;
-    BOOLEAN              _SEH2_VOLATILE LegacyDeviceInfoValid = FALSE;
+    BOOLEAN              LegacyDeviceInfoValid = FALSE;
 
     PAGED_CODE();
 
@@ -2142,7 +2167,7 @@ DxgkpCreateDevice(
     /* --- Call DxgkDdiCreateDevice ---------------------------------------- */
 
     RtlZeroMemory(&CreateDeviceArg, sizeof(CreateDeviceArg));
-    RtlZeroMemory((void *)&LegacyDeviceInfo, sizeof(LegacyDeviceInfo));
+    RtlZeroMemory(&LegacyDeviceInfo, sizeof(LegacyDeviceInfo));
     CreateDeviceArg.hDevice             = (HANDLE)Device; /* raw pointer as token */
     /* UMD D3DKMT flags are not bit-compatible with the KMD device flags. */
     CreateDeviceArg.Flags.Value         = 0;
@@ -3177,7 +3202,7 @@ DxgkProcessCleanup(
      * Tear down any lingering user-mode GPU mappings before the process VAD
      * tree is destroyed. User-mode runtimes do not always unlock everything
      * before exit, and MmMapLockedPagesSpecifyCache(UserMode) uses dedicated
-     * VADs that ARM3 expects to be gone by this point.
+     * VADs for those mappings.
      */
     DxgkAdapterProcessCleanup(Process);
     DxgkVidMmProcessCleanup(Process);

@@ -23,7 +23,7 @@ Create_DirectDraw (LPGUID pGUID, LPDIRECTDRAW* pIface,
     LPDDRAWI_DIRECTDRAW_INT This;
 
     DX_WINDBG_trace();
-    BOOL _SEH2_VOLATILE linking = FALSE;
+    BOOL linking = FALSE;
 
     if (pIface == NULL)
     {

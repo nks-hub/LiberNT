@@ -47,7 +47,7 @@ MiCheckForUserStackOverflow(
     ULONG64 StackBase, StackLimit, DeallocationStack, Guaranteed, Page, Next, Size;
     ULONG64 GuardSize = MM_USER_STACK_GUARD_PAGES * PAGE_SIZE;
     ULONG64 OverflowReserve;
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_GUARD_PAGE_VIOLATION;
+    NTSTATUS Status = STATUS_GUARD_PAGE_VIOLATION;
 #ifdef _WIN64
     PTEB32 Wow64Teb = NULL;
 #endif
@@ -208,6 +208,15 @@ MmAccessFaultEx(
 
         Space = &MiSystem.SystemSpace;
         Process = NULL;
+
+        if (MmIsSessionAddress(Address))
+        {
+            Space = MiSessionSpaceOfProcess(PsGetCurrentProcess());
+            if (Space == NULL)
+                return STATUS_ACCESS_VIOLATION;
+            ASSERT(Space->IsSession && Space->IsSystem);
+            ASSERT((ULONG64)(ULONG_PTR)Address >= Space->LowestVa && (ULONG64)(ULONG_PTR)Address <= Space->HighestVa);
+        }
     }
     else
     {
@@ -294,9 +303,11 @@ MmSetAddressRangeModified(
     return (BOOLEAN)NT_SUCCESS(MiSetRangeModified(MiSpaceForAddress(Address), (ULONG64)(ULONG_PTR)Address, Length));
 }
 
+/* A user address of another process is translated through that process's own tables and read through the alias */
 NTSTATUS
 NTAPI
-MmDbgCopyMemory(
+MmDbgCopyProcessMemory(
+    _In_opt_ PEPROCESS Process,
     _In_ ULONG64 Address,
     _In_ PVOID Buffer,
     _In_ ULONG Size,
@@ -304,7 +315,8 @@ MmDbgCopyMemory(
 {
     const MI_ARCH_DESCRIPTOR *Arch = MiArchDescribe();
     PVOID Source = NULL;
-    ULONG64 Physical, AliasPhysical, AliasAddress;
+    ULONG64 Physical, AliasPhysical, AliasAddress, RootFrame;
+    BOOLEAN Foreign = FALSE;
     MI_PTE Leaf;
     ULONG CacheFlags = 0;
     ULONG RequestedCache = Flags & (MMDBG_COPY_CACHED | MMDBG_COPY_UNCACHED |
@@ -329,12 +341,20 @@ MmDbgCopyMemory(
             ((Address + (1ULL << (Arch->VirtualAddressBits - 1))) >> Arch->VirtualAddressBits))
             return STATUS_UNSUCCESSFUL;
 
-        if (!MiPtTranslateRoot(Arch, MiArchDebugRootFrame(Address),
-                               Address, &Physical, &Leaf))
+        RootFrame = MiArchDebugRootFrame(Address);
+        if (Process != NULL && Address <= (ULONG64)(ULONG_PTR)MmHighestUserAddress)
+        {
+            if (MI_PROCESS_OF(Process) == NULL || MiSpaceOfProcess(Process)->RootFrame == 0)
+                return STATUS_UNSUCCESSFUL;
+            RootFrame = MiSpaceOfProcess(Process)->RootFrame;
+            Foreign = TRUE;
+        }
+
+        if (!MiPtTranslateRoot(Arch, RootFrame, Address, &Physical, &Leaf))
             return STATUS_UNSUCCESSFUL;
 
         CacheFlags = MiArchPteLeafFlags(Leaf) & MI_LEAF_CACHE_MASK;
-        if (CacheFlags != 0)
+        if (CacheFlags != 0 && !Foreign)
         {
             Source = (PVOID)(ULONG_PTR)Address;
         }
@@ -418,6 +438,17 @@ MmDbgCopyMemory(
         RtlCopyMemory(Buffer, Source, Size);
 
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+NTAPI
+MmDbgCopyMemory(
+    _In_ ULONG64 Address,
+    _In_ PVOID Buffer,
+    _In_ ULONG Size,
+    _In_ ULONG Flags)
+{
+    return MmDbgCopyProcessMemory(NULL, Address, Buffer, Size, Flags);
 }
 
 NTSTATUS

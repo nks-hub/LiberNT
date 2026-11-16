@@ -577,7 +577,7 @@ NtGdiGetBitmapBits(
 {
     PSURFACE psurf;
     ULONG cjSize;
-    LONG _SEH2_VOLATILE ret = 0;
+    LONG ret = 0;
 
     /* Check parameters */
     if (pUnsafeBits != NULL && cjBuffer == 0)

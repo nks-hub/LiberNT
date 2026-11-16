@@ -682,7 +682,7 @@ NTSTATUS
 APIENTRY
 NtUserSetInformationThread(IN HANDLE ThreadHandle,
                            IN USERTHREADINFOCLASS ThreadInformationClass,
-                           IN PVOID _SEH2_VOLATILE ThreadInformation,
+                           IN PVOID ThreadInformation,
                            IN ULONG ThreadInformationLength)
 {
     NTSTATUS Status = STATUS_SUCCESS;
@@ -707,7 +707,7 @@ NtUserSetInformationThread(IN HANDLE ThreadHandle,
     {
         case UserThreadInitiateShutdown:
         {
-            ULONG _SEH2_VOLATILE CapturedFlags = 0;
+            ULONG CapturedFlags = 0;
 
             TRACE("Shutdown initiated\n");
 
@@ -731,7 +731,7 @@ NtUserSetInformationThread(IN HANDLE ThreadHandle,
             }
             _SEH2_END;
 
-            Status = UserInitiateShutdown(Thread, (PULONG)&CapturedFlags);
+            Status = UserInitiateShutdown(Thread, &CapturedFlags);
 
             /* Return the modified value to the caller */
             _SEH2_TRY
@@ -749,7 +749,7 @@ NtUserSetInformationThread(IN HANDLE ThreadHandle,
 
         case UserThreadEndShutdown:
         {
-            NTSTATUS _SEH2_VOLATILE ShutdownStatus = STATUS_UNSUCCESSFUL;
+            NTSTATUS ShutdownStatus = STATUS_UNSUCCESSFUL;
 
             TRACE("Shutdown ended\n");
 
@@ -779,7 +779,7 @@ NtUserSetInformationThread(IN HANDLE ThreadHandle,
 
         case UserThreadCsrApiPort:
         {
-            HANDLE _SEH2_VOLATILE CsrPortHandle = NULL;
+            HANDLE CsrPortHandle = NULL;
 
 
             TRACE("Set CSR API Port for Win32k\n");

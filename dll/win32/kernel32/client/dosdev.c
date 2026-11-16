@@ -31,7 +31,7 @@ IsGlobalDeviceMap(
     NTSTATUS Status = STATUS_UNSUCCESSFUL;
     DWORD ReturnLength;
     UNICODE_STRING GlobalString;
-    OBJECT_NAME_INFORMATION NameInfo, *_SEH2_VOLATILE PNameInfo;
+    OBJECT_NAME_INFORMATION NameInfo, *PNameInfo;
 
     /* We need both parameters */
     if (DirectoryHandle == 0 || IsGlobal == NULL)
@@ -551,7 +551,7 @@ QueryDosDeviceW(
     USHORT i, TotalEntries;
     UNICODE_STRING UnicodeString;
     OBJECT_ATTRIBUTES ObjectAttributes;
-    HANDLE _SEH2_VOLATILE DirectoryHandle, DeviceHandle;
+    HANDLE DirectoryHandle, DeviceHandle;
     BOOLEAN IsGlobal, GlobalNeeded, Found;
     POBJECT_DIRECTORY_INFORMATION DirInfo;
     OBJECT_DIRECTORY_INFORMATION NullEntry = {{0}};
@@ -565,7 +565,7 @@ QueryDosDeviceW(
                                OBJ_CASE_INSENSITIVE,
                                NULL,
                                NULL);
-    Status = NtOpenDirectoryObject((PHANDLE)&DirectoryHandle,
+    Status = NtOpenDirectoryObject(&DirectoryHandle,
                                    DIRECTORY_QUERY,
                                    &ObjectAttributes);
     if (!NT_SUCCESS(Status))
@@ -587,7 +587,7 @@ QueryDosDeviceW(
                                        OBJ_CASE_INSENSITIVE,
                                        DirectoryHandle,
                                        NULL);
-            Status = NtOpenSymbolicLinkObject((PHANDLE)&DeviceHandle,
+            Status = NtOpenSymbolicLinkObject(&DeviceHandle,
                                               SYMBOLIC_LINK_QUERY,
                                               &ObjectAttributes);
             if (!NT_SUCCESS(Status))
@@ -820,7 +820,7 @@ QueryDosDeviceW(
                                        OBJ_CASE_INSENSITIVE,
                                        NULL,
                                        NULL);
-            Status = NtOpenDirectoryObject((PHANDLE)&DirectoryHandle,
+            Status = NtOpenDirectoryObject(&DirectoryHandle,
                                            DIRECTORY_QUERY,
                                            &ObjectAttributes);
             if (!NT_SUCCESS(Status))

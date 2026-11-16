@@ -781,6 +781,20 @@ RtlGetThreadErrorMode(
     VOID
 );
 
+NTSYSAPI
+HANDLE
+NTAPI
+RtlGetCurrentTransaction(
+    VOID
+);
+
+NTSYSAPI
+LOGICAL
+NTAPI
+RtlSetCurrentTransaction(
+    _In_opt_ HANDLE TransactionHandle
+);
+
 #endif /* NTOS_MODE_USER */
 
 NTSYSAPI
@@ -1008,6 +1022,19 @@ RtlGetProcessHeaps(
     _In_ ULONG HeapCount,
     _Out_cap_(HeapCount) HANDLE *HeapArray
 );
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlEnumProcessHeaps(
+    _In_ PHEAP_ENUMERATION_ROUTINE HeapEnumerationRoutine,
+    _In_ PVOID Parameter
+);
+
+NTSYSAPI
+BOOLEAN
+NTAPI
+RtlValidateProcessHeaps(VOID);
 
 _Success_(return != 0)
 BOOLEAN
@@ -3122,6 +3149,13 @@ VOID
 NTAPI
 RtlReleasePebLock(VOID);
 
+#ifdef NTOS_MODE_USER
+NTSYSAPI
+LOGICAL
+NTAPI
+RtlTryAcquirePebLock(VOID);
+#endif
+
 NTSYSAPI
 NTSTATUS
 NTAPI
@@ -3731,6 +3765,13 @@ RtlQueryProcessDebugInformation(
     _Inout_ PRTL_DEBUG_INFORMATION DebugBuffer
 );
 
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlQueryProcessHeapInformation(
+    _Inout_ PRTL_DEBUG_INFORMATION DebugBuffer
+);
+
 //
 // Bitmap Functions
 //
@@ -4014,6 +4055,14 @@ RtlDeleteTimerQueue(HANDLE TimerQueue);
 //
 // SList functions
 //
+_Must_inspect_result_
+NTSYSAPI
+PSLIST_ENTRY
+NTAPI
+RtlFirstEntrySList(
+    _In_ const SLIST_HEADER *ListHead
+);
+
 PSLIST_ENTRY
 FASTCALL
 InterlockedPushListSList(
@@ -5294,6 +5343,53 @@ NTAPI
 RtlReleaseSRWLockExclusive(IN OUT PRTL_SRWLOCK SRWLock);
 
 //
+// Synchronization Barrier Functions
+//
+#ifdef NTOS_MODE_USER
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlInitBarrier(
+    _Out_ PRTL_BARRIER Barrier,
+    _In_ LONG TotalThreads,
+    _In_ LONG SpinCount);
+
+NTSYSAPI
+BOOLEAN
+NTAPI
+RtlBarrier(
+    _Inout_ PRTL_BARRIER Barrier,
+    _In_ ULONG Flags);
+
+NTSYSAPI
+VOID
+NTAPI
+RtlDeleteBarrier(
+    _In_ PRTL_BARRIER Barrier);
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlWaitOnAddress(
+    _In_ const VOID *Address,
+    _In_ const VOID *CompareAddress,
+    _In_ SIZE_T AddressSize,
+    _In_opt_ const LARGE_INTEGER *Timeout);
+
+NTSYSAPI
+VOID
+NTAPI
+RtlWakeAddressAll(
+    _In_ const VOID *Address);
+
+NTSYSAPI
+VOID
+NTAPI
+RtlWakeAddressSingle(
+    _In_ const VOID *Address);
+#endif
+
+//
 // Secure Memory Functions
 //
 #ifdef NTOS_MODE_USER
@@ -5301,6 +5397,12 @@ NTSYSAPI
 NTSTATUS
 NTAPI
 RtlRegisterSecureMemoryCacheCallback(
+    _In_ PRTL_SECURE_MEMORY_CACHE_CALLBACK Callback);
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlDeregisterSecureMemoryCacheCallback(
     _In_ PRTL_SECURE_MEMORY_CACHE_CALLBACK Callback);
 
 NTSYSAPI
@@ -5720,6 +5822,14 @@ RtlGetThreadPreferredUILanguages(
     _Out_ PULONG Count,
     _Out_writes_opt_(*Size) PWSTR Buffer,
     _Inout_ PULONG Size);
+
+NTSYSAPI
+NTSTATUS
+NTAPI
+RtlSetThreadPreferredUILanguages(
+    _In_ DWORD Flags,
+    _In_opt_ PCZZWSTR Buffer,
+    _Out_opt_ PULONG Count);
 
 NTSYSAPI
 BOOLEAN

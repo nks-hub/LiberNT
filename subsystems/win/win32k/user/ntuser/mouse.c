@@ -20,6 +20,7 @@ IntAddMouseMoveHistory(LONG x, LONG y, DWORD Time, ULONG_PTR ExtraInfo)
     gMouseHistoryOfMoves[gcMouseHistoryOfMoves].y = y;
     gMouseHistoryOfMoves[gcMouseHistoryOfMoves].time = Time;
     gMouseHistoryOfMoves[gcMouseHistoryOfMoves].dwExtraInfo = ExtraInfo;
+    ASSERT(UserIsEnteredExclusive());
     if (++gcMouseHistoryOfMoves == ARRAYSIZE(gMouseHistoryOfMoves))
        gcMouseHistoryOfMoves = 0;
 }
@@ -650,7 +651,7 @@ NtUserGetMouseMovePointsEx(
 {
     MOUSEMOVEPOINT Safeppt;
     //BOOL Hit;
-    INT _SEH2_VOLATILE iRet = -1;
+    INT iRet = -1;
     PTHREADINFO pti;
 
     TRACE("Enter NtUserGetMouseMovePointsEx\n");

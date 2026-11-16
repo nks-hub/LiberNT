@@ -95,8 +95,8 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_UNSUCCESSFUL;
-    PIRP_CONTEXT _SEH2_VOLATILE IrpContext = NULL;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
+    PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
 
@@ -255,7 +255,7 @@ Return Value:
     PVCB Vcb;
     PDCB Dcb;
     PCCB Ccb;
-    PBCB _SEH2_VOLATILE Bcb;
+    PBCB Bcb;
 
     ULONG i;
     PUCHAR Buffer;
@@ -263,7 +263,7 @@ Return Value:
 
     PUNICODE_STRING UniArgFileName;
     WCHAR LongFileNameBuffer[ FAT_CREATE_INITIAL_NAME_BUF_SIZE];
-    UNICODE_STRING _SEH2_VOLATILE LongFileName;
+    UNICODE_STRING LongFileName;
     UNICODE_STRING OrigFileName;
     FILE_INFORMATION_CLASS FileInformationClass;
     ULONG FileIndex;
@@ -417,7 +417,7 @@ Return Value:
     _SEH2_TRY {
 
         ULONG BaseLength;
-        ULONG _SEH2_VOLATILE BytesConverted;
+        ULONG BytesConverted;
 
         //
         // If we are in the Fsp now because we had to wait earlier,
@@ -781,10 +781,10 @@ Return Value:
                              CurrentVbo,
                              &MatchFlags,
                              &Dirent,
-                             (PBCB *)&Bcb,
+                             &Bcb,
                              &NextVbo,
                              &FileNameDos,
-                             (PUNICODE_STRING)&LongFileName,
+                             &LongFileName,
                              &OrigFileName );
 
             //
@@ -975,7 +975,7 @@ Return Value:
 
                     Status = RtlOemToUnicodeN( (PWCH)&Buffer[NextEntry + BaseLength],
                                                BytesRemainingInBuffer - BaseLength,
-                                               (PULONG)&BytesConverted,
+                                               &BytesConverted,
                                                Fat8Dot3String.Buffer,
                                                Fat8Dot3String.Length );
 
@@ -1291,7 +1291,7 @@ Return Value:
         //  Free any dynamically allocated string buffer
         //
 
-        FatFreeStringBuffer( (PVOID)&LongFileName);
+        FatFreeStringBuffer( &LongFileName);
 
         //
         //  Perform any cleanup.  If this is the first query, then store
@@ -1474,7 +1474,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS _SEH2_VOLATILE Status = STATUS_SUCCESS;
+    NTSTATUS Status = STATUS_SUCCESS;
     PIO_STACK_LOCATION IrpSp;
     PVCB Vcb;
     PDCB Dcb;

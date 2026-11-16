@@ -342,30 +342,6 @@ HalpWritePCIConfig(IN PBUS_HANDLER BusHandler,
     }
 }
 
-#ifdef SARCH_XBOX
-static
-BOOLEAN
-HalpXboxBlacklistedPCISlot(
-    _In_ ULONG BusNumber,
-    _In_ PCI_SLOT_NUMBER Slot)
-{
-    /* Trying to get PCI config data from devices 0:0:1 and 0:0:2 will completely
-     * hang the Xbox. Also, the device number doesn't seem to be decoded for the
-     * video card, so it appears to be present on 1:0:0 - 1:31:0.
-     * We hack around these problems by indicating "device not present" for devices
-     * 0:0:1, 0:0:2, 1:1:0, 1:2:0, 1:3:0, ...., 1:31:0 */
-    if ((BusNumber == 0 && Slot.u.bits.DeviceNumber == 0 &&
-        (Slot.u.bits.FunctionNumber == 1 || Slot.u.bits.FunctionNumber == 2)) ||
-        (BusNumber == 1 && Slot.u.bits.DeviceNumber != 0))
-    {
-        DPRINT("Blacklisted PCI slot (%d:%d:%d)\n",
-               BusNumber, Slot.u.bits.DeviceNumber, Slot.u.bits.FunctionNumber);
-        return TRUE;
-    }
-
-    return FALSE;
-}
-#endif
 
 BOOLEAN
 NTAPI
@@ -381,10 +357,6 @@ HalpValidPCISlot(IN PBUS_HANDLER BusHandler,
     if (Slot.u.bits.Reserved) return FALSE;
     if (Slot.u.bits.DeviceNumber >= BusData->MaxDevice) return FALSE;
 
-#ifdef SARCH_XBOX
-    if (HalpXboxBlacklistedPCISlot(BusHandler->BusNumber, Slot))
-        return FALSE;
-#endif
 
     /* Function 0 doesn't need checking */
     if (!Slot.u.bits.FunctionNumber) return TRUE;
@@ -419,13 +391,6 @@ HalpPhase0GetPciDataByOffset(
     PUCHAR BufferPtr = Buffer;
     PCI_TYPE1_CFG_BITS PciCfg;
 
-#ifdef SARCH_XBOX
-    if (HalpXboxBlacklistedPCISlot(Bus, PciSlot))
-    {
-        RtlFillMemory(Buffer, Length, 0xFF);
-        return Length;
-    }
-#endif
 
     PciCfg.u.AsULONG = 0;
     PciCfg.u.bits.BusNumber = Bus;
@@ -488,12 +453,6 @@ HalpPhase0SetPciDataByOffset(
     PUCHAR BufferPtr = Buffer;
     PCI_TYPE1_CFG_BITS PciCfg;
 
-#ifdef SARCH_XBOX
-    if (HalpXboxBlacklistedPCISlot(Bus, PciSlot))
-    {
-        return 0;
-    }
-#endif
 
     PciCfg.u.AsULONG = 0;
     PciCfg.u.bits.BusNumber = Bus;
@@ -550,6 +509,7 @@ static ULONGLONG HalpPciExtendedConfigBase;
 static ULONG HalpPciExtendedConfigStartBus;
 static ULONG HalpPciExtendedConfigEndBus;
 static PUCHAR HalpPciExtendedConfigBus[PCI_MAX_BRIDGE_NUMBER + 1];
+#endif
 
 VOID
 NTAPI
@@ -558,11 +518,16 @@ HalpPciSetExtendedConfigWindow(
     _In_ ULONG StartBus,
     _In_ ULONG EndBus)
 {
+#ifndef _MINIHAL_
     HalpPciExtendedConfigBase = BaseAddress;
     HalpPciExtendedConfigStartBus = StartBus;
     HalpPciExtendedConfigEndBus = min(EndBus, PCI_MAX_BRIDGE_NUMBER);
-}
+#else
+    UNREFERENCED_PARAMETER(BaseAddress);
+    UNREFERENCED_PARAMETER(StartBus);
+    UNREFERENCED_PARAMETER(EndBus);
 #endif
+}
 
 static
 PUCHAR
@@ -698,13 +663,6 @@ HalpGetPCIData(IN PBUS_HANDLER BusHandler,
     ULONG StandardLength;
 
     Slot.u.AsULONG = SlotNumber;
-#ifdef SARCH_XBOX
-    if (HalpXboxBlacklistedPCISlot(BusHandler->BusNumber, Slot))
-    {
-        RtlFillMemory(Buffer, Length, 0xFF);
-        return Length;
-    }
-#endif
 
     /* Normalize the length */
     if (Offset >= PCI_EXTENDED_CONFIG_LENGTH) return 0;
@@ -782,7 +740,7 @@ HalpGetPCIData(IN PBUS_HANDLER BusHandler,
     return Len;
 }
 
-#if defined(_M_AMD64) && !defined(_MINIHAL_)
+#ifndef _MINIHAL_
 ULONG NTAPI HalpKdReadPciConfig(_In_ ULONG BusNumber, _In_ ULONG SlotNumber, _Out_writes_bytes_(Length) PVOID Buffer, _In_ ULONG Offset, _In_ ULONG Length)
 {
     /* A frozen processor may own this lock. Never wait from KDB. */
@@ -811,10 +769,6 @@ HalpSetPCIData(IN PBUS_HANDLER BusHandler,
     ULONG StandardLength;
 
     Slot.u.AsULONG = SlotNumber;
-#ifdef SARCH_XBOX
-    if (HalpXboxBlacklistedPCISlot(BusHandler->BusNumber, Slot))
-        return 0;
-#endif
 
     /* Normalize the length */
     if (Offset >= PCI_EXTENDED_CONFIG_LENGTH) return 0;

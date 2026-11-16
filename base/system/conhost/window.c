@@ -217,7 +217,11 @@ static void load_registry_key( HKEY key, struct console_config *config )
         config->history_mode = val;
 
     count = sizeof(val);
+#ifdef __REACTOS__
+    if (!RegQueryValueExW( key, L"InsertMode", 0, &type, (BYTE *)&val, &count ))
+#else
     if (!RegQueryValueExW( key, L"wszInsertMode", 0, &type, (BYTE *)&val, &count ))
+#endif
         config->insert_mode = val;
 
     count = sizeof(val);
@@ -1771,6 +1775,13 @@ static void record_key_input( struct console *console, BOOL down, WPARAM wparam,
 static void record_char_input( struct console *console, WCHAR ch, LPARAM lparam )
 {
     INPUT_RECORD ir;
+#ifdef __REACTOS__
+    ir.EventType = KEY_EVENT;
+    ir.Event.KeyEvent.bKeyDown          = TRUE;
+    ir.Event.KeyEvent.wRepeatCount      = 1;
+    ir.Event.KeyEvent.wVirtualKeyCode   = 0;
+    ir.Event.KeyEvent.wVirtualScanCode  = 0;
+#else
     SHORT sh = VkKeyScanW( ch );
 
     if (sh == ~0) return;
@@ -1779,6 +1790,7 @@ static void record_char_input( struct console *console, WCHAR ch, LPARAM lparam 
     ir.Event.KeyEvent.wRepeatCount      = 0;
     ir.Event.KeyEvent.wVirtualKeyCode   = LOBYTE(sh);
     ir.Event.KeyEvent.wVirtualScanCode  = MapVirtualKeyW( LOBYTE(sh), 0 );
+#endif
     ir.Event.KeyEvent.uChar.UnicodeChar = ch;
     ir.Event.KeyEvent.dwControlKeyState = 0;
     if (lparam & (1u << 24)) ir.Event.KeyEvent.dwControlKeyState |= ENHANCED_KEY;
@@ -2330,6 +2342,10 @@ static void apply_config( struct console *console, const struct console_config *
     console->edition_mode = config->edition_mode;
     console->history_mode = config->history_mode;
 
+#ifdef __REACTOS__
+    if (console->history_buffer_size != config->history_size)
+        set_history_buffer_size( console, config->history_size );
+#else
     if (console->history_size != config->history_size)
     {
         struct history_line **mem = NULL;
@@ -2356,11 +2372,15 @@ static void apply_config( struct console *console, const struct console_config *
             console->history_size = config->history_size;
         }
     }
+#endif
 
     if (config->insert_mode)
         console->mode |= ENABLE_INSERT_MODE|ENABLE_EXTENDED_FLAGS;
     else
         console->mode &= ~ENABLE_INSERT_MODE;
+#ifdef __REACTOS__
+    console->insert_mode = config->insert_mode != 0;
+#endif
 
     console->active->cursor_size = config->cursor_size;
     console->active->cursor_visible = config->cursor_visible;
@@ -2399,10 +2419,18 @@ static void current_config( struct console *console, struct console_config *conf
 
     config->edition_mode = console->edition_mode;
     config->history_mode = console->history_mode;
+#ifdef __REACTOS__
+    config->history_size = console->history_buffer_size;
+#else
     config->history_size = console->history_size;
+#endif
 
+#ifdef __REACTOS__
+    config->insert_mode = console->insert_mode;
+#else
     config->insert_mode = (console->mode & (ENABLE_INSERT_MODE|ENABLE_EXTENDED_FLAGS)) ==
         (ENABLE_INSERT_MODE|ENABLE_EXTENDED_FLAGS);
+#endif
 
     config->cursor_size = console->active->cursor_size;
     config->cursor_visible = console->active->cursor_visible;

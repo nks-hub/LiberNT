@@ -149,12 +149,12 @@ ExFatRead(
     PEXFAT_VCB Vcb;
     PEXFAT_FCB Fcb;
     PEXFAT_CCB Ccb;
-    LARGE_INTEGER _SEH2_VOLATILE Offset = Stack->Parameters.Read.ByteOffset;
+    LARGE_INTEGER Offset = Stack->Parameters.Read.ByteOffset;
     ULONG Length = Stack->Parameters.Read.Length;
     UINT BytesRead = 0;
     PVOID Buffer;
     FRESULT Result;
-    NTSTATUS _SEH2_VOLATILE Status;
+    NTSTATUS Status;
     BOOLEAN PagingIo = !!(Irp->Flags & IRP_PAGING_IO);
     BOOLEAN NoCache;
 
@@ -245,14 +245,14 @@ ExFatRead(
                 if (Stack->MinorFunction & IRP_MN_MDL)
                 {
                     CcMdlRead(FileObject,
-                              (PLARGE_INTEGER)&Offset,
+                              &Offset,
                               Length,
                               &Irp->MdlAddress,
                               &Irp->IoStatus);
                     Status = Irp->IoStatus.Status;
                 }
                 else if (!CcCopyRead(FileObject,
-                                     (PLARGE_INTEGER)&Offset,
+                                     &Offset,
                                      Length,
                                      TRUE,
                                      Buffer,
@@ -348,17 +348,17 @@ ExFatWrite(
     PEXFAT_VCB Vcb;
     PEXFAT_FCB Fcb;
     PEXFAT_CCB Ccb;
-    LARGE_INTEGER _SEH2_VOLATILE Offset = Stack->Parameters.Write.ByteOffset;
+    LARGE_INTEGER Offset = Stack->Parameters.Write.ByteOffset;
     ULONG Length = Stack->Parameters.Write.Length;
     UINT BytesWritten = 0;
     PVOID Buffer;
-    FRESULT _SEH2_VOLATILE Result;
-    NTSTATUS _SEH2_VOLATILE Status;
+    FRESULT Result;
+    NTSTATUS Status;
     BOOLEAN PagingIo = !!(Irp->Flags & IRP_PAGING_IO);
     BOOLEAN NoCache;
     LARGE_INTEGER EndOffset;
     LARGE_INTEGER OldValidDataLength;
-    IO_STATUS_BLOCK _SEH2_VOLATILE FlushStatus;
+    IO_STATUS_BLOCK FlushStatus;
 
     if (DeviceObject == ExFatGlobalData->DeviceObject || !FileObject)
         return STATUS_INVALID_DEVICE_REQUEST;
@@ -470,7 +470,7 @@ ExFatWrite(
                 if (Offset.QuadPart > OldValidDataLength.QuadPart &&
                     !CcZeroData(FileObject,
                                 &OldValidDataLength,
-                                (PLARGE_INTEGER)&Offset,
+                                &Offset,
                                 TRUE))
                 {
                     Status = STATUS_CANT_WAIT;
@@ -480,14 +480,14 @@ ExFatWrite(
                 if (Stack->MinorFunction & IRP_MN_MDL)
                 {
                     CcPrepareMdlWrite(FileObject,
-                                      (PLARGE_INTEGER)&Offset,
+                                      &Offset,
                                       Length,
                                       &Irp->MdlAddress,
                                       &Irp->IoStatus);
                     Status = Irp->IoStatus.Status;
                 }
                 else if (!CcCopyWrite(FileObject,
-                                      (PLARGE_INTEGER)&Offset,
+                                      &Offset,
                                       Length,
                                       TRUE,
                                       Buffer))
@@ -515,14 +515,14 @@ ExFatWrite(
                         CcFlushCache(&Fcb->SectionObjectPointers,
                                      NULL,
                                      0,
-                                     (PIO_STATUS_BLOCK)&FlushStatus);
+                                     &FlushStatus);
                     }
                     else
                     {
                         CcFlushCache(&Fcb->SectionObjectPointers,
-                                     (PLARGE_INTEGER)&Offset,
+                                     &Offset,
                                      Length,
-                                     (PIO_STATUS_BLOCK)&FlushStatus);
+                                     &FlushStatus);
                     }
                     Status = FlushStatus.Status;
                     if (NT_SUCCESS(Status))
@@ -558,12 +558,12 @@ ExFatWrite(
             if (!PagingIo && Fcb->SectionObjectPointers.DataSectionObject)
             {
                 CcFlushCache(&Fcb->SectionObjectPointers,
-                             (PLARGE_INTEGER)&Offset,
+                             &Offset,
                              Length,
-                             (PIO_STATUS_BLOCK)&FlushStatus);
+                             &FlushStatus);
                 if (!NT_SUCCESS(FlushStatus.Status) ||
                     !CcPurgeCacheSection(&Fcb->SectionObjectPointers,
-                                         (PLARGE_INTEGER)&Offset,
+                                         &Offset,
                                          Length,
                                          FALSE))
                 {

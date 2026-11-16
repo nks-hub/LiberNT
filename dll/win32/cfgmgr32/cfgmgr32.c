@@ -1299,9 +1299,31 @@ static LSTATUS query_driver_property( HKEY hkey, const struct property_desc *des
 }
 #endif
 
+#ifdef __REACTOS__
+/* Windows keeps no class name in an instance key: it is the Class value of the class key ClassGUID names */
+static LSTATUS query_device_class_name( HKEY hkey, struct property *prop )
+{
+    WCHAR guid[40], path[ARRAY_SIZE(L"System\\CurrentControlSet\\Control\\Class\\") + ARRAY_SIZE(guid)];
+    DWORD size = sizeof(guid), type;
+    LSTATUS err;
+    HKEY class_key;
+
+    if (RegQueryValueExW( hkey, L"ClassGUID", NULL, &type, (BYTE *)guid, &size ) || type != REG_SZ || size < 2 * sizeof(WCHAR))
+        return ERROR_NOT_FOUND;
+    guid[min( size / sizeof(WCHAR), ARRAY_SIZE(guid) - 1 )] = 0;
+    swprintf( path, ARRAY_SIZE(path), L"System\\CurrentControlSet\\Control\\Class\\%s", guid );
+    if (RegOpenKeyExW( HKEY_LOCAL_MACHINE, path, 0, KEY_QUERY_VALUE, &class_key )) return ERROR_NOT_FOUND;
+    err = query_named_property( class_key, L"Class", DEVPROP_TYPE_STRING, prop );
+    RegCloseKey( class_key );
+    return err;
+}
+#endif
+
 static LSTATUS query_device_property( HKEY hkey, const struct device *dev, struct property *prop )
 {
 #ifdef __REACTOS__
+    if (!memcmp( &DEVPKEY_Device_Class, &prop->key, sizeof(prop->key) ))
+        return query_device_class_name( hkey, prop );
     if (!memcmp( &DEVPKEY_Device_Parent, &prop->key, sizeof(prop->key) ))
         return query_device_parent( dev, prop );
     if (!memcmp( &DEVPKEY_Device_Children, &prop->key, sizeof(prop->key) ) ||
@@ -2954,13 +2976,18 @@ static BOOL is_valid_property_data( DEVPROPTYPE prop_type, const BYTE *buffer, U
 {
     DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
     const WCHAR *str = (const WCHAR *)buffer;
-    ULONG len = size / sizeof(WCHAR), width;
+    ULONG len = size / sizeof(WCHAR), width, i;
 
     switch (prop_type & DEVPROP_MASK_TYPE)
     {
+        case DEVPROP_TYPE_BOOLEAN:
+            /* Windows 11 takes only DEVPROP_TRUE and DEVPROP_FALSE */
+            for (i = 0; i < size; i++)
+                if (buffer[i] != (BYTE)DEVPROP_TRUE && buffer[i] != (BYTE)DEVPROP_FALSE) return FALSE;
+            width = 1;
+            break;
         case DEVPROP_TYPE_SBYTE:
         case DEVPROP_TYPE_BYTE:
-        case DEVPROP_TYPE_BOOLEAN:
             width = 1;
             break;
         case DEVPROP_TYPE_INT16:
@@ -3030,6 +3057,22 @@ CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *ke
 
     if (!memcmp( &key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid, sizeof(key->fmtid) ) && key->pid >= 2)
     {
+        for (UINT i = 0; i < ARRAY_SIZE(device_properties); i++)
+        {
+            DEVPROPTYPE canonical = device_properties[i].type;
+
+            if (memcmp( device_properties[i].key, key, sizeof(*key) )) continue;
+            /* Windows 11 checks the type before access, takes an indirect string for a string and keeps SecuritySDS */
+            if (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)
+            {
+                if (key->pid - 1 == CM_DRP_SECURITY_SDS) return CR_INVALID_DATA;
+            }
+            else if (type != canonical && (type != DEVPROP_TYPE_STRING_INDIRECT || canonical != DEVPROP_TYPE_STRING))
+                return CR_INVALID_DATA;
+            break;
+        }
+        /* An instance key holds no class name: it is the Class value of the class key ClassGUID names */
+        if (key->pid - 1 == CM_DRP_CLASS) return CR_INVALID_PROPERTY;
         if (type == DEVPROP_TYPE_GUID)
         {
             guid_string( (const GUID *)buffer, guid, ARRAY_SIZE(guid) );

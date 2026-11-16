@@ -13,8 +13,6 @@
 #define NDEBUG
 #include <debug.h>
 
-#define ARM64_STUB() UNIMPLEMENTED_DBGBREAK()
-
 #define READ_SYSREG64(_var, _reg) ((_var) = ARM64_READ_SYSREG(_reg))
 #define WRITE_SYSREG64(_reg, _val) ARM64_WRITE_SYSREG(_reg, _val)
 
@@ -752,14 +750,6 @@ KeSetDmaIoCoherency(_In_ ULONG Coherency)
 }
 
 VOID
-__cdecl
-KeSaveStateForHibernate(_In_ PKPROCESSOR_STATE State)
-{
-    UNREFERENCED_PARAMETER(State);
-    ARM64_STUB();
-}
-
-VOID
 NTAPI
 KiSaveProcessorState(
     _In_ PKTRAP_FRAME TrapFrame,
@@ -1141,4 +1131,15 @@ KiDisplayBugCheckRegisterState(
             RtlStringCbPrintfA(Line, sizeof(Line), "X%02lu=%016I64x\r\n", Base, Registers[Base]);
         KiDisplayAndLogBugCheckString(Line);
     }
+}
+
+BOOLEAN
+NTAPI
+KiUnwindFrame(
+    _Inout_ PCONTEXT Context,
+    _In_ BOOLEAN CallerFrame)
+{
+    UNREFERENCED_PARAMETER(CallerFrame);
+
+    return KiUnwindFrameRecord(Context);
 }

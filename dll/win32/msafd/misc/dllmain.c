@@ -286,7 +286,12 @@ WSPSocket(int AddressFamily,
         goto ok;
 
     /* Packet Size */
-    SizeOfPacket = TransportName.Length + sizeof(AFD_CREATE_PACKET) + sizeof(WCHAR);
+    if (TransportName.Length > MAXUSHORT - FIELD_OFFSET(AFD_CREATE_PACKET, TransportName) - sizeof(WCHAR))
+    {
+        Status = WSAENOBUFS;
+        goto error;
+    }
+    SizeOfPacket = FIELD_OFFSET(AFD_CREATE_PACKET, TransportName) + TransportName.Length + sizeof(WCHAR);
 
     /* EA Size */
     SizeOfEA = SizeOfPacket + sizeof(FILE_FULL_EA_INFORMATION) + AFD_PACKET_COMMAND_LENGTH;
@@ -315,6 +320,9 @@ WSPSocket(int AddressFamily,
                    TransportName.Buffer,
                    TransportName.Length + sizeof(WCHAR));
     AfdPacket->GroupID = g;
+    AfdPacket->AddressFamily = AddressFamily;
+    AfdPacket->SocketType = SocketType;
+    AfdPacket->Protocol = Protocol;
 
     /* Set up Endpoint Flags */
     if ((Socket->SharedData->ServiceFlags1 & XP1_CONNECTIONLESS) != 0)
@@ -648,10 +656,14 @@ TranslateNtStatusError(NTSTATUS Status)
           return WSAECONNREFUSED;
 
        case STATUS_CONNECTION_RESET:
+       case STATUS_PORT_UNREACHABLE:
           return WSAECONNRESET;
 
        case STATUS_CONNECTION_ABORTED:
           return WSAECONNABORTED;
+
+       case STATUS_CONNECTION_ACTIVE:
+          return WSAEISCONN;
 
        case STATUS_NETWORK_UNREACHABLE:
           return WSAENETUNREACH;
@@ -1117,7 +1129,7 @@ WSPBind(SOCKET Handle,
     }
     if (!SocketAddress || SocketAddressLength < Socket->HelperData->MinWSAddressLength)
     {
-        if (lpErrno) *lpErrno = WSAEINVAL;
+        if (lpErrno) *lpErrno = WSAEFAULT;
         return SOCKET_ERROR;
     }
 
@@ -1161,7 +1173,9 @@ WSPBind(SOCKET Handle,
                    SocketAddressLength - sizeof(SocketAddress->sa_family));
 
     if (SocketAddress->sa_family == AF_INET6 &&
-        SocketInfo.AddressInfo == SockaddrAddressInfoWildcard &&
+        (SocketInfo.AddressInfo == SockaddrAddressInfoWildcard ||
+         (SocketAddressLength >= (int)sizeof(SOCKADDR_IN6) &&
+          IN6_IS_ADDR_V4MAPPED(&((const SOCKADDR_IN6 *)SocketAddress)->sin6_addr))) &&
         Socket->HelperData->WSHGetSocketInformation(Socket->HelperContext,
                                                     Handle,
                                                     Socket->TdiAddressHandle,
@@ -2520,6 +2534,12 @@ Leave:
         }
     }
 
+    if (Status == STATUS_ADDRESS_ALREADY_ASSOCIATED)
+    {
+        if (lpErrno) *lpErrno = WSAEALREADY;
+        return SOCKET_ERROR;
+    }
+
     return MsafdReturnWithErrno(Status, lpErrno, 0, NULL);
 }
 
@@ -2790,6 +2810,13 @@ WSPGetSockName(IN SOCKET Handle,
                            SocketAddress->Address[0].Address,
                            SocketAddress->Address[0].AddressLength);
             *NameLength = Socket->SharedData->SizeOfLocalAddress;
+            if (Name->sa_family == AF_UNIX && SocketAddress->Address[0].Address[0] != '\0')
+            {
+                *NameLength = min(*NameLength,
+                                  (INT)(FIELD_OFFSET(SOCKADDR, sa_data) +
+                                        strnlen((PCSTR)SocketAddress->Address[0].Address,
+                                                SocketAddress->Address[0].AddressLength) + 1));
+            }
             TRACE("NameLength %d Address: %x Port %x\n",
                           *NameLength, ((struct sockaddr_in *)Name)->sin_addr.s_addr,
                           ((struct sockaddr_in *)Name)->sin_port);
@@ -3086,22 +3113,6 @@ WSPIoctl(IN  SOCKET Handle,
             }
 
             cbRet = sizeof(BOOL);
-            Errno = NO_ERROR;
-            Ret = NO_ERROR;
-            break;
-        case SIO_UDP_CONNRESET:
-        case SIO_UDP_NETRESET:
-            if (Socket->SharedData->SocketType != SOCK_DGRAM)
-            {
-                Errno = WSAEINVAL;
-                break;
-            }
-            if (lpvInBuffer == NULL)
-            {
-                Errno = WSAEFAULT;
-                break;
-            }
-            /* FIXME: the value is not kept; tcpip reports no ICMP unreachable to UDP sockets */
             Errno = NO_ERROR;
             Ret = NO_ERROR;
             break;

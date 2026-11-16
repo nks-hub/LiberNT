@@ -182,10 +182,10 @@ ScmDecryptPassword(
     _Out_ PWSTR *pDecryptedPassword);
 
 
-/* controlset.c */
+/* bootconfig.c */
 
-DWORD
-ScmCreateLastKnownGoodControlSet(VOID);
+VOID
+ScmReadBootConfigPolicy(VOID);
 
 DWORD
 ScmAcceptBoot(VOID);
@@ -201,6 +201,7 @@ VOID ScmShutdownServiceDatabase(VOID);
 VOID ScmGetBootAndSystemDriverState(VOID);
 VOID ScmAutoStartServices(VOID);
 DWORD ScmGetServiceDword(PSERVICE pService, PCWSTR pszValueName, DWORD dwDefault);
+VOID ScmLoadSystemProfile(VOID);
 VOID ScmAutoShutdownServices(VOID);
 DWORD ScmStartService(PSERVICE Service,
                       DWORD argc,
@@ -311,6 +312,8 @@ VOID ScmStartRpcServer(VOID);
 VOID ScmInitServiceNotify(VOID);
 VOID ScmNotifyServiceStatus(PSERVICE lpService);
 VOID ScmNotifyServiceDatabase(DWORD dwTrigger, LPCWSTR lpServiceName);
+extern CRITICAL_SECTION ScmStatusChangeLock;
+extern CONDITION_VARIABLE ScmStatusChanged;
 
 #define SERVICE_NOTIFY_SUBSCRIPTION 0x80000000
 #define SERVICE_NOTIFY_ALL (SERVICE_NOTIFY_STOPPED | SERVICE_NOTIFY_START_PENDING | SERVICE_NOTIFY_STOP_PENDING | SERVICE_NOTIFY_RUNNING | \
@@ -318,6 +321,9 @@ VOID ScmNotifyServiceDatabase(DWORD dwTrigger, LPCWSTR lpServiceName);
                             SERVICE_NOTIFY_DELETED | SERVICE_NOTIFY_DELETE_PENDING)
 
 #define SCM_SUBSCRIPTION_WAIT 5000
+/* Set in the sequence a status subscription echoes once it has seen SERVICE_NOTIFY_DELETE_PENDING */
+#define SCM_SEQUENCE_DELETE_SEEN 0x80000000
+
 DWORD ScmReadFailureActions(HKEY hServiceKey,
                             PSERVICE_FAILURE_ACTIONS_VALUE *lpValue,
                             LPDWORD lpActionCount);

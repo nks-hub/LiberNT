@@ -80,18 +80,19 @@ CreateNamesLock(_Inout_ PINIT_ONCE Once, _Inout_opt_ PVOID Parameter, _Out_opt_ 
     if (Boundary && AddSIDToBoundaryDescriptor(&Boundary, Admins))
     {
         /* The namespace ends with its last handle, so it can be gone again once creating it found it */
+        /* An alias belongs to the whole process, and netcfgx opens the same namespace under NetworkConnectionNames */
         for (Try = 0; !NamesNamespace && Try < 3; Try++)
         {
-            NamesNamespace = CreatePrivateNamespaceW(&Security, Boundary, L"NetworkConnectionNames");
+            NamesNamespace = CreatePrivateNamespaceW(&Security, Boundary, L"NciConnectionNames");
             if (!NamesNamespace)
-                NamesNamespace = OpenPrivateNamespaceW(Boundary, L"NetworkConnectionNames");
+                NamesNamespace = OpenPrivateNamespaceW(Boundary, L"NciConnectionNames");
         }
     }
     if (Boundary)
         DeleteBoundaryDescriptor(Boundary);
     if (NamesNamespace)
     {
-        NamesLock = CreateMutexW(&Security, FALSE, L"NetworkConnectionNames\\Lock");
+        NamesLock = CreateMutexW(&Security, FALSE, L"NciConnectionNames\\Lock");
         if (!NamesLock)
         {
             ClosePrivateNamespace(NamesNamespace, 0);

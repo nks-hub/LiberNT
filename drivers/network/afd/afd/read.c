@@ -28,8 +28,7 @@ AfdRearmDatagram(PAFD_FCB FCB)
         if (!(FCB->Flags & AFD_ENDPOINT_CONNECTIONLESS) || FCB->CleanedUp ||
             FCB->SharedData.State == SOCKET_STATE_CLOSED || FCB->TdiReceiveClosed ||
             FCB->ReceiveIrp.InFlightRequest || !FCB->AddressFile.Object ||
-            !FCB->AddressFrom || !FCB->Recv.Window ||
-            (FCB->Recv.Size ? FCB->Recv.Content >= FCB->Recv.Size : !IsListEmpty(&FCB->DatagramList)))
+            !FCB->AddressFrom || !FCB->Recv.Window)
             break;
 
         FCB->AddressFrom->Options = FCB->RecvControl;
@@ -662,7 +661,12 @@ SatisfyPacketRecvRequest( PAFD_FCB FCB, PIRP Irp,
         MmUnmapLockedPages(Map[i + 4].BufferAddress, Map[i + 4].Mdl);
     }
 
-    if (!(MsgFlags & (MSG_TRUNC | MSG_CTRUNC)))
+    if (DatagramRecv->Status != STATUS_SUCCESS)
+    {
+        /* This entry reports a datagram the socket sent and nobody took */
+        Status = Irp->IoStatus.Status = DatagramRecv->Status;
+    }
+    else if (!(MsgFlags & (MSG_TRUNC | MSG_CTRUNC)))
     {
         /* We copied the whole datagram */
         Status = Irp->IoStatus.Status = STATUS_SUCCESS;
@@ -953,13 +957,11 @@ AfdIsFromConnectedPeer(
     return PeerIp->in_addr == FromIp->in_addr && PeerIp->sin_port == FromIp->sin_port;
 }
 
-NTSTATUS NTAPI
-PacketSocketRecvComplete(
-        PDEVICE_OBJECT DeviceObject,
-        PIRP Irp,
-        PVOID Context ) {
+static NTSTATUS
+PacketSocketRecvProcess(
+        PAFD_FCB FCB,
+        PIRP Irp ) {
     NTSTATUS Status = STATUS_SUCCESS;
-    PAFD_FCB FCB = Context;
     PIRP NextIrp;
     PIO_STACK_LOCATION NextIrpSp;
     PLIST_ENTRY ListEntry;
@@ -968,11 +970,7 @@ PacketSocketRecvComplete(
     UINT ControlLen = 0;
     UINT DGSize;
     PLIST_ENTRY NextIrpEntry, DatagramRecvEntry;
-
-    UNREFERENCED_PARAMETER(DeviceObject);
-
-    if( !SocketAcquireStateLock( FCB ) )
-        return STATUS_FILE_CLOSED;
+    BOOLEAN Unreachable = (Irp->IoStatus.Status == STATUS_PORT_UNREACHABLE);
 
     ASSERT(FCB->ReceiveIrp.InFlightRequest == Irp);
     FCB->ReceiveIrp.InFlightRequest = NULL;
@@ -1005,7 +1003,7 @@ PacketSocketRecvComplete(
         return STATUS_FILE_CLOSED;
     }
 
-    if (Irp->IoStatus.Status != STATUS_SUCCESS)
+    if (Irp->IoStatus.Status != STATUS_SUCCESS && !Unreachable)
     {
         if (FCB->TdiRundownEvent) AfdSignalTdiRundown(FCB);
         SocketStateUnlock(FCB);
@@ -1032,7 +1030,13 @@ PacketSocketRecvComplete(
         goto SatisfyRequests;
     }
 
-    if (Irp->IoStatus.Information > MAXULONG - FCB->Recv.Content)
+    if (Irp->IoStatus.Information > MAXULONG - FCB->Recv.Content ||
+        (FCB->Recv.Size ? FCB->Recv.Content >= FCB->Recv.Size : !IsListEmpty(&FCB->DatagramList)))
+        goto SatisfyRequests;
+
+    /* One queued report is enough to fail the next receive */
+    if (Unreachable && !IsListEmpty(&FCB->DatagramList) &&
+        CONTAINING_RECORD(FCB->DatagramList.Blink, AFD_STORED_DATAGRAM, ListEntry)->Status != STATUS_SUCCESS)
         goto SatisfyRequests;
 
     DGSize = FIELD_OFFSET(AFD_STORED_DATAGRAM, Buffer) +
@@ -1042,6 +1046,7 @@ PacketSocketRecvComplete(
                                          TAG_AFD_STORED_DATAGRAM);
 
     if( DatagramRecv ) {
+        DatagramRecv->Status = Irp->IoStatus.Status;
         DatagramRecv->Len = Irp->IoStatus.Information;
         RtlCopyMemory( DatagramRecv->Buffer, FCB->Recv.Window,
                        DatagramRecv->Len );
@@ -1114,20 +1119,67 @@ SatisfyRequests:
     if( !IsListEmpty( &FCB->DatagramList ) && IsListEmpty(&FCB->PendingIrpList[FUNCTION_RECV]) ) {
         AFD_DbgPrint(MID_TRACE,("Signalling\n"));
         FCB->PollState |= AFD_EVENT_RECEIVE;
-        FCB->PollStatus[FD_READ_BIT] = STATUS_SUCCESS;
+        FCB->PollStatus[FD_READ_BIT] =
+            CONTAINING_RECORD(FCB->DatagramList.Flink, AFD_STORED_DATAGRAM, ListEntry)->Status;
         PollReeval( FCB->DeviceExt, FCB->FileObject );
     } else
         FCB->PollState &= ~AFD_EVENT_RECEIVE;
 
     AfdTryApplyPendingReceiveWindow(FCB);
 
-    if (NT_SUCCESS(Irp->IoStatus.Status))
+    if (NT_SUCCESS(Irp->IoStatus.Status) || Unreachable)
         AfdRearmDatagram(FCB);
 
     if (FCB->TdiRundownEvent) AfdSignalTdiRundown(FCB);
     SocketStateUnlock( FCB );
 
     return STATUS_SUCCESS;
+}
+
+static IO_WORKITEM_ROUTINE PacketSocketDeferredRecv;
+
+static
+VOID
+NTAPI
+PacketSocketDeferredRecv(
+        PDEVICE_OBJECT DeviceObject,
+        PVOID Context ) {
+    PAFD_FCB FCB = Context;
+    PIRP Irp;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if( !SocketAcquireStateLock( FCB ) )
+        return;
+
+    Irp = FCB->ReceiveIrp.InFlightRequest;
+    PacketSocketRecvProcess( FCB, Irp );
+    IoFreeIrp(Irp);
+}
+
+NTSTATUS NTAPI
+PacketSocketRecvComplete(
+        PDEVICE_OBJECT DeviceObject,
+        PIRP Irp,
+        PVOID Context ) {
+    PAFD_FCB FCB = Context;
+    LARGE_INTEGER NoWait;
+
+    UNREFERENCED_PARAMETER(DeviceObject);
+
+    if( !FCB )
+        return STATUS_FILE_CLOSED;
+
+    /* A looped-back datagram completes inside its sender's send, so waiting here could close a lock cycle */
+    NoWait.QuadPart = 0;
+    if (KeGetCurrentIrql() == PASSIVE_LEVEL &&
+        KeWaitForSingleObject(&FCB->Mutex, Executive, KernelMode, FALSE, &NoWait) == STATUS_SUCCESS)
+    {
+        return PacketSocketRecvProcess( FCB, Irp );
+    }
+
+    IoQueueWorkItem(FCB->ReceiveWorkItem, PacketSocketDeferredRecv, DelayedWorkQueue, FCB);
+    return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
 NTSTATUS NTAPI
@@ -1205,7 +1257,8 @@ AfdPacketSocketReadData(PDEVICE_OBJECT DeviceObject, PIRP Irp,
         if (!IsListEmpty(&FCB->DatagramList))
         {
             FCB->PollState |= AFD_EVENT_RECEIVE;
-            FCB->PollStatus[FD_READ_BIT] = STATUS_SUCCESS;
+            FCB->PollStatus[FD_READ_BIT] =
+                CONTAINING_RECORD(FCB->DatagramList.Flink, AFD_STORED_DATAGRAM, ListEntry)->Status;
             PollReeval( FCB->DeviceExt, FCB->FileObject );
         }
         else

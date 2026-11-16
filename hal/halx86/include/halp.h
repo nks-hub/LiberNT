@@ -238,6 +238,7 @@ HalpEnableInterruptHandler(IN UCHAR Flags,
 VOID NTAPI HalpInitializePICs(IN BOOLEAN EnableInterrupts);
 VOID __cdecl HalpApcInterrupt(VOID);
 VOID __cdecl HalpDispatchInterrupt(VOID);
+VOID __cdecl HalpIpiInterrupt(VOID);
 PHAL_SW_INTERRUPT_HANDLER __cdecl HalpDispatchInterrupt2(VOID);
 DECLSPEC_NORETURN VOID FASTCALL HalpApcInterrupt2ndEntry(IN PKTRAP_FRAME TrapFrame);
 DECLSPEC_NORETURN VOID FASTCALL HalpDispatchInterrupt2ndEntry(IN PKTRAP_FRAME TrapFrame);
@@ -711,29 +712,6 @@ HalpInitProcessor(
     IN PLOADER_PARAMETER_BLOCK LoaderBlock
 );
 
-#if defined(SARCH_PC98)
-BOOLEAN
-NTAPI
-HalpDismissIrq08(
-    _In_ KIRQL Irql,
-    _In_ ULONG Irq,
-    _Out_ PKIRQL OldIrql
-);
-
-BOOLEAN
-NTAPI
-HalpDismissIrq08Level(
-    _In_ KIRQL Irql,
-    _In_ ULONG Irq,
-    _Out_ PKIRQL OldIrql
-);
-
-VOID
-NTAPI
-HalpInitializeClockPc98(VOID);
-
-extern ULONG PIT_FREQUENCY;
-#endif /* SARCH_PC98 */
 
 VOID
 NTAPI

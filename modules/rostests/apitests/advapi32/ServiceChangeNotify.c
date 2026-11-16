@@ -705,6 +705,115 @@ test_DeleteDuringCallback(SC_HANDLE Manager)
     }
 }
 
+typedef struct _SUBSCRIBER
+{
+    volatile LONG Calls, Seen, Deletes, First;
+    HANDLE Gate;
+} SUBSCRIBER;
+
+static VOID CALLBACK
+SubscriberNotified(DWORD Notify, PVOID Context)
+{
+    SUBSCRIBER *Subscriber = Context;
+
+    trace("Subscriber %p callback 0x%lx\n", Subscriber, Notify);
+    InterlockedCompareExchange(&Subscriber->First, Notify, 0);
+    InterlockedOr(&Subscriber->Seen, Notify);
+    if (Notify & SERVICE_NOTIFY_DELETE_PENDING)
+        InterlockedIncrement(&Subscriber->Deletes);
+    if (InterlockedIncrement(&Subscriber->Calls) == 1 && Subscriber->Gate)
+        WaitForSingleObject(Subscriber->Gate, 30000);
+}
+
+static volatile LONG DeleteApcs;
+
+static VOID CALLBACK
+DeleteNotified(PVOID Parameter)
+{
+    PSERVICE_NOTIFYW Notify = Parameter;
+
+    if (Notify->dwNotificationStatus == ERROR_SUCCESS && Notify->dwNotificationTriggered == SERVICE_NOTIFY_DELETE_PENDING)
+        InterlockedIncrement(&DeleteApcs);
+}
+
+static void
+WaitDeletes(SUBSCRIBER *Subscriber)
+{
+    DWORD Start;
+
+    for (Start = GetTickCount(); !Subscriber->Deletes && GetTickCount() - Start < 5000; )
+        SleepEx(50, TRUE);
+}
+
+/* Every subscription and request on one handle gets the delete, also one busy in its callback or made after the delete */
+static void
+test_DeleteSharedHandle(SC_HANDLE Manager)
+{
+    SUBSCRIBER Busy = { 0 }, Waiting = { 0 }, Late = { 0 };
+    PSC_NOTIFICATION_REGISTRATION BusySub = NULL, WaitingSub = NULL, LateSub = NULL;
+    static SERVICE_NOTIFYW Notify[2];
+    SC_HANDLE Service;
+    DWORD Error, Start, i;
+
+    Service = CreateTestService(Manager);
+    ok(Service != NULL, "CreateServiceW failed (%lu)\n", GetLastError());
+    if (!Service)
+        return;
+
+    Busy.Gate = CreateEventW(NULL, TRUE, FALSE, NULL);
+    Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, SubscriberNotified, &Busy, &BusySub);
+    ok(Error == ERROR_SUCCESS, "First subscription returned %lu\n", Error);
+    Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, SubscriberNotified, &Waiting, &WaitingSub);
+    ok(Error == ERROR_SUCCESS, "Second subscription returned %lu\n", Error);
+    DeleteApcs = 0;
+    for (i = 0; i < ARRAYSIZE(Notify); i++)
+    {
+        ZeroMemory(&Notify[i], sizeof(Notify[i]));
+        Notify[i].dwVersion = SERVICE_NOTIFY_STATUS_CHANGE;
+        Notify[i].pfnNotifyCallback = DeleteNotified;
+        Error = NotifyServiceStatusChangeW(Service, SERVICE_NOTIFY_DELETE_PENDING, &Notify[i]);
+        ok(Error == ERROR_SUCCESS, "Request %lu returned %lu\n", i, Error);
+    }
+    for (Start = GetTickCount(); !Busy.Calls && GetTickCount() - Start < 5000; )
+        Sleep(50);
+    /* Windows runs the callbacks of a process one at a time, so the others wait until the gate opens */
+    Sleep(500);
+
+    ok(DeleteService(Service), "DeleteService failed (%lu)\n", GetLastError());
+    Error = pSubscribe(Service, SC_EVENT_STATUS_CHANGE, SubscriberNotified, &Late, &LateSub);
+    ok(Error == ERROR_SUCCESS, "Subscription after the delete returned %lu\n", Error);
+    SleepEx(1000, TRUE);
+    SetEvent(Busy.Gate);
+    WaitDeletes(&Busy);
+    WaitDeletes(&Waiting);
+    WaitDeletes(&Late);
+    for (Start = GetTickCount(); DeleteApcs < 2 && GetTickCount() - Start < 5000; )
+        SleepEx(50, TRUE);
+    SleepEx(500, TRUE);
+
+    ok(DeleteApcs == 2, "%ld of 2 requests on the handle got the delete\n", DeleteApcs);
+    ok(Busy.Deletes == 1, "The subscription busy in its callback got %ld deletes (seen 0x%lx)\n", Busy.Deletes, Busy.Seen);
+    ok(Waiting.Deletes == 1, "The waiting subscription got %ld deletes (seen 0x%lx)\n", Waiting.Deletes, Waiting.Seen);
+    ok(Late.Deletes == 1, "The subscription made after the delete got %ld deletes (seen 0x%lx)\n", Late.Deletes, Late.Seen);
+    ok(Late.First == SERVICE_NOTIFY_STOPPED, "The subscription made after the delete first got 0x%lx\n", Late.First);
+
+    if (BusySub)
+        pUnsubscribe(BusySub);
+    if (WaitingSub)
+        pUnsubscribe(WaitingSub);
+    if (LateSub)
+        pUnsubscribe(LateSub);
+    CloseHandle(Busy.Gate);
+    CloseServiceHandle(Service);
+    for (Start = GetTickCount(); GetTickCount() - Start < 5000; Sleep(50))
+    {
+        Service = OpenServiceW(Manager, TEST_SERVICE, SERVICE_QUERY_STATUS);
+        if (!Service)
+            break;
+        CloseServiceHandle(Service);
+    }
+}
+
 static volatile LONG DatabaseCalls, DatabaseSeen;
 
 static VOID CALLBACK
@@ -818,6 +927,7 @@ START_TEST(ServiceChangeNotify)
         test_runner(test_ChangeDuringCallback, NULL);
         test_runner(test_StopAfterDelete, NULL);
         test_DeleteDuringCallback(Manager);
+        test_DeleteSharedHandle(Manager);
         test_DatabaseChangeDuringCallback(Manager);
     }
     else

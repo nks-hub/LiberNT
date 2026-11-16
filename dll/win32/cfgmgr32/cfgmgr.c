@@ -942,6 +942,8 @@ CmpHandleNotifyCallback(
     PDEV_BROADCAST_HANDLE pHandle = (PDEV_BROADCAST_HANDLE)pHeader;
     PHANDLE_NOTIFY_EVENT pEvent;
     HDEVNOTIFY hHandleNotify = pHandle->dbch_hdevnotify;
+    DWORD_PTR Result = TRUE;
+    HWND hWindow;
 
     pEvent = HeapAlloc(GetProcessHeap(), 0, FIELD_OFFSET(HANDLE_NOTIFY_EVENT, Header) + pHeader->dbch_size);
     if (pEvent == NULL)
@@ -951,6 +953,28 @@ CmpHandleNotifyCallback(
     pEvent->dwEventType = dwEventType;
     CopyMemory(&pEvent->Header, pHeader, pHeader->dbch_size);
     ((PDEV_BROADCAST_HANDLE)&pEvent->Header)->dbch_hdevnotify = (HDEVNOTIFY)hContext;
+
+    /* A query is answered by the window itself: BROADCAST_QUERY_DENY keeps the device */
+    if (dwEventType == DBT_DEVICEQUERYREMOVE)
+    {
+        EnterCriticalSection(&HandleNotifyLock);
+        hWindow = CmpFindHandleNotifyWindow(pEvent->pNotifyData, hHandleNotify);
+        LeaveCriticalSection(&HandleNotifyLock);
+
+        if (hWindow != NULL &&
+            !SendMessageTimeoutW(hWindow,
+                                 WM_DEVICECHANGE,
+                                 (WPARAM)dwEventType,
+                                 (LPARAM)&pEvent->Header,
+                                 SMTO_ABORTIFHUNG,
+                                 2000,
+                                 &Result))
+        {
+            Result = TRUE;
+        }
+        HeapFree(GetProcessHeap(), 0, pEvent);
+        return (Result == BROADCAST_QUERY_DENY) ? BROADCAST_QUERY_DENY : TRUE;
+    }
 
     EnterCriticalSection(&HandleNotifyLock);
     if (CmpFindHandleNotifyWindow(pEvent->pNotifyData, hHandleNotify) == NULL)
@@ -2453,6 +2477,14 @@ CfgmgrRemoveSoftwareDevice(
     _In_ ULONG ulGeneration)
 {
     return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, ulGeneration, pszInstanceId);
+}
+
+
+CONFIGRET
+CfgmgrRemoveAnySoftwareDevice(
+    _In_ PCWSTR pszInstanceId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, PNP_SOFTWARE_DEVICE_ANY_GENERATION, pszInstanceId);
 }
 
 
@@ -7077,11 +7109,12 @@ CM_Set_DevNode_Registry_Property_ExW(
 
     RpcTryExcept
     {
+        /* The buffer is a reference pointer, also for a deletion without data */
         ret = PNP_SetDeviceRegProp(BindingHandle,
                                    lpDevInst,
                                    ulProperty,
                                    ulType,
-                                   (BYTE *)Buffer,
+                                   Buffer ? (BYTE *)Buffer : (BYTE *)&ulType,
                                    ulLength,
                                    ulFlags);
     }

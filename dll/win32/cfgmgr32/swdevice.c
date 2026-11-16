@@ -40,6 +40,7 @@ typedef struct _SW_DEVICE
     HMODULE Module;
     HMODULE CallbackModule;
     BOOL Reopened;
+    BOOL Claimed;
     ULONG Generation;
     LIST_ENTRY OpenEntry;
     LONG ActiveCalls;
@@ -539,12 +540,27 @@ UnlockSwDeviceOwners(_In_ HANDLE Lock)
     ReleaseMutex(Lock);
 }
 
+static BOOL
+IsInUse(_In_ PCWSTR InstanceId)
+{
+    HANDLE Lock = LockSwDeviceOwners();
+    BOOL InUse = Lock && GetOwner(InstanceId) == SwOwnerInUse;
+
+    if (Lock)
+        UnlockSwDeviceOwners(Lock);
+    return InUse;
+}
+
 static VOID
 ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
 {
-    HANDLE Lock = LockSwDeviceOwners();
+    HANDLE Token = NULL, Lock;
     CONFIGRET Cr;
 
+    /* Windows 11 removes the device also when the thread that closes the handle impersonates a user who may not */
+    if (OpenThreadToken(GetCurrentThread(), TOKEN_IMPERSONATE, TRUE, &Token))
+        SetThreadToken(NULL, NULL);
+    Lock = LockSwDeviceOwners();
     if (Remove)
     {
         /* Windows 11 leaves a device that was created with the instance ID after the device of this handle had left */
@@ -572,6 +588,11 @@ ReleaseSwDeviceNode(_In_ PSW_DEVICE Device, _In_ BOOL Remove)
     }
     if (Lock)
         UnlockSwDeviceOwners(Lock);
+    if (Token)
+    {
+        SetThreadToken(NULL, Token);
+        CloseHandle(Token);
+    }
 }
 
 static HRESULT
@@ -606,7 +627,7 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
                 break;
 
             case SwOwnerEnded:
-                if (CfgmgrRemoveSoftwareDevice(Device->InstanceId, 0) == CR_SUCCESS)
+                if (CfgmgrRemoveAnySoftwareDevice(Device->InstanceId) == CR_SUCCESS)
                 {
                     TRACE("Removed %s left by an ended process\n", debugstr_w(Device->InstanceId));
                     Cr = CM_Create_DevNodeW(&DevInst, Device->InstanceId, Device->ParentInst,
@@ -638,6 +659,18 @@ ClaimSwDeviceNode(_In_ PSW_DEVICE Device)
     if (Cr != CR_SUCCESS)
         return Cr == CR_ALREADY_SUCH_DEVINST ? HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) : CrToHresult(Cr);
     return hr;
+}
+
+static VOID
+UnclaimSwDeviceNode(_In_ PSW_DEVICE Device)
+{
+    if (Device->DevInst)
+        ReleaseSwDeviceNode(Device, !Device->Reopened);
+    EnterCriticalSection(&Device->LifetimeLock);
+    Device->DevInst = 0;
+    LeaveCriticalSection(&Device->LifetimeLock);
+    Device->Reopened = FALSE;
+    Device->Claimed = FALSE;
 }
 
 /* Windows 11: the given container, else a container of its own for a removable device and the container of the parent for any other */
@@ -700,9 +733,13 @@ CreateSwDeviceNode(_In_ PSW_DEVICE Device)
     CONFIGRET Cr;
     HRESULT hr;
 
-    hr = ClaimSwDeviceNode(Device);
-    if (FAILED(hr))
-        return hr;
+    if (!Device->Claimed)
+    {
+        hr = ClaimSwDeviceNode(Device);
+        if (FAILED(hr))
+            return hr;
+    }
+    Device->Claimed = FALSE;
 
     /* A device that may start without a driver would start before the driver it gets below is installed */
     Cr = CfgmgrSetSoftwareDeviceCapabilities(Device->InstanceId, Device->Capabilities | SWDeviceCapabilitiesDriverRequired);
@@ -835,12 +872,7 @@ SwDeviceCreateThread(_In_ PVOID Parameter)
 
         ERR("Creating software device %s failed (0x%08lx)\n", debugstr_w(Device->InstanceId), hr);
 
-        if (Device->DevInst)
-            ReleaseSwDeviceNode(Device, !Device->Reopened);
-        EnterCriticalSection(&Device->LifetimeLock);
-        Device->DevInst = 0;
-        LeaveCriticalSection(&Device->LifetimeLock);
-        Device->Reopened = FALSE;
+        UnclaimSwDeviceNode(Device);
 
         /* A parent that left during the creation took the device with it; the creation waits for the parent like one that began later */
         if (hr == HRESULT_FROM_WIN32(ERROR_OPERATION_ABORTED) || IsParentStarted(Device))
@@ -869,8 +901,6 @@ SwDeviceCreate(
     _Out_ PHSWDEVICE phSwDevice)
 {
     PSW_DEVICE Device;
-    HANDLE Lock;
-    BOOL InUse;
     HRESULT hr;
 
     TRACE("%s %s %p %lu %p %p %p %p\n", debugstr_w(pszEnumeratorName), debugstr_w(pszParentDeviceInstance),
@@ -903,11 +933,7 @@ SwDeviceCreate(
     }
 
     /* Windows 11 answers at once when a handle of the instance ID is open in any process */
-    Lock = LockSwDeviceOwners();
-    InUse = Lock && GetOwner(Device->InstanceId) == SwOwnerInUse;
-    if (Lock)
-        UnlockSwDeviceOwners(Lock);
-    if (InUse)
+    if (IsInUse(Device->InstanceId))
     {
         FreeSwDevice(Device);
         return HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS);
@@ -984,10 +1010,27 @@ SwDeviceCreate(
         return hr;
     }
 
+    /* Windows 11 refuses at once an instance ID that a creation in another process takes at the same time */
+    if (IsParentStarted(Device))
+    {
+        hr = ClaimSwDeviceNode(Device);
+        if (hr == HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS) && IsInUse(Device->InstanceId))
+        {
+            FreeLibrary(Device->Module);
+            FreeLibrary(Device->CallbackModule);
+            FreeSwDevice(Device);
+            return hr;
+        }
+        Device->Claimed = SUCCEEDED(hr);
+        if (!Device->Claimed)
+            UnclaimSwDeviceNode(Device);
+    }
+
     Device->Thread = CreateThread(NULL, 0, SwDeviceCreateThread, Device, CREATE_SUSPENDED, &Device->ThreadId);
     if (!Device->Thread)
     {
         hr = HRESULT_FROM_WIN32(GetLastError());
+        UnclaimSwDeviceNode(Device);
         FreeLibrary(Device->Module);
         FreeLibrary(Device->CallbackModule);
         FreeSwDevice(Device);
@@ -1004,6 +1047,7 @@ SwDeviceCreate(
         hr = HRESULT_FROM_WIN32(GetLastError());
         TerminateThread(Device->Thread, 0);
         CloseHandle(Device->Thread);
+        UnclaimSwDeviceNode(Device);
         FreeLibrary(Device->Module);
         FreeLibrary(Device->CallbackModule);
         AcquireSRWLockExclusive(&SwDeviceListLock);

@@ -770,6 +770,23 @@ DxgkpVidMmPrimarySegmentsCpuVisible(
     return TRUE;
 }
 
+/* A primary goes where the miniport prefers; only without a preference must all its write segments be CPU-accessible (D3DDDI_ALLOCATIONINFO) */
+static BOOLEAN
+DxgkpVidMmPrimaryPlacementValid(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ const DXGK_ALLOCATIONINFO *AllocInfo)
+{
+    if (AllocInfo->Flags.PermanentSysMem || AllocInfo->Flags.Cached ||
+        AllocInfo->Flags.Protected || AllocInfo->Flags.ExistingSysMem ||
+        AllocInfo->Flags.ExistingKernelSysMem)
+    {
+        return FALSE;
+    }
+
+    return AllocInfo->PreferredSegment.Value != 0 ||
+           DxgkpVidMmPrimarySegmentsCpuVisible(Adapter, AllocInfo->SupportedWriteSegmentSet);
+}
+
 static PLIST_ENTRY
 DxgkpVidMmAllocationHashHead(
     _In_ D3DKMT_HANDLE Handle)
@@ -781,6 +798,8 @@ static VOID
 DxgkpVidMmPublishAllocationLocked(
     _Inout_ PDXGKVMM_ALLOCATION Allocation)
 {
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     InsertTailList(&DxgkVidMmAllocationListHead, &Allocation->GlobalAllocationEntry);
     InsertTailList(DxgkpVidMmAllocationHashHead(Allocation->Handle), &Allocation->HandleHashEntry);
 }
@@ -789,6 +808,8 @@ static VOID
 DxgkpVidMmUnpublishAllocationLocked(
     _Inout_ PDXGKVMM_ALLOCATION Allocation)
 {
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     RemoveEntryList(&Allocation->GlobalAllocationEntry);
     InitializeListHead(&Allocation->GlobalAllocationEntry);
     RemoveEntryList(&Allocation->HandleHashEntry);
@@ -799,6 +820,8 @@ static VOID
 DxgkpVidMmPublishResourceLocked(
     _Inout_ PDXGKVMM_RESOURCE Resource)
 {
+    ASSERT(Resource != NULL);
+
     InsertTailList(&DxgkVidMmResourceListHead, &Resource->GlobalResourceEntry);
     InsertTailList(&DxgkVidMmResourceHashHeads[(ULONG)Resource->Handle & (DXGKVMM_ALLOCATION_HASH_BUCKETS - 1)],
                    &Resource->HandleHashEntry);
@@ -813,6 +836,8 @@ static VOID
 DxgkpVidMmUnpublishResourceLocked(
     _Inout_ PDXGKVMM_RESOURCE Resource)
 {
+    ASSERT(Resource != NULL);
+
     RemoveEntryList(&Resource->GlobalResourceEntry);
     InitializeListHead(&Resource->GlobalResourceEntry);
     RemoveEntryList(&Resource->HandleHashEntry);
@@ -1676,7 +1701,9 @@ DxgkVidMmMapVirtualPresentAllocation(
     D3DDDIGPUVIRTUALADDRESS_PROTECTION_TYPE Protection;
     PDXGKRNL_DEVICE Device = Backing->Device;
     D3DGPU_VIRTUAL_ADDRESS UserAddress = 0;
+    D3DGPU_VIRTUAL_ADDRESS Reserved = 0;
     BOOLEAN Borrowed;
+    NTSTATUS FreeStatus;
     NTSTATUS Status;
     ULONG Index;
 
@@ -1743,11 +1770,21 @@ DxgkVidMmMapVirtualPresentAllocation(
         return STATUS_SUCCESS;
     }
 
-    Protection.Value = 0;
-    Protection.Write = Write;
-    Status = DxgkGpuVaMap(Device->Adapter, Device->ProcessRecord, Allocation, Binding->Handle, 0, 0, 0, 0, Allocation->Size, Protection, 0, 0, OutAddress);
+    Status = DxgkGpuVaReserve(Device->ProcessRecord, 0, 0, 0, Allocation->Size, D3DDDIGPUVIRTUALADDRESS_RESERVE_NO_ACCESS, 0, &Reserved);
     if (!NT_SUCCESS(Status))
         return Status;
+    ASSERT(Reserved != 0);
+    Protection.Value = 0;
+    Protection.Write = Write;
+    Status = DxgkGpuVaMap(Device->Adapter, Device->ProcessRecord, Allocation, Binding->Handle, 0, Reserved, 0, 0, Allocation->Size, Protection, 0, 0, OutAddress);
+    if (!NT_SUCCESS(Status))
+    {
+        FreeStatus = DxgkGpuVaFree(Device->ProcessRecord, Reserved, Allocation->Size);
+        ASSERT(NT_SUCCESS(FreeStatus));
+        (VOID)FreeStatus;
+        return Status;
+    }
+    ASSERT(*OutAddress == Reserved);
     /* Own the reservation as soon as Map succeeds, including when flushing
      * or pinning subsequently fails and no submission is accepted. */
     Index = Backing->DataMappingCount++;
@@ -2460,6 +2497,8 @@ DxgkpVidMmLookupAllocationLocked(
     PLIST_ENTRY Head = DxgkpVidMmAllocationHashHead(Handle);
     PLIST_ENTRY Entry;
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     for (Entry = Head->Flink; Entry != Head; Entry = Entry->Flink)
     {
         PDXGKVMM_ALLOCATION Alloc;
@@ -2479,6 +2518,8 @@ DxgkpVidMmLookupResourceLocked(
     PLIST_ENTRY Head = &DxgkVidMmResourceHashHeads[(ULONG)Handle & (DXGKVMM_ALLOCATION_HASH_BUCKETS - 1)];
     PLIST_ENTRY Entry;
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     for (Entry = Head->Flink; Entry != Head; Entry = Entry->Flink)
     {
         PDXGKVMM_RESOURCE Resource;
@@ -2497,6 +2538,8 @@ DxgkpVidMmLookupGlobalShareLocked(
 {
     PLIST_ENTRY Head = &DxgkVidMmShareHashHeads[(ULONG)Handle & (DXGKVMM_ALLOCATION_HASH_BUCKETS - 1)];
     PLIST_ENTRY Entry;
+
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
 
     for (Entry = Head->Flink; Entry != Head; Entry = Entry->Flink)
     {
@@ -3193,6 +3236,8 @@ DxgkpVidMmFindSharedAccessLocked(
     _In_opt_ PEPROCESS Process)
 {
     PLIST_ENTRY Entry;
+
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
 
     for (Entry = Resource->SharedAccessList.Flink; Entry != &Resource->SharedAccessList; Entry = Entry->Flink)
     {
@@ -4870,7 +4915,7 @@ DxgkVidMmQueryUEFIFrameBufferRanges(
 
         RtlZeroMemory(&MemoryState, sizeof(MemoryState));
         RtlZeroMemory(Ranges, sizeof(Ranges));
-        MemoryState.DriverSegmentId          = (WORD)Seg->SegmentId;
+        MemoryState.DriverSegmentId          = DxgkPostDisplayCoreUefiRangeSegment(Seg->SegmentId);
         MemoryState.PhysicalAdapterIndex     = 0;
         MemoryState.NumUEFIFrameBufferRanges = Count;
         MemoryState.pMemoryRanges            = Ranges;
@@ -6295,14 +6340,7 @@ DxgkpVidMmCreateAllocationTracked(
         /* D3DDDI_ALLOCATIONINFO.Primary makes the allocation implicitly
          * CPU-accessible. The miniport still owns its layout and placement,
          * but must not return storage incompatible with a primary. */
-        if (AllocInfo->Flags.PermanentSysMem || AllocInfo->Flags.Cached ||
-            AllocInfo->Flags.Protected || AllocInfo->Flags.ExistingSysMem ||
-            AllocInfo->Flags.ExistingKernelSysMem)
-        {
-            Status = STATUS_INVALID_PARAMETER;
-            goto FailMiniportAllocation;
-        }
-        if (!DxgkpVidMmPrimarySegmentsCpuVisible(Adapter, AllocInfo->SupportedWriteSegmentSet))
+        if (!DxgkpVidMmPrimaryPlacementValid(Adapter, AllocInfo))
         {
             Status = STATUS_INVALID_PARAMETER;
             goto FailMiniportAllocation;
@@ -10268,6 +10306,8 @@ DxgkpVidMmInsertSegmentEntryLocked(
     PLIST_ENTRY Entry;
     PLIST_ENTRY InsertBefore = Segment->AllocationList.Flink;
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     for (Entry = Segment->AllocationList.Blink;
          Entry != &Segment->AllocationList;
          Entry = Entry->Blink)
@@ -10917,6 +10957,8 @@ DxgkpVidMmFindResidencyReferenceLocked(
 {
     PLIST_ENTRY Entry;
 
+    ASSERT(Allocation != NULL);
+
     if (Allocation->ResidencyReferenceList.Flink == NULL)
         return NULL;
     for (Entry = Allocation->ResidencyReferenceList.Flink;
@@ -10939,6 +10981,8 @@ DxgkpVidMmAcquireDeviceResidencyReferenceLocked(
     PDXGKVMM_RESIDENCY_REF Ref;
     LONG TotalReferences;
     BOOLEAN CreatedRef = FALSE;
+
+    ASSERT(Allocation != NULL);
 
     if (Allocation->ResidencyReferenceList.Flink == NULL)
         InitializeListHead(&Allocation->ResidencyReferenceList);
@@ -10977,6 +11021,8 @@ DxgkpVidMmAcquireDeviceResidencyReferencesLocked(
     PDXGKVMM_RESIDENCY_REF Ref;
     LONG TotalReferences;
     BOOLEAN CreatedRef = FALSE;
+
+    ASSERT(Allocation != NULL);
 
     if (Count == 0 || Count > MAXLONG)
         return STATUS_INVALID_PARAMETER;
@@ -11023,6 +11069,9 @@ DxgkpVidMmQueryDeviceResidencyReferenceCountLocked(
 
     Ref = DxgkpVidMmFindResidencyReferenceLocked(Allocation, Device);
     Count = Ref != NULL ? Ref->Count : 0;
+
+    ASSERT(Allocation != NULL);
+
     if (Allocation->ImplicitResidencyReference && Device == Allocation->Device)
         Count++;
     return Count;
@@ -11151,6 +11200,8 @@ DxgkpVidMmReleaseDeviceResidencyReferenceLocked(
     _Out_ PBOOLEAN OutReachedZero)
 {
     PDXGKVMM_RESIDENCY_REF Ref;
+
+    ASSERT(Allocation != NULL);
 
     if (OutReachedZero != NULL)
         *OutReachedZero = FALSE;
@@ -12954,6 +13005,8 @@ DxgkpVidMmFindAllocationBudgetChargeLocked(
     _In_ PDXGKVMM_PROCESS_BUDGET Record)
 {
     PLIST_ENTRY Entry;
+
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
 
     for (Entry = Allocation->ResidencyBudgetChargeList.Flink;
          Entry != &Allocation->ResidencyBudgetChargeList;
@@ -15408,6 +15461,9 @@ DxgkpVidMmCleanAllocationForSubmissionLocked(
 {
     DPT_SCOPE Trace = DptBegin(&g_DxgPresentTrace, DPT_KERNEL_CACHE_CLEAN);
     NTSTATUS Status = DxgkpVidMmCleanAllocationForSubmissionLockedImpl(Allocation, Adapter);
+
+    ASSERT(Allocation != NULL);
+
     DptEnd(&g_DxgPresentTrace, Trace, NT_SUCCESS(Status), Allocation->Size);
     return Status;
 }
@@ -15793,6 +15849,8 @@ DxgkpVidMmFindUserMappingLocked(
 {
     PLIST_ENTRY Entry;
 
+    ASSERT(KeGetCurrentIrql() < DISPATCH_LEVEL);
+
     for (Entry = Allocation->UserModeMappingList.Flink;
          Entry != &Allocation->UserModeMappingList;
          Entry = Entry->Flink)
@@ -16080,6 +16138,8 @@ DxgkpVidMmReleaseSwizzleRangeLocked(
     DXGKARG_RELEASESWIZZLINGRANGE Args;
     NTSTATUS Status;
 
+    ASSERT(Owner != NULL);
+
     if (!Owner->SwizzleRangeHeld)
         return;
     if (Owner->CpuAddress != NULL && Owner->CpuAddress == Owner->SwizzleRangeVa)
@@ -16134,6 +16194,8 @@ DxgkpVidMmStealSwizzleRangeLocked(
     _In_ PDXGKVMM_ALLOCATION Requester)
 {
     ULONG Index;
+
+    ASSERT(Adapter != NULL);
 
     for (Index = 0; Index < Adapter->SwizzlingRangeCount; ++Index)
     {
@@ -17046,6 +17108,8 @@ DxgkpVidMmFindProcessBudgetLocked(
 {
     PLIST_ENTRY Entry;
 
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
+
     for (Entry = DxgkVidMmProcessBudgetListHead.Flink;
          Entry != &DxgkVidMmProcessBudgetListHead;
          Entry = Entry->Flink)
@@ -17064,6 +17128,8 @@ DxgkpVidMmFindProcessBudgetGateLocked(
     _In_ PEPROCESS Process)
 {
     PLIST_ENTRY Entry;
+
+    ASSERT(KeGetCurrentIrql() == APC_LEVEL);
 
     for (Entry = DxgkVidMmProcessBudgetGateListHead.Flink;
          Entry != &DxgkVidMmProcessBudgetGateListHead;
@@ -17164,6 +17230,8 @@ static BOOLEAN
 DxgkpVidMmProcessBudgetCanRetireLocked(
     _In_ PDXGKVMM_PROCESS_BUDGET Record)
 {
+    ASSERT(Record != NULL);
+
     return Record->ProcessExiting &&
            Record->ActiveTransactions == 0 &&
            Record->ChargeEntryCount == 0 &&

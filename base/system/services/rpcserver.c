@@ -51,6 +51,7 @@ typedef struct _NOTIFY_HANDLE
     LIST_ENTRY ListEntry;
     PVOID Owner;
     BOOL bSubscription;
+    BOOL bDeleteSeen;
 } NOTIFY_HANDLE, *PNOTIFY_HANDLE;
 
 
@@ -60,7 +61,6 @@ typedef struct _SERVICE_HANDLE
     PSERVICE ServiceEntry;
     LIST_ENTRY HandleListEntry;
     BOOL bStatusNotified;
-    BOOL bDeleteNotified;
     LIST_ENTRY NotifyList;
 } SERVICE_HANDLE, *PSERVICE_HANDLE;
 
@@ -122,6 +122,8 @@ DWORD g_dwServiceBits = 0;
 static CRITICAL_SECTION ScmNotifyLock;
 static LIST_ENTRY ScmManagerNotifyList;
 static DWORD ScmDatabaseNotifySequence;
+CRITICAL_SECTION ScmStatusChangeLock;
+CONDITION_VARIABLE ScmStatusChanged;
 
 /* FUNCTIONS ***************************************************************/
 
@@ -237,6 +239,8 @@ ScmInitServiceNotify(VOID)
 {
     InitializeCriticalSection(&ScmNotifyLock);
     InitializeListHead(&ScmManagerNotifyList);
+    InitializeCriticalSection(&ScmStatusChangeLock);
+    InitializeConditionVariable(&ScmStatusChanged);
 }
 
 
@@ -308,6 +312,8 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
         if (lpService->Status.dwCurrentState != SERVICE_STOPPED && lpService->lpImage != NULL)
             pParams->ServiceStatus.dwProcessId = lpService->lpImage->dwProcessId;
         pParams->dwSequence = lpService->dwNotifySequence;
+        if (pNotify->bDeleteSeen || dwTriggered == SERVICE_NOTIFY_DELETE_PENDING)
+            pParams->dwSequence |= SCM_SEQUENCE_DELETE_SEEN;
     }
     else
     {
@@ -340,8 +346,7 @@ ScmFillNotify(PNOTIFY_HANDLE pNotify,
 static BOOL
 ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
                          PSERVICE lpService,
-                         DWORD dwTrigger,
-                         PBOOL pbSubscription)
+                         DWORD dwTrigger)
 {
     PLIST_ENTRY Entry, Next;
     PNOTIFY_HANDLE pNotify;
@@ -358,8 +363,6 @@ ScmCompleteServiceNotify(PSERVICE_HANDLE hSvc,
         InitializeListHead(Entry);
         if (!pNotify->bSubscription)
             bCompleted = TRUE;
-        else if (pbSubscription != NULL)
-            *pbSubscription = TRUE;
         ScmFillNotify(pNotify, lpService, dwTrigger, NULL);
         ScmReleaseNotify(pNotify);
     }
@@ -376,9 +379,14 @@ ScmNotifyServiceStatus(PSERVICE lpService)
 
     dwMask = 1 << (lpService->Status.dwCurrentState - SERVICE_STOPPED);
 
+    EnterCriticalSection(&ScmStatusChangeLock);
+    WakeAllConditionVariable(&ScmStatusChanged);
+    LeaveCriticalSection(&ScmStatusChangeLock);
+
     EnterCriticalSection(&ScmNotifyLock);
 
-    if (++lpService->dwNotifySequence == 0)
+    lpService->dwNotifySequence = (lpService->dwNotifySequence + 1) & ~SCM_SEQUENCE_DELETE_SEEN;
+    if (lpService->dwNotifySequence == 0)
         lpService->dwNotifySequence = 1;
 
     for (Entry = lpService->HandleListHead.Flink;
@@ -387,7 +395,7 @@ ScmNotifyServiceStatus(PSERVICE lpService)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
 
-        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask, NULL);
+        hSvc->bStatusNotified = ScmCompleteServiceNotify(hSvc, lpService, dwMask);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -407,7 +415,7 @@ ScmNotifyServiceDeletePending(PSERVICE lpService)
          Entry = Entry->Flink)
     {
         hSvc = CONTAINING_RECORD(Entry, SERVICE_HANDLE, HandleListEntry);
-        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING, &hSvc->bDeleteNotified);
+        ScmCompleteServiceNotify(hSvc, lpService, SERVICE_NOTIFY_DELETE_PENDING);
     }
 
     LeaveCriticalSection(&ScmNotifyLock);
@@ -3473,28 +3481,32 @@ RQueryServiceConfigW(
                         &lpDependencies,
                         &dwDependenciesLength);
 
-    dwRequiredSize = sizeof(QUERY_SERVICE_CONFIGW);
+    dwRequiredSize = ALIGN_UP_BY(sizeof(QUERY_SERVICE_CONFIGW), sizeof(PVOID));
 
     if (lpImagePath != NULL)
         dwRequiredSize += (DWORD)((wcslen(lpImagePath) + 1) * sizeof(WCHAR));
     else
         dwRequiredSize += 2 * sizeof(WCHAR);
 
+    dwRequiredSize = ALIGN_UP_BY(dwRequiredSize, sizeof(PVOID));
     if ((lpService->lpGroup != NULL) && (lpService->lpGroup->lpGroupName != NULL))
         dwRequiredSize += (DWORD)((wcslen(lpService->lpGroup->lpGroupName) + 1) * sizeof(WCHAR));
     else
         dwRequiredSize += 2 * sizeof(WCHAR);
 
+    dwRequiredSize = ALIGN_UP_BY(dwRequiredSize, sizeof(PVOID));
     if (lpDependencies != NULL)
         dwRequiredSize += dwDependenciesLength * sizeof(WCHAR);
     else
         dwRequiredSize += 2 * sizeof(WCHAR);
 
+    dwRequiredSize = ALIGN_UP_BY(dwRequiredSize, sizeof(PVOID));
     if (lpServiceStartName != NULL)
         dwRequiredSize += (DWORD)((wcslen(lpServiceStartName) + 1) * sizeof(WCHAR));
     else
         dwRequiredSize += 2 * sizeof(WCHAR);
 
+    dwRequiredSize = ALIGN_UP_BY(dwRequiredSize, sizeof(PVOID));
     if (lpService->lpDisplayName != NULL)
         dwRequiredSize += (DWORD)((wcslen(lpService->lpDisplayName) + 1) * sizeof(WCHAR));
     else
@@ -3511,7 +3523,8 @@ RQueryServiceConfigW(
         lpServiceConfig->dwErrorControl = lpService->dwErrorControl;
         lpServiceConfig->dwTagId = lpService->dwTag;
 
-        lpStr = (LPWSTR)(lpServiceConfig + 1);
+        ASSERT(((ULONG_PTR)lpServiceConfig & (sizeof(PVOID) - 1)) == 0);
+        lpStr = (LPWSTR)ALIGN_UP_POINTER_BY(lpServiceConfig + 1, sizeof(PVOID));
 
         /* Append the image path */
         if (lpImagePath != NULL)
@@ -3524,7 +3537,7 @@ RQueryServiceConfigW(
         }
 
         lpServiceConfig->lpBinaryPathName = (LPWSTR)((ULONG_PTR)lpStr - (ULONG_PTR)lpServiceConfig);
-        lpStr += (wcslen(lpStr) + 1);
+        lpStr = (LPWSTR)ALIGN_UP_POINTER_BY(lpStr + wcslen(lpStr) + 1, sizeof(PVOID));
 
         /* Append the group name */
         if ((lpService->lpGroup != NULL) && (lpService->lpGroup->lpGroupName != NULL))
@@ -3537,7 +3550,7 @@ RQueryServiceConfigW(
         }
 
         lpServiceConfig->lpLoadOrderGroup = (LPWSTR)((ULONG_PTR)lpStr - (ULONG_PTR)lpServiceConfig);
-        lpStr += (wcslen(lpStr) + 1);
+        lpStr = (LPWSTR)ALIGN_UP_POINTER_BY(lpStr + wcslen(lpStr) + 1, sizeof(PVOID));
 
         /* Append Dependencies */
         if (lpDependencies != NULL)
@@ -3548,14 +3561,16 @@ RQueryServiceConfigW(
         }
         else
         {
-            *lpStr = 0;
+            lpStr[0] = 0;
+            lpStr[1] = 0;
         }
 
         lpServiceConfig->lpDependencies = (LPWSTR)((ULONG_PTR)lpStr - (ULONG_PTR)lpServiceConfig);
         if (lpDependencies != NULL)
             lpStr += dwDependenciesLength;
         else
-            lpStr += (wcslen(lpStr) + 1);
+            lpStr += 2;
+        lpStr = (LPWSTR)ALIGN_UP_POINTER_BY(lpStr, sizeof(PVOID));
 
         /* Append the service start name */
         if (lpServiceStartName != NULL)
@@ -3568,7 +3583,7 @@ RQueryServiceConfigW(
         }
 
         lpServiceConfig->lpServiceStartName = (LPWSTR)((ULONG_PTR)lpStr - (ULONG_PTR)lpServiceConfig);
-        lpStr += (wcslen(lpStr) + 1);
+        lpStr = (LPWSTR)ALIGN_UP_POINTER_BY(lpStr + wcslen(lpStr) + 1, sizeof(PVOID));
 
         /* Append the display name */
         if (lpService->lpDisplayName != NULL)
@@ -4630,14 +4645,15 @@ RQueryServiceConfigA(
         }
         else
         {
-            *lpStr = 0;
+            lpStr[0] = 0;
+            lpStr[1] = 0;
         }
 
         lpServiceConfig->lpDependencies = (LPSTR)((ULONG_PTR)lpStr - (ULONG_PTR)lpServiceConfig);
         if (lpDependencies)
             lpStr += dwDependenciesLength;
         else
-            lpStr += (strlen(lpStr) + 1);
+            lpStr += 2;
 
         if (lpServiceStartName)
         {
@@ -7195,11 +7211,16 @@ RNotifyServiceStatusChange(
         lpService->dwNotifySequence = 1;
     /* The first request of a subscription carries no sequence and gets the current state */
     if (pNotify->bSubscription)
-        bReport = dwSequence != lpService->dwNotifySequence;
+    {
+        pNotify->bDeleteSeen = (dwSequence & SCM_SEQUENCE_DELETE_SEEN) != 0;
+        bReport = (dwSequence & ~SCM_SEQUENCE_DELETE_SEEN) != lpService->dwNotifySequence;
+    }
     else
+    {
         bReport = !hSvc->bStatusNotified;
+    }
 
-    bDeletePending = pNotify->bSubscription && lpService->bDeleted && !hSvc->bDeleteNotified &&
+    bDeletePending = pNotify->bSubscription && lpService->bDeleted && !pNotify->bDeleteSeen &&
                      (pNotify->dwNotifyMask & SERVICE_NOTIFY_DELETE_PENDING);
 
     /* A subscription to a deleted service lasts until it has seen the delete and the service stopped */
@@ -7212,19 +7233,16 @@ RNotifyServiceStatusChange(
         return ERROR_SERVICE_MARKED_FOR_DELETE;
     }
 
-    if (bDeletePending)
-    {
-        /* The delete came while no request was waiting; the sequence stays, so a state change missed as well is reported next */
-        ScmFillNotify(pNotify, lpService, SERVICE_NOTIFY_DELETE_PENDING, NULL);
-        if (pNotify->pParamsList != NULL)
-            pNotify->pParamsList->NotifyParamsArray[0].pStatusChangeParam2->dwSequence = dwSequence;
-        hSvc->bDeleteNotified = TRUE;
-    }
-    else if (bReport && (pNotify->dwNotifyMask & dwMask))
+    /* As on Windows, a missed state change comes before a missed delete; the next request then reports the delete */
+    if (bReport && (pNotify->dwNotifyMask & dwMask))
     {
         ScmFillNotify(pNotify, lpService, dwMask, NULL);
         if (!pNotify->bSubscription)
             hSvc->bStatusNotified = TRUE;
+    }
+    else if (bDeletePending)
+    {
+        ScmFillNotify(pNotify, lpService, SERVICE_NOTIFY_DELETE_PENDING, NULL);
     }
     else
     {

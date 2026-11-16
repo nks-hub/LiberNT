@@ -370,6 +370,8 @@ NwifiDispatchDeviceControl(
                  Req->AuthAlgorithm != DOT11_AUTH_ALGO_RSNA_PSK &&
                  Req->AuthAlgorithm != DOT11_AUTH_ALGO_WPA3_SAE))
             {
+                DPRINT1("NWIFI: connect request rejected: size %lu, SSID length %lu, BSS type %u, auth %u\n",
+                        Req->Size, Req->Ssid.uSSIDLength, Req->BssType, Req->AuthAlgorithm);
                 Status = STATUS_INVALID_PARAMETER;
                 break;
             }
@@ -386,6 +388,8 @@ NwifiDispatchDeviceControl(
                  (Req->UnicastCipher != DOT11_CIPHER_ALGO_CCMP ||
                   Req->MulticastCipher != DOT11_CIPHER_ALGO_CCMP)))
             {
+                DPRINT1("NWIFI: connect request rejected: BSS type %u, auth %u, ciphers %x/%x\n", Req->BssType,
+                        Req->AuthAlgorithm, Req->UnicastCipher, Req->MulticastCipher);
                 Status = STATUS_INVALID_PARAMETER;
                 break;
             }
@@ -549,7 +553,7 @@ NwifiDispatchDeviceControl(
             List->Header.Revision = DOT11_AUTH_CIPHER_PAIR_LIST_REVISION_1;
             List->Header.Size = sizeof(DOT11_AUTH_CIPHER_PAIR_LIST);
 
-            NdisStatus = NwifiProtocolDoRequest(Adapter, NdisRequestQueryInformation,
+            NdisStatus = NwifiDoRequest(Adapter, NdisRequestQueryInformation,
                                                 OID_DOT11_SUPPORTED_UNICAST_ALGORITHM_PAIR,
                                                 List, ListSize, NULL);
             if (NdisStatus == NDIS_STATUS_BUFFER_OVERFLOW ||
@@ -725,7 +729,7 @@ NwifiCreateControlDevice(VOID)
     Attr.DefaultSDDLString = NULL;
     Attr.DeviceClassGuid = NULL;
 
-    Status = NdisRegisterDeviceEx(gNwifi.MiniportDriverHandle,
+    Status = NdisRegisterDeviceEx(gNwifi.FilterDriverHandle,
                                   &Attr,
                                   &DeviceObject,
                                   &gNwifiControlDeviceHandle);

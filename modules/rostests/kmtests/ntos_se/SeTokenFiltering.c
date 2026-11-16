@@ -154,7 +154,7 @@ WriteRestrictedToken(VOID)
     ULONG DaclBuffer[(sizeof(ACL) + 2 * (sizeof(ACCESS_ALLOWED_ACE) + SECURITY_MAX_SID_SIZE)) / sizeof(ULONG) + 1];
     PACL Dacl = (PACL)DaclBuffer;
     SECURITY_SUBJECT_CONTEXT SubjectContext;
-    PACCESS_TOKEN Token, Restricted = NULL, WriteRestricted = NULL;
+    PACCESS_TOKEN Token, Restricted = NULL, WriteRestricted = NULL, Refiltered;
     TOKEN_GROUPS RestrictedGroups;
     SECURITY_DESCRIPTOR Sd;
     ACCESS_MASK GrantedAccess;
@@ -223,6 +223,17 @@ WriteRestrictedToken(VOID)
                   "write-restricted token appends with its restricted SID");
     ok_bool_true(CheckAccess(&Sd, &SubjectContext, WriteRestricted, MAXIMUM_ALLOWED, &GrantedAccess), "write-restricted token gets its maximum");
     ok_eq_hex(GrantedAccess & (FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA), FILE_READ_DATA | FILE_WRITE_DATA);
+
+    Status = SeFilterToken(Restricted, WRITE_RESTRICTED, NULL, NULL, &RestrictedGroups, &Refiltered);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (NT_SUCCESS(Status))
+    {
+        ok_bool_true(SeTokenIsRestricted(Refiltered), "write-restricted copy of a restricted token is restricted");
+        ok_bool_false(SeTokenIsWriteRestricted(Refiltered), "write-restricted copy of a restricted token is write restricted");
+        ok_bool_false(CheckAccess(&Sd, &SubjectContext, Refiltered, FILE_GENERIC_READ, &GrantedAccess),
+                      "write-restricted copy of a restricted token reads");
+        ObDereferenceObject(Refiltered);
+    }
 
 done:
     if (WriteRestricted != NULL)

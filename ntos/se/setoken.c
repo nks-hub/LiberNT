@@ -737,22 +737,26 @@ SepCloneToken(
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
-    /* The user is always kept; a group that is off is kept only if it may
-     * still be turned on */
-    for (i = 0; i < Token->UserAndGroupCount; i++)
+    RtlCopyMemory(Groups, Token->UserAndGroups, Token->UserAndGroupCount * sizeof(SID_AND_ATTRIBUTES));
+    GroupCount = Token->UserAndGroupCount;
+    Contents.DefaultOwnerIndex = Token->DefaultOwnerIndex;
+
+    /* The user is always kept; Windows 11 moves the last group into the place of a group it drops */
+    for (i = 1; EffectiveOnly && i < GroupCount;)
     {
-        if (i != 0 && EffectiveOnly &&
-            !(Token->UserAndGroups[i].Attributes & SE_GROUP_ENABLED) &&
-            !(Token->UserAndGroups[i].Attributes & SE_GROUP_INTEGRITY))
+        if (Groups[i].Attributes & (SE_GROUP_ENABLED | SE_GROUP_INTEGRITY | SE_GROUP_USE_FOR_DENY_ONLY))
         {
+            i++;
             continue;
         }
 
-        Groups[GroupCount] = Token->UserAndGroups[i];
+        GroupCount--;
+        Groups[i] = Groups[GroupCount];
 
-        if (i == Token->DefaultOwnerIndex) Contents.DefaultOwnerIndex = GroupCount;
-
-        GroupCount++;
+        if (Contents.DefaultOwnerIndex == i)
+            Contents.DefaultOwnerIndex = 0;
+        else if (Contents.DefaultOwnerIndex == GroupCount)
+            Contents.DefaultOwnerIndex = i;
     }
 
     for (i = 0; i < Token->PrivilegeCount; i++)

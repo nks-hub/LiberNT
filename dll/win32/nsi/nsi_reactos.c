@@ -49,10 +49,19 @@ static BOOL module_equal(const NPI_MODULEID *left, const NPI_MODULEID *right)
     return FALSE;
 }
 
+static BOOL ip4_query_interface(UINT index, IP4_INTERFACE_INFO *info);
+
 static NET_LUID make_luid(UINT index, UINT type)
 {
+    IP4_INTERFACE_INFO info;
     NET_LUID luid;
 
+    /* An interface bound to an NDIS adapter has the LUID NDIS gave the adapter */
+    if (ip4_query_interface(index, &info) && info.NetLuid)
+    {
+        luid.Value = info.NetLuid;
+        return luid;
+    }
     luid.Value = 0;
     luid.Info.NetLuidIndex = index;
     luid.Info.IfType = type;
@@ -71,6 +80,24 @@ static UINT interface_type(UINT index)
 static NET_LUID interface_luid(UINT index)
 {
     return make_luid(index, interface_type(index));
+}
+
+static UINT luid_index(const NET_LUID *luid)
+{
+    InterfaceIndexTable *indexes = getInterfaceIndexTable();
+    UINT index = luid->Info.NetLuidIndex;
+    DWORD i;
+
+    for (i = 0; indexes && i < indexes->numIndexes; i++)
+    {
+        if (interface_luid(indexes->indexes[i]).Value == luid->Value)
+        {
+            index = indexes->indexes[i];
+            break;
+        }
+    }
+    free(indexes);
+    return index;
 }
 
 static GUID interface_guid(UINT index, const char *name)
@@ -195,8 +222,6 @@ static DWORD finish_enumeration(struct nsi_enumerate_all_ex *params, UINT_PTR to
 
 static ULONG64 interface_speed(UINT index);
 
-static BOOL ip4_query_interface(UINT index, IP4_INTERFACE_INFO *info);
-
 static BOOL fill_ndis_entry(UINT index, NET_LUID *key, struct nsi_ndis_ifinfo_rw *rw,
                             struct nsi_ndis_ifinfo_dynamic *dynamic, struct nsi_ndis_ifinfo_static *stat)
 {
@@ -308,7 +333,7 @@ static DWORD get_ndis(struct nsi_get_all_parameters_ex *params)
     struct nsi_ndis_ifinfo_static stat;
     NET_LUID key;
 
-    if (!fill_ndis_entry(luid->Info.NetLuidIndex, &key, &rw, &dynamic, &stat) || key.Value != luid->Value)
+    if (!fill_ndis_entry(luid_index(luid), &key, &rw, &dynamic, &stat) || key.Value != luid->Value)
         return ERROR_FILE_NOT_FOUND;
     if (params->rw_size) memcpy(params->rw_data, &rw, sizeof(rw));
     if (params->dynamic_size) memcpy(params->dynamic_data, &dynamic, sizeof(dynamic));

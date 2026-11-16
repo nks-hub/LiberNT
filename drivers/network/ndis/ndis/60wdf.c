@@ -496,9 +496,7 @@ NdisWdfGetAdapterContextFromAdapterHandle(
         return NULL;
 
     Ext = NDIS6_EXT(Adapter);
-    return (Ext && Ext->IsWdfManaged)
-        ? Ext->MiniportAdapterContext
-        : NULL;
+    return Ext ? Ext->MiniportAdapterContext : NULL;
 }
 
 NTSTATUS

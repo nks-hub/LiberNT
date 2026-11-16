@@ -1,0 +1,73 @@
+; PROJECT:     LiberNT network tests
+; LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+; PURPOSE:     Installs the NetAdapterCx test adapter with the raw IP medium
+; COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+
+[Version]
+Signature = "$Windows NT$"
+Class = Net
+ClassGUID = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider = %LiberNT%
+DriverVer = 11/12/2026,1.0.0.0
+PnpLockdown = 1
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+netcxloopip.sys = 1,,
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[Manufacturer]
+%LiberNT% = LiberNT,NTamd64,NTarm64
+
+[LiberNT.NTamd64]
+%NetCxLoopIp.DeviceDesc% = NetCxLoopIp_Device, ROOT\NETCXLOOPIP
+
+[LiberNT.NTarm64]
+%NetCxLoopIp.DeviceDesc% = NetCxLoopIp_Device, ROOT\NETCXLOOPIP
+
+[NetCxLoopIp_Device.NT]
+AddReg = NetCxLoopIp_AddReg
+CopyFiles = NetCxLoopIp_CopyFiles
+Characteristics = 0x1
+*IfType = 53
+*MediaType = 19
+*PhysicalMediaType = 0
+*IfConnectorPresent = 0
+*ConnectionType = 1
+*DirectionType = 0
+*AccessType = 2
+*HardwareLoopback = 0
+
+[NetCxLoopIp_CopyFiles]
+netcxloopip.sys
+
+[NetCxLoopIp_AddReg]
+HKR, Ndi, Service, 0, "NetCxLoopIp"
+HKR, Ndi\Interfaces, UpperRange, 0, "ndis5"
+HKR, Ndi\Interfaces, LowerRange, 0, "nolower"
+
+[NetCxLoopIp_Device.NT.Services]
+AddService = NetCxLoopIp, 0x00000002, NetCxLoopIp_Service
+
+[NetCxLoopIp_Service]
+DisplayName = %NetCxLoopIp.ServiceDesc%
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %12%\netcxloopip.sys
+
+[NetCxLoopIp_Device.NT.Wdf]
+KmdfService = NetCxLoopIp, NetCxLoopIp_WdfSection
+
+[NetCxLoopIp_WdfSection]
+KmdfLibraryVersion = 1.33
+
+[Strings]
+LiberNT = "LiberNT Project"
+DiskName = "LiberNT NetAdapterCx test disk"
+NetCxLoopIp.DeviceDesc = "LiberNT NetAdapterCx Raw IP Test Adapter"
+NetCxLoopIp.ServiceDesc = "LiberNT NetAdapterCx Raw IP Test Adapter Service"

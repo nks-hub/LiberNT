@@ -795,6 +795,9 @@ NTSTATUS TdiQueryInformation(
                                            &Event,
                                            &Iosb);
     if (!Irp) {
+        /* The completion of the request would have unlocked and freed the MDL */
+        MmUnlockPages(MdlBuffer);
+        IoFreeMdl(MdlBuffer);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 

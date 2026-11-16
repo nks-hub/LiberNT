@@ -7,7 +7,8 @@
  *              IP_PKTINFO and malformed control data on a send, bursts of datagrams,
  *              the limit on the datagrams a socket holds for its client,
  *              closing a socket that receives, binding while IP_PKTINFO changes,
- *              IP_PKTINFO naming a source and an interface that do not match
+ *              IP_PKTINFO naming a source and an interface that do not match,
+ *              ICMP port unreachable reports for datagrams the socket sent
  * COPYRIGHT:  Copyright 2026 LuRy <lury@lury.cz>
  */
 
@@ -1405,6 +1406,66 @@ deregister:
 }
 
 static
+VOID
+TestPortUnreachable(VOID)
+{
+    WSK_CLIENT_NPI ClientNpi;
+    WSK_PROVIDER_NPI ProviderNpi;
+    WSK_REGISTRATION Registration;
+    PWSK_SOCKET Receiver, Sender;
+    NTSTATUS Status;
+    LONG Round, Count;
+
+    ReceiveCount = 0;
+    Refuse = FALSE;
+    RtlZeroMemory(Seen, sizeof(Seen));
+
+    ClientNpi.ClientContext = NULL;
+    ClientNpi.Dispatch = &ClientDispatch;
+    Status = WskRegister(&ClientNpi, &Registration);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        return;
+    Status = WskCaptureProviderNPI(&Registration, WSK_INFINITE_WAIT, &ProviderNpi);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    if (!NT_SUCCESS(Status))
+        goto deregister;
+
+    Receiver = OpenSocket(&ProviderNpi, WSKEVENTS_PORT + 12);
+    Sender = OpenSocket(&ProviderNpi, 0);
+    if (Receiver == NULL || Sender == NULL)
+        goto close;
+
+    Status = SetReceiveEvent(Receiver, TRUE);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+
+    /* Nothing listens on WSKEVENTS_PORT + 13: each datagram brings back an ICMP port unreachable report, twice as many as netio has receive requests */
+    for (Round = 0; Round < 8; Round++)
+    {
+        Status = SendTo(Receiver, "UNRE0001", WSKEVENTS_PORT + 13);
+        ok_eq_hex(Status, STATUS_SUCCESS);
+        WaitReceives(1, 50);
+    }
+    Count = ReceiveCount;
+    ok_eq_long(Count, 0L);
+
+    Status = SendTo(Sender, "UNRE0002", WSKEVENTS_PORT + 12);
+    ok_eq_hex(Status, STATUS_SUCCESS);
+    Count = WaitReceives(1, 2000);
+    ok_eq_long(Count, 1L);
+    ok(WasSeen("UNRE0002"), "UNRE0002 was not indicated after the port unreachable reports\n");
+
+close:
+    if (Receiver != NULL)
+        CloseSocket(Receiver);
+    if (Sender != NULL)
+        CloseSocket(Sender);
+    WskReleaseProviderNPI(&Registration);
+deregister:
+    WskDeregister(&Registration);
+}
+
+static
 NTSTATUS
 SetPktInfo(
     _In_ PWSK_SOCKET Socket,
@@ -1722,5 +1783,6 @@ TestMessageHandler(
     TestReceiveLimit();
     TestCloseWhileReceiving();
     TestBindWhileSettingPktInfo();
+    TestPortUnreachable();
     return STATUS_SUCCESS;
 }

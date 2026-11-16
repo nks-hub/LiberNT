@@ -1684,8 +1684,9 @@ NetioReceiveComplete(
         NetioIndicateQueued(Socket);
         NetioPostReceive(Receive);
     }
-    else if (Status == STATUS_BUFFER_OVERFLOW && !Socket->ReceiveClosing)
+    else if ((Status == STATUS_BUFFER_OVERFLOW || Status == STATUS_PORT_UNREACHABLE) && !Socket->ReceiveClosing)
     {
+        /* A receive event cannot carry the ICMP port unreachable report that tcpip fails a request with */
         NetioPostReceive(Receive);
     }
     else

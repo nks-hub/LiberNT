@@ -743,7 +743,8 @@ SepCloneToken(
     {
         if (i != 0 && EffectiveOnly &&
             !(Token->UserAndGroups[i].Attributes & SE_GROUP_ENABLED) &&
-            !(Token->UserAndGroups[i].Attributes & SE_GROUP_INTEGRITY))
+            !(Token->UserAndGroups[i].Attributes & SE_GROUP_INTEGRITY) &&
+            !(Token->UserAndGroups[i].Attributes & SE_GROUP_USE_FOR_DENY_ONLY))
         {
             continue;
         }

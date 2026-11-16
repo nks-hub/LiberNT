@@ -20,6 +20,10 @@ Author:
 #ifndef _ARM_KETYPES_H
 #define _ARM_KETYPES_H
 
+#define PROCESSOR_POWER_STATE_LEGACY_AREA_SIZE 0x160
+/* TODO: no Windows layout evidence for PROCESSOR_POWER_STATE on arm */
+#include <potypes.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -831,8 +835,8 @@ typedef struct _KPRCB
     UCHAR _PADDING4_[0x8];
     struct _REQUEST_MAILBOX* Mailbox;
     LONG TargetCount;
-    ULONG IpiFrozen;
-    ULONG RequestSummary;
+    volatile ULONG IpiFrozen;
+    volatile ULONG RequestSummary;
     KDPC_DATA DpcData[2];
     PVOID DpcStack;
     PVOID SpBase;
@@ -847,7 +851,7 @@ typedef struct _KPRCB
 #if (NTDDI_VERSION >= NTDDI_WIN8)
     union
     {
-        LONG DpcRequestSummary;
+        volatile LONG DpcRequestSummary;
         SHORT DpcRequestSlot[2];
         struct
         {

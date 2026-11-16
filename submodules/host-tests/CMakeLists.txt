@@ -14,7 +14,49 @@ option(HOST_TEST_MMCC "Build native memory-manager and cache-manager tests" ON)
 option(HOST_TEST_KE "Build native kernel executive tests" ON)
 option(HOST_TEST_NTDLL "Build native NT loader and runtime tests" ON)
 option(HOST_TEST_RTL "Build native kernel runtime library tests" ON)
+option(HOST_TEST_FSRTL "Build native file system runtime library tests" ON)
 option(HOST_TEST_I8042 "Build native PS/2 controller tests" ON)
+option(HOST_TEST_ACPI "Build native firmware table tests" ON)
+option(HOST_TEST_HALTIME "Build native HAL time arithmetic tests" ON)
+option(HOST_TEST_NDIS "Build native NDIS WDI tests" ON)
+option(HOST_TEST_DHCPCSVC "Build native DHCP client tests" ON)
+option(HOST_TEST_EXT4 "Build native ext4 driver core tests" ON)
+option(HOST_TEST_USB "Build native USB host controller tests" ON)
+option(HOST_TEST_STORPORT "Build native Storport tests" ON)
+option(HOST_TEST_DXGKRNL "Build native DirectX graphics kernel tests" ON)
+
+if(BUILD_TESTING AND HOST_TEST_DHCPCSVC)
+    add_subdirectory(dhcpcsvc)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_EXT4)
+    add_subdirectory(ext4)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_USB)
+    add_subdirectory(usb)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_STORPORT)
+    add_subdirectory(storport)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_DXGKRNL)
+    add_subdirectory(dxgkrnl)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_NDIS)
+    add_subdirectory(ndis)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_ACPI)
+    add_subdirectory(acpival)
+    add_subdirectory(acpirouting)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_HALTIME)
+    add_subdirectory(haltime)
+endif()
 
 if(BUILD_TESTING AND HOST_TEST_I8042)
     add_subdirectory(i8042)
@@ -34,4 +76,8 @@ endif()
 
 if(BUILD_TESTING AND HOST_TEST_RTL)
     add_subdirectory(rtl)
+endif()
+
+if(BUILD_TESTING AND HOST_TEST_FSRTL)
+    add_subdirectory(fsrtl)
 endif()

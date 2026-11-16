@@ -16,7 +16,7 @@ list(APPEND ROSLOAD_SOURCE
     oslist.c
     lib/rtl/libsupp.c
     ${REACTOS_SOURCE_DIR}/ntos/config/cmboot.c
-    ${REACTOS_SOURCE_DIR}/ntos/ke/config.c
+    ${REACTOS_SOURCE_DIR}/ntos/ke/arcconfig.c
     ntldr/startup.c
     ntldr/conversion.c
     ntldr/headless.c
@@ -78,6 +78,10 @@ set_target_properties(rosload
     PROPERTIES
     ENABLE_EXPORTS TRUE
     DEFINE_SYMBOL "")
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(rosload PRIVATE --param=min-pagesize=0)
+endif()
 
 set_image_base(rosload 0x10000) # 0x200000
 set_subsystem(rosload native)

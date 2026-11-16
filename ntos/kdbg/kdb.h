@@ -1,10 +1,14 @@
+/*
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Built-in kernel debugger declarations
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
+
 #pragma once
 #include "../kd/kd.h"
 #include <symz.h>
 
-/* TYPES *********************************************************************/
-
-/* from kdb.c */
 typedef CONTEXT KDB_KTRAP_FRAME, *PKDB_KTRAP_FRAME;
 
 typedef enum _KDB_BREAKPOINT_TYPE
@@ -25,17 +29,21 @@ typedef enum _KDB_ACCESS_TYPE
 
 typedef struct _KDB_BREAKPOINT
 {
-   KDB_BREAKPOINT_TYPE    Type;         /* Type of breakpoint */
-   BOOLEAN                Enabled;      /* Whether the bp is enabled */
-   ULONG_PTR              Address;      /* Address of the breakpoint */
-   BOOLEAN                Global;       /* Whether the breakpoint is global or local to a process */
-   PEPROCESS              Process;      /* Owning process */
+   KDB_BREAKPOINT_TYPE    Type;
+   BOOLEAN                Enabled;
+   ULONG_PTR              Address;
+   BOOLEAN                Global;
+   PEPROCESS              Process;
    PCHAR                  ConditionExpression;
    PVOID                  Condition;
+   BOOLEAN                Internal;     /* Set by a step or a run to an address; gone at the next stop */
+   ULONG                  HitCount;     /* Times it was reached with its condition holding */
+   ULONG                  IgnoreCount;  /* Hits still to let pass without stopping */
+   PCHAR                  Commands;     /* What to run when it stops the machine */
    union {
-      /* KdbBreakPointSoftware */
+
       KD_BREAKPOINT_TYPE  SavedInstruction;
-      /* KdbBreakPointHardware */
+
       struct {
          UCHAR            DebugReg : 2;
          UCHAR            Size : 4;
@@ -59,54 +67,30 @@ typedef enum _KD_CONTINUE_TYPE
     kdHandleException
 } KD_CONTINUE_TYPE;
 
-FORCEINLINE
-BOOLEAN
-KdbpProcessorStateIsFrozen(
-    _In_ ULONG FrozenState)
-{
-#ifdef _WIN64
-    return (FrozenState & ~IPI_FROZEN_FLAG_ACTIVE) == IPI_FROZEN_STATE_FROZEN;
-#else
-    UNREFERENCED_PARAMETER(FrozenState);
-    return FALSE;
-#endif
-}
-
-
-/* GLOBALS *******************************************************************/
-
 extern volatile PCHAR KdbInitFileBuffer;
 
 extern PEPROCESS KdbCurrentProcess;
+
 extern PETHREAD KdbCurrentThread;
+
 extern PETHREAD KdbOriginalThread;
+
 extern EXCEPTION_RECORD64 KdbCurrentExceptionRecord;
+
 extern BOOLEAN KdbCurrentExceptionRecordValid;
+
 extern BOOLEAN KdbActive;
+
 extern LONG KdbLastBreakPointNr;
+
 extern ULONG KdbNumSingleSteps;
+
 extern BOOLEAN KdbSingleStepOver;
+
 extern PKDB_KTRAP_FRAME KdbCurrentTrapFrame;
 
-
-/* FUNCTIONS *****************************************************************/
-
-/* from i386/i386-dis.c */
-
-LONG
-KdbpDisassemble(
-   IN ULONG_PTR Address,
-   IN ULONG IntelSyntax);
-
-LONG
-KdbpGetInstLength(
-   IN ULONG_PTR Address);
-
-BOOLEAN
-KdbpDisassemblerSelfTest(VOID);
-
 #if defined(_M_RISCV64)
-/* from riscv64/riscv64-dis.c */
+
 BOOLEAN
 KdbpRiscvGetNextPc(
    IN PCONTEXT Context,
@@ -114,14 +98,41 @@ KdbpRiscvGetNextPc(
    OUT PCSTR *Reason);
 #endif
 
-/* from i386/kdb_help.S */
+typedef BOOLEAN (NTAPI *PKDB_SYMBOL_ENUM_CALLBACK)(_In_ ULONG_PTR Address, _In_ PCSTR ModuleName, _In_ PCSTR FunctionName, _In_ PCSTR FileName, _In_ ULONG SourceLine, _In_opt_ PVOID Context);
 
-VOID NTAPI
+VOID
+KbdDisableMouse(VOID);
+
+VOID
+KbdEnableMouse(VOID);
+
+VOID
+NTAPI
 KdbpStackSwitchAndCall(
-   IN PVOID NewStack,
-   IN VOID (*Function)(VOID));
+    _In_ PVOID NewStack,
+    _In_ VOID (*Function)(VOID));
 
-/* from kdb_cli.c */
+LONG
+KdbpDisassemble(
+    _In_ ULONG_PTR Address,
+    _In_ ULONG IntelSyntax);
+
+BOOLEAN
+KdbpDisassemblerSelfTest(VOID);
+
+LONG
+KdbpGetInstLength(
+    _In_ ULONG_PTR Address);
+
+VOID
+KdbSymzPrepareImage(
+    _In_ PVOID ImageBase);
+
+BOOLEAN
+KdbpSymzEnumerate(
+    _In_ PLDR_DATA_TABLE_ENTRY LdrEntry,
+    _In_ PSYMZ_ENUM_ROUTINE Routine,
+    _In_ PVOID Context);
 
 NTSTATUS
 NTAPI
@@ -135,30 +146,40 @@ KdbRegisterCliCallback(
     PVOID Callback,
     BOOLEAN Deregister);
 
+VOID
+KdbpCaptureOutput(
+    _In_ PCCH String,
+    _In_ USHORT Length);
+
+BOOLEAN
+KdbpSelfTestCapture(
+    _In_reads_(Length) PCCH String,
+    _In_ ULONG Length);
+
 NTSTATUS
 KdbpCliInit(VOID);
 
 VOID
-KdbpCliMainLoop(
-   IN BOOLEAN EnteredOnSingleStep);
+KdbpCliInterpretInitFile(VOID);
 
 VOID
-KdbpCliInterpretInitFile(VOID);
+KdbpCliMainLoop(
+    _In_ BOOLEAN EnteredOnSingleStep);
+
+BOOLEAN
+NTAPI
+KdbpGetAddressExpression(
+    _In_ PCHAR Expression,
+    _Out_ PULONG_PTR Address);
+
+BOOLEAN
+NTAPI
+KdbpGetHexNumber(
+    _In_ PCHAR pszNum,
+    _Out_ ULONG_PTR *pulValue);
 
 BOOLEAN
 KdbpIsOutputAborted(VOID);
-
-VOID
-KdbpCaptureOutput(IN PCCH String, IN USHORT Length);
-
-VOID
-KdbpCommandHistoryAppend(
-    _In_ PCSTR Command);
-
-PCSTR
-KdbGetHistoryEntry(
-    _Inout_ PLONG NextIndex,
-    _In_ BOOLEAN Next);
 
 VOID
 KdbpPager(
@@ -174,58 +195,209 @@ VOID
 KdbpPrintUnicodeString(
     _In_ PCUNICODE_STRING String);
 
-BOOLEAN
-NTAPI
-KdbpGetHexNumber(
-    IN PCHAR pszNum,
-    OUT ULONG_PTR *pulValue);
+VOID
+KdbpPrintCountedString(
+    _In_ PCUNICODE_STRING String);
+
+KD_CONTINUE_TYPE
+KdbEnterDebuggerException(
+    _In_ PEXCEPTION_RECORD64 ExceptionRecord,
+    _In_ KPROCESSOR_MODE PreviousMode,
+    _Inout_ PCONTEXT Context,
+    _In_ BOOLEAN FirstChance);
 
 BOOLEAN
-NTAPI
-KdbpGetAddressExpression(IN PCHAR Expression, OUT PULONG_PTR Address);
+KdbpAttachToProcess(
+    PVOID ProcessId);
 
-/* from kdb_expr.c */
+BOOLEAN
+KdbpAttachToThread(
+    PVOID ThreadId);
+
+BOOLEAN
+KdbpDeleteBreakPoint(
+    _In_opt_ LONG BreakPointNr,
+    _Inout_opt_ PKDB_BREAKPOINT BreakPoint);
+
+BOOLEAN
+KdbpDisableBreakPoint(
+    _In_opt_ LONG BreakPointNr,
+    _Inout_opt_ PKDB_BREAKPOINT BreakPoint);
+
+BOOLEAN
+KdbpEnableBreakPoint(
+    _In_opt_ LONG BreakPointNr,
+    _Inout_opt_ PKDB_BREAKPOINT BreakPoint);
+
+BOOLEAN
+KdbpFindProcessById(
+    _In_ PVOID ProcessId,
+    _Out_ PEPROCESS *Process);
+
+BOOLEAN
+KdbpFindThreadById(
+    _In_ PVOID ThreadId,
+    _Out_ PETHREAD *Thread);
+
+BOOLEAN
+KdbpGetBreakPointInfo(
+    _In_ ULONG BreakPointNr,
+    _Out_opt_ ULONG_PTR *Address,
+    _Out_opt_ KDB_BREAKPOINT_TYPE *Type,
+    _Out_opt_ UCHAR *Size,
+    _Out_opt_ KDB_ACCESS_TYPE *AccessType,
+    _Out_opt_ UCHAR *DebugReg,
+    _Out_opt_ BOOLEAN *Enabled,
+    _Out_opt_ BOOLEAN *Global,
+    _Out_opt_ PEPROCESS *Process,
+    _Out_opt_ PCHAR *ConditionExpression);
+
+VOID
+KdbpGetCommandLineSettings(
+    _In_ PCSTR p1);
+
+BOOLEAN
+KdbpGetEnterCondition(
+    _In_ LONG ExceptionNr,
+    _In_ BOOLEAN FirstChance,
+    _Out_ KDB_ENTER_CONDITION *Condition);
+
+LONG
+KdbpGetNextBreakPointNr(
+    _In_opt_ ULONG Start);
+
+NTSTATUS
+KdbpInsertBreakPoint(
+    _In_ ULONG_PTR Address,
+    _In_ KDB_BREAKPOINT_TYPE Type,
+    _In_opt_ UCHAR Size,
+    _In_opt_ KDB_ACCESS_TYPE AccessType,
+    _In_opt_ PCHAR ConditionExpression,
+    _In_ BOOLEAN Global,
+    _Out_opt_ PLONG BreakPointNr);
+
+BOOLEAN
+KdbpKdbTrapFrameFromKernelStack(
+    PVOID KernelStack,
+    PKDB_KTRAP_FRAME KdbTrapFrame);
+
+NTSTATUS
+KdbpSafeReadMemory(
+    _Out_ PVOID Dest,
+    _In_ PVOID Src,
+    _In_ ULONG Bytes);
+
+NTSTATUS
+KdbpSafeWriteMemory(
+    _Out_ PVOID Dest,
+    _In_ PVOID Src,
+    _In_ ULONG Bytes);
+
+BOOLEAN
+KdbpSetEnterCondition(
+    _In_ LONG ExceptionNr,
+    _In_ BOOLEAN FirstChance,
+    _In_ KDB_ENTER_CONDITION Condition);
+
+NTSTATUS
+KdbpGetRegisterValue(
+    _In_ PKDB_KTRAP_FRAME TrapFrame,
+    _In_ PCSTR RegisterName,
+    _Out_ PULONGLONG Value,
+    _Out_opt_ PULONG RegisterSize);
 
 BOOLEAN
 KdbpRpnEvaluateExpression(
-   IN  PCHAR Expression,
-   IN  PKDB_KTRAP_FRAME TrapFrame,
-   OUT PULONGLONG Result,
-   OUT PLONG ErrOffset  OPTIONAL,
-   OUT PCHAR ErrMsg  OPTIONAL);
-
-PVOID
-KdbpRpnParseExpression(
-   IN  PCHAR Expression,
-   OUT PLONG ErrOffset  OPTIONAL,
-   OUT PCHAR ErrMsg  OPTIONAL);
+    _In_ PCHAR Expression,
+    _In_ PKDB_KTRAP_FRAME TrapFrame,
+    _Out_ PULONGLONG Result,
+    _Out_opt_ PLONG ErrOffset,
+    _Out_opt_ PCHAR ErrMsg);
 
 BOOLEAN
 KdbpRpnEvaluateParsedExpression(
-   IN  PVOID Expression,
-   IN  PKDB_KTRAP_FRAME TrapFrame,
-   OUT PULONGLONG Result,
-   OUT PLONG ErrOffset  OPTIONAL,
-   OUT PCHAR ErrMsg  OPTIONAL);
+    _In_ PVOID Expression,
+    _In_ PKDB_KTRAP_FRAME TrapFrame,
+    _Out_ PULONGLONG Result,
+    _Out_opt_ PLONG ErrOffset,
+    _Out_opt_ PCHAR ErrMsg);
+
+PVOID
+KdbpRpnParseExpression(
+    _In_ PCHAR Expression,
+    _Out_opt_ PLONG ErrOffset,
+    _Out_opt_ PCHAR ErrMsg);
 
 NTSTATUS
-KdbpGetRegisterValue(IN PKDB_KTRAP_FRAME TrapFrame, IN PCSTR RegisterName, OUT PULONGLONG Value, OUT PULONG RegisterSize OPTIONAL);
+KdbpSetRegisterValue(
+    _Inout_ PKDB_KTRAP_FRAME TrapFrame,
+    _In_ PCSTR RegisterName,
+    _In_ ULONGLONG Value);
+
+PCSTR
+KdbGetHistoryEntry(
+    _Inout_ PLONG NextIndex,
+    _In_ BOOLEAN Next);
+
+VOID
+KdbpCommandHistoryAppend(
+    _In_ PCSTR Command);
+
+VOID
+KdbPrintString(
+    _In_ const CSTRING* Output);
+
+VOID
+__cdecl
+KdbPrintf(
+    _In_ PCSTR Format,
+    ...);
+
+SIZE_T
+KdbPrompt(
+    _In_ PCSTR Prompt,
+    _Out_ PCHAR Buffer,
+    _In_ SIZE_T Size);
+
+USHORT
+KdbPromptString(
+    _In_ const CSTRING* PromptString,
+    _Inout_ PSTRING ResponseString);
+
+VOID
+KdbPuts(
+    _In_ PCSTR String);
+
+VOID
+KdbPutsN(
+    _In_ PCCH String,
+    _In_ USHORT Length);
 
 NTSTATUS
-KdbpSetRegisterValue(IN OUT PKDB_KTRAP_FRAME TrapFrame, IN PCSTR RegisterName, IN ULONGLONG Value);
-
-/* from kdb_symbols.c */
-
-BOOLEAN
-KdbpSymFindModule(
-    IN PVOID Address  OPTIONAL,
-    IN INT Index  OPTIONAL,
-    OUT PLDR_DATA_TABLE_ENTRY* pLdrEntry);
+KdbSymEnumerate(
+    _In_ PCSTR ModulePattern,
+    _In_ PCSTR SymbolPattern,
+    _In_ ULONG MaximumMatches,
+    _In_ PKDB_SYMBOL_ENUM_CALLBACK Callback,
+    _In_opt_ PVOID Context,
+    _Out_ PULONG MatchCount,
+    _Out_ PBOOLEAN Truncated);
 
 BOOLEAN
 KdbSymPrintAddress(
-    IN PVOID Address,
-    IN PCONTEXT Context);
+    _In_ PVOID Address,
+    _In_ PCONTEXT Context);
+
+BOOLEAN
+KdbSymPrintNearest(
+    _In_ PVOID Address,
+    _In_ PCONTEXT Context);
+
+BOOLEAN
+KdbpSymFindModule(
+    _In_opt_ PVOID Address,
+    _In_opt_ INT Index,
+    _Out_ PLDR_DATA_TABLE_ENTRY* pLdrEntry);
 
 BOOLEAN
 KdbSymDescribeAddress(
@@ -250,170 +422,15 @@ KdbpSymzDescribe(
     _In_ ULONG FileNameLength,
     _Out_opt_ PULONG Line);
 
-typedef BOOLEAN (NTAPI *PKDB_SYMBOL_ENUM_CALLBACK)(_In_ ULONG_PTR Address, _In_ PCSTR ModuleName, _In_ PCSTR FunctionName, _In_ PCSTR FileName, _In_ ULONG SourceLine, _In_opt_ PVOID Context);
-
-NTSTATUS
-KdbSymEnumerate(_In_ PCSTR ModulePattern, _In_ PCSTR SymbolPattern, _In_ ULONG MaximumMatches, _In_ PKDB_SYMBOL_ENUM_CALLBACK Callback, _In_opt_ PVOID Context, _Out_ PULONG MatchCount, _Out_ PBOOLEAN Truncated);
-
+FORCEINLINE
 BOOLEAN
-KdbSymPrintNearest(_In_ PVOID Address, _In_ PCONTEXT Context);
-
-VOID
-KdbSymzPrepareImage(
-    _In_ PVOID ImageBase);
-
-BOOLEAN
-KdbpSymzEnumerate(
-    _In_ PLDR_DATA_TABLE_ENTRY LdrEntry,
-    _In_ PSYMZ_ENUM_ROUTINE Routine,
-    _In_ PVOID Context);
-
-/* from kdb.c */
-
-LONG
-KdbpGetNextBreakPointNr(
-   IN ULONG Start  OPTIONAL);
-
-BOOLEAN
-KdbpGetBreakPointInfo(
-   IN  ULONG BreakPointNr,
-   OUT ULONG_PTR *Address  OPTIONAL,
-   OUT KDB_BREAKPOINT_TYPE *Type  OPTIONAL,
-   OUT UCHAR *Size  OPTIONAL,
-   OUT KDB_ACCESS_TYPE *AccessType  OPTIONAL,
-   OUT UCHAR *DebugReg  OPTIONAL,
-   OUT BOOLEAN *Enabled  OPTIONAL,
-   OUT BOOLEAN *Global  OPTIONAL,
-   OUT PEPROCESS *Process  OPTIONAL,
-   OUT PCHAR *ConditionExpression  OPTIONAL);
-
-NTSTATUS
-KdbpInsertBreakPoint(
-   IN  ULONG_PTR Address,
-   IN  KDB_BREAKPOINT_TYPE Type,
-   IN  UCHAR Size  OPTIONAL,
-   IN  KDB_ACCESS_TYPE AccessType  OPTIONAL,
-   IN  PCHAR ConditionExpression  OPTIONAL,
-   IN  BOOLEAN Global,
-   OUT PLONG BreakPointNr  OPTIONAL);
-
-BOOLEAN
-KdbpDeleteBreakPoint(
-   IN LONG BreakPointNr  OPTIONAL,
-   IN OUT PKDB_BREAKPOINT BreakPoint  OPTIONAL);
-
-BOOLEAN
-KdbpEnableBreakPoint(
-   IN LONG BreakPointNr  OPTIONAL,
-   IN OUT PKDB_BREAKPOINT BreakPoint  OPTIONAL);
-
-BOOLEAN
-KdbpDisableBreakPoint(
-   IN LONG BreakPointNr  OPTIONAL,
-   IN OUT PKDB_BREAKPOINT BreakPoint  OPTIONAL);
-
-BOOLEAN
-KdbpGetEnterCondition(
-   IN LONG ExceptionNr,
-   IN BOOLEAN FirstChance,
-   OUT KDB_ENTER_CONDITION *Condition);
-
-BOOLEAN
-KdbpSetEnterCondition(
-   IN LONG ExceptionNr,
-   IN BOOLEAN FirstChance,
-   IN KDB_ENTER_CONDITION Condition);
-
-BOOLEAN
-KdbpAttachToThread(
-   PVOID ThreadId);
-
-BOOLEAN
-KdbpFindThreadById(IN PVOID ThreadId, OUT PETHREAD *Thread);
-
-BOOLEAN
-KdbpFindProcessById(IN PVOID ProcessId, OUT PEPROCESS *Process);
-
-BOOLEAN
-KdbpAttachToProcess(
-   PVOID ProcessId);
-
-BOOLEAN
-KdbpKdbTrapFrameFromKernelStack(PVOID KernelStack, PKDB_KTRAP_FRAME KdbTrapFrame);
-
-VOID
-KdbpGetCommandLineSettings(
-    _In_ PCSTR p1);
-
-KD_CONTINUE_TYPE
-KdbEnterDebuggerException(IN PEXCEPTION_RECORD64 ExceptionRecord,
-                          IN KPROCESSOR_MODE PreviousMode,
-                          IN OUT PCONTEXT Context,
-                          IN BOOLEAN FirstChance);
-
-/* other functions */
-
-BOOLEAN
-NTAPI
-KdpSafeReadMemory(
-    IN ULONG_PTR Addr,
-    IN LONG Len,
-    OUT PVOID Value
-);
-
-BOOLEAN
-NTAPI
-KdpSafeWriteMemory(
-    IN ULONG_PTR Addr,
-    IN LONG Len,
-    IN ULONGLONG Value
-);
-
-NTSTATUS
-KdbpSafeReadMemory(OUT PVOID Dest,
-                   IN PVOID Src,
-                   IN ULONG Bytes);
-
-NTSTATUS
-KdbpSafeWriteMemory(OUT PVOID Dest,
-                    IN PVOID Src,
-                    IN ULONG Bytes);
-
-VOID
-KbdDisableMouse(VOID);
-
-VOID
-KbdEnableMouse(VOID);
-
-
-/* From kdb_print.c */
-
-VOID
-KdbPrintString(
-    _In_ const CSTRING* Output);
-
-USHORT
-KdbPromptString(
-    _In_ const CSTRING* PromptString,
-    _Inout_ PSTRING ResponseString);
-
-VOID
-KdbPutsN(
-    _In_ PCCH String,
-    _In_ USHORT Length);
-
-VOID
-KdbPuts(
-    _In_ PCSTR String);
-
-VOID
-__cdecl
-KdbPrintf(
-    _In_ PCSTR Format,
-    ...);
-
-SIZE_T
-KdbPrompt(
-    _In_ PCSTR Prompt,
-    _Out_ PCHAR Buffer,
-    _In_ SIZE_T Size);
+KdbpProcessorStateIsFrozen(
+    _In_ ULONG FrozenState)
+{
+#ifdef _WIN64
+    return (FrozenState & ~IPI_FROZEN_FLAG_ACTIVE) == IPI_FROZEN_STATE_FROZEN;
+#else
+    UNREFERENCED_PARAMETER(FrozenState);
+    return FALSE;
+#endif
+}

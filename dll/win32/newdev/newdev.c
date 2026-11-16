@@ -24,6 +24,8 @@
 #include "driver_cache.h"
 
 #include <cfgmgr32.h>
+#include <initguid.h>
+#include <devguid.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <winnls.h>
@@ -197,22 +199,25 @@ UpdateDriverForPlugAndPlayDevicesW(
     OUT PBOOL bRebootRequired OPTIONAL)
 {
     DEVINSTDATA DevInstData;
-    DWORD i;
+    DWORD i, LastError;
     LPWSTR Buffer = NULL;
     DWORD BufferSize;
     LPCWSTR CurrentHardwareId; /* Pointer into Buffer */
     DWORD Property;
     BOOL FoundHardwareId, FoundAtLeastOneDevice = FALSE;
     BOOL FoundCurrentDriver = FALSE;
-    BOOL ret = FALSE;
+    BOOL ret = FALSE, Wow64 = FALSE;
 
     DevInstData.hDevInfo = INVALID_HANDLE_VALUE;
 
     TRACE("UpdateDriverForPlugAndPlayDevicesW(%p %s %s 0x%x %p)\n",
         hwndParent, debugstr_w(HardwareId), debugstr_w(FullInfPath), InstallFlags, bRebootRequired);
 
-    if (bRebootRequired)
-        *bRebootRequired = FALSE;
+    if (IsWow64Process(GetCurrentProcess(), &Wow64) && Wow64)
+    {
+        SetLastError(ERROR_IN_WOW64);
+        return FALSE;
+    }
 
     if (!HardwareId || !FullInfPath)
     {
@@ -233,6 +238,9 @@ UpdateDriverForPlugAndPlayDevicesW(
         SetLastError(ERROR_FILE_NOT_FOUND);
         goto cleanup;
     }
+
+    if (bRebootRequired)
+        *bRebootRequired = FALSE;
 
     /* Enumerate all devices of the system */
     DevInstData.hDevInfo = SetupDiGetClassDevsW(NULL, NULL, hwndParent, DIGCF_ALLCLASSES | DIGCF_PRESENT);
@@ -366,7 +374,6 @@ UpdateDriverForPlugAndPlayDevicesW(
         //if (!InstallCurrentDriver(&DevInstData))
         if (!InstallCurrentDriver(&DevInstData) && GetLastError() != ERROR_PRIVILEGE_NOT_HELD)
         {
-            TRACE("InstallCurrentDriver() failed with error 0x%x\n", GetLastError());
             continue;
         }
 
@@ -392,9 +399,11 @@ UpdateDriverForPlugAndPlayDevicesW(
     }
 
 cleanup:
+    LastError = GetLastError();
     if (DevInstData.hDevInfo != INVALID_HANDLE_VALUE)
         SetupDiDestroyDeviceInfoList(DevInstData.hDevInfo);
     HeapFree(GetProcessHeap(), 0, Buffer);
+    SetLastError(LastError);
     return ret;
 }
 
@@ -465,6 +474,51 @@ GetDeviceIdRank(
     return MAXDWORD;
 }
 
+static DWORD
+GetInstalledFeatureScore(
+    IN HKEY hKey)
+{
+    WCHAR InfPath[MAX_PATH], Section[2 * LINE_LEN], Extension[LINE_LEN], Text[16];
+    DWORD Size, Type, Score = 0xFF;
+    INFCONTEXT Context;
+    PWSTR End;
+    HINF hInf;
+
+    Size = sizeof(InfPath) - sizeof(WCHAR);
+    if (RegQueryValueExW(hKey, REGSTR_VAL_INFPATH, NULL, &Type, (LPBYTE)InfPath, &Size) != ERROR_SUCCESS || Type != REG_SZ)
+        return Score;
+    InfPath[Size / sizeof(WCHAR)] = UNICODE_NULL;
+
+    Size = sizeof(WCHAR) * (LINE_LEN - 1);
+    if (RegQueryValueExW(hKey, REGSTR_VAL_INFSECTION, NULL, &Type, (LPBYTE)Section, &Size) != ERROR_SUCCESS || Type != REG_SZ)
+        return Score;
+    Section[Size / sizeof(WCHAR)] = UNICODE_NULL;
+
+    Size = sizeof(Extension) - sizeof(WCHAR);
+    if (RegQueryValueExW(hKey, REGSTR_VAL_INFSECTIONEXT, NULL, &Type, (LPBYTE)Extension, &Size) == ERROR_SUCCESS && Type == REG_SZ)
+    {
+        Extension[Size / sizeof(WCHAR)] = UNICODE_NULL;
+        wcscat(Section, Extension);
+    }
+
+    hInf = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
+    if (hInf == INVALID_HANDLE_VALUE)
+        return Score;
+
+    /* The directive is a single hexadecimal byte, written without a 0x prefix */
+    if (SetupFindFirstLineW(hInf, Section, L"FeatureScore", &Context) &&
+        SetupGetStringFieldW(&Context, 1, Text, ARRAYSIZE(Text), NULL) &&
+        Text[0] != UNICODE_NULL)
+    {
+        Size = wcstoul(Text, &End, 16);
+        if (*End == UNICODE_NULL && Size <= 0xFF)
+            Score = Size;
+    }
+
+    SetupCloseInfFile(hInf);
+    return Score;
+}
+
 static BOOL
 IsSelectedDriverBetter(
     IN PDEVINSTDATA DevInstData)
@@ -514,6 +568,9 @@ IsSelectedDriverBetter(
     InstalledRank = GetDeviceIdRank(HardwareIds, MatchingId, 0);
     if (InstalledRank == MAXDWORD)
         InstalledRank = GetDeviceIdRank(CompatibleIds, MatchingId, 0x2000);
+    /* FIXME: the installed rank ignores whether the INF named the ID as a compatible one */
+    if (InstalledRank != MAXDWORD)
+        InstalledRank |= GetInstalledFeatureScore(hKey) << 16;
 
     Size = sizeof(InstalledDate);
     if (RegQueryValueExW(hKey, L"DriverDateData", NULL, &Type, (LPBYTE)&InstalledDate, &Size) != ERROR_SUCCESS ||
@@ -565,6 +622,155 @@ InstallNeedsReboot(
     return (InstallParams.Flags & (DI_NEEDRESTART | DI_NEEDREBOOT)) != 0;
 }
 
+static BOOL
+IdListContains(
+    IN LPCWSTR List OPTIONAL,
+    IN LPCWSTR Id)
+{
+    for (; List && *List; List += wcslen(List) + 1)
+    {
+        if (!_wcsicmp(List, Id))
+            return TRUE;
+    }
+    return FALSE;
+}
+
+static LPWSTR
+GetDeviceIds(
+    IN HDEVINFO DeviceInfoSet,
+    IN PSP_DEVINFO_DATA DeviceInfoData,
+    IN DWORD Property)
+{
+    DWORD Size = 0;
+    LPWSTR Ids;
+
+    if (SetupDiGetDeviceRegistryPropertyW(DeviceInfoSet, DeviceInfoData, Property, NULL, NULL, 0, &Size) ||
+        GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+    {
+        return NULL;
+    }
+
+    Ids = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, Size + 2 * sizeof(WCHAR));
+    if (Ids && !SetupDiGetDeviceRegistryPropertyW(DeviceInfoSet, DeviceInfoData, Property, NULL, (PBYTE)Ids, Size, NULL))
+    {
+        HeapFree(GetProcessHeap(), 0, Ids);
+        Ids = NULL;
+    }
+    return Ids;
+}
+
+static BOOL
+ExtensionMatchesDevice(
+    IN HINF hInf,
+    IN HDEVINFO DeviceInfoSet,
+    IN PSP_DEVINFO_DATA DeviceInfoData)
+{
+    WCHAR Models[LINE_LEN], Id[MAX_DEVICE_ID_LEN];
+    INFCONTEXT Manufacturer, Device;
+    LPWSTR HardwareIds, CompatibleIds;
+    DWORD Field, Count;
+    BOOL Found, Match = FALSE;
+
+    HardwareIds = GetDeviceIds(DeviceInfoSet, DeviceInfoData, SPDRP_HARDWAREID);
+    CompatibleIds = GetDeviceIds(DeviceInfoSet, DeviceInfoData, SPDRP_COMPATIBLEIDS);
+
+    for (Found = SetupFindFirstLineW(hInf, L"Manufacturer", NULL, &Manufacturer);
+         Found && !Match && (HardwareIds || CompatibleIds);
+         Found = SetupFindNextLine(&Manufacturer, &Manufacturer))
+    {
+        if (!SetupDiGetActualModelsSectionW(&Manufacturer, NULL, Models, _countof(Models), NULL, NULL) ||
+            !SetupFindFirstLineW(hInf, Models, NULL, &Device))
+        {
+            continue;
+        }
+
+        do
+        {
+            Count = SetupGetFieldCount(&Device);
+            for (Field = 2; Field <= Count && !Match; Field++)
+            {
+                Match = SetupGetStringFieldW(&Device, Field, Id, _countof(Id), NULL) &&
+                        (IdListContains(HardwareIds, Id) || IdListContains(CompatibleIds, Id));
+            }
+        } while (!Match && SetupFindNextLine(&Device, &Device));
+    }
+
+    HeapFree(GetProcessHeap(), 0, HardwareIds);
+    HeapFree(GetProcessHeap(), 0, CompatibleIds);
+    return Match;
+}
+
+/* The base driver installed again brings the device the extensions that now match it */
+static BOOL
+ReapplyInstalledDriver(
+    IN PDEVINSTDATA DevInstData)
+{
+    SP_DEVINSTALL_PARAMS_W Params;
+
+    Params.cbSize = sizeof(Params);
+    if (!SetupDiGetDeviceInstallParamsW(DevInstData->hDevInfo, &DevInstData->devInfoData, &Params))
+        return FALSE;
+    Params.Flags &= ~DI_ENUMSINGLEINF;
+    Params.FlagsEx |= DI_FLAGSEX_INSTALLEDDRIVER;
+    Params.DriverPath[0] = UNICODE_NULL;
+    if (!SetupDiSetDeviceInstallParamsW(DevInstData->hDevInfo, &DevInstData->devInfoData, &Params))
+        return FALSE;
+
+    SetupDiDestroyDriverInfoList(DevInstData->hDevInfo, &DevInstData->devInfoData, SPDIT_COMPATDRIVER);
+    if (!SetupDiBuildDriverInfoList(DevInstData->hDevInfo, &DevInstData->devInfoData, SPDIT_COMPATDRIVER))
+        return FALSE;
+
+    DevInstData->drvInfoData.cbSize = sizeof(DevInstData->drvInfoData);
+    if (!SetupDiEnumDriverInfoW(DevInstData->hDevInfo, &DevInstData->devInfoData, SPDIT_COMPATDRIVER, 0,
+                                &DevInstData->drvInfoData))
+    {
+        return FALSE;
+    }
+
+    return InstallCurrentDriver(DevInstData);
+}
+
+/* An extension package goes on every present device that has a base driver and that it matches (Using an Extension INF File) */
+static DWORD
+InstallExtensionOnDevices(
+    IN PDEVINSTDATA DevInstData,
+    IN LPCWSTR InfPath,
+    OUT PBOOL NeedReboot OPTIONAL)
+{
+    WCHAR Driver[MAX_PATH];
+    DWORD Error = ERROR_SUCCESS;
+    HINF hInf;
+    DWORD i;
+
+    hInf = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
+    if (hInf == INVALID_HANDLE_VALUE)
+        return GetLastError();
+
+    DevInstData->devInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
+    for (i = 0; SetupDiEnumDeviceInfo(DevInstData->hDevInfo, i, &DevInstData->devInfoData); i++)
+    {
+        if (!SetupDiGetDeviceRegistryPropertyW(DevInstData->hDevInfo, &DevInstData->devInfoData, SPDRP_DRIVER, NULL,
+                                               (PBYTE)Driver, sizeof(Driver), NULL) ||
+            !ExtensionMatchesDevice(hInf, DevInstData->hDevInfo, &DevInstData->devInfoData))
+        {
+            continue;
+        }
+
+        if (!ReapplyInstalledDriver(DevInstData))
+        {
+            if (Error == ERROR_SUCCESS)
+                Error = GetLastError();
+            continue;
+        }
+
+        if (NeedReboot && InstallNeedsReboot(DevInstData))
+            *NeedReboot = TRUE;
+    }
+
+    SetupCloseInfFile(hInf);
+    return Error;
+}
+
 BOOL WINAPI
 DiInstallDriverW(
     IN HWND hwndParent OPTIONAL,
@@ -573,7 +779,8 @@ DiInstallDriverW(
     OUT PBOOL NeedReboot OPTIONAL)
 {
     DEVINSTDATA DevInstData;
-    WCHAR FullInfPath[MAX_PATH];
+    WCHAR FullInfPath[MAX_PATH], ClassName[MAX_CLASS_NAME_LEN];
+    GUID ClassGuid;
     DWORD Length;
     DWORD Error = ERROR_SUCCESS;
     DWORD i;
@@ -617,6 +824,15 @@ DiInstallDriverW(
     DevInstData.hDevInfo = SetupDiGetClassDevsW(NULL, NULL, hwndParent, DIGCF_ALLCLASSES | DIGCF_PRESENT);
     if (DevInstData.hDevInfo == INVALID_HANDLE_VALUE)
         return FALSE;
+
+    if (SetupDiGetINFClassW(FullInfPath, &ClassGuid, ClassName, _countof(ClassName), NULL) &&
+        IsEqualGUID(&ClassGuid, &GUID_DEVCLASS_EXTENSION))
+    {
+        Error = InstallExtensionOnDevices(&DevInstData, FullInfPath, NeedReboot);
+        SetupDiDestroyDeviceInfoList(DevInstData.hDevInfo);
+        SetLastError(Error);
+        return Error == ERROR_SUCCESS;
+    }
 
     DevInstData.devInfoData.cbSize = sizeof(SP_DEVINFO_DATA);
     for (i = 0; SetupDiEnumDeviceInfo(DevInstData.hDevInfo, i, &DevInstData.devInfoData); i++)
@@ -1318,7 +1534,6 @@ InstallCurrentDriver(
         &DevInstData->devInfoData);
     if (!ret)
     {
-        TRACE("SetupDiCallClassInstaller(DIF_SELECTBESTCOMPATDRV) failed with error 0x%x\n", GetLastError());
         return FALSE;
     }
 
@@ -1418,7 +1633,6 @@ InstallSelectedDriver(
         &DevInstData->devInfoData);
     if (!ret)
     {
-        TRACE("SetupDiCallClassInstaller(DIF_INSTALLDEVICEFILES) failed with error 0x%x\n", GetLastError());
         return FALSE;
     }
 
@@ -1428,7 +1642,6 @@ InstallSelectedDriver(
         &DevInstData->devInfoData);
     if (!ret)
     {
-        TRACE("SetupDiCallClassInstaller(DIF_REGISTER_COINSTALLERS) failed with error 0x%x\n", GetLastError());
         return FALSE;
     }
 
@@ -1438,7 +1651,6 @@ InstallSelectedDriver(
         &DevInstData->devInfoData);
     if (!ret)
     {
-        TRACE("SetupDiCallClassInstaller(DIF_INSTALLINTERFACES) failed with error 0x%x\n", GetLastError());
         return FALSE;
     }
 
@@ -1448,7 +1660,6 @@ InstallSelectedDriver(
         &DevInstData->devInfoData);
     if (!ret)
     {
-        TRACE("SetupDiCallClassInstaller(DIF_INSTALLDEVICE) failed with error 0x%x\n", GetLastError());
         return FALSE;
     }
 

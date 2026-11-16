@@ -6,7 +6,6 @@
 #endif
 #endif
 
-#ifndef SYSFUNCS_NT6_ONLY
     SVC_(AcceptConnectPort, 6)
     SVC_(AccessCheck, 8)
     SVC_(AccessCheckAndAuditAlarm, 11)
@@ -311,13 +310,10 @@
     SVC_(QueryPortInformationProcess, 0)
     SVC_(GetCurrentProcessorNumber, 0)
     SVC_(WaitForMultipleObjects32, 5)
-#endif // SYSFUNCS_NT6_ONLY
 
-#ifndef SYSFUNCS_NT5_ONLY
     SVC_(FlushProcessWriteBuffers, 0)
     SVC_(GetCurrentProcessorNumberEx, 1)
     SVC_(CreateUserProcess, 11)
-#if (NTDDI_VERSION >= NTDDI_VISTA)
     SVC_(CreateTransactionManager, 6)
     SVC_(OpenTransactionManager, 6)
     SVC_(RenameTransactionManager, 2)
@@ -359,7 +355,6 @@
     SVC_(CreateKeyTransacted, 8)
     SVC_(OpenKeyTransacted, 4)
     SVC_(OpenKeyTransactedEx, 5)
-#endif
     SVC_(CompareObjects, 2)
     SVC_(AlertMultipleThreadByThreadId, 4)
     SVC_(AllocateReserveObject, 3)
@@ -398,15 +393,12 @@
 #if (NTDDI_VERSION >= NTDDI_WIN8)
     SVC_(CreateLowBoxToken, 9)
 #endif
-#if (NTDDI_VERSION >= NTDDI_VISTA)
     SVC_(CreatePrivateNamespace, 4)
     SVC_(DeletePrivateNamespace, 1)
     SVC_(OpenPrivateNamespace, 4)
-#endif
 #if (NTDDI_VERSION >= NTDDI_WIN10_RS3)
     SVC_(NotifyChangeDirectoryFileEx, 10)
 #endif
-#if (NTDDI_VERSION >= NTDDI_VISTA)
     SVC_(AlpcAcceptConnectPort, 9)
     SVC_(AlpcCancelMessage, 3)
     SVC_(AlpcConnectPort, 11)
@@ -428,16 +420,13 @@
     SVC_(AlpcRevokeSecurityContext, 3)
     SVC_(AlpcSendWaitReceivePort, 8)
     SVC_(AlpcSetInformation, 4)
-#endif
 #if (NTDDI_VERSION >= NTDDI_WIN8)
     SVC_(AlpcConnectPortEx, 11)
 #endif
 #if (NTDDI_VERSION >= NTDDI_WIN10)
     SVC_(AlpcImpersonateClientContainerOfPort, 3)
 #endif
-#if (NTDDI_VERSION >= NTDDI_VISTA)
     SVC_(GetNextThread, 6)
-#endif
     SVC_(CreateWaitCompletionPacket, 3)
     SVC_(AssociateWaitCompletionPacket, 8)
     SVC_(CancelWaitCompletionPacket, 2)
@@ -452,4 +441,3 @@
     SVC_(Wow64GetNativeSystemInformation, 4)
     SVC_(Wow64IsProcessorFeaturePresent, 1)
 #endif
-#endif // SYSFUNCS_NT5_ONLY

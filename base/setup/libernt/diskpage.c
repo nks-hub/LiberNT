@@ -91,7 +91,7 @@ FindVolumeFormatPlan(
     return NULL;
 }
 
-static BOOLEAN
+BOOLEAN
 PlanVolumeFormat(
     _In_ PVOLENTRY Volume,
     _In_ PCWSTR FileSystem,
@@ -463,7 +463,8 @@ IsResizableVolume(
         return FALSE;
     if (IsSystemPartitionEntry(PartEntry))
         return FALSE;
-    return _wcsicmp(Volume->Info.FileSystem, L"NTFS") == 0 || IsUnformatted(&Volume->Info);
+    return _wcsicmp(Volume->Info.FileSystem, L"NTFS") == 0 || _wcsnicmp(Volume->Info.FileSystem, L"EXT", 3) == 0 ||
+           IsUnformatted(&Volume->Info);
 }
 
 ULONGLONG

@@ -1,13 +1,11 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/ke/amd64/kiinit.c
- * PURPOSE:         Kernel Initialization for x86 CPUs
- * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
- *                  Timo Kreuzer (timo.kreuzer@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     amd64 kernel entry from the loader: PCR, GDT, IDT, TSS, MSRs, features and processor startup
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright Timo Kreuzer <timo.kreuzer@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES *****************************************************************/
 
 #include <ntoskrnl.h>
 #define NDEBUG
@@ -17,76 +15,52 @@
                                KF_LARGE_PAGE|KF_FAST_SYSCALL|KF_GLOBAL_PAGE| \
                                KF_CMOV|KF_PAT|KF_MMX|KF_FXSR|KF_NX_BIT|KF_MTRR)
 
-/* GLOBALS *******************************************************************/
-
-/* Function pointer for early debug prints */
 ULONG (*FrLdrDbgPrint)(const char *Format, ...);
 
-/* Spinlocks used only on X86 */
 KSPIN_LOCK KiFreezeExecutionLock;
-
 
 KIPCR KiInitialPcr;
 
-/* Boot and double-fault/NMI/DPC stack */
 UCHAR DECLSPEC_ALIGN(16) KiP0BootStackData[KERNEL_STACK_SIZE] = {0};
 UCHAR DECLSPEC_ALIGN(16) KiP0DoubleFaultStackData[KERNEL_STACK_SIZE] = {0};
+UCHAR DECLSPEC_ALIGN(16) KiP0NmiStackData[KERNEL_STACK_SIZE] = {0};
 PVOID KiP0BootStack = &KiP0BootStackData[KERNEL_STACK_SIZE];
 PVOID KiP0DoubleFaultStack = &KiP0DoubleFaultStackData[KERNEL_STACK_SIZE];
+PVOID KiP0NmiStack = &KiP0NmiStackData[KERNEL_STACK_SIZE];
 
 ULONGLONG BootCycles, BootCyclesEnd;
 
 BOOLEAN KiHvApicMsrs;
+BOOLEAN KiX2ApicMsrs;
 
 void KiInitializeSegments();
 void KiSystemCallEntry64();
 void KiSystemCallEntry32();
-
-/* FUNCTIONS *****************************************************************/
 
 CODE_SEG("INIT")
 VOID
 NTAPI
 KiInitMachineDependent(VOID)
 {
-    /* Check for large page support */
     if (KeFeatureBits & KF_LARGE_PAGE)
     {
-        /* FIXME: Support this */
         DPRINT("Large Page support detected but not yet taken advantage of!\n");
     }
 
-    /* Check for global page support */
     if (KeFeatureBits & KF_GLOBAL_PAGE)
     {
-        /* FIXME: Support this */
         DPRINT("Global Page support detected but not yet taken advantage of!\n");
     }
 
-    /* Check if we have MTRR */
     if (KeFeatureBits & KF_MTRR)
     {
-        /* FIXME: Support this */
         DPRINT("MTRR support detected but not yet taken advantage of!\n");
     }
 
-    /* Check for PAT and/or MTRR support */
     if (KeFeatureBits & KF_PAT)
     {
-        /* FIXME: Support this */
         DPRINT("PAT support detected but not yet taken advantage of!\n");
     }
-
-//        /* Allocate the IOPM save area */
-//        Ki386IopmSaveArea = ExAllocatePoolWithTag(PagedPool,
-//                                                  IOPM_SIZE,
-//                                                  '  eK');
-//        if (!Ki386IopmSaveArea)
-//        {
-//            /* Bugcheck. We need this for V86/VDM support. */
-//            KeBugCheckEx(NO_PAGES_AVAILABLE, 2, IOPM_SIZE, 0, 0);
-//        }
-
 }
 
 static
@@ -100,144 +74,112 @@ KiInitializePcr(
     _In_ PKTHREAD IdleThread,
     _In_ PVOID DpcStack)
 {
-    /* Zero out the PCR */
     RtlZeroMemory(Pcr, sizeof(KIPCR));
 
-    /* Set pointers to ourselves */
     Pcr->Self = (PKPCR)Pcr;
     Pcr->CurrentPrcb = &Pcr->Prcb;
-    Pcr->Prcb.CrashDumpContext = &Pcr->Prcb.ProcessorState.ContextFrame;
+    Pcr->Prcb.Context = &Pcr->Prcb.ProcessorState.ContextFrame;
 
-    /* Set the PCR Version */
     Pcr->MajorVersion = PCR_MAJOR_VERSION;
     Pcr->MinorVersion = PCR_MINOR_VERSION;
 
-    /* Set the PRCB Version */
     Pcr->Prcb.MajorVersion = PRCB_MAJOR_VERSION;
     Pcr->Prcb.MinorVersion = PRCB_MINOR_VERSION;
 
-    /* Set the Build Type */
     Pcr->Prcb.BuildType = 0;
-#ifndef CONFIG_SMP
-    Pcr->Prcb.BuildType |= PRCB_BUILD_UNIPROCESSOR;
-#endif
 #if DBG
     Pcr->Prcb.BuildType |= PRCB_BUILD_DEBUG;
 #endif
 
-    /* Set the Processor Number and current Processor Mask */
     Pcr->Prcb.Number = (UCHAR)ProcessorNumber;
     Pcr->Prcb.SetMember = 1ULL << ProcessorNumber;
 
-    /* Set GDT and IDT base */
     Pcr->GdtBase = GdtBase;
     Pcr->IdtBase = IdtBase;
 
-    /* Set TssBase */
     Pcr->TssBase = TssBase;
 
-    Pcr->Prcb.RspBase = Pcr->TssBase->Rsp0; // FIXME
+    Pcr->Prcb.RspBase = Pcr->TssBase->Rsp0;
 
-    /* Set DPC Stack */
     Pcr->Prcb.DpcStack = DpcStack;
 
-    /* Setup the processor set */
     Pcr->Prcb.MultiThreadProcessorSet = Pcr->Prcb.SetMember;
     Pcr->Prcb.MultiThreadSetMaster = &Pcr->Prcb;
 
-    /* Clear DR6/7 to cleanup bootloader debugging */
+    /* Drop any breakpoints the boot loader left armed */
     Pcr->Prcb.ProcessorState.SpecialRegisters.KernelDr6 = 0;
     Pcr->Prcb.ProcessorState.SpecialRegisters.KernelDr7 = 0;
 
-    /* Initialize MXCSR (all exceptions masked) */
     Pcr->Prcb.MxCsr = INITIAL_MXCSR;
 
-    /* Set the Current Thread */
     Pcr->Prcb.CurrentThread = IdleThread;
 
-    /* Start us out at PASSIVE_LEVEL */
     Pcr->Irql = PASSIVE_LEVEL;
 }
 
 VOID
 NTAPI
-KiInitializeCpu(PKIPCR Pcr)
+KiInitializeCpu(
+    PKIPCR Pcr)
 {
     ULONG64 Pat;
     ULONG64 FeatureBits;
 
-    /* Initialize gs */
     KiInitializeSegments();
 
-    /* Set GS base */
     __writemsr(MSR_GS_BASE, (ULONG64)Pcr);
     __writemsr(MSR_GS_SWAP, (ULONG64)Pcr);
 
-    /* Detect and set the CPU Type */
     KiSetProcessorType();
 
-    /* Get the processor features for this CPU */
     FeatureBits = KiGetFeatureBits();
 
-    /* Check if we support all needed features */
     if ((FeatureBits & REQUIRED_FEATURE_BITS) != REQUIRED_FEATURE_BITS)
     {
-        /* If not, bugcheck system */
         FrLdrDbgPrint("CPU doesn't have needed features! Has: 0x%x, required: 0x%x\n",
                 FeatureBits, REQUIRED_FEATURE_BITS);
         KeBugCheck(0);
     }
 
-    /* Set DEP to always on */
     FeatureBits |= KF_NX_ENABLED;
 
-    /* Save feature bits */
     Pcr->Prcb.FeatureBits = (ULONG)FeatureBits;
     Pcr->Prcb.FeatureBitsHigh = FeatureBits >> 32;
 
-    /* Enable fx save restore support */
     __writecr4(__readcr4() | CR4_FXSR);
 
-    /* Enable XMMI exceptions */
     __writecr4(__readcr4() | CR4_XMMEXCPT);
 
-    /* Enable Write-Protection */
     __writecr0(__readcr0() | CR0_WP);
 
-    /* Disable fpu monitoring */
     __writecr0(__readcr0() & ~CR0_MP);
 
     __writecr0(__readcr0() | CR0_NE);
 
-    /* Check if XSAVE is supported */
+    /* CR0.AM lets user mode opt into alignment checking */
+    __writecr0(__readcr0() | CR0_AM);
+
     if (FeatureBits & KF_XSTATE)
     {
-        /* Enable CR4.OSXSAVE[Bit 18] */
         __writecr4(__readcr4() | CR4_XSAVE);
     }
 
-    /* LDT is unused */
     __lldt(0);
 
-    /* Set the systemcall entry points */
     __writemsr(MSR_LSTAR, (ULONG64)KiSystemCallEntry64);
     __writemsr(MSR_CSTAR, (ULONG64)KiSystemCallEntry32);
 
     __writemsr(MSR_STAR, ((ULONG64)KGDT64_R0_CODE << 32) |
                          ((ULONG64)(KGDT64_R3_CMCODE|RPL_MASK) << 48));
 
-    /* Set the flags to be cleared when doing a syscall */
     __writemsr(MSR_SYSCALL_MASK, EFLAGS_IF_MASK | EFLAGS_TF | EFLAGS_DF | EFLAGS_NESTED_TASK);
 
-    /* Enable syscall instruction and no-execute support */
     __writemsr(MSR_EFER, __readmsr(MSR_EFER) | MSR_SCE | MSR_NXE);
 
-    /* Initialize the PAT */
     Pat = (PAT_WB << 0)  | (PAT_WC << 8) | (PAT_UCM << 16) | (PAT_UC << 24) |
           (PAT_WB << 32) | (PAT_WC << 40) | (PAT_UCM << 48) | (PAT_UC << 56);
     __writemsr(MSR_PAT, Pat);
 
-    /* Initialize MXCSR */
     _mm_setcsr(INITIAL_MXCSR);
 
     KeSetCurrentIrql(PASSIVE_LEVEL);
@@ -254,28 +196,20 @@ KiInitializeTss(
 {
     PKGDTENTRY64 TssEntry;
 
-    /* Get pointer to the GDT entry */
     TssEntry = KiGetGdtEntry(Pcr->GdtBase, KGDT64_SYS_TSS);
 
-    /* Initialize the GDT entry */
     KiInitGdtEntry(TssEntry, (ULONG64)Tss, sizeof(KTSS64), AMD64_TSS, 0);
 
-    /* Zero out the TSS */
     RtlZeroMemory(Tss, sizeof(KTSS64));
 
-    /* FIXME: I/O Map? */
     Tss->IoMapBase = 0x68;
 
-    /* Setup ring 0 stack pointer */
     Tss->Rsp0 = (ULONG64)InitialStack;
 
-    /* Setup a stack for Double Fault Traps */
     Tss->Ist[1] = (ULONG64)DoubleFaultStack;
 
-    /* Setup a stack for CheckAbort Traps */
     Tss->Ist[2] = (ULONG64)DoubleFaultStack;
 
-    /* Setup a stack for NMI Traps */
     Tss->Ist[3] = (ULONG64)NmiStack;
 }
 
@@ -293,7 +227,6 @@ KiInitializeProcessorBootStructures(
     _In_ PVOID DoubleFaultStack,
     _In_ PVOID NmiStack)
 {
-    /* Initialize the PCR */
     KiInitializePcr(Pcr,
                     ProcessorNumber,
                     GdtBase,
@@ -302,8 +235,6 @@ KiInitializeProcessorBootStructures(
                     IdleThread,
                     DpcStack);
 
-
-    /* Setup the TSS descriptor and entries */
     KiInitializeTss(Pcr,
                     TssBase,
                     KernelStack,
@@ -321,21 +252,17 @@ KiInitializeP0BootStructures(
     PKGDTENTRY64 TssEntry;
     PKTSS64 TssBase;
 
-    /* Set the initial stack, idle thread and process for processor 0 */
     LoaderBlock->KernelStack = (ULONG_PTR)KiP0BootStack;
     LoaderBlock->Thread = (ULONG_PTR)&KiInitialThread;
     LoaderBlock->Process = (ULONG_PTR)&KiInitialProcess.Pcb;
     LoaderBlock->Prcb = (ULONG_PTR)&KiInitialPcr.Prcb;
 
-    /* Get GDT and IDT descriptors */
     __sgdt(&GdtDescriptor.Limit);
     __sidt(&IdtDescriptor.Limit);
 
-    /* Get the boot TSS from the GDT */
     TssEntry = KiGetGdtEntry(GdtDescriptor.Base, KGDT64_SYS_TSS);
     TssBase = KiGetGdtDescriptorBase(TssEntry);
 
-    /* Initialize PCR and TSS */
     KiInitializeProcessorBootStructures(0,
                                         &KiInitialPcr,
                                         GdtDescriptor.Base,
@@ -345,7 +272,7 @@ KiInitializeP0BootStructures(
                                         KiP0BootStack,
                                         KiP0DoubleFaultStack,
                                         KiP0DoubleFaultStack,
-                                        KiP0DoubleFaultStack);
+                                        KiP0NmiStack);
 }
 
 CODE_SEG("INIT")
@@ -381,18 +308,18 @@ CODE_SEG("INIT")
 VOID
 NTAPI
 KiInitializeKernelMachineDependent(
-    IN PKPRCB Prcb,
-    IN PLOADER_PARAMETER_BLOCK LoaderBlock)
+    _In_ PKPRCB Prcb,
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     ULONG64 FeatureBits = KeFeatureBits;
     ULONG HvPrivileges, HvRecommendations;
+    ULONG NxFeatureBits;
 
     HvRecommendations = KiQueryHypervisorRecommendations(&HvPrivileges);
     KiHvApicMsrs = (HvPrivileges & HV_ACCESS_INTR_CTRL_REGS) &&
                    (HvRecommendations & (HV_APIC_ACCESS_RECOMMENDED | HV_X2APIC_MSRS_RECOMMENDED));
     KiRelaxedTiming = (HvRecommendations & HV_RELAXED_TIMING_RECOMMENDED) != 0;
 
-    /* Set boot-level flags */
     KeI386CpuType = Prcb->CpuType;
     KeI386CpuStep = Prcb->CpuStep;
     KeProcessorArchitecture = PROCESSOR_ARCHITECTURE_AMD64;
@@ -400,7 +327,6 @@ KiInitializeKernelMachineDependent(
     if (Prcb->CpuID)
         KeProcessorRevision = Prcb->CpuStep;
 
-    /* Set basic CPU Features that user mode can read */
     SharedUserData->ProcessorFeatures[PF_FLOATING_POINT_PRECISION_ERRATA] = FALSE;
     SharedUserData->ProcessorFeatures[PF_FLOATING_POINT_EMULATED] = FALSE;
     SharedUserData->ProcessorFeatures[PF_COMPARE_EXCHANGE_DOUBLE] = TRUE;
@@ -411,17 +337,17 @@ KiInitializeKernelMachineDependent(
     SharedUserData->ProcessorFeatures[PF_3DNOW_INSTRUCTIONS_AVAILABLE] =
         (FeatureBits & KF_3DNOW) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_RDTSC_INSTRUCTION_AVAILABLE] = TRUE;
-    SharedUserData->ProcessorFeatures[PF_PAE_ENABLED] = TRUE; // ???
+    SharedUserData->ProcessorFeatures[PF_PAE_ENABLED] = TRUE;
     SharedUserData->ProcessorFeatures[PF_XMMI64_INSTRUCTIONS_AVAILABLE] =
         ((FeatureBits & KF_FXSR) && (FeatureBits & KF_XMMI64)) ? TRUE : FALSE;
-    SharedUserData->ProcessorFeatures[PF_SSE_DAZ_MODE_AVAILABLE] = FALSE; // ???
+    SharedUserData->ProcessorFeatures[PF_SSE_DAZ_MODE_AVAILABLE] = FALSE;
     SharedUserData->ProcessorFeatures[PF_NX_ENABLED] = TRUE;
     SharedUserData->ProcessorFeatures[PF_SSE3_INSTRUCTIONS_AVAILABLE] =
         (FeatureBits & KF_SSE3) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_COMPARE_EXCHANGE128] =
         (FeatureBits & KF_CMPXCHG16B) ? TRUE : FALSE;
-    SharedUserData->ProcessorFeatures[PF_COMPARE64_EXCHANGE128] = FALSE; // ???
-    SharedUserData->ProcessorFeatures[PF_CHANNELS_ENABLED] = FALSE; // ???
+    SharedUserData->ProcessorFeatures[PF_COMPARE64_EXCHANGE128] = FALSE;
+    SharedUserData->ProcessorFeatures[PF_CHANNELS_ENABLED] = FALSE;
     SharedUserData->ProcessorFeatures[PF_XSAVE_ENABLED] =
         (FeatureBits & KF_XSTATE) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_SECOND_LEVEL_ADDRESS_TRANSLATION] =
@@ -435,7 +361,7 @@ KiInitializeKernelMachineDependent(
         (FeatureBits & KF_RDRAND) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_RDTSCP_INSTRUCTION_AVAILABLE] =
         (FeatureBits & KF_RDTSCP) ? TRUE : FALSE;
-    SharedUserData->ProcessorFeatures[PF_RDPID_INSTRUCTION_AVAILABLE] = FALSE; // ???
+    SharedUserData->ProcessorFeatures[PF_RDPID_INSTRUCTION_AVAILABLE] = FALSE;
     SharedUserData->ProcessorFeatures[PF_SSSE3_INSTRUCTIONS_AVAILABLE] =
         (FeatureBits & KF_SSSE3) ? TRUE : FALSE;
     SharedUserData->ProcessorFeatures[PF_SSE4_1_INSTRUCTIONS_AVAILABLE] =
@@ -449,38 +375,11 @@ KiInitializeKernelMachineDependent(
     SharedUserData->ProcessorFeatures[PF_AVX512F_INSTRUCTIONS_AVAILABLE] =
         (FeatureBits & KF_AVX512F) ? TRUE : FALSE;
 
-    /* Set the default NX policy (opt-in) */
-    SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_OPTIN;
-
-    /* Check if NPX is always on */
-    if (strstr(KeLoaderBlock->LoadOptions, "NOEXECUTE=ALWAYSON"))
-    {
-        /* Set it always on */
-        SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_ALWAYSON;
-        Prcb->FeatureBits |= KF_NX_ENABLED;
-    }
-    else if (strstr(KeLoaderBlock->LoadOptions, "NOEXECUTE=OPTOUT"))
-    {
-        /* Set it in opt-out mode */
-        SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_OPTOUT;
-        Prcb->FeatureBits |= KF_NX_ENABLED;
-    }
-    else if ((strstr(KeLoaderBlock->LoadOptions, "NOEXECUTE=OPTIN")) ||
-             (strstr(KeLoaderBlock->LoadOptions, "NOEXECUTE")))
-    {
-        /* Set the feature bits */
-        Prcb->FeatureBits |= KF_NX_ENABLED;
-    }
-    else if ((strstr(KeLoaderBlock->LoadOptions, "NOEXECUTE=ALWAYSOFF")) ||
-             (strstr(KeLoaderBlock->LoadOptions, "EXECUTE")))
-    {
-        /* Set disabled mode */
-        SharedUserData->NXSupportPolicy = NX_SUPPORT_POLICY_ALWAYSOFF;
-        Prcb->FeatureBits |= KF_NX_DISABLED;
-    }
+    SharedUserData->NXSupportPolicy = KiNxPolicyFromLoadOptions(KeLoaderBlock->LoadOptions, &NxFeatureBits);
+    Prcb->FeatureBits |= NxFeatureBits;
 
 #if DBG
-    /* Print applied kernel features/policies and boot CPU features */
+
     KiReportCpuFeatures(Prcb);
 #endif
 }
@@ -488,30 +387,233 @@ KiInitializeKernelMachineDependent(
 static LDR_DATA_TABLE_ENTRY LdrCoreEntries[3];
 
 void
-KiInitModuleList(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
+KiInitModuleList(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     PLDR_DATA_TABLE_ENTRY LdrEntry;
     PLIST_ENTRY Entry;
     ULONG i;
 
-    /* Initialize the list head */
     InitializeListHead(&PsLoadedModuleList);
 
-    /* Loop the first 3 entries */
     for (Entry = LoaderBlock->LoadOrderListHead.Flink, i = 0;
          Entry != &LoaderBlock->LoadOrderListHead && i < 3;
          Entry = Entry->Flink, i++)
     {
-        /* Get the data table entry */
         LdrEntry = CONTAINING_RECORD(Entry,
                                      LDR_DATA_TABLE_ENTRY,
                                      InLoadOrderLinks);
 
-        /* Copy the entry */
         LdrCoreEntries[i] = *LdrEntry;
 
-        /* Insert the copy into the list */
         InsertTailList(&PsLoadedModuleList, &LdrCoreEntries[i].InLoadOrderLinks);
+    }
+}
+
+#define KI_BOOT_MARK_COLUMNS 8
+#define KI_BOOT_MARK_ROWS    4
+#define KI_BOOT_MARK_WIDTH   40
+#define KI_BOOT_MARK_HEIGHT  20
+#define KI_BOOT_MARK_GAP     6
+#define KI_BOOT_MARK_BELOW   112
+#define KI_BOOT_HEX_SCALE    4
+#define KI_BOOT_HEX_PITCH    (4 * KI_BOOT_HEX_SCALE)
+#define KI_BOOT_HEX_LINE     (7 * KI_BOOT_HEX_SCALE)
+#define KI_BOOT_HEX_LINES    5
+#define KI_BOOT_HEX_SLOT     (KI_BOOT_HEX_LINES * KI_BOOT_HEX_LINE + 12)
+#define KI_BOOT_HEX_SLOTS    4
+#define KI_BOOT_CPUID_MCA    0x00004000
+
+C_ASSERT(BootMarkMaximum <= KI_BOOT_MARK_COLUMNS * KI_BOOT_MARK_ROWS);
+
+static volatile ULONG* KiBootMarkPixels;
+static ULONG KiBootMarkPitch, KiBootMarkLeft, KiBootMarkTop;
+static ULONG KiBootHexLeft, KiBootHexSlot, KiBootHexSlots;
+
+static
+BOOLEAN
+KiAmd64BootMarkWanted(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock)
+{
+    static const CHAR Option[] = "DEBUGPORT=SCREEN";
+    PCHAR Options = LoaderBlock->LoadOptions;
+
+    if (Options == NULL)
+        return FALSE;
+
+    for (; *Options != ANSI_NULL; Options++)
+    {
+        if (_strnicmp(Options, Option, sizeof(Option) - 1) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static
+BOOLEAN
+KiAmd64BootMarkMapped(
+    _In_ ULONG_PTR First,
+    _In_ ULONG_PTR Last)
+{
+    ULONG_PTR Address;
+
+    for (Address = First & ~(ULONG_PTR)(PAGE_SIZE - 1); Address <= Last; Address += PAGE_SIZE)
+    {
+        if (!MiAddressToPxe((PVOID)Address)->u.Hard.Valid ||
+            !MiAddressToPpe((PVOID)Address)->u.Hard.Valid)
+        {
+            return FALSE;
+        }
+
+        if (MiAddressToPpe((PVOID)Address)->u.Hard.LargePage)
+            continue;
+
+        if (!MiAddressToPde((PVOID)Address)->u.Hard.Valid)
+            return FALSE;
+
+        if (MiAddressToPde((PVOID)Address)->u.Hard.LargePage)
+            continue;
+
+        if (!MiAddressToPte((PVOID)Address)->u.Hard.Valid)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+static
+VOID
+KiAmd64BootHexLine(
+    _In_ ULONG Slot,
+    _In_ ULONG Line,
+    _In_ ULONG64 Value,
+    _In_ ULONG Colour)
+{
+    static const USHORT Glyphs[16] = { 0x7B6F, 0x2C97, 0x73E7, 0x73CF, 0x5BC9, 0x79CF, 0x79EF, 0x7249, 0x7BEF, 0x7BCF, 0x7BED, 0x6BAE, 0x7927, 0x6B6E, 0x79E7, 0x79E4 };
+    volatile ULONG* Pixels = KiBootMarkPixels;
+    ULONG Top = 8 + Slot * KI_BOOT_HEX_SLOT + Line * KI_BOOT_HEX_LINE;
+    ULONG Digit, Row, Col, Left, Bits;
+    BOOLEAN On;
+
+    for (Digit = 0; Digit < 16; Digit++)
+    {
+        Bits = Glyphs[(Value >> ((15 - Digit) * 4)) & 0xF];
+        Left = KiBootHexLeft + Digit * KI_BOOT_HEX_PITCH;
+        for (Row = 0; Row < KI_BOOT_HEX_LINE; Row++)
+        {
+            for (Col = 0; Col < KI_BOOT_HEX_PITCH; Col++)
+            {
+                On = Row < 5 * KI_BOOT_HEX_SCALE && Col < 3 * KI_BOOT_HEX_SCALE &&
+                     ((Bits >> (14 - ((Row / KI_BOOT_HEX_SCALE) * 3 + Col / KI_BOOT_HEX_SCALE))) & 1);
+                Pixels[(Top + Row) * KiBootMarkPitch + Left + Col] = On ? Colour : 0;
+            }
+        }
+    }
+}
+
+VOID
+NTAPI
+KiAmd64BootReadout(
+    _In_ ULONG Source,
+    _In_ ULONG64 Code,
+    _In_ ULONG64 A,
+    _In_ ULONG64 B,
+    _In_ ULONG64 C,
+    _In_ ULONG64 D)
+{
+    ULONG Slot;
+
+    if (KiBootMarkPixels == NULL || KiBootHexSlot >= KiBootHexSlots)
+        return;
+
+    Slot = KiBootHexSlot++;
+    KiAmd64BootHexLine(Slot, 0, ((ULONG64)Source << 60) | (Code & 0x0FFFFFFFFFFFFFFFULL), 0x00FFFF00);
+    KiAmd64BootHexLine(Slot, 1, A, 0x00FFFFFF);
+    KiAmd64BootHexLine(Slot, 2, B, 0x00FFFFFF);
+    KiAmd64BootHexLine(Slot, 3, C, 0x00FFFFFF);
+    KiAmd64BootHexLine(Slot, 4, D, 0x00FFFFFF);
+}
+
+VOID
+NTAPI
+KiAmd64BootMarkStop(VOID)
+{
+    KiBootMarkPixels = NULL;
+}
+
+static
+VOID
+KiAmd64BootMarkStart(
+    _In_ PLOADER_PARAMETER_BLOCK LoaderBlock)
+{
+    PLOADER_PARAMETER_EXTENSION Extension = LoaderBlock->Extension;
+    ULONG GridWidth = KI_BOOT_MARK_COLUMNS * (KI_BOOT_MARK_WIDTH + KI_BOOT_MARK_GAP);
+    ULONG GridHeight = KI_BOOT_MARK_ROWS * (KI_BOOT_MARK_HEIGHT + KI_BOOT_MARK_GAP);
+    ULONG Width, Height, Pitch;
+    ULONG_PTR Base;
+    int CpuInfo[4];
+
+    if (Extension == NULL ||
+        Extension->GopFramebuffer.FrameBufferBase.QuadPart == 0 ||
+        Extension->GopFramebuffer.PixelFormat != 32 ||
+        !KiAmd64BootMarkWanted(LoaderBlock))
+    {
+        return;
+    }
+
+    Width = Extension->GopFramebuffer.HorizontalResolution;
+    Height = Extension->GopFramebuffer.VerticalResolution;
+    Pitch = Extension->GopFramebuffer.PixelsPerScanLine;
+    if (Pitch < Width ||
+        Width < max(GridWidth, 16 * KI_BOOT_HEX_PITCH + 8) ||
+        Height < GridHeight + KI_BOOT_MARK_BELOW + 8 + KI_BOOT_HEX_SLOT ||
+        (ULONG64)Pitch * Height * sizeof(ULONG) > Extension->GopFramebuffer.FrameBufferSize)
+    {
+        return;
+    }
+
+    /* The loader maps this view only when it drew its own marks */
+    Base = (ULONG_PTR)(KSEG0_BASE + Extension->GopFramebuffer.FrameBufferBase.QuadPart);
+    if (!KiAmd64BootMarkMapped(Base, Base + (ULONG_PTR)Pitch * Height * sizeof(ULONG) - 1))
+        return;
+
+    KiBootMarkPitch = Pitch;
+    KiBootMarkLeft = Width - GridWidth;
+    KiBootMarkTop = Height - KI_BOOT_MARK_BELOW - GridHeight;
+    KiBootHexLeft = Width - 16 * KI_BOOT_HEX_PITCH - 8;
+    KiBootHexSlots = min((KiBootMarkTop - 8) / KI_BOOT_HEX_SLOT, KI_BOOT_HEX_SLOTS);
+    KiBootMarkPixels = (volatile ULONG*)Base;
+
+    __cpuid(CpuInfo, 1);
+    KiAmd64BootReadout(BootReadoutProcessorState,
+                       __readcr4(),
+                       __readcr0(),
+                       __readmsr(MSR_EFER),
+                       (CpuInfo[3] & KI_BOOT_CPUID_MCA) ? __readmsr(MSR_MCG_STATUS) : 0,
+                       (CpuInfo[3] & KI_BOOT_CPUID_MCA) ? __readmsr(MSR_MCG_CAP) : 0);
+}
+
+VOID
+NTAPI
+KiAmd64BootMark(
+    _In_ ULONG Mark)
+{
+    static const ULONG Colours[KI_BOOT_MARK_ROWS] =
+        { 0x00FFFFFF, 0x0000FFFF, 0x00FF00FF, 0x00FF8000 };
+    volatile ULONG* Pixels = KiBootMarkPixels;
+    ULONG Row, Col, Left, Top;
+
+    if (Pixels == NULL || Mark >= BootMarkMaximum)
+        return;
+
+    Left = KiBootMarkLeft + (Mark % KI_BOOT_MARK_COLUMNS) * (KI_BOOT_MARK_WIDTH + KI_BOOT_MARK_GAP);
+    Top = KiBootMarkTop + (Mark / KI_BOOT_MARK_COLUMNS) * (KI_BOOT_MARK_HEIGHT + KI_BOOT_MARK_GAP);
+
+    for (Row = 0; Row < KI_BOOT_MARK_HEIGHT; Row++)
+    {
+        for (Col = 0; Col < KI_BOOT_MARK_WIDTH; Col++)
+            Pixels[(Top + Row) * KiBootMarkPitch + Left + Col] = Colours[Mark / KI_BOOT_MARK_COLUMNS];
     }
 }
 
@@ -527,113 +629,100 @@ KiSystemStartup(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
     PKIPCR Pcr;
     CPU_INFO CpuInfo;
 
-    /* Boot cycles timestamp */
     BootCycles = __rdtsc();
 
-    /* HACK */
     FrLdrDbgPrint = LoaderBlock->u.I386.CommonDataArea;
-    //FrLdrDbgPrint("Hello from KiSystemStartup!!!\n");
 
     if (KeNumberProcessors == 0)
     {
-        /* Boot processor: it prepares the loader block for itself */
         Cpu = 0;
 
-        /* Save the loader block */
         KeLoaderBlock = LoaderBlock;
 
-        /* Prepare LoaderBlock, PCR, TSS with the P0 boot data */
         KiInitializeP0BootStructures(LoaderBlock);
+        KiAmd64BootMarkStart(LoaderBlock);
+        KiAmd64BootMark(BootMarkBootStructures);
     }
     else
     {
-        /* The number comes from the PRCB: KeNumberProcessors++ is not atomic */
+        /* An application processor was numbered when its PRCB was built */
         Pcr = CONTAINING_RECORD(LoaderBlock->Prcb, KIPCR, Prcb);
         Cpu = Pcr->Prcb.Number;
     }
 
-    /* Get Pcr from loader block */
     Pcr = CONTAINING_RECORD(LoaderBlock->Prcb, KIPCR, Prcb);
 
-    /* Publish the PRCB before counting: [0, KeNumberProcessors) must be valid */
+    /* Publish the PRCB before counting it: every index below KeNumberProcessors must be valid */
     KiProcessorBlock[Cpu] = &Pcr->Prcb;
     KeMemoryBarrier();
     if ((CCHAR)(Cpu + 1) > KeNumberProcessors)
         KeNumberProcessors = (CCHAR)(Cpu + 1);
 
-    /* Save the initial thread */
     InitialThread = (PKTHREAD)LoaderBlock->Thread;
 
-    /* Set us as the current process */
     InitialThread->ApcState.Process = (PVOID)LoaderBlock->Process;
 
-    /* Initialize the CPU features */
     KiInitializeCpu(Pcr);
+    KiAmd64BootMark(BootMarkProcessor);
 
-    /* Initial setup for the boot CPU */
     if (Cpu == 0)
     {
-        /* Set global feature bits */
         KeFeatureBits = (ULONG64)Pcr->Prcb.FeatureBitsHigh << 32 |
                         Pcr->Prcb.FeatureBits;
         KiInitializeMxCsrMask();
 
-        /* Initialize the module list (ntos, hal, kdcom) */
         KiInitModuleList(LoaderBlock);
+        KiAmd64BootMark(BootMarkModuleList);
 
-        /* Setup the IDT */
         KeInitExceptions();
+        KiAmd64BootMark(BootMarkExceptions);
 
-        /* Initialize the kernel VA layout */
         MiInitializeKernelVaLayout(LoaderBlock);
+        KiAmd64BootMark(BootMarkVaLayout);
     }
 
     KiCpuId(&CpuInfo, 1);
     if (CpuInfo.Edx & X86_FEATURE_MCE)
         __writecr4(__readcr4() | CR4_MCE);
 
-    /* Acquire lock */
     while (InterlockedBitTestAndSet64((PLONG64)&KiFreezeExecutionLock, 0))
     {
-        /* Loop until lock is free */
         while ((*(volatile KSPIN_LOCK*)&KiFreezeExecutionLock) & 1);
     }
 
-    /* Initialize the Processor with HAL */
+    KiAmd64BootMark(BootMarkHalProcessorEntry);
     HalInitializeProcessor(Cpu, KeLoaderBlock);
+    KiAmd64BootMark(BootMarkHalProcessor);
 
-    /* Set processor as active */
+    /* End interrupts the same way the HAL reaches the local APIC */
+    if ((__readmsr(X2APIC_BASE_MSR) & X2APIC_EXTENDED) != 0)
+        KiX2ApicMsrs = TRUE;
+
     if (Cpu == 0)
         KeActiveProcessors |= 1ULL << Cpu;
 
-    /* Release lock */
     InterlockedAnd64((PLONG64)&KiFreezeExecutionLock, 0);
 
     if (Cpu == 0)
     {
-        /* Initialize debugging system */
         KdInitSystem(0, KeLoaderBlock);
+        KiAmd64BootMark(BootMarkDebugger);
 
-        /* Check for break-in */
         if (KdPollBreakIn()) DbgBreakPointWithStatus(DBG_STATUS_CONTROL_C);
     }
 
     DPRINT1("Pcr = %p, Gdt = %p, Idt = %p, Tss = %p\n",
            Pcr, Pcr->GdtBase, Pcr->IdtBase, Pcr->TssBase);
 
-    /* Raise to HIGH_LEVEL */
     KfRaiseIrql(HIGH_LEVEL);
 
-    /* Machine specific kernel initialization */
     if (Cpu == 0) KiInitializeKernelMachineDependent(&Pcr->Prcb, LoaderBlock);
+    KiAmd64BootMark(BootMarkMachineDependent);
 
-    /* Initialize extended state management */
     KiInitializeXStateConfiguration(Cpu);
+    KiAmd64BootMark(BootMarkExtendedState);
 
-    /* Calculate the initial stack pointer */
     InitialStack = ALIGN_DOWN_BY(LoaderBlock->KernelStack - KeXStateLength, 64);
 
-    /* Switch to new kernel stack and start kernel bootstrapping */
     KiSwitchToBootStack(InitialStack);
 }
-

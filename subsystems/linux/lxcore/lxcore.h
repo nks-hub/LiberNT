@@ -221,6 +221,7 @@ typedef struct _LX_DEVPTS
     ULONG Mode;
     ULONG Uid;
     ULONG Gid;
+    ULONG Max;
     BOOLEAN UidSet;
     BOOLEAN GidSet;
 } LX_DEVPTS, *PLX_DEVPTS;
@@ -282,6 +283,7 @@ struct _LX_FILE
     BOOLEAN DirRestart;
     BOOLEAN DirEnd;
     LONG64 DirOffset;
+    LONG64 DirSkip;
     ULONG64 Ino;
     BOOLEAN PollOnly;
     KSPIN_LOCK EpollLock;
@@ -303,6 +305,7 @@ struct _LX_FILE
     BOOLEAN MountsRead;
     PSTR SynthRelative;
     BOOLEAN Flocked;
+    BOOLEAN RecordLocked;
 };
 
 typedef enum _LX_FS_KIND
@@ -579,6 +582,22 @@ struct _LX_CGROUP
     LONG64 PidsEventsLocal;
 };
 
+typedef struct _LX_CRED
+{
+    ULONG Uid[3];
+    ULONG Gid[3];
+    ULONG Fsuid;
+    ULONG Fsgid;
+    ULONG GroupCount;
+    ULONG Groups[32];
+    ULONG SecureBits;
+    ULONG64 CapInheritable;
+    ULONG64 CapPermitted;
+    ULONG64 CapEffective;
+    ULONG64 CapBounding;
+    ULONG64 CapAmbient;
+} LX_CRED, *PLX_CRED;
+
 struct _LX_PROCESS
 {
     volatile LONG RefCount;
@@ -621,6 +640,9 @@ struct _LX_PROCESS
     LIST_ENTRY Threads;
     volatile LONG64 Pending;
     LX_SIGINFO PendingInfo[LX_NSIG];
+    LIST_ENTRY SignalQueue;
+    ULONG SignalQueued;
+    BOOLEAN RecordLocks;
     ULONG64 SigTrampoline;
     LONG WaitStatus;
     BOOLEAN WaitStatusValid;
@@ -640,26 +662,14 @@ struct _LX_PROCESS
     ULONG NsPid[LX_PIDNS_MAX_LEVEL];
     LONG64 StartTime;
     LONG OomScoreAdj;
-    ULONG PdeathSignal;
+    ULONG ParentTid;
     LX_RLIMIT Limits[16];
     LX_POLL_HEAD ExitPoll;
     LX_POLL_HEAD SignalPoll;
     LX_POLL_HEAD ChildPoll;
-    ULONG Uid[3];
-    ULONG Gid[3];
-    ULONG Fsuid;
-    ULONG Fsgid;
-    ULONG GroupCount;
-    ULONG Groups[32];
+    LX_CRED Cred;
     ULONG Dumpable;
-    BOOLEAN NoNewPrivs;
     BOOLEAN Execed;
-    ULONG SecureBits;
-    ULONG64 CapInheritable;
-    ULONG64 CapPermitted;
-    ULONG64 CapEffective;
-    ULONG64 CapBounding;
-    ULONG64 CapAmbient;
     ULONG ExitSignal;
     ULONG64 MinFlt;
     LX_USAGE ExitUsage;
@@ -680,6 +690,7 @@ struct _LX_PROCESS
     ULONG64 Auxv[LX_AUXV_WORDS];
     LONG64 ExitTime;
     PLX_ITIMER RealTimer;
+    PVOID CpuTimer[2];
     ULONG Trace;
     LIST_ENTRY Timers;
     LONG NextTimerId;
@@ -771,11 +782,13 @@ struct _LX_THREAD
     ULONG CurrentSyscall;
     LONG InKernel;
     volatile LONG SignalApc;
+    volatile LONG SharedWake;
     PEX_TIMER SignalRetry;
     ULONG64 CurrentArgs[6];
     ULONG64 RobustList;
     LONG64 Restart;
     ULONG64 RestartArgument;
+    LONG64 SleepDeadline;
     PLX_NS NsOverride[LxNsCount];
     PLX_FS_STATE Fs;
     struct _LX_THREAD *Vfork;
@@ -795,6 +808,10 @@ struct _LX_THREAD
     volatile LONG PtraceWork;
     LONG ExitCode;
     ULONG PtraceVforkPid;
+    PLX_CRED Cred;
+    LX_CRED OwnCred;
+    ULONG PdeathSignal;
+    BOOLEAN NoNewPrivs;
     PLX_KEY ThreadKeyring;
     PLX_KEY ProcessKeyring;
     PLX_KEY SessionKeyring;
@@ -949,6 +966,7 @@ NTSTATUS LxHugeCopyPage(_In_ PVOID From, _In_ PVOID To);
 LONG64 LxHugeStoreRead(_In_ PLX_HUGE_STORE Store, _In_ ULONG64 Offset, _In_ ULONG64 Buffer, _In_ ULONG64 Length);
 PLX_FILE LxHugeFileCreate(_In_ PCSTR Path);
 PVOID LxAlloc(_In_ SIZE_T Size);
+PVOID LxAllocString(_In_ SIZE_T Size);
 VOID LxFree(_In_opt_ PVOID Buffer);
 PVOID LxAllocPaged(_In_ SIZE_T Size);
 VOID LxFreePaged(_In_opt_ PVOID Buffer);
@@ -1017,6 +1035,9 @@ VOID LxVforkAbandon(_Inout_ PLX_THREAD Thread);
 VOID LxPollHeadInit(_Out_ PLX_POLL_HEAD Head);
 VOID LxFlockInitialize(VOID);
 VOID LxFlockRelease(_In_ PLX_FILE File);
+VOID LxInetInitialize(VOID);
+VOID LxRecordLocksClosed(_In_ PLX_PROCESS Process, _In_ PLX_FILE File);
+VOID LxRecordLocksPurge(_In_ PLX_PROCESS Process);
 VOID LxEventSourceInit(_Out_ PLX_EVENT_SOURCE Source);
 VOID LxEventSourceSignal(_In_ PLX_EVENT_SOURCE Source);
 VOID LxPollAdd(_In_ PLX_POLL_HEAD Head, _Inout_ PLX_POLL_ENTRY Entry);
@@ -1149,6 +1170,7 @@ VOID LxUnixDiagFree(_In_opt_ PLX_UNIX_DIAG Entries, _In_ ULONG Count);
 BOOLEAN LxNetlinkIsFile(_In_ PLX_FILE File);
 LONG64 LxNetDeviceIoctl(_In_ PLX_PROCESS Process, _In_ ULONG Request, _In_ ULONG64 Argument);
 ULONG LxNetlinkAddressIndex(_In_ ULONG Address);
+ULONG LxNetlinkSourceAddress(_In_ ULONG Destination);
 BOOLEAN LxInetIsFile(_In_ PLX_FILE File);
 LONG64 LxInetBind(_In_ PLX_CALL Call, _In_ PLX_FILE File);
 LONG64 LxInetListen(_In_ PLX_CALL Call, _In_ PLX_FILE File);
@@ -1197,6 +1219,7 @@ VOID LxNsInstanceShutdown(_In_ PLX_INSTANCE Instance);
 PCSTR LxNsName(_In_ LX_NS_KIND Kind);
 LONG64 LxTimeNsOffset(_In_opt_ PLX_PROCESS Process, _In_ ULONG Clock);
 LONG LxQueryClockIn(_In_opt_ PLX_PROCESS Process, _In_ ULONG Clock, _Out_ PLX_TIMESPEC Timespec);
+LONG LxQueryCpuClock(_In_opt_ PLX_PROCESS Viewer, _In_ LONG Clock, _Out_ PLX_TIMESPEC Timespec);
 LONG LxNsInheritProcess(_Inout_ PLX_PROCESS Child, _In_ PLX_PROCESS Parent, _In_ ULONG64 Flags);
 VOID LxNsAttachRoot(_Inout_ PLX_PROCESS Process, _In_ PLX_INSTANCE Instance);
 VOID LxNsReleaseProcess(_Inout_ PLX_PROCESS Process);
@@ -1357,6 +1380,8 @@ LONG LxTmpfsXattrWrite(_In_ PLX_TMPFS_INODE Inode, _In_reads_bytes_(Length) PUCH
 LONG LxTmpfsOpenFile(_In_ PLX_TMPFS_INODE Inode, _In_ ULONG Flags, _Out_ PLX_FILE *File);
 LONG LxTmpfsCreateAnonymous(_In_ ULONG Mode, _In_ ULONG Uid, _In_ ULONG Gid, _Out_ PLX_FILE *File);
 PLX_TMPFS_INODE LxTmpfsFileInode(_In_opt_ PLX_FILE File);
+VOID LxTmpfsFileAccessed(_In_ PLX_FILE File);
+VOID LxTmpfsFileModified(_In_ PLX_FILE File);
 NTSTATUS LxTmpfsMapSection(_In_ PLX_TMPFS_INODE Inode, _In_ BOOLEAN Shared, _Out_ PHANDLE Section, _Out_opt_ PULONG64 Size);
 LONG64 LxTmpfsReadKernel(_In_ PLX_TMPFS_INODE Inode, _Out_writes_bytes_(Length) PVOID Buffer, _In_ ULONG Length,
                          _In_ ULONG64 Offset);
@@ -1514,10 +1539,11 @@ LONG LxUserNsGetMax(_In_ PLX_PROCESS Process);
 LONG LxUserNsSetMax(_In_ PLX_PROCESS Process, _In_ LONG64 Value);
 BOOLEAN LxInGroup(_In_ PLX_PROCESS Process, _In_ ULONG Gid);
 ULONG LxCredMakeId(_In_ PLX_PROCESS Process, _In_ BOOLEAN Group, _In_ ULONG Id);
+PLX_CRED LxProcessCred(_In_ PLX_PROCESS Process);
 VOID LxCredSave(_In_ PLX_PROCESS Process, _Out_ PLX_CRED_SAVE Save);
 VOID LxCredFixSetuid(_Inout_ PLX_PROCESS Process, _In_ PLX_CRED_SAVE Old, _In_ BOOLEAN FileSystem);
-VOID LxCredCommit(_Inout_ PLX_PROCESS Process, _In_ PLX_CRED_SAVE Old);
-ULONG LxCredExec(_Inout_ PLX_PROCESS Process, _In_ PLX_CRED_SAVE Old, _In_ PLX_FILE_CAPS FileCaps);
+VOID LxCredCommit(_Inout_ PLX_PROCESS Process, _Inout_ PLX_THREAD Thread, _In_ PLX_CRED_SAVE Old);
+ULONG LxCredExec(_Inout_ PLX_PROCESS Process, _Inout_ PLX_THREAD Thread, _In_ PLX_CRED_SAVE Old, _In_ PLX_FILE_CAPS FileCaps);
 BOOLEAN LxCredRootOwnsNs(_In_ PLX_PROCESS Process, _In_ ULONG RootId);
 LONG LxCredSetCapabilities(_Inout_ PLX_PROCESS Process, _In_ ULONG64 Effective, _In_ ULONG64 Permitted,
                            _In_ ULONG64 Inheritable);
@@ -1546,8 +1572,10 @@ BOOLEAN LxMmPickLayout(_Inout_ PLX_PROCESS Process);
 ULONG64 LxMmRandomOffset(VOID);
 ULONG64 LxMmRandomizeBrk(_In_ ULONG64 Base);
 VOID LxProcessExited(_In_ PLX_PROCESS Process, _In_ NTSTATUS ExitStatus);
+VOID LxProcessThreadExited(_In_ PLX_PROCESS Process, _In_ ULONG Tid);
 VOID LxItimerRelease(_In_ PLX_PROCESS Process);
 VOID LxPosixTimersRelease(_In_ PLX_PROCESS Process, _In_ BOOLEAN Free);
+VOID LxPosixTimerDequeued(_In_ PLX_PROCESS Process, _Inout_ PLX_SIGINFO Info);
 VOID LxProcessRegister(_In_ PLX_PROCESS Process);
 VOID LxProcessUnregister(_In_ PLX_PROCESS Process);
 VOID LxProcessCloseFiles(_In_ PLX_PROCESS Process);
@@ -1621,7 +1649,9 @@ BOOLEAN LxGpuHostIoctl(_In_ PFILE_OBJECT FileObject, _Inout_ PIRP Irp, _In_ PIO_
 NTSTATUS LxIpcCreateSection(_In_ ULONG64 Size, _Out_ PVOID *Section);
 
 LONG LxSignalFromException(_In_ NTSTATUS ExceptionCode, _Out_ PLONG Code);
-VOID LxSignalSend(_In_ PLX_PROCESS Target, _In_opt_ PLX_THREAD TargetThread, _In_ LONG Signal, _In_opt_ PLX_SIGINFO Info);
+LONG LxSignalSend(_In_ PLX_PROCESS Target, _In_opt_ PLX_THREAD TargetThread, _In_ LONG Signal, _In_opt_ PLX_SIGINFO Info);
+VOID LxSignalFlushQueued(_In_ PLX_PROCESS Process, _In_opt_ PLX_THREAD Thread, _In_ LONG Signal);
+VOID LxSignalRestoreWaitMask(_In_ PLX_THREAD Thread);
 VOID LxSignalCheckPending(_In_ PLX_THREAD Thread, _Inout_ PKTRAP_FRAME TrapFrame, _Inout_opt_ PKEXCEPTION_FRAME ExceptionFrame);
 VOID LxSeccompInherit(_Inout_ PLX_THREAD Thread, _In_ PLX_THREAD Parent);
 VOID LxSeccompRelease(_Inout_ PLX_THREAD Thread);
@@ -1633,11 +1663,15 @@ LONG LxSeccompWriteActionsLogged(_In_ PLX_PROCESS Process, _In_reads_bytes_(Leng
 PLX_FILE LxAnonFileCreate(_In_ const LX_FILE_OPS *Ops, _In_ ULONG Flags, _In_ PCSTR Name, _In_ SIZE_T ObjectSize);
 LONG LxAnonStat(_In_ PLX_FILE File, _Out_ PLX_STAT Stat);
 BOOLEAN LxSignalDeliverFault(_In_ PLX_THREAD Thread, _Inout_ PKTRAP_FRAME TrapFrame, _Inout_opt_ PKEXCEPTION_FRAME ExceptionFrame, _In_ LONG Signal, _In_ PLX_SIGINFO Info);
+VOID LxThreadPublish(_In_ PLX_THREAD Thread);
 VOID LxThreadAttach(_In_ PLX_THREAD Thread);
 BOOLEAN LxThreadDetach(_In_ PLX_THREAD Thread);
 BOOLEAN LxSignalIgnoredByDefault(_In_ LONG Signal);
 BOOLEAN LxSignalStopsByDefault(_In_ LONG Signal);
 VOID LxSignalWakeThread(_In_ PLX_PROCESS Process, _In_ ULONG Tid);
+ULONG64 LxSignalPendingSet(_In_ PLX_THREAD Thread);
+VOID LxSignalRecheck(_In_ PLX_THREAD Base, _In_ PLX_THREAD Thread);
+VOID LxSignalRetarget(_In_ PLX_PROCESS Process, _In_opt_ PLX_THREAD Thread, _In_ ULONG64 Bits);
 VOID LxSignalForce(_In_ PLX_THREAD Thread, _In_ LONG Signal, _In_ PLX_SIGINFO Info);
 ULONG LxSeccompAuditArch(VOID);
 VOID LxPtraceInitialize(VOID);

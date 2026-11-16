@@ -13,6 +13,8 @@
 LIST_ENTRY LxProcessList;
 FAST_MUTEX LxProcessListLock;
 
+static VOID LxStringInitialize(VOID);
+
 VOID
 LxProcessInitialize(VOID)
 {
@@ -26,6 +28,7 @@ LxProcessInitialize(VOID)
     LxMqInitialize();
     LxWinInitialize();
     LxDrmInitialize();
+    LxStringInitialize();
 }
 
 PVOID
@@ -35,12 +38,82 @@ LxAlloc(
     return ExAllocatePoolZero(NonPagedPoolNx, Size, LX_TAG);
 }
 
+/* Every path call builds and drops a dozen short strings and a few path-sized buffers. They are recycled from two
+   lists of fixed blocks cut out of one region, so that LxFree tells them from pool blocks by their address. */
+#define LX_STRING_SMALL         256
+#define LX_STRING_SMALL_COUNT   2048
+#define LX_STRING_LARGE         LX_PATH_MAX
+#define LX_STRING_LARGE_COUNT   96
+
+static PUCHAR LxStringRegion, LxStringLargeStart, LxStringRegionEnd;
+static SLIST_HEADER LxStringSmallFree, LxStringLargeFree;
+
+static
+VOID
+LxStringInitialize(VOID)
+{
+    SIZE_T SmallBytes = (SIZE_T)LX_STRING_SMALL * LX_STRING_SMALL_COUNT;
+    SIZE_T LargeBytes = (SIZE_T)LX_STRING_LARGE * LX_STRING_LARGE_COUNT;
+    PUCHAR Block;
+
+    C_ASSERT((LX_STRING_SMALL % MEMORY_ALLOCATION_ALIGNMENT) == 0);
+    C_ASSERT((LX_STRING_LARGE % MEMORY_ALLOCATION_ALIGNMENT) == 0);
+
+    ExInitializeSListHead(&LxStringSmallFree);
+    ExInitializeSListHead(&LxStringLargeFree);
+    LxStringRegion = ExAllocatePoolZero(NonPagedPoolNx, SmallBytes + LargeBytes, LX_TAG);
+    if (LxStringRegion == NULL)
+        return;
+    ASSERT(((ULONG_PTR)LxStringRegion % MEMORY_ALLOCATION_ALIGNMENT) == 0);
+    LxStringLargeStart = LxStringRegion + SmallBytes;
+    LxStringRegionEnd = LxStringLargeStart + LargeBytes;
+    for (Block = LxStringRegion; Block < LxStringLargeStart; Block += LX_STRING_SMALL)
+        InterlockedPushEntrySList(&LxStringSmallFree, (PSLIST_ENTRY)Block);
+    for (Block = LxStringLargeStart; Block < LxStringRegionEnd; Block += LX_STRING_LARGE)
+        InterlockedPushEntrySList(&LxStringLargeFree, (PSLIST_ENTRY)Block);
+}
+
+/* For strings and string buffers only: freed with LxFree, never handed to anything that frees pool */
+PVOID
+LxAllocString(
+    _In_ SIZE_T Size)
+{
+    PSLIST_ENTRY Block = NULL;
+
+    if (Size <= LX_STRING_SMALL)
+        Block = InterlockedPopEntrySList(&LxStringSmallFree);
+    else if (Size <= LX_STRING_LARGE)
+        Block = InterlockedPopEntrySList(&LxStringLargeFree);
+    if (Block == NULL)
+        return LxAlloc(Size);
+    ASSERT(((PUCHAR)Block >= LxStringRegion) && ((PUCHAR)Block < LxStringRegionEnd));
+    RtlZeroMemory(Block, Size);
+    return Block;
+}
+
 VOID
 LxFree(
     _In_opt_ PVOID Buffer)
 {
-    if (Buffer != NULL)
-        ExFreePoolWithTag(Buffer, LX_TAG);
+    PUCHAR Block = Buffer;
+
+    if (Buffer == NULL)
+        return;
+    if ((Block >= LxStringRegion) && (Block < LxStringRegionEnd))
+    {
+        if (Block < LxStringLargeStart)
+        {
+            ASSERT(((SIZE_T)(Block - LxStringRegion) % LX_STRING_SMALL) == 0);
+            InterlockedPushEntrySList(&LxStringSmallFree, (PSLIST_ENTRY)Block);
+        }
+        else
+        {
+            ASSERT(((SIZE_T)(Block - LxStringLargeStart) % LX_STRING_LARGE) == 0);
+            InterlockedPushEntrySList(&LxStringLargeFree, (PSLIST_ENTRY)Block);
+        }
+        return;
+    }
+    ExFreePoolWithTag(Buffer, LX_TAG);
 }
 
 PSTR
@@ -48,7 +121,7 @@ LxStrDup(
     _In_ PCSTR String)
 {
     SIZE_T Length = strlen(String) + 1;
-    PSTR Copy = LxAlloc(Length);
+    PSTR Copy = LxAllocString(Length);
 
     if (Copy != NULL)
         RtlCopyMemory(Copy, String, Length);
@@ -257,7 +330,7 @@ LxCopyStringFromUser(
     if (Result != 0)
         return Result;
 
-    Buffer = LxAlloc(Index + 1);
+    Buffer = LxAllocString(Index + 1);
     if (Buffer == NULL)
         return -LX_ENOMEM;
     Result = LxCopyFromUser(Buffer, Source, Index);
@@ -329,6 +402,7 @@ LxProcessCreate(
     InitializeListHead(&Process->Children);
     InitializeListHead(&Process->Tracees);
     InitializeListHead(&Process->Threads);
+    InitializeListHead(&Process->SignalQueue);
     InitializeListHead(&Process->Timers);
     InitializeListHead(&Process->Vmas);
     InitializeListHead(&Process->Guards);
@@ -345,8 +419,8 @@ LxProcessCreate(
     Process->ExitSignal = LX_SIGCHLD;
     Process->LoginUid = MAXULONG;
     Process->SessionId = MAXULONG;
-    Process->CapBounding = LX_CAP_FULL_SET & ~(1ULL << LX_CAP_SYS_TIME);
-    Process->CapPermitted = Process->CapEffective = Process->CapBounding;
+    Process->Cred.CapBounding = LX_CAP_FULL_SET & ~(1ULL << LX_CAP_SYS_TIME);
+    Process->Cred.CapPermitted = Process->Cred.CapEffective = Process->Cred.CapBounding;
     Process->StartTime = (LONG64)KeQueryInterruptTime();
     LxProcessDefaultLimits(Process->Limits);
     LxNsAttachRoot(Process, Instance);
@@ -388,19 +462,7 @@ LxProcessFork(
     RtlCopyMemory(Process->Comm, Parent->Comm, sizeof(Process->Comm));
     RtlCopyMemory(Process->SigAction, Parent->SigAction, sizeof(Process->SigAction));
     RtlCopyMemory(Process->Limits, Parent->Limits, sizeof(Process->Limits));
-    RtlCopyMemory(Process->Uid, Parent->Uid, sizeof(Process->Uid));
-    RtlCopyMemory(Process->Gid, Parent->Gid, sizeof(Process->Gid));
-    Process->Fsuid = Parent->Fsuid;
-    Process->Fsgid = Parent->Fsgid;
-    Process->GroupCount = Parent->GroupCount;
-    RtlCopyMemory(Process->Groups, Parent->Groups, sizeof(Process->Groups));
-    Process->NoNewPrivs = Parent->NoNewPrivs;
-    Process->SecureBits = Parent->SecureBits;
-    Process->CapInheritable = Parent->CapInheritable;
-    Process->CapPermitted = Parent->CapPermitted;
-    Process->CapEffective = Parent->CapEffective;
-    Process->CapBounding = Parent->CapBounding;
-    Process->CapAmbient = Parent->CapAmbient;
+    Process->Cred = *LxProcessCred(Parent);
     Process->Dumpable = Parent->Dumpable;
     Process->CoreFilter = Parent->CoreFilter;
     Process->OomScoreAdj = Parent->OomScoreAdj;
@@ -500,6 +562,9 @@ LxProcessDereference(
     LxFree(Process->ExePath);
     LxFree(Process->Cmdline);
     LxFree(Process->Environ);
+    LxSignalFlushQueued(Process, NULL, 0);
+    ASSERT(IsListEmpty(&Process->SignalQueue));
+    LxRecordLocksPurge(Process);
     LxInstanceDereference(Process->Instance);
     LxFree(Process);
 }
@@ -554,6 +619,7 @@ LxThreadCreateCommon(
 
     LxProcessReference(Process);
     Thread->Process = Process;
+    Thread->Cred = &Process->Cred;
     InitializeListHead(&Thread->Link);
     Thread->AltStack.Flags = LX_SS_DISABLE;
     Thread->Sched.UtilMax = 1024;
@@ -587,6 +653,16 @@ LxThreadFree(
     _In_ PLX_THREAD Thread)
 {
     PLX_PROCESS Process = Thread->Process;
+
+    LxSignalFlushQueued(Process, Thread, 0);
+    if (!IsListEmpty(&Thread->Link))
+    {
+        ASSERT(Thread->EThread == NULL);
+        ExAcquireFastMutex(&Process->Lock);
+        RemoveEntryList(&Thread->Link);
+        InitializeListHead(&Thread->Link);
+        ExReleaseFastMutex(&Process->Lock);
+    }
 
     LxPtraceRelease(Thread);
     if (Thread->SignalRetry != NULL)
@@ -910,6 +986,74 @@ LxProcessPublishName(
 }
 
 static
+ULONG
+LxProcessLiveTid(
+    _In_ PLX_PROCESS Process)
+{
+    if (IsListEmpty(&Process->Threads))
+        return Process->Pid;
+    return CONTAINING_RECORD(Process->Threads.Flink, LX_THREAD, Link)->Tid;
+}
+
+static
+VOID
+LxProcessSendParentDeath(
+    _In_ PLX_PROCESS Child)
+{
+    ULONG64 Signals = 0;
+    PLIST_ENTRY Entry;
+    ULONG Signal;
+
+    ExAcquireFastMutex(&Child->Lock);
+    for (Entry = Child->Threads.Flink; Entry != &Child->Threads; Entry = Entry->Flink)
+    {
+        PLX_THREAD Thread = CONTAINING_RECORD(Entry, LX_THREAD, Link);
+
+        if ((Thread->PdeathSignal != 0) && (Thread->PdeathSignal <= LX_NSIG))
+            Signals |= 1ULL << (Thread->PdeathSignal - 1);
+    }
+    if (Child->Exited)
+        Signals = 0;
+    ExReleaseFastMutex(&Child->Lock);
+    for (Signal = 1; Signal <= LX_NSIG; Signal++)
+    {
+        if (Signals & (1ULL << (Signal - 1)))
+            LxSignalSend(Child, NULL, (LONG)Signal, NULL);
+    }
+}
+
+VOID
+LxProcessThreadExited(
+    _In_ PLX_PROCESS Process,
+    _In_ ULONG Tid)
+{
+    for (;;)
+    {
+        PLX_PROCESS Orphan = NULL;
+        PLIST_ENTRY Entry;
+
+        ExAcquireFastMutex(&Process->Lock);
+        for (Entry = Process->Children.Flink; Entry != &Process->Children; Entry = Entry->Flink)
+        {
+            PLX_CHILD Child = CONTAINING_RECORD(Entry, LX_CHILD, Link);
+
+            if (Child->Lx->ParentTid == Tid)
+            {
+                Child->Lx->ParentTid = LxProcessLiveTid(Process);
+                Orphan = Child->Lx;
+                LxProcessReference(Orphan);
+                break;
+            }
+        }
+        ExReleaseFastMutex(&Process->Lock);
+        if (Orphan == NULL)
+            break;
+        LxProcessSendParentDeath(Orphan);
+        LxProcessDereference(Orphan);
+    }
+}
+
+static
 PLX_PROCESS
 LxProcessFindReaper(
     _In_ PLX_PROCESS Process)
@@ -994,7 +1138,7 @@ LxProcessNotifyParent(
             Info.Child.Status = (Status >> 8) & 0xFF;
         }
         Info.Child.Pid = (LONG)LxPidNr(Parent, Child);
-        Info.Child.Uid = Child->Uid[0];
+        Info.Child.Uid = Child->Cred.Uid[0];
         LxSignalSend(Parent, NULL, (LONG)Child->ExitSignal, &Info);
     }
     LxPollWake(&Parent->ChildPoll, LX_POLLIN);
@@ -1061,9 +1205,7 @@ LxProcessExited(
         {
             PLX_CHILD Child = CONTAINING_RECORD(RemoveHeadList(&Orphans), LX_CHILD, Link);
 
-            /* FIXME: Linux sends the parent-death signal when the creating thread exits, not the whole process */
-            if (!Child->Lx->Exited && (Child->Lx->PdeathSignal != 0))
-                LxSignalSend(Child->Lx, NULL, (LONG)Child->Lx->PdeathSignal, NULL);
+            LxProcessSendParentDeath(Child->Lx);
             if ((Reaper == NULL) || Reaper->Exited)
             {
                 LxProcessUnregister(Child->Lx);
@@ -1073,6 +1215,7 @@ LxProcessExited(
             }
             Child->Lx->ParentPid = Reaper->Pid;
             ExAcquireFastMutex(&Reaper->Lock);
+            Child->Lx->ParentTid = LxProcessLiveTid(Reaper);
             InsertTailList(&Reaper->Children, &Child->Link);
             ExReleaseFastMutex(&Reaper->Lock);
             if (Child->Lx->Exited)

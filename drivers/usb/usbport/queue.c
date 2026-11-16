@@ -794,6 +794,11 @@ USBPORT_FlushCancelList(IN PUSBPORT_ENDPOINT Endpoint)
                 USBPORT_CompleteTransferSafe(Transfer,
                                              USBD_STATUS_DEVICE_GONE);
             }
+            else if (Transfer->Flags & TRANSFER_FLAG_TIMED_OUT)
+            {
+                USBPORT_CompleteTransferSafe(Transfer,
+                                             USBD_STATUS_TIMEOUT);
+            }
             else
             {
                 USBPORT_CompleteTransferSafe(Transfer,
@@ -1249,28 +1254,6 @@ USBPORT_QueueTransferUrb(IN PURB Urb)
     InterlockedDecrement(&DeviceHandle->DeviceHandleLock);
 
     USBPORT_FlushPendingTransfers(Endpoint);
-
-    DPRINT_URB("... URB TransferBufferLength - %x\n",
-           Urb->UrbControlTransfer.TransferBufferLength);
-
-    if (Urb->UrbControlTransfer.TransferBufferLength)
-    {
-        PULONG Buffer;
-        ULONG BufferLength;
-        ULONG_PTR BufferEnd;
-        ULONG ix;
-
-        Buffer = Urb->UrbControlTransfer.TransferBuffer;
-        BufferLength = Urb->UrbControlTransfer.TransferBufferLength;
-        BufferEnd = (ULONG_PTR)Buffer + BufferLength;
-
-        DPRINT_URB("URB TransferBuffer - %p\n", Buffer);
-
-        for (ix = 0; (ULONG_PTR)(Buffer + ix) < BufferEnd; ix++)
-        {
-            DPRINT_URB("Buffer[%02X] - %p\n", ix, Buffer[ix]);
-        }
-    }
 }
 
 VOID

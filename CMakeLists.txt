@@ -62,17 +62,31 @@ endif()
 # Versioning
 include(sdk/include/reactos/version.cmake)
 
+# Build stamp: the branch, commit and time the build was made from. It is
+# written once here so the first compile has it, and again at every build so a
+# tree that moved is stamped with where it moved to.
+set(LIBERNT_BUILDSTAMP_HEADER "${REACTOS_BINARY_DIR}/sdk/include/reactos/buildstamp.h")
+execute_process(COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${REACTOS_SOURCE_DIR}
+    -DOUTPUT=${LIBERNT_BUILDSTAMP_HEADER}
+    -DBUILD_ARCH=${WINARCH}
+    -DCOMPILER_ID=${CMAKE_C_COMPILER_ID}
+    -P ${REACTOS_SOURCE_DIR}/sdk/cmake/buildstamp.cmake)
+add_custom_target(buildstamp ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${REACTOS_SOURCE_DIR}
+        -DOUTPUT=${LIBERNT_BUILDSTAMP_HEADER}
+        -DBUILD_ARCH=${WINARCH}
+        -DCOMPILER_ID=${CMAKE_C_COMPILER_ID}
+        -P ${REACTOS_SOURCE_DIR}/sdk/cmake/buildstamp.cmake
+    BYPRODUCTS ${LIBERNT_BUILDSTAMP_HEADER}
+    COMMENT "Stamping the build with its branch, commit and time"
+    VERBATIM)
+
 # Compile options
 include(sdk/cmake/config.cmake)
 
-# Derive the target NTDDI level from REACTOS_TARGET_NT for *both* the
-# cross-compile (target) build and the host-tools build below — host tools like
-# mkhive need the same NTDDI level the kernel will use so cmlib's hive-format
-# feature gates stay in sync. Mirror sdkddkver.h's WS03 default too: when the
-# selected target is 5.2, default NTDDI should be WS03SP1 rather than raw WS03.
-if(REACTOS_TARGET_NT STREQUAL "0x502")
-    set(REACTOS_TARGET_NTDDI "0x05020100")
-elseif(REACTOS_TARGET_NT STREQUAL "0xA00")
+if(REACTOS_TARGET_NT STREQUAL "0xA00")
     set(REACTOS_TARGET_NTDDI "0x0A000010")
 else()
     math(EXPR REACTOS_TARGET_NTDDI "${REACTOS_TARGET_NT} * 65536" OUTPUT_FORMAT HEXADECIMAL)
@@ -169,7 +183,7 @@ if(NOT CMAKE_CROSSCOMPILING)
     add_subdirectory(sdk/tools)
     add_subdirectory(sdk/lib)
 
-    set(NATIVE_TARGETS asmpp bin2c gas2armasm widl gendib cabman fatten hpp isohybrid mkhive mkisofs obj2bin spec2def geninc mkshelllink utf16le windmc xml2sdb)
+    set(NATIVE_TARGETS asmpp bin2c gas2armasm widl gendib cabman fatten hpp mkhive mkisofs obj2bin spec2def geninc mkshelllink utf16le windmc xml2sdb)
     if(NOT CMAKE_HOST_WIN32)
         list(APPEND NATIVE_TARGETS ntfsimg)
     endif()
@@ -193,9 +207,6 @@ else()
     else()
         # Single-configuration generators, like Ninja.
         message("-- Build type: ${CMAKE_BUILD_TYPE}")
-        if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
-            message(WARNING "${CMAKE_BUILD_TYPE} builds are not built by CI and are not maintained. Use a Debug build.")
-        endif()
     endif()
 
     # Always add /MT in VS CMAKE_GENERATOR and define _SBCS otherwise VS thinks it's a multi-byte or whatever project

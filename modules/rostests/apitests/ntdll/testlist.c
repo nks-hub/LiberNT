@@ -84,6 +84,7 @@ extern void func_NtCreateSection_CachedRead(void);
 extern void func_NtCreateSection_ConcurrentImage(void);
 extern void func_NtCreateThread(void);
 extern void func_NtCreateThreadWin32(void);
+extern void func_NtCreateToken(void);
 extern void func_NtDeleteKey(void);
 extern void func_NtDuplicateObject(void);
 extern void func_NtDuplicateToken(void);
@@ -335,6 +336,7 @@ const struct test winetest_testlist[] =
     { "NtCreateSection_ConcurrentImage", func_NtCreateSection_ConcurrentImage },
     { "NtCreateThread",                 func_NtCreateThread },
     { "NtCreateThreadWin32",            func_NtCreateThreadWin32 },
+    { "NtCreateToken",                  func_NtCreateToken },
     { "NtDeleteKey",                    func_NtDeleteKey },
     { "NtDuplicateObject",              func_NtDuplicateObject },
     { "NtDuplicateToken",               func_NtDuplicateToken },

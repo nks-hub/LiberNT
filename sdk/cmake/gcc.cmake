@@ -241,7 +241,11 @@ elseif(CMAKE_BUILD_TYPE STREQUAL "MinSizeRel")
     add_compile_options(-Wno-unused-variable)
     add_compile_options(-Wno-unused-but-set-variable)
 else()
-    if(OPTIMIZE STREQUAL "1")
+    if(OPTIMIZE STREQUAL "0")
+        add_compile_options(-O0)
+        # Unoptimized frames are several times larger, so kernel stacks are doubled.
+        add_compile_definitions(KERNEL_STACK_SCALE=2)
+    elseif(OPTIMIZE STREQUAL "1")
         add_compile_options(-Os)
         if (CMAKE_C_COMPILER_ID STREQUAL "GNU")
             add_compile_options(-ftracer)
@@ -377,7 +381,9 @@ else()
 endif()
 set(CMAKE_ASM_COMPILE_OBJECT "<CMAKE_ASM_COMPILER> ${_compress_debug_sections_flag} -x assembler-with-cpp -o <OBJECT> -I${REACTOS_SOURCE_DIR}/sdk/include/asm -I${REACTOS_BINARY_DIR}/sdk/include/asm ${_arm64_asm_compat_include} <INCLUDES> <FLAGS> <DEFINES> -D__ASM__ -c <SOURCE>")
 
-set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> -O coff <INCLUDES> <DEFINES> -DRC_INVOKED -D__WIN32__=1 -D__FLAT__=1 ${I18N_DEFS} <FLAGS> <SOURCE> <OBJECT>")
+find_program(RCDEPS_PYTHON_EXECUTABLE NAMES python3 python REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+set(CMAKE_RC_COMPILE_OBJECT "<CMAKE_RC_COMPILER> -O coff <INCLUDES> <DEFINES> -DRC_INVOKED -D__WIN32__=1 -D__FLAT__=1 ${I18N_DEFS} <FLAGS> <SOURCE> <OBJECT>"
+    "\"${RCDEPS_PYTHON_EXECUTABLE}\" \"${REACTOS_SOURCE_DIR}/sdk/tools/rcdeps.py\" <OBJECT> <SOURCE> <INCLUDES>")
 
 if (CMAKE_C_COMPILER_ID STREQUAL "Clang")
     set(RC_PREPROCESSOR_TARGET "--preprocessor-arg=--target=${CMAKE_C_COMPILER_TARGET}")

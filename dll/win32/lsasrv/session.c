@@ -39,7 +39,6 @@ typedef struct _LSAP_LOGON_SESSION_DATA32
     UNICODE_STRING32 LogonServer;
     UNICODE_STRING32 DnsDomainName;
     UNICODE_STRING32 Upn;
-#if (_WIN32_WINNT >= 0x0600)
     ULONG UserFlags;
     LSA_LAST_INTER_LOGON_INFO LastLogonInfo;
     UNICODE_STRING32 LogonScript;
@@ -51,7 +50,6 @@ typedef struct _LSAP_LOGON_SESSION_DATA32
     LARGE_INTEGER PasswordLastSet;
     LARGE_INTEGER PasswordCanChange;
     LARGE_INTEGER PasswordMustChange;
-#endif
 } LSAP_LOGON_SESSION_DATA32;
 
 static VOID
@@ -67,6 +65,8 @@ LsapCopyString32(PUNICODE_STRING32 Destination, const UNICODE_STRING *Source)
 LIST_ENTRY SessionListHead;
 ULONG SessionCount;
 
+static RTL_SRWLOCK LogonSessionLock;
+
 /* FUNCTIONS ***************************************************************/
 
 VOID
@@ -74,6 +74,18 @@ LsapInitLogonSessions(VOID)
 {
     InitializeListHead(&SessionListHead);
     SessionCount = 0;
+}
+
+VOID
+LsapLockLogonSessions(VOID)
+{
+    RtlAcquireSRWLockExclusive(&LogonSessionLock);
+}
+
+VOID
+LsapUnlockLogonSessions(VOID)
+{
+    RtlReleaseSRWLockExclusive(&LogonSessionLock);
 }
 
 
@@ -354,6 +366,14 @@ LsapEnumLogonSessions(IN OUT PLSA_API_MSG RequestMsg)
     if (RequestMsg->EnumLogonSessions.Request.PointerSize != sizeof(ULONG) &&
         RequestMsg->EnumLogonSessions.Request.PointerSize != sizeof(ULONGLONG))
         return STATUS_INVALID_PARAMETER;
+
+    if (SessionCount == 0)
+    {
+        RequestMsg->EnumLogonSessions.Reply.LogonSessionCount = 0;
+        RequestMsg->EnumLogonSessions.Reply.Reserved = 0;
+        RequestMsg->EnumLogonSessions.Reply.LogonSessionBuffer = 0;
+        return STATUS_SUCCESS;
+    }
 
     Length = SessionCount * sizeof(LUID);
     SessionList = RtlAllocateHeap(RtlGetProcessHeap(),

@@ -10,6 +10,8 @@
 
 #include <hal.h>
 #include <ntstrsafe.h>
+#include <acpival.h>
+#include <acpifault.h>
 #define NDEBUG
 #include <debug.h>
 
@@ -18,14 +20,15 @@
 /* Loader-supplied override tables are packed on this boundary */
 #define HALP_ACPI_OVERRIDE_ALIGNMENT 8
 
+/* First mapping of a table, which always covers its header */
+#define HALP_ACPI_HEADER_PAGES 2
+
 LIST_ENTRY HalpAcpiTableCacheList;
 FAST_MUTEX HalpAcpiTableCacheLock;
 
 PACPI_BIOS_MULTI_NODE HalpAcpiMultiNode;
 PHYSICAL_ADDRESS HalpAcpiRsdpAddress;
 PHYSICAL_ADDRESS HalpAcpiRootTablePhysicalAddress;
-
-ULONG HalpInvalidAcpiTable;
 
 /* PRIVATE FUNCTIONS **********************************************************/
 
@@ -70,6 +73,75 @@ HalpAcpiUnmapTable(
 }
 
 /*
+ * Bytes a table at PhysicalAddress may use: the rest of the firmware
+ * memory-map range that holds it.
+ */
+static
+ULONG
+HalpAcpiFirmwareRangeLength(
+    _In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock,
+    _In_ PHYSICAL_ADDRESS PhysicalAddress)
+{
+    PLIST_ENTRY NextEntry;
+    PMEMORY_ALLOCATION_DESCRIPTOR Descriptor;
+    ULONGLONG Base, End;
+
+    /* The map belongs to the loader block, which phase 1 no longer has */
+    if (!LoaderBlock) return 0;
+
+    for (NextEntry = LoaderBlock->MemoryDescriptorListHead.Flink;
+         NextEntry != &LoaderBlock->MemoryDescriptorListHead;
+         NextEntry = NextEntry->Flink)
+    {
+        Descriptor = CONTAINING_RECORD(NextEntry,
+                                       MEMORY_ALLOCATION_DESCRIPTOR,
+                                       ListEntry);
+        Base = (ULONGLONG)Descriptor->BasePage << PAGE_SHIFT;
+        End = Base + ((ULONGLONG)Descriptor->PageCount << PAGE_SHIFT);
+        if ((PhysicalAddress.QuadPart >= Base) &&
+            (PhysicalAddress.QuadPart < End))
+            return HalpAcpiRangeLength(Base, End, PhysicalAddress.QuadPart);
+    }
+
+    return 0;
+}
+
+static
+ULONG
+HalpAcpiAvailableForTable(
+    _In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock,
+    _In_ PHYSICAL_ADDRESS PhysicalAddress)
+{
+    ULONG Available;
+
+    Available = HalpAcpiFirmwareRangeLength(LoaderBlock, PhysicalAddress);
+    if (!Available)
+    {
+        /* Only the header mapping is known to be readable */
+        Available = (ULONG)((HALP_ACPI_HEADER_PAGES << PAGE_SHIFT) -
+                            (PhysicalAddress.QuadPart & (PAGE_SIZE - 1)));
+    }
+
+    return Available;
+}
+
+static
+BOOLEAN
+HalpAcpiTableWithinRange(
+    _In_opt_ PLOADER_PARAMETER_BLOCK LoaderBlock,
+    _In_ PDESCRIPTION_HEADER Header,
+    _In_ ULONG Available)
+{
+    if (Header->Length <= Available) return TRUE;
+
+    /* Records the fault and releases the header mapping the caller holds */
+    HalpAcpiRecordFault(Header->Signature, HalpAcpiFaultBadLength, 0, 0,
+                        Header->Length, Header->Length);
+    HalpAcpiUnmapTable(LoaderBlock, Header, HALP_ACPI_HEADER_PAGES);
+    return FALSE;
+}
+
+/*
  * A table is first mapped with two pages, which always covers its header.
  * Extend that mapping to the full length the header reports.
  */
@@ -82,9 +154,9 @@ HalpAcpiRemapTable(
     _Out_ PFN_COUNT *PageCount)
 {
     *PageCount = HalpAcpiPagesForRange(PhysicalAddress, Header->Length);
-    if (*PageCount == 2) return Header;
+    if (*PageCount == HALP_ACPI_HEADER_PAGES) return Header;
 
-    HalpAcpiUnmapTable(LoaderBlock, Header, 2);
+    HalpAcpiUnmapTable(LoaderBlock, Header, HALP_ACPI_HEADER_PAGES);
     Header = HalpAcpiMapTable(LoaderBlock, PhysicalAddress, *PageCount);
     if (!Header) DPRINT1("HAL: Failed to remap ACPI table.\n");
 
@@ -92,31 +164,44 @@ HalpAcpiRemapTable(
 }
 
 static
-VOID
-HalpAcpiValidateChecksum(
-    _In_ PDESCRIPTION_HEADER Header)
+HALP_ACPI_VERDICT
+HalpAcpiValidateTable(
+    _In_ PDESCRIPTION_HEADER Header,
+    _In_ ULONG Available)
 {
-    CHAR CheckSum = 0;
-    PCHAR CurrentByte;
+    HALP_ACPI_CHECK Check;
+    HALP_ACPI_VERDICT Verdict;
+    ULONG Reason, Value;
 
     /* All tables in ACPI 3.0 other than the FACP should have correct checksum */
     if ((Header->Signature == FADT_SIGNATURE) && (Header->Revision <= 2))
-        return;
+        return HalpAcpiAccepted;
 
-    /* Go to the end of the table */
-    CurrentByte = (PCHAR)Header + Header->Length;
-    while (CurrentByte-- != (PCHAR)Header)
+    Verdict = HalpAcpiCheckTable((const UCHAR *)Header, Available, &Check);
+    if (Verdict == HalpAcpiAccepted)
+        return Verdict;
+
+    switch (Verdict)
     {
-        /* Add this byte */
-        CheckSum += *CurrentByte;
+        case HalpAcpiBadSignature:
+            Reason = HalpAcpiFaultBadSignature;
+            Value = Check.Length;
+            break;
+
+        case HalpAcpiBadLength:
+            Reason = HalpAcpiFaultBadLength;
+            Value = Check.Length;
+            break;
+
+        default:
+            /* The correct checksum is always 0, anything else is illegal */
+            Reason = HalpAcpiFaultBadChecksum;
+            Value = Check.Sum;
+            break;
     }
 
-    /* The correct checksum is always 0, anything else is illegal */
-    if (CheckSum)
-    {
-        HalpInvalidAcpiTable = Header->Signature;
-        DPRINT1("Checksum failed on ACPI table %.4s\n", (PCSTR)&Header->Signature);
-    }
+    HalpAcpiRecordFault(Header->Signature, Reason, 0, 0, Value, Header->Length);
+    return Verdict;
 }
 
 PDESCRIPTION_HEADER
@@ -241,6 +326,8 @@ HalpAcpiGetTableFromBios(
     PDESCRIPTION_HEADER Header;
     ULONG TableLength;
     ULONG Offset;
+    ULONG Available;
+    HALP_ACPI_VERDICT Verdict;
     ULONG EntryCount, CurrentEntry;
 
     /* Should not query the RSDT/XSDT by itself */
@@ -257,7 +344,8 @@ HalpAcpiGetTableFromBios(
         PhysicalAddress = HalpAcpiSelectFadtPointer(Fadt->dsdt, Fadt->x_dsdt);
         if (!PhysicalAddress.QuadPart) return NULL;
 
-        Header = HalpAcpiMapTable(LoaderBlock, PhysicalAddress, 2);
+        Header = HalpAcpiMapTable(LoaderBlock, PhysicalAddress,
+                                  HALP_ACPI_HEADER_PAGES);
         if (!Header)
         {
             DPRINT1("HAL: Failed to map ACPI table.\n");
@@ -267,7 +355,7 @@ HalpAcpiGetTableFromBios(
         /* Validate the signature */
         if (Header->Signature != DSDT_SIGNATURE)
         {
-            HalpAcpiUnmapTable(LoaderBlock, Header, 2);
+            HalpAcpiUnmapTable(LoaderBlock, Header, HALP_ACPI_HEADER_PAGES);
             return NULL;
         }
     }
@@ -327,7 +415,8 @@ HalpAcpiGetTableFromBios(
             }
 
             /* Map just enough to read the signature */
-            Header = HalpAcpiMapTable(LoaderBlock, PhysicalAddress, 2);
+            Header = HalpAcpiMapTable(LoaderBlock, PhysicalAddress,
+                                      HALP_ACPI_HEADER_PAGES);
             if (!Header)
             {
                 /* Game over */
@@ -338,18 +427,27 @@ HalpAcpiGetTableFromBios(
             DPRINT("Found ACPI table %.4s at 0x%p\n", (PCSTR)&Header->Signature, Header);
             if (Header->Signature == Signature) break;
 
-            HalpAcpiUnmapTable(LoaderBlock, Header, 2);
+            HalpAcpiUnmapTable(LoaderBlock, Header, HALP_ACPI_HEADER_PAGES);
         }
 
         /* Did we end up here back at the last entry? */
         if (CurrentEntry == EntryCount) return NULL;
     }
 
+    /* A table may not map past the firmware range that holds it */
+    Available = HalpAcpiAvailableForTable(LoaderBlock, PhysicalAddress);
+    if (!HalpAcpiTableWithinRange(LoaderBlock, Header, Available)) return NULL;
+
     /* Now map this table using its correct size */
     Header = HalpAcpiRemapTable(LoaderBlock, PhysicalAddress, Header, PageCount);
     if (!Header) return NULL;
 
-    HalpAcpiValidateChecksum(Header);
+    Verdict = HalpAcpiValidateTable(Header, Available);
+    if ((Verdict == HalpAcpiBadSignature) || (Verdict == HalpAcpiBadLength))
+    {
+        HalpAcpiUnmapTable(LoaderBlock, Header, *PageCount);
+        return NULL;
+    }
 
     /* Return the table */
     return Header;
@@ -584,6 +682,7 @@ HalpAcpiApplyLoaderOverrides(
 {
     PDESCRIPTION_HEADER TableHeader, CachedHeader;
     PACPI_CACHED_TABLE CachedTable;
+    HALP_ACPI_VERDICT Verdict;
     PUCHAR Current = OverrideBuffer;
     ULONG Remaining = OverrideSize;
     ULONG Advance;
@@ -600,18 +699,27 @@ HalpAcpiApplyLoaderOverrides(
             break;
         }
 
-        CachedHeader = HalpAcpiCopyBiosTable(LoaderBlock, TableHeader);
-        if (!CachedHeader)
+        Verdict = HalpAcpiValidateTable(TableHeader, Remaining);
+        if ((Verdict == HalpAcpiBadSignature) || (Verdict == HalpAcpiBadLength))
         {
-            DPRINT1("HAL: Failed to cache ACPI override %.4s\n",
+            DPRINT1("HAL: ACPI override %.4s rejected\n",
                     (PCSTR)&TableHeader->Signature);
-            break;
         }
+        else
+        {
+            CachedHeader = HalpAcpiCopyBiosTable(LoaderBlock, TableHeader);
+            if (!CachedHeader)
+            {
+                DPRINT1("HAL: Failed to cache ACPI override %.4s\n",
+                        (PCSTR)&TableHeader->Signature);
+                break;
+            }
 
-        /* Prepend so the override supersedes the firmware copy */
-        CachedTable = CONTAINING_RECORD(CachedHeader, ACPI_CACHED_TABLE, Header);
-        InsertHeadList(&HalpAcpiTableCacheList, &CachedTable->Links);
-        Applied++;
+            /* Prepend so the override supersedes the firmware copy */
+            CachedTable = CONTAINING_RECORD(CachedHeader, ACPI_CACHED_TABLE, Header);
+            InsertHeadList(&HalpAcpiTableCacheList, &CachedTable->Links);
+            Applied++;
+        }
 
         Advance = min(ALIGN_UP_BY(TableHeader->Length, HALP_ACPI_OVERRIDE_ALIGNMENT), Remaining);
         Current += Advance;
@@ -631,6 +739,8 @@ HalpAcpiTableCacheInit(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
     PVOID MappedAddress;
     PFN_COUNT TablePages;
     PRSDT Rsdt;
+    ULONG Available;
+    HALP_ACPI_VERDICT Verdict;
     PLOADER_PARAMETER_EXTENSION LoaderExtension;
 
     /* Only initialize once */
@@ -648,7 +758,8 @@ HalpAcpiTableCacheInit(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
     HalpAcpiRootTablePhysicalAddress = PhysicalAddress;
 
     /* Map the RSDT, we assume it's about 2 pages */
-    MappedAddress = HalpAcpiMapTable(LoaderBlock, PhysicalAddress, 2);
+    MappedAddress = HalpAcpiMapTable(LoaderBlock, PhysicalAddress,
+                                     HALP_ACPI_HEADER_PAGES);
     Rsdt = MappedAddress;
     if (!MappedAddress)
     {
@@ -666,6 +777,11 @@ HalpAcpiTableCacheInit(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
         KeBugCheckEx(MISMATCHED_HAL, 4, __LINE__, 0, 0);
     }
 
+    /* A root table may not map past the firmware range that holds it */
+    Available = HalpAcpiAvailableForTable(LoaderBlock, PhysicalAddress);
+    if (!HalpAcpiTableWithinRange(LoaderBlock, &Rsdt->Header, Available))
+        return STATUS_ACPI_INVALID_DATA;
+
     /* We assumed two pages -- do we need less or more? */
     MappedAddress = HalpAcpiRemapTable(LoaderBlock, PhysicalAddress, &Rsdt->Header, &TablePages);
     Rsdt = MappedAddress;
@@ -674,6 +790,13 @@ HalpAcpiTableCacheInit(IN PLOADER_PARAMETER_BLOCK LoaderBlock)
         /* Fail, no memory */
         DPRINT1("HAL: Couldn't remap RSDT\n");
         return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    Verdict = HalpAcpiValidateTable(&Rsdt->Header, Available);
+    if ((Verdict == HalpAcpiBadSignature) || (Verdict == HalpAcpiBadLength))
+    {
+        HalpAcpiUnmapTable(LoaderBlock, MappedAddress, TablePages);
+        return STATUS_ACPI_INVALID_DATA;
     }
 
     /* Now take the BIOS copy and make our own local copy */

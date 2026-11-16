@@ -81,15 +81,3 @@ KeTrapFrameToContext(
     KiPpcCopyContext(Context, &TrapFrame->Context, Context->ContextFlags & CONTEXT_ALL);
     KeRestoreInterrupts(Interrupts);
 }
-
-NTSTATUS
-NTAPI
-KiContinueExtendedState(
-    _In_ PCONTEXT Context,
-    _In_ ULONG ContextFlags)
-{
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(ContextFlags);
-
-    return STATUS_SUCCESS;
-}

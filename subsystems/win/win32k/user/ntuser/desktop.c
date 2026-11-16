@@ -9,7 +9,7 @@
 /* INCLUDES ******************************************************************/
 
 #include <win32k.h>
-#include <reactos/buildno.h>
+#include <reactos/buildstamp.h>
 #include <ndk/inbvfuncs.h>
 DBG_DEFAULT_CHANNEL(UserDesktop);
 
@@ -69,7 +69,7 @@ IntDesktopObjectParse(IN PVOID ParseObject,
                       IN PSECURITY_QUALITY_OF_SERVICE SecurityQos OPTIONAL,
                       OUT PVOID *Object)
 {
-    NTSTATUS Status;
+    NTSTATUS Status, AccessStatus;
     PDESKTOP Desktop;
     OBJECT_ATTRIBUTES ObjectAttributes;
     PLIST_ENTRY NextEntry, ListHead;
@@ -117,6 +117,10 @@ IntDesktopObjectParse(IN PVOID ParseObject,
                 /* This was a real open, so this is OK */
                 Status = STATUS_SUCCESS;
             }
+
+            AccessStatus = IntCheckParsedObjectAccess(Desktop, ExDesktopObjectType, AccessState, AccessMode);
+            if (!NT_SUCCESS(AccessStatus))
+                return AccessStatus;
 
             /* Reference the desktop and return it */
             ObReferenceObject(Desktop);
@@ -326,189 +330,33 @@ IntQueryNetworkAssistanceKey(OUT PWSTR pwszText,
     }
 }
 
+#if DBG
+#define LIBERNT_BUILD_FLAVOUR L"debug"
+#else
+#define LIBERNT_BUILD_FLAVOUR L"release"
+#endif
+
+#define LIBERNT_BUILD_HEADING L"LiberNT " LIBERNT_BUILD_FLAVOUR L" build"
+
 static NTSTATUS
 GetSystemVersionString(OUT PWSTR pwszzVersion,
                        IN SIZE_T cchDest,
                        IN BOOLEAN InSafeMode)
 {
     NTSTATUS Status;
-
-    RTL_OSVERSIONINFOEXW VerInfo;
-    UNICODE_STRING BuildLabString;
-    UNICODE_STRING CSDVersionString;
-    RTL_QUERY_REGISTRY_TABLE VersionConfigurationTable[] =
-    {
-        {
-            NULL,
-            RTL_QUERY_REGISTRY_DIRECT,
-            L"BuildLab",
-            &BuildLabString,
-            REG_NONE, NULL, 0
-        },
-        {
-            NULL,
-            RTL_QUERY_REGISTRY_DIRECT,
-            L"CSDVersion",
-            &CSDVersionString,
-            REG_NONE, NULL, 0
-        },
-
-        {0}
-    };
-
-    WCHAR BuildLabBuffer[256];
-    WCHAR VersionBuffer[256];
     PWCHAR EndBuffer;
-    PWCHAR Hash, Revision, Compiler, Scan;
-    PCSTR Arch, ArchEnd;
-    INT ArchLength;
 
-    VerInfo.dwOSVersionInfoSize = sizeof(VerInfo);
-
-    /*
-     * This call is uniquely used to retrieve the current CSD numbers.
-     * All the rest (major, minor, ...) is either retrieved from the
-     * SharedUserData structure, or from the registry.
-     */
-    RtlGetVersion((PRTL_OSVERSIONINFOW)&VerInfo);
-
-    /*
-     * - Retrieve the BuildLab string from the registry (set by the kernel).
-     * - In kernel-mode, szCSDVersion is not initialized. Initialize it
-     *   and query its value from the registry.
-     */
-    RtlZeroMemory(BuildLabBuffer, sizeof(BuildLabBuffer));
-    RtlInitEmptyUnicodeString(&BuildLabString,
-                              BuildLabBuffer,
-                              sizeof(BuildLabBuffer));
-    RtlZeroMemory(VerInfo.szCSDVersion, sizeof(VerInfo.szCSDVersion));
-    RtlInitEmptyUnicodeString(&CSDVersionString,
-                              VerInfo.szCSDVersion,
-                              sizeof(VerInfo.szCSDVersion));
-    Status = RtlQueryRegistryValues(RTL_REGISTRY_WINDOWS_NT,
-                                    L"",
-                                    VersionConfigurationTable,
-                                    NULL,
-                                    NULL);
+    /* Safe Mode has one line to show it on, the desktop has two */
+    Status = RtlStringCchCopyW(pwszzVersion,
+                               cchDest,
+                               InSafeMode
+                                   ? LIBERNT_BUILD_HEADING L" " LIBERNT_BUILD_STAMP_W L"\n"
+                                   : LIBERNT_BUILD_HEADING L"\n" LIBERNT_BUILD_STAMP_W L"\n");
     if (!NT_SUCCESS(Status))
     {
-        /* Indicate nothing is there */
-        BuildLabString.Length = 0;
-        CSDVersionString.Length = 0;
-    }
-    /* NULL-terminate the strings */
-    BuildLabString.Buffer[BuildLabString.Length / sizeof(WCHAR)] = UNICODE_NULL;
-    CSDVersionString.Buffer[CSDVersionString.Length / sizeof(WCHAR)] = UNICODE_NULL;
-
-    /* Hide the git commit count and hash, preserving the tag and toolchain. */
-    Hash = NULL;
-    Scan = BuildLabString.Buffer;
-    while ((Scan = wcsstr(Scan, L"-g")) != NULL)
-    {
-        Hash = Scan;
-        Scan += 2;
-    }
-    if (Hash)
-    {
-        Revision = Hash;
-        while (Revision > BuildLabString.Buffer &&
-               Revision[-1] >= L'0' && Revision[-1] <= L'9')
-        {
-            --Revision;
-        }
-        Compiler = Hash + 2 + wcsspn(Hash + 2, L"0123456789abcdefABCDEF");
-        if (Revision > BuildLabString.Buffer && Revision < Hash &&
-            Revision[-1] == L'-' && Compiler > Hash + 2 &&
-            (*Compiler == L'.' || *Compiler == UNICODE_NULL))
-        {
-            --Revision;
-            RtlMoveMemory(Revision, Compiler, (wcslen(Compiler) + 1) * sizeof(WCHAR));
-            BuildLabString.Length = (USHORT)(wcslen(BuildLabString.Buffer) * sizeof(WCHAR));
-        }
-    }
-
-    Scan = BuildLabString.Buffer + wcsspn(BuildLabString.Buffer, L"0123456789");
-    if (Scan > BuildLabString.Buffer && *Scan == L'-')
-    {
-        ++Scan;
-        RtlMoveMemory(BuildLabString.Buffer, Scan, (wcslen(Scan) + 1) * sizeof(WCHAR));
-        BuildLabString.Length = (USHORT)(wcslen(BuildLabString.Buffer) * sizeof(WCHAR));
-    }
-    Scan = wcsrchr(BuildLabString.Buffer, L'_');
-    if (Scan)
-        *Scan = L'-';
-
-    Arch = strchr(KERNEL_VERSION_STR, '-');
-    Arch = Arch ? Arch + 1 : KERNEL_VERSION_STR;
-    ArchEnd = strchr(Arch, '-');
-    ArchLength = ArchEnd ? (INT)(ArchEnd - Arch) : (INT)strlen(Arch);
-
-    EndBuffer = VersionBuffer;
-    if ( /* VerInfo.wServicePackMajor != 0 && */ CSDVersionString.Length)
-    {
-        /* Print the version string */
-        Status = RtlStringCbPrintfExW(VersionBuffer,
-                                      sizeof(VersionBuffer),
-                                      &EndBuffer,
-                                      NULL,
-                                      0,
-                                      L": %wZ",
-                                      &CSDVersionString);
-        if (!NT_SUCCESS(Status))
-        {
-            /* No version, NULL-terminate the string */
-            *EndBuffer = UNICODE_NULL;
-        }
-    }
-    else
-    {
-        /* No version, NULL-terminate the string */
-        *EndBuffer = UNICODE_NULL;
-    }
-
-    if (InSafeMode)
-    {
-        /* String for Safe Mode */
-        Status = RtlStringCchPrintfW(pwszzVersion,
-                                     cchDest,
-                                     L"LiberNT \u00b7 Development Preview (Target: Windows 11 24H2 %u.%u%s) %wZ-%.*S\n",
-                                     (VerInfo.dwBuildNumber & 0xFFFF),
-                                     (ULONG)VER_PRODUCTBUILD_QFE,
-                                     VersionBuffer,
-                                     &BuildLabString,
-                                     ArchLength,
-                                     Arch);
-    }
-    else
-    {
-        /* Multi-string for Normal Mode */
-        Status = RtlStringCchPrintfW(pwszzVersion,
-                                     cchDest,
-                                     L"LiberNT \u00b7 Development Preview\n"
-                                     L"Target: Windows 11 24H2 %u.%u%s\n"
-                                     L"Build %wZ-%.*S\n",
-                                     (VerInfo.dwBuildNumber & 0xFFFF),
-                                     (ULONG)VER_PRODUCTBUILD_QFE,
-                                     VersionBuffer,
-                                     &BuildLabString,
-                                     ArchLength,
-                                     Arch);
-    }
-
-    if (!NT_SUCCESS(Status))
-    {
-        /* Fall-back string */
-        Status = RtlStringCchPrintfW(pwszzVersion,
-                                     cchDest,
-                                     L"LiberNT \u00b7 Development Preview %wZ-%.*S\n",
-                                     &BuildLabString,
-                                     ArchLength,
-                                     Arch);
-        if (!NT_SUCCESS(Status))
-        {
-            /* General failure, NULL-terminate the string */
-            pwszzVersion[0] = UNICODE_NULL;
-        }
+        /* General failure, NULL-terminate the string */
+        pwszzVersion[0] = UNICODE_NULL;
+        return Status;
     }
 
     /*
@@ -1008,8 +856,10 @@ IntResolveDesktop(
 
             // TODO: Check also that we compare wrt. window station WinSta0
             // which is the only one that can be interactive on the system.
-            if (((!bUseDefaultWinSta || bInherit) && RtlEqualLuid(&ProcessLuid, &SystemLuid)) ||
-                 RtlEqualLuid(&ProcessLuid, &WinStaObject->luidUser))
+            /* A process that names the window station got in through its DACL, which is what grants another logon session (CreateProcessWithTokenW) */
+            if ((!bUseDefaultWinSta && Process == PsGetCurrentProcess()) ||
+                (bInherit && RtlEqualLuid(&ProcessLuid, &SystemLuid)) ||
+                RtlEqualLuid(&ProcessLuid, &WinStaObject->luidUser))
             {
                 /* We are interactive on this window station */
                 bAccessAllowed = TRUE;
@@ -1589,8 +1439,10 @@ VOID NTAPI DesktopThreadMain(VOID)
     BOOL Ret;
     MSG Msg;
     PUSER_SESSION Session = UserGetCurrentSession();
+    PTHREADINFO pti = PsGetCurrentThreadWin32Thread();
 
-    Session->DesktopThread = PsGetCurrentThreadWin32Thread();
+    ASSERT(pti->pEventQueueServer != NULL);
+    WritePointerRelease((PVOID volatile *)&Session->DesktopThread, pti);
 
     UserEnterExclusive();
 
@@ -1602,12 +1454,12 @@ VOID NTAPI DesktopThreadMain(VOID)
 
     while (TRUE)
     {
-        Ret = co_IntGetPeekMessage(&Msg, 0, 0, 0, PM_REMOVE, TRUE);
-        if (Ret)
+        while ((Ret = co_IntGetPeekMessage(&Msg, 0, 0, 0, PM_REMOVE | PM_NOYIELD, FALSE)) != FALSE)
         {
             IntDispatchMessage(&Msg);
         }
         co_UserProcessDisplayConfigurationUpdate();
+        (VOID)co_MsqWaitForNewMessages(pti, NULL, 0, 0);
     }
 
     UserLeave();
@@ -2008,7 +1860,7 @@ IntDrawScaledWallpaper(
     PDC pdc;
     BOOL Ret;
 
-    if (!UserIsEnteredExclusive())
+    if (!UserIsEnteredExclusive() || cx <= 0 || cy <= 0)
         return NtGdiStretchBlt(hDC, x, y, cx, cy, hWallpaperDC, xSrc, ySrc, cxSrc, cySrc, SRCCOPY, CLR_INVALID);
 
     pdc = DC_LockDc(hDC);
@@ -3419,9 +3271,7 @@ NtUserSwitchDesktop(HDESK hdesk)
      * interactive window station: pulse the legacy (NT 3.5+)
      * event and send the desktop-switch notification (Vista+) */
     KePulseEvent(gpDisplaySession->DesktopSwitchEvent, EVENT_INCREMENT, FALSE);
-#if (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
     IntNotifyWinEvent(EVENT_SYSTEM_DESKTOPSWITCH, NULL, OBJID_WINDOW, CHILDID_SELF, 0);
-#endif
 
     TRACE("SwitchDesktop gpdeskInputDesktop 0x%p\n", gpdeskInputDesktop);
     if (pdeskPrevious != NULL)

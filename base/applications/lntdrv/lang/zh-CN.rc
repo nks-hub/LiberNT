@@ -16,6 +16,7 @@ BEGIN
     LTEXT "", IDC_FRAME_SUBTITLE, 120, 26, 290, 18, SS_NOPREFIX
     LTEXT "", IDC_FRAME_PAGE, 120, 48, 290, 160, NOT WS_VISIBLE
     CONTROL "", -1, "Static", SS_ETCHEDHORZ, 120, 212, 300, 1
+    CONTROL "", IDC_CATALOG_LINK, "SysLink", WS_TABSTOP, 120, 222, 90, 9
     PUSHBUTTON "上一步(&B)", IDC_FRAME_BACK, 250, 219, 50, 14
     DEFPUSHBUTTON "下一步(&N)", IDC_FRAME_NEXT, 305, 219, 50, 14
     PUSHBUTTON "取消", IDCANCEL, 360, 219, 50, 14
@@ -39,7 +40,11 @@ STYLE DS_SHELLFONT | DS_CONTROL | WS_CHILD
 FONT 8, "MS Shell Dlg"
 BEGIN
     LTEXT "", IDC_PROGRESS_TEXT, 0, 44, 290, 9, SS_NOPREFIX | SS_ENDELLIPSIS
-    LTEXT "", IDC_PROGRESS_DETAIL, 0, 58, 290, 9, SS_NOPREFIX | SS_ENDELLIPSIS
+    LTEXT "", IDC_PROGRESS_DETAIL, 0, 58, 220, 9, SS_NOPREFIX | SS_ENDELLIPSIS
+    LTEXT "", IDC_PROGRESS_SPEED, 222, 58, 68, 9, SS_NOPREFIX | SS_RIGHT
+    CONTROL "", IDC_PROGRESS_ITEM, "msctls_progress32", PBS_SMOOTH, 0, 70, 290, 8
+    CONTROL "", IDC_PROGRESS_TOTAL, "msctls_progress32", PBS_SMOOTH, 0, 88, 290, 8
+    LTEXT "", IDC_PROGRESS_COUNT, 0, 99, 290, 9, SS_NOPREFIX
 END
 
 IDD_DONE DIALOGEX 0, 0, 290, 160
@@ -79,6 +84,8 @@ BEGIN
     IDS_FINISH "完成(&F)"
     IDS_DEVICES_TITLE "此电脑的驱动程序"
     IDS_DEVICES_SUBTITLE "没有驱动程序或使用第三方驱动程序，且在 Microsoft 更新目录中有更新驱动程序的设备。勾选要安装的设备。"
+    IDS_ABOUT_MENU "关于 LiberNT 驱动程序安装程序(&A)..."
+    IDS_ABOUT_TEXT "LiberNT 驱动程序安装程序\nCopyright (C) 2026 Ahmed ARIF\n根据 GNU 通用公共许可证第 3 版或更高版本授权。\n\n驱动程序从 Microsoft 更新目录下载，该目录是 Microsoft Corporation 提供的服务。\nMicrosoft 更新目录：Copyright (c) Microsoft Corporation. 保留所有权利。\n每个驱动程序包归其发布者所有，并受该发布者的许可条款约束。"
     IDS_INSTALL_TITLE "正在安装驱动程序"
     IDS_INSTALL_SUBTITLE "请等待驱动程序安装完成。"
     IDS_DONE_TITLE "已完成"
@@ -97,10 +104,10 @@ BEGIN
     IDS_INSTALL_CANCELLING "将在当前步骤完成后停止..."
     IDS_PROGRESS_QUERY "正在向 Microsoft 更新目录查询程序包"
     IDS_PROGRESS_DOWNLOAD "正在下载 %1 (%2 KB)"
-    IDS_PROGRESS_UNPACK "正在解压 %1"
+    IDS_PROGRESS_UNPACK "正在解压程序包"
     IDS_PROGRESS_VERIFY "正在检查程序包签名"
     IDS_PROGRESS_CHECK "正在检查驱动程序是否适合此设备"
-    IDS_PROGRESS_INSTALL "正在为 %1 安装驱动程序"
+    IDS_PROGRESS_INSTALL "正在安装: %1"
     IDS_RESULT_INSTALLED "已安装"
     IDS_RESULT_REBOOT "已安装，需要重新启动"
     IDS_RESULT_SKIPPED "已有驱动程序"
@@ -182,4 +189,10 @@ BEGIN
     IDS_SCAN_FOUND "为 %1 个设备找到了更新的驱动程序。"
     IDS_SCAN_NONE "Microsoft 更新目录中没有可为此电脑安装的新内容。"
     IDS_RESULT_UNSIGNED "签名未验证"
+    IDS_SCAN_THROTTLED "搜索将于 %1 继续。Microsoft 更新目录正在限制来自此电脑的搜索。"
+    IDS_CATALOG_LINK "<a>法律声明</a>"
+    IDS_CATALOG_NOTICE "驱动程序从 Microsoft 更新目录下载，该服务由 Microsoft Corporation 提供。\nMicrosoft 更新目录: Copyright (c) Microsoft Corporation. All rights reserved.\nMicrosoft 和 Windows 是 Microsoft 集团公司的商标。LiberNT 与 Microsoft Corporation 无关联。\n\n每个驱动程序包均归其发布者所有，并受发布者自身的许可条款约束。"
+    IDS_PROGRESS_DOWNLOADING "正在下载"
+    IDS_SPEED_KB "%1 KB/秒"
+    IDS_SPEED_MB "%1 MB/秒"
 END

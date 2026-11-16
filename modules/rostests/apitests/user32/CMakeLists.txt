@@ -2,6 +2,7 @@ add_subdirectory(makeimg)
 
 list(APPEND SOURCE
     AltTabHook.c
+    AnimatedCursor.c
     AttachThreadInput.c
     ../include/msgtrace.c
     CalculatePopupWindowPosition.c
@@ -13,6 +14,7 @@ list(APPEND SOURCE
     ClipboardData.c
     FrameMetrics.c
     ComboBox.c
+    ControlColorOtherThread.c
     CopyImage.c
     CopyImage_Icon.c
     CursorPresentation.c
@@ -20,6 +22,7 @@ list(APPEND SOURCE
     CreateIconFromResourceEx.c
     CoveredWindow.c
     CreateWindowEx.c
+    CrossThreadWindowPos.c
     DeferWindowPos.c
     DefFrameProc.c
     DeskWallpaper.c
@@ -28,6 +31,7 @@ list(APPEND SOURCE
     DestroyWindow.c
     DialogAccelerator.c
     DialogDpiChangeBehavior.c
+    DisplayConfigTarget.c
     DM_REPOSITION.c
     Dpi.c
     DpiHostingBehavior.c
@@ -37,6 +41,7 @@ list(APPEND SOURCE
     DrawIconEx.c
     DrawText.c
     desktop.c
+    EditCompositionForm.c
     EmptyClipboard.c
     EnableScrollBar.c
     EnumDisplaySettings.c
@@ -60,7 +65,9 @@ list(APPEND SOURCE
     GetWindowPlacement.c
     GhostWindow.c
     GW_ENABLEDPOPUP.c
+    HiddenChildWindowPos.c
     ImeWindow.c
+    ImeWindowZOrder.c
     InitializeLpkHooks.c
     InputMessageSource.c
     InvalidHandles.c
@@ -76,6 +83,7 @@ list(APPEND SOURCE
     MaximizedCaptionClick.c
     MenuUI.c
     MenuItemData.c
+    MenuBarBackground.c
     MessageStateAnalyzer.c
     MinimizedPosition.c
     ModernUser32.c
@@ -102,6 +110,7 @@ list(APPEND SOURCE
     ScrollWindowEx.c
     UnhookWinEvent.c
     SendMessageTimeout.c
+    ServiceAccountDesktop.c
     SendMessageTimeoutHung.c
     SetActiveWindow.c
     SetCursorPos.c
@@ -111,6 +120,10 @@ list(APPEND SOURCE
     SetScrollInfo.c
     SetScrollRange.c
     SetWindowPlacement.c
+    SharedInputLanguage.c
+    ShellHookShowActive.c
+    SetWindowPosOwnerTree.c
+    SetWindowPosZOrder.c
     WindowDisplayAffinity.c
     WindowRegionFrame.c
     ShellWindowQueries.c
@@ -128,6 +141,9 @@ list(APPEND SOURCE
     VirtualKey.c
     WaitForInputIdle.c
     WindowBand.c
+    WindowStationErrors.c
+    WindowStationSecurity.c
+    WindowPosInsertAfter.c
     WndProc.c
     wsprintf.c)
 
@@ -143,7 +159,7 @@ add_executable(user32_apitest
 
 target_link_libraries(user32_apitest wine ${PSEH_LIB})
 set_module_type(user32_apitest win32cui)
-add_importlibs(user32_apitest advapi32 imm32 gdi32 gdiplus user32 msvcrt kernel32 ntdll)
+add_importlibs(user32_apitest advapi32 imm32 gdi32 gdiplus user32 setupapi msvcrt kernel32 ntdll)
 add_pch(user32_apitest precomp.h "${PCH_SKIP_SOURCE}")
 add_rostests_file(TARGET user32_apitest)
 

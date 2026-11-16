@@ -10,6 +10,10 @@
 #include "mmharness.h"
 #include "ntsessionshim.h"
 
+extern PVOID MmSessionBase;
+extern SIZE_T MmSessionSize;
+
+PMI_SYSTEM MiSessionTestSystem;
 _Thread_local PEPROCESS MiSessionTestCurrent;
 volatile LONG MiSessionTestAllocations;
 volatile LONG MiSessionTestFailAllocate;
@@ -24,6 +28,8 @@ SessionProcessInitialize(PEPROCESS Process, PMI_PROCESS Native)
     Process->References = 1;
     Process->AddressSpaceInitialized = 2;
     Process->Vm.VmWorkingSetList = Native;
+    CHECK(NT_SUCCESS(MiAddressSpaceCreate(MiSessionTestSystem, &Native->Space)));
+    CHECK(Native->Space.RootFrame != MI_FRAME_INVALID && Native->Space.RootFrame != 0);
 }
 
 static void
@@ -285,12 +291,67 @@ SessionMultipleMembers(void)
     MiSessionTestCurrent = NULL;
 }
 
+static void
+SessionSpaceRange(void)
+{
+    PMI_SYSTEM System = MiSessionTestSystem;
+    const MI_ARCH_DESCRIPTOR *Arch = System->Arch;
+    ULONG64 Span = 1ULL << Arch->Level[Arch->PagingLevels - 1].Shift;
+    MI_ADDRESS_SPACE Session, Process;
+
+    CHECK(Arch->SessionTopLevelEntries != 0);
+    CHECK(NT_SUCCESS(MiSystemReserveSessionRange(System)));
+    CHECK(System->SessionEnd > System->SessionStart);
+    if (System->SessionEnd <= System->SessionStart)
+        return;
+    CHECK((System->SessionStart & (Span - 1)) == 0);
+    CHECK(System->SessionEnd - System->SessionStart + 1 == Span * Arch->SessionTopLevelEntries);
+    CHECK(System->SessionStart >= Arch->SystemAddressStart && System->SessionEnd <= Arch->SystemAddressEnd);
+    MmSessionBase = (PVOID)(ULONG_PTR)System->SessionStart;
+    MmSessionSize = (SIZE_T)(System->SessionEnd - System->SessionStart + 1);
+
+    CHECK(NT_SUCCESS(MiSessionSpaceCreate(System, &Session)));
+    CHECK(NT_SUCCESS(MiAddressSpaceCreate(System, &Process)));
+    MiSessionSpaceLink(&Session, &Process, TRUE);
+    MiSessionSpaceLink(&Session, &Process, FALSE);
+    MiAddressSpaceDestroy(&Process);
+    MiSessionSpaceDestroy(&Session);
+}
+
+static void
+SessionSpaceRelease(PMI_SYSTEM System)
+{
+    PMI_VAD_ROOT Tree = &System->SystemSpace.VadRoot;
+    PMI_VAD_NODE Node = MiVadFind(Tree, System->SessionStart >> PAGE_SHIFT);
+    PMI_VAD Vad;
+
+    CHECK(Node != NULL);
+    if (Node == NULL)
+        return;
+    Vad = CONTAINING_RECORD(Node, MI_VAD, Node);
+    CHECK(Vad->Type == MiVadSystem);
+    CHECK(Node->StartingVpn == System->SessionStart >> PAGE_SHIFT);
+    CHECK(Node->EndingVpn == System->SessionEnd >> PAGE_SHIFT);
+    MiVadRemove(Tree, Node);
+    MI_FREE(Vad);
+    System->SessionStart = 0;
+    System->SessionEnd = 0;
+}
+
 void
 TestSession(void)
 {
+    TEST_WORLD World;
+
+    WorldCreate(&World, 256, 1, 1024);
+    MiSessionTestSystem = &World.System;
+    SessionSpaceRange();
     SessionMultipleMembers();
     SessionCreateRace();
     SessionLifecycle();
     SessionAttachRundown();
     SessionMoveProcess();
+    SessionSpaceRelease(&World.System);
+    MiSessionTestSystem = NULL;
+    WorldDestroy(&World);
 }

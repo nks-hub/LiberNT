@@ -375,7 +375,7 @@ BOOL
 DestroyDriverInfoElement(struct DriverInfoElement* driverInfo);
 
 BOOL
-SETUPAPI_StageDriverPackage(
+SETUPAPI_StageLockedDriverPackage(
     IN PCWSTR SourceInfFileName);
 
 BOOL
@@ -389,7 +389,7 @@ SETUPAPI_GetInfSourceDirectory(
     OUT PWSTR Buffer);
 
 BOOL
-SETUPAPI_DeleteDriverStorePackage(
+SETUPAPI_DeleteLockedDriverStorePackage(
     IN PCWSTR PublishedInfFileName);
 
 BOOL

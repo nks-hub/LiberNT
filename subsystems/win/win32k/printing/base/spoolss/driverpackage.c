@@ -1,0 +1,932 @@
+/*
+ * PROJECT:     LiberNT Spooler Router
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Installing a printer driver from a package in the driver store
+ * COPYRIGHT:   Copyright 2026 LuRy <lury@lury.cz>
+ */
+
+#include "precomp.h"
+#include <winuser.h>
+#include <setupapi.h>
+#include <winver.h>
+#include <strsafe.h>
+#include <drvpkglock.h>
+#include <drvpkgenv.h>
+
+typedef struct _PACKAGE_FILES
+{
+    DWORD Count;
+    DWORD Capacity;
+    PWSTR *Names;
+    PWSTR *Sources;
+} PACKAGE_FILES, *PPACKAGE_FILES;
+
+static BOOL
+AddPackageFile(PPACKAGE_FILES Files, PCWSTR Name, PCWSTR Source)
+{
+    DWORD i;
+
+    if (!Name || !*Name)
+        return TRUE;
+
+    for (i = 0; i < Files->Count; i++)
+    {
+        if (_wcsicmp(Files->Names[i], Name) == 0)
+            return TRUE;
+    }
+
+    if (Files->Count == Files->Capacity)
+    {
+        DWORD Capacity = Files->Capacity ? Files->Capacity * 2 : 32;
+        PWSTR *Grown;
+
+        if (Capacity <= Files->Capacity || Capacity > MAXDWORD / sizeof(PWSTR))
+        {
+            SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+            return FALSE;
+        }
+        Grown = DllAllocSplMem(Capacity * sizeof(PWSTR));
+        if (!Grown)
+            return FALSE;
+        if (Files->Names)
+        {
+            CopyMemory(Grown, Files->Names, Files->Count * sizeof(PWSTR));
+            DllFreeSplMem(Files->Names);
+        }
+        Files->Names = Grown;
+        Grown = DllAllocSplMem(Capacity * sizeof(PWSTR));
+        if (!Grown)
+            return FALSE;
+        if (Files->Sources)
+        {
+            CopyMemory(Grown, Files->Sources, Files->Count * sizeof(PWSTR));
+            DllFreeSplMem(Files->Sources);
+        }
+        Files->Sources = Grown;
+        Files->Capacity = Capacity;
+    }
+
+    Files->Names[Files->Count] = AllocSplStr(Name);
+    Files->Sources[Files->Count] = NULL;
+    if (!Files->Names[Files->Count])
+        return FALSE;
+    if (Source && *Source && _wcsicmp(Source, Name) != 0)
+    {
+        Files->Sources[Files->Count] = AllocSplStr(Source);
+        if (!Files->Sources[Files->Count])
+        {
+            DllFreeSplStr(Files->Names[Files->Count]);
+            return FALSE;
+        }
+    }
+    Files->Count++;
+    return TRUE;
+}
+
+static VOID
+FreePackageFiles(PPACKAGE_FILES Files)
+{
+    while (Files->Count)
+    {
+        Files->Count--;
+        DllFreeSplStr(Files->Names[Files->Count]);
+        if (Files->Sources[Files->Count])
+            DllFreeSplStr(Files->Sources[Files->Count]);
+    }
+    if (Files->Names)
+        DllFreeSplMem(Files->Names);
+    if (Files->Sources)
+        DllFreeSplMem(Files->Sources);
+    Files->Names = Files->Sources = NULL;
+    Files->Capacity = 0;
+}
+
+/* Windows 11 passes over a CopyFiles section that no INF has */
+static BOOL
+CollectCopyFiles(HINF hInf, PCWSTR Section, PPACKAGE_FILES Files)
+{
+    WCHAR Entry[MAX_PATH], Name[MAX_PATH], Source[MAX_PATH];
+    INFCONTEXT Context, FileContext;
+    DWORD Field, FieldCount;
+
+    if (!SetupFindFirstLineW(hInf, Section, L"CopyFiles", &Context))
+        return TRUE;
+
+    do
+    {
+        FieldCount = SetupGetFieldCount(&Context);
+        for (Field = 1; Field <= FieldCount; Field++)
+        {
+            if (!SetupGetStringFieldW(&Context, Field, Entry, ARRAYSIZE(Entry), NULL) || !*Entry)
+                continue;
+
+            if (Entry[0] == L'@')
+            {
+                if (!AddPackageFile(Files, Entry + 1, NULL))
+                    return FALSE;
+                continue;
+            }
+
+            if (!SetupFindFirstLineW(hInf, Entry, NULL, &FileContext))
+                continue;
+            do
+            {
+                if (!SetupGetStringFieldW(&FileContext, 2, Source, ARRAYSIZE(Source), NULL))
+                    *Source = UNICODE_NULL;
+                if (SetupGetStringFieldW(&FileContext, 1, Name, ARRAYSIZE(Name), NULL) &&
+                    !AddPackageFile(Files, Name, Source))
+                {
+                    return FALSE;
+                }
+            } while (SetupFindNextLine(&FileContext, &FileContext));
+        }
+    } while (SetupFindNextMatchLineW(&Context, L"CopyFiles", &Context));
+
+    return TRUE;
+}
+
+static BOOL
+GetDirective(HINF hInf, PWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR Value, DWORD ValueSize)
+{
+    WCHAR DataSection[MAX_PATH];
+    INFCONTEXT Context;
+    DWORD i;
+
+    for (i = 0; i < SectionCount; i++)
+    {
+        if (SetupFindFirstLineW(hInf, Sections[i], Key, &Context) &&
+            SetupGetStringFieldW(&Context, 1, Value, ValueSize, NULL))
+        {
+            return TRUE;
+        }
+    }
+
+    for (i = 0; i < SectionCount; i++)
+    {
+        if (SetupFindFirstLineW(hInf, Sections[i], L"DataSection", &Context) &&
+            SetupGetStringFieldW(&Context, 1, DataSection, ARRAYSIZE(DataSection), NULL) &&
+            SetupFindFirstLineW(hInf, DataSection, Key, &Context) &&
+            SetupGetStringFieldW(&Context, 1, Value, ValueSize, NULL))
+        {
+            return TRUE;
+        }
+    }
+
+    *Value = UNICODE_NULL;
+    return FALSE;
+}
+
+/* System tells that only an INF of the system names the file, and none of the package */
+static BOOL
+GetFileDirective(HINF hInf, HINF hPackage, PWSTR *Sections, DWORD SectionCount, PCWSTR Key, PWSTR Value, DWORD ValueSize,
+                 PBOOL System)
+{
+    WCHAR Own[MAX_PATH];
+    BOOL Found = GetDirective(hInf, Sections, SectionCount, Key, Value, ValueSize);
+
+    *System = Found && !GetDirective(hPackage, Sections, SectionCount, Key, Own, ARRAYSIZE(Own));
+    return Found;
+}
+
+/* For a 64-bit environment Windows 11 looks for the model only in a section with the decoration of the architecture */
+static BOOL
+FindModelSection(HINF hInf, PSP_ALTPLATFORM_INFO Platform, WORD Architecture, PCWSTR DriverName, PWSTR Section, DWORD SectionSize)
+{
+    WCHAR Models[MAX_PATH], Undecorated[MAX_PATH];
+    INFCONTEXT MfgContext, ModelContext;
+
+    if (!SetupFindFirstLineW(hInf, L"Manufacturer", NULL, &MfgContext))
+        return FALSE;
+
+    do
+    {
+        /* SetupDiGetActualModelsSectionW fails for a line without TargetOSVersion, which names its section itself */
+        if (SetupGetFieldCount(&MfgContext) < 2
+                ? !SetupGetStringFieldW(&MfgContext, 1, Models, ARRAYSIZE(Models), NULL)
+                : !SetupDiGetActualModelsSectionW(&MfgContext, Platform, Models, ARRAYSIZE(Models), NULL, NULL))
+        {
+            continue;
+        }
+        if (Architecture != PROCESSOR_ARCHITECTURE_INTEL &&
+            SetupGetStringFieldW(&MfgContext, 1, Undecorated, ARRAYSIZE(Undecorated), NULL) && !_wcsicmp(Models, Undecorated))
+        {
+            continue;
+        }
+
+        if (SetupFindFirstLineW(hInf, Models, DriverName, &ModelContext) &&
+            SetupGetStringFieldW(&ModelContext, 1, Section, SectionSize, NULL))
+        {
+            return TRUE;
+        }
+    } while (SetupFindNextLine(&MfgContext, &MfgContext));
+
+    return FALSE;
+}
+
+static BOOL
+FindSourceDisksLine(HINF hInf, PCWSTR Section, PCWSTR Decoration, PCWSTR Key, PINFCONTEXT Context)
+{
+    WCHAR Decorated[64];
+
+    return (SUCCEEDED(StringCchPrintfW(Decorated, ARRAYSIZE(Decorated), L"%s.%s", Section, Decoration)) &&
+            SetupFindFirstLineW(hInf, Decorated, Key, Context)) ||
+           SetupFindFirstLineW(hInf, Section, Key, Context);
+}
+
+static BOOL
+IsBelowDirectory(PCWSTR Directory, PWSTR Path)
+{
+    WCHAR Base[MAX_PATH];
+    DWORD Length = GetFullPathNameW(Directory, ARRAYSIZE(Base), Base, NULL);
+
+    if (Length == 0 || Length >= ARRAYSIZE(Base))
+        return FALSE;
+    if (Base[Length - 1] == L'\\')
+        Length--;
+    return _wcsnicmp(Path, Base, Length) == 0 && Path[Length] == L'\\' && Path[Length + 1];
+}
+
+static BOOL
+IsSafeRelativePath(PCWSTR Relative)
+{
+    PCWSTR Cursor = Relative;
+    SIZE_T Length;
+
+    if (wcschr(Relative, L':') || *Relative == L'\\' || *Relative == L'/')
+        return FALSE;
+
+    while (*Cursor)
+    {
+        Length = wcscspn(Cursor, L"\\/");
+        if (Length == 2 && Cursor[0] == L'.' && Cursor[1] == L'.')
+            return FALSE;
+        Cursor += Length;
+        if (*Cursor)
+            Cursor++;
+    }
+    return TRUE;
+}
+
+static BOOL
+LocatePackageFile(HINF hInf, PCWSTR Decoration, PCWSTR PackageDir, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
+{
+    WCHAR SourcePath[MAX_PATH] = L"", SubDir[MAX_PATH] = L"", DiskName[16], Joined[MAX_PATH];
+    INFCONTEXT Line;
+    INT SourceId;
+    DWORD Length;
+
+    if (FindSourceDisksLine(hInf, L"SourceDisksFiles", Decoration, Name, &Line) && SetupGetIntField(&Line, 1, &SourceId))
+    {
+        if (!SetupGetStringFieldW(&Line, 2, SubDir, ARRAYSIZE(SubDir), NULL))
+            *SubDir = UNICODE_NULL;
+        StringCchPrintfW(DiskName, ARRAYSIZE(DiskName), L"%d", SourceId);
+        if (!FindSourceDisksLine(hInf, L"SourceDisksNames", Decoration, DiskName, &Line) ||
+            !SetupGetStringFieldW(&Line, 4, SourcePath, ARRAYSIZE(SourcePath), NULL))
+        {
+            *SourcePath = UNICODE_NULL;
+        }
+    }
+
+    if (SUCCEEDED(StringCchPrintfW(Joined, ARRAYSIZE(Joined), L"%s%s%s%s%s\\%s", PackageDir,
+                                   *SourcePath ? L"\\" : L"", SourcePath,
+                                   *SubDir ? L"\\" : L"", SubDir, Name)) &&
+        !wcschr(Joined + wcslen(PackageDir), L':') &&
+        (Length = GetFullPathNameW(Joined, PathSize, Path, NULL)) != 0 && Length < PathSize &&
+        IsBelowDirectory(PackageDir, Path) &&
+        GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
+    {
+        return TRUE;
+    }
+
+    if (DriverDir && !wcspbrk(Name, L"\\/:") &&
+        SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
+        GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES)
+    {
+        return TRUE;
+    }
+
+    ERR("Printer driver file %S not found\n", Name);
+    return FALSE;
+}
+
+/* The directories of the included packages are the sources of the list, which has the INF names */
+static BOOL
+LocateIncludedFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Included, PCWSTR DriverDir, PCWSTR Name, PWSTR Path, DWORD PathSize)
+{
+    BOOL System = FALSE;
+    DWORD i;
+
+    for (i = 0; i < Included->Count; i++)
+    {
+        if (!Included->Sources[i])
+            System = TRUE;
+        else if (LocatePackageFile(hInf, Decoration, Included->Sources[i], NULL, Name, Path, PathSize))
+            return TRUE;
+    }
+
+    /* An included INF that is no package of the store has its files in the driver directory */
+    return System && !wcspbrk(Name, L"\\/:") && SUCCEEDED(StringCchPrintfW(Path, PathSize, L"%s\\3\\%s", DriverDir, Name)) &&
+           GetFileAttributesW(Path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static BOOL
+ResolvePackageFile(HINF hInf, PCWSTR Decoration, PPACKAGE_FILES Files, PPACKAGE_FILES Owned, PPACKAGE_FILES Included, PCWSTR PackageDir, PCWSTR DriverDir,
+                   PCWSTR Name, BOOL System, PWSTR StagingDir, PPACKAGE_FILES Staged, PWSTR Path, DWORD PathSize)
+{
+    WCHAR Copy[MAX_PATH];
+    PCWSTR Source = Name;
+    BOOL Listed = FALSE;
+    DWORD i, Attempt;
+
+    for (i = 0; i < Files->Count; i++)
+    {
+        if (_wcsicmp(Files->Names[i], Name) != 0)
+            continue;
+        Listed = TRUE;
+        if (Files->Sources[i])
+            Source = Files->Sources[i];
+    }
+
+    /* Windows 11 installs no file that the package has and no CopyFiles list of the driver copies */
+    if (!Listed && !System)
+    {
+        ERR("No CopyFiles list copies the printer driver file %S\n", Name);
+        return FALSE;
+    }
+    System = TRUE;
+
+    /* A file that the package does not copy is one of an included package or, for an INF of the system, of the driver directory */
+    for (i = 0; i < Owned->Count && _wcsicmp(Owned->Names[i], Name) != 0; i++);
+    if (i < Owned->Count)
+    {
+        if (!LocatePackageFile(hInf, Decoration, PackageDir, NULL, Source, Path, PathSize))
+            return FALSE;
+    }
+    else if (!LocateIncludedFile(hInf, Decoration, Included, DriverDir, Source, Path, PathSize))
+    {
+        return FALSE;
+    }
+    if (Source == Name)
+        return TRUE;
+    if (wcspbrk(Name, L"\\/:"))
+    {
+        ERR("%S is not a file name\n", Name);
+        return FALSE;
+    }
+
+    for (Attempt = 0; !*StagingDir && Attempt < 100; Attempt++)
+    {
+        if (FAILED(StringCchPrintfW(StagingDir, MAX_PATH, L"%s\\pkgstage-%lx-%lx", DriverDir,
+                                    GetCurrentProcessId(), GetTickCount() + Attempt)))
+        {
+            *StagingDir = UNICODE_NULL;
+            break;
+        }
+        if (!CreateDirectoryW(StagingDir, NULL))
+            *StagingDir = UNICODE_NULL;
+    }
+    if (!*StagingDir || FAILED(StringCchPrintfW(Copy, ARRAYSIZE(Copy), L"%s\\%s", StagingDir, Name)))
+    {
+        ERR("No staging directory for %S (%lu)\n", Name, GetLastError());
+        return FALSE;
+    }
+
+    for (i = 0; i < Staged->Count && _wcsicmp(Staged->Names[i], Copy) != 0; i++);
+    if (i == Staged->Count)
+    {
+        if (!CopyFileW(Path, Copy, TRUE))
+        {
+            ERR("Cannot copy %S as %S (%lu)\n", Source, Name, GetLastError());
+            return FALSE;
+        }
+        if (!AddPackageFile(Staged, Copy, NULL))
+        {
+            DeleteFileW(Copy);
+            return FALSE;
+        }
+    }
+    return SUCCEEDED(StringCchCopyW(Path, PathSize, Copy));
+}
+
+typedef BOOL (APIENTRY *PDRV_QUERY_DRIVER_INFO)(DWORD dwMode, PVOID pBuffer, DWORD cbBuf, PDWORD pcbNeeded);
+#define DRVQUERY_USERMODE 1
+
+/* Windows 11 loads the driver file and asks it; a file that cannot be loaded or does not answer is a kernel mode driver to it */
+static BOOL
+IsUserModeDriverFile(PCWSTR Path)
+{
+    DWORD UserMode = FALSE, Needed = 0;
+    PDRV_QUERY_DRIVER_INFO Query;
+    HMODULE hModule;
+    UINT ErrorMode;
+    BOOL Ret;
+
+    ErrorMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+    hModule = LoadLibraryExW(Path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+    SetErrorMode(ErrorMode);
+    if (!hModule)
+        return FALSE;
+
+    Query = (PDRV_QUERY_DRIVER_INFO)GetProcAddress(hModule, "DrvQueryDriverInfo");
+    Ret = Query && Query(DRVQUERY_USERMODE, &UserMode, sizeof(UserMode), &Needed) && UserMode;
+    FreeLibrary(hModule);
+    return Ret;
+}
+
+/* Windows 11 installs a driver file whose version resource says 0.3, whose machine is the one of the environment and, */
+/* for the environment of this machine, which tells through DrvQueryDriverInfo that it runs in user mode */
+static HRESULT
+CheckDriverFile(PCWSTR Path, WORD Architecture, BOOL Local)
+{
+    static const struct
+    {
+        WORD Architecture;
+        WORD Machine;
+    } Machines[] =
+    {
+        { PROCESSOR_ARCHITECTURE_INTEL, IMAGE_FILE_MACHINE_I386 },
+        { PROCESSOR_ARCHITECTURE_AMD64, IMAGE_FILE_MACHINE_AMD64 },
+        { PROCESSOR_ARCHITECTURE_ARM, IMAGE_FILE_MACHINE_ARMNT },
+        { PROCESSOR_ARCHITECTURE_ARM64, IMAGE_FILE_MACHINE_ARM64 },
+        { PROCESSOR_ARCHITECTURE_IA64, IMAGE_FILE_MACHINE_IA64 },
+    };
+    HRESULT hr = HRESULT_FROM_WIN32(ERROR_PRINTER_DRIVER_BLOCKED);
+    VS_FIXEDFILEINFO *Version;
+    IMAGE_FILE_HEADER Header;
+    IMAGE_DOS_HEADER Dos;
+    DWORD Size, Handle, Read, Signature, i;
+    UINT Length;
+    HANDLE hFile;
+    PVOID Data;
+
+    Size = GetFileVersionInfoSizeW(Path, &Handle);
+    Data = Size ? DllAllocSplMem(Size) : NULL;
+    if (!Data)
+        return hr;
+    if (GetFileVersionInfoW(Path, 0, Size, Data) && VerQueryValueW(Data, L"\\", (PVOID *)&Version, &Length) &&
+        Length >= sizeof(*Version))
+    {
+        if (Version->dwFileVersionMS == 3)
+            hr = S_OK;
+        else if (Version->dwFileVersionMS == 2)
+            hr = HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED);
+    }
+    DllFreeSplMem(Data);
+    if (FAILED(hr))
+        return hr;
+
+    hFile = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hFile == INVALID_HANDLE_VALUE)
+        return HRESULT_FROM_WIN32(GetLastError());
+    hr = HRESULT_FROM_WIN32(ERROR_EXE_MACHINE_TYPE_MISMATCH);
+    if (ReadFile(hFile, &Dos, sizeof(Dos), &Read, NULL) && Read == sizeof(Dos) && Dos.e_magic == IMAGE_DOS_SIGNATURE &&
+        SetFilePointer(hFile, Dos.e_lfanew, NULL, FILE_BEGIN) != INVALID_SET_FILE_POINTER &&
+        ReadFile(hFile, &Signature, sizeof(Signature), &Read, NULL) && Read == sizeof(Signature) && Signature == IMAGE_NT_SIGNATURE &&
+        ReadFile(hFile, &Header, sizeof(Header), &Read, NULL) && Read == sizeof(Header))
+    {
+        hr = S_OK;
+        for (i = 0; i < ARRAYSIZE(Machines); i++)
+        {
+            if (Machines[i].Architecture == Architecture && Machines[i].Machine != Header.Machine)
+                hr = HRESULT_FROM_WIN32(ERROR_EXE_MACHINE_TYPE_MISMATCH);
+        }
+    }
+    CloseHandle(hFile);
+    if (SUCCEEDED(hr) && Local && !IsUserModeDriverFile(Path))
+        hr = HRESULT_FROM_WIN32(ERROR_KM_DRIVER_BLOCKED);
+    return hr;
+}
+
+/* Windows 11 takes a rooted path with either slash and with "." between directories; it refuses "..", a doubled slash, */
+/* "." as the directory of the INF and a relative path */
+static BOOL
+NormalizeInfPath(PCWSTR Given, PWSTR Path)
+{
+    WCHAR Windows[MAX_PATH];
+    PWSTR Out = Path;
+    SIZE_T Length;
+
+    if (Given[0] && Given[1] == L':')
+    {
+        *Out++ = Given[0];
+        Given += 2;
+    }
+    else
+    {
+        if (!GetSystemWindowsDirectoryW(Windows, ARRAYSIZE(Windows)))
+            return FALSE;
+        *Out++ = Windows[0];
+    }
+    *Out++ = L':';
+    if (*Given != L'\\' && *Given != L'/')
+        return FALSE;
+
+    while (*Given)
+    {
+        Given++;
+        Length = wcscspn(Given, L"\\/");
+        if (Length == 0 || (Length == 2 && Given[0] == L'.' && Given[1] == L'.'))
+            return FALSE;
+        if (Length == 1 && Given[0] == L'.')
+        {
+            if (!Given[1] || !wcspbrk(Given + 2, L"\\/"))
+                return FALSE;
+        }
+        else
+        {
+            if ((SIZE_T)(Out - Path) + Length + 2 > MAX_PATH)
+                return FALSE;
+            *Out++ = L'\\';
+            CopyMemory(Out, Given, Length * sizeof(WCHAR));
+            Out += Length;
+        }
+        Given += Length;
+    }
+    *Out = UNICODE_NULL;
+    return TRUE;
+}
+
+static HRESULT
+InstallFromPackage(PCWSTR pszInfPath, PCWSTR pszDriverName, PCWSTR Environment, WORD Architecture, DWORD dwFlags,
+                   HANDLE Namespace, HANDLE Lock, PBOOL Locked)
+{
+    WCHAR InstallSection[MAX_PATH], ActualSection[MAX_PATH], NeedsSection[MAX_PATH], Include[MAX_PATH];
+    WCHAR DriverFile[MAX_PATH], ConfigFile[MAX_PATH], DataFile[MAX_PATH], HelpFile[MAX_PATH];
+    WCHAR DefaultDataType[MAX_PATH], PackageDir[MAX_PATH], DriverDir[MAX_PATH];
+    WCHAR DriverPath[MAX_PATH], ConfigPath[MAX_PATH], DataPath[MAX_PATH], HelpPath[MAX_PATH], FilePath[MAX_PATH];
+    DWORD Field, FieldCount, Size, i, DependentLength = 1;
+    PACKAGE_FILES Files = { 0 }, Staged = { 0 }, Sections = { 0 }, Includes = { 0 }, Owned = { 0 };
+    WCHAR StagingDir[MAX_PATH] = L"", InfPath[MAX_PATH], IncludePath[MAX_PATH], IncludeDir[MAX_PATH];
+    BOOL Found, SystemDriver, SystemConfig, SystemData, SystemHelp;
+    PACKAGE_FILES Foreign = { 0 };
+    PWSTR DependentFiles = NULL, Next, Slash;
+    DRIVER_INFO_8W DriverInfo = { 0 };
+    PSP_ALTPLATFORM_INFO Platform = NULL;
+    SP_ALTPLATFORM_INFO OtherPlatform;
+    RTL_OSVERSIONINFOW Version;
+    INFCONTEXT Context;
+    PCWSTR Decoration = L"";
+    HINF hInf, hPackage;
+    HANDLE hPin = INVALID_HANDLE_VALUE;
+    HRESULT hr;
+
+    for (i = 0; i < ARRAYSIZE(EnvironmentArchitectures); i++)
+    {
+        if (EnvironmentArchitectures[i].Architecture == Architecture)
+            Decoration = EnvironmentArchitectures[i].Decoration;
+    }
+
+    if (_wcsicmp(Environment, wszCurrentEnvironment) != 0)
+    {
+        Version.dwOSVersionInfoSize = sizeof(Version);
+        RtlGetVersion(&Version);
+        ZeroMemory(&OtherPlatform, sizeof(OtherPlatform));
+        OtherPlatform.cbSize = sizeof(OtherPlatform);
+        OtherPlatform.Platform = VER_PLATFORM_WIN32_NT;
+        OtherPlatform.MajorVersion = Version.dwMajorVersion;
+        OtherPlatform.MinorVersion = Version.dwMinorVersion;
+        OtherPlatform.ProcessorArchitecture = Architecture;
+        Platform = &OtherPlatform;
+    }
+
+    if (!NormalizeInfPath(pszInfPath, FilePath))
+        return E_INVALIDARG;
+
+    /* Windows 11 takes the INF of a package in the store alone, and not the INF that the package was uploaded from */
+    i = ARRAYSIZE(InfPath);
+    if (FAILED(DriverStoreFindDriverPackageW(FilePath, NULL, NULL, Architecture, NULL, InfPath, &i)) ||
+        _wcsicmp(FilePath, InfPath) != 0)
+    {
+        /* An INF in the INF directory stands for the package it was published from, but only as <Windows>\INF\<name> */
+        Size = GetSystemWindowsDirectoryW(PackageDir, ARRAYSIZE(PackageDir));
+        if (Size == 0 || FAILED(StringCchCatW(PackageDir, ARRAYSIZE(PackageDir), L"\\INF\\")) ||
+            _wcsnicmp(FilePath, PackageDir, Size + 5) != 0 || wcschr(FilePath + Size + 5, L'\\'))
+        {
+            return E_INVALIDARG;
+        }
+        if (_wcsicmp(pszInfPath, FilePath) != 0)
+            return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+
+        i = ARRAYSIZE(InfPath);
+        if (!SetupGetInfDriverStoreLocationW(FilePath, NULL, NULL, DriverDir, ARRAYSIZE(DriverDir), NULL) ||
+            FAILED(DriverStoreFindDriverPackageW(DriverDir, NULL, NULL, Architecture, NULL, InfPath, &i)) ||
+            _wcsicmp(DriverDir, InfPath) != 0)
+        {
+            return HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
+        }
+    }
+
+    if (FAILED(StringCchCopyW(PackageDir, ARRAYSIZE(PackageDir), InfPath)) ||
+        !(Slash = wcsrchr(PackageDir, L'\\')))
+    {
+        return E_INVALIDARG;
+    }
+    *Slash = UNICODE_NULL;
+
+    if (!IsBelowDirectory(PackageDir, InfPath))
+    {
+        ERR("INF %S cannot be taken from the package directory\n", InfPath);
+        return HRESULT_FROM_WIN32(ERROR_BAD_PATHNAME);
+    }
+
+    Size = sizeof(DriverDir);
+    if (!GetPrinterDriverDirectoryW(NULL, (PWSTR)Environment, 1, (PBYTE)DriverDir, Size, &Size))
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    hInf = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
+    if (hInf == INVALID_HANDLE_VALUE)
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    /* The INFs of the package alone, to tell the files it copies from those a system INF copies */
+    hPackage = SetupOpenInfFileW(InfPath, NULL, INF_STYLE_WIN4, NULL);
+    if (hPackage == INVALID_HANDLE_VALUE)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        SetupCloseInfFile(hInf);
+        return hr;
+    }
+
+    if (!FindModelSection(hInf, Platform, Architecture, pszDriverName, InstallSection, ARRAYSIZE(InstallSection)) ||
+        !SetupDiGetActualSectionToInstallExW(hInf, InstallSection, Platform, ActualSection, ARRAYSIZE(ActualSection),
+                                             NULL, NULL, NULL))
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
+        goto Cleanup;
+    }
+    if (!AddPackageFile(&Sections, ActualSection, NULL))
+    {
+        hr = E_OUTOFMEMORY;
+        goto Cleanup;
+    }
+
+    for (i = 0; i < Sections.Count; i++)
+    {
+        for (Found = SetupFindFirstLineW(hInf, Sections.Names[i], L"Include", &Context);
+             Found;
+             Found = SetupFindNextMatchLineW(&Context, L"Include", &Context))
+        {
+            FieldCount = SetupGetFieldCount(&Context);
+            for (Field = 1; Field <= FieldCount; Field++)
+            {
+                if (!SetupGetStringFieldW(&Context, Field, Include, ARRAYSIZE(Include), NULL))
+                    continue;
+
+                for (Size = 0; Size < Includes.Count && _wcsicmp(Includes.Names[Size], Include) != 0; Size++);
+                if (Size < Includes.Count)
+                    continue;
+
+                /* Windows 11 includes an INF of the INF directory that is one of a package of the store, its own ntprint.inf or one */
+                /* that a package is published as. It returns ERROR_NOT_FOUND for a rooted path, ERROR_PATH_NOT_FOUND for a name with */
+                /* a directory, and ERROR_NOT_SUPPORTED for a path with ".." and for any other INF, of the package directory too */
+                *IncludeDir = UNICODE_NULL;
+                StringCchCopyW(IncludePath, ARRAYSIZE(IncludePath), Include);
+                if (wcschr(Include, L':') || *Include == L'\\' || *Include == L'/')
+                {
+                    hr = HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+                }
+                else if (IsSafeRelativePath(Include) && wcspbrk(Include, L"\\/"))
+                {
+                    hr = HRESULT_FROM_WIN32(ERROR_PATH_NOT_FOUND);
+                }
+                else if (IsSafeRelativePath(Include) && (Size = GetSystemWindowsDirectoryW(FilePath, ARRAYSIZE(FilePath))) != 0 &&
+                         Size < ARRAYSIZE(FilePath) && SUCCEEDED(StringCchCatW(FilePath, ARRAYSIZE(FilePath), L"\\INF\\")) &&
+                         SUCCEEDED(StringCchCatW(FilePath, ARRAYSIZE(FilePath), Include)) &&
+                         SetupGetInfDriverStoreLocationW(FilePath, NULL, NULL, IncludePath, ARRAYSIZE(IncludePath), NULL))
+                {
+                    hr = StringCchCopyW(IncludeDir, ARRAYSIZE(IncludeDir), IncludePath);
+                    if (wcsrchr(IncludeDir, L'\\'))
+                        *wcsrchr(IncludeDir, L'\\') = UNICODE_NULL;
+                }
+                else
+                {
+                    hr = _wcsicmp(Include, L"ntprint.inf") != 0 ? HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED) : S_OK;
+                }
+                if (SUCCEEDED(hr) && !SetupOpenAppendInfFileW(IncludePath, hInf, NULL))
+                    hr = HRESULT_FROM_WIN32(GetLastError());
+                if (SUCCEEDED(hr) && !AddPackageFile(&Includes, Include, IncludeDir))
+                    hr = E_OUTOFMEMORY;
+                if (FAILED(hr))
+                {
+                    ERR("INF %S cannot be included (0x%lx)\n", Include, hr);
+                    goto Cleanup;
+                }
+            }
+        }
+
+        for (Found = SetupFindFirstLineW(hInf, Sections.Names[i], L"Needs", &Context);
+             Found;
+             Found = SetupFindNextMatchLineW(&Context, L"Needs", &Context))
+        {
+            FieldCount = SetupGetFieldCount(&Context);
+            for (Field = 1; Field <= FieldCount; Field++)
+            {
+                if (!SetupGetStringFieldW(&Context, Field, NeedsSection, ARRAYSIZE(NeedsSection), NULL) ||
+                    !*NeedsSection)
+                {
+                    continue;
+                }
+                /* Windows 11 follows Needs to a section of the included INF; one of the package and one that is missing it passes over */
+                if (SetupGetLineCountW(hInf, NeedsSection) < 0 || SetupGetLineCountW(hPackage, NeedsSection) >= 0)
+                    continue;
+                if (!AddPackageFile(&Sections, NeedsSection, NULL))
+                {
+                    hr = E_OUTOFMEMORY;
+                    goto Cleanup;
+                }
+            }
+        }
+    }
+
+    if (SetupFindFirstLineW(hInf, L"Version", L"ClassVer", &Context) &&
+        SetupGetStringFieldW(&Context, 1, Include, ARRAYSIZE(Include), NULL) && Include[0] == L'4')
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
+        goto Cleanup;
+    }
+
+    if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"DriverFile", DriverFile, ARRAYSIZE(DriverFile), &SystemDriver))
+        StringCchCopyW(DriverFile, ARRAYSIZE(DriverFile), InstallSection);
+    if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"ConfigFile", ConfigFile, ARRAYSIZE(ConfigFile), &SystemConfig))
+    {
+        StringCchCopyW(ConfigFile, ARRAYSIZE(ConfigFile), DriverFile);
+        SystemConfig = SystemDriver;
+    }
+    GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"HelpFile", HelpFile, ARRAYSIZE(HelpFile), &SystemHelp);
+    GetDirective(hInf, Sections.Names, Sections.Count, L"DefaultDataType", DefaultDataType, ARRAYSIZE(DefaultDataType));
+    if (!GetFileDirective(hInf, hPackage, Sections.Names, Sections.Count, L"DataFile", DataFile, ARRAYSIZE(DataFile), &SystemData))
+        StringCchCopyW(DataFile, ARRAYSIZE(DataFile), InstallSection);
+
+    /* LanguageMonitor and VendorSetup are not processed */
+
+    for (i = 0; i < Sections.Count; i++)
+    {
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        if (!CollectCopyFiles(hInf, Sections.Names[i], &Files) ||
+            !CollectCopyFiles(hPackage, Sections.Names[i], &Owned))
+        {
+            hr = HRESULT_FROM_WIN32(GetLastError());
+            goto Cleanup;
+        }
+    }
+
+    /* Windows 11 takes the file of a section of an included INF from the included package, also when the package copies that name */
+    for (i = 0; i < Sections.Count; i++)
+    {
+        if (SetupGetLineCountW(hPackage, Sections.Names[i]) < 0 && !CollectCopyFiles(hInf, Sections.Names[i], &Foreign))
+        {
+            hr = E_OUTOFMEMORY;
+            goto Cleanup;
+        }
+    }
+    for (i = 0; i < Foreign.Count; i++)
+    {
+        if (!LocateIncludedFile(hInf, Decoration, &Includes, DriverDir, Foreign.Sources[i] ? Foreign.Sources[i] : Foreign.Names[i],
+                                FilePath, ARRAYSIZE(FilePath)))
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+            goto Cleanup;
+        }
+    }
+
+    if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, DriverFile, SystemDriver, StagingDir, &Staged,
+                            DriverPath, ARRAYSIZE(DriverPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, ConfigFile, SystemConfig, StagingDir, &Staged,
+                            ConfigPath, ARRAYSIZE(ConfigPath)) ||
+        !ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, DataFile, SystemData, StagingDir, &Staged,
+                            DataPath, ARRAYSIZE(DataPath)) ||
+        (*HelpFile &&
+         !ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, HelpFile, SystemHelp, StagingDir, &Staged,
+                             HelpPath, ARRAYSIZE(HelpPath))))
+    {
+        hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+        goto Cleanup;
+    }
+
+    for (i = 0; i < Files.Count; i++)
+    {
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
+                                FilePath, ARRAYSIZE(FilePath)))
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+            goto Cleanup;
+        }
+        DependentLength += (DWORD)wcslen(FilePath) + 1;
+    }
+
+    hr = CheckDriverFile(DriverPath, Architecture, Platform == NULL);
+    if (FAILED(hr))
+        goto Cleanup;
+
+    DependentFiles = DllAllocSplMem(DependentLength * sizeof(WCHAR));
+    if (!DependentFiles)
+    {
+        hr = E_OUTOFMEMORY;
+        goto Cleanup;
+    }
+
+    Next = DependentFiles;
+    for (i = 0; i < Files.Count; i++)
+    {
+        if (!_wcsicmp(Files.Names[i], DriverFile) || !_wcsicmp(Files.Names[i], ConfigFile) ||
+            !_wcsicmp(Files.Names[i], DataFile) || !_wcsicmp(Files.Names[i], HelpFile))
+        {
+            continue;
+        }
+
+        if (!ResolvePackageFile(hInf, Decoration, &Files, &Owned, &Includes, PackageDir, DriverDir, Files.Names[i], FALSE, StagingDir, &Staged,
+                                FilePath, ARRAYSIZE(FilePath)) ||
+            FAILED(StringCchCopyW(Next, DependentLength - (DWORD)(Next - DependentFiles), FilePath)))
+        {
+            hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
+            goto Cleanup;
+        }
+        Next += wcslen(Next) + 1;
+    }
+    *Next = UNICODE_NULL;
+
+    DriverInfo.cVersion = 3;
+    DriverInfo.pName = (PWSTR)pszDriverName;
+    DriverInfo.pEnvironment = (PWSTR)Environment;
+    DriverInfo.pDriverPath = DriverPath;
+    DriverInfo.pConfigFile = ConfigPath;
+    DriverInfo.pDataFile = DataPath;
+    DriverInfo.pHelpFile = *HelpFile ? HelpPath : NULL;
+    DriverInfo.pDependentFiles = DependentFiles;
+    DriverInfo.pDefaultDataType = *DefaultDataType ? DefaultDataType : NULL;
+    DriverInfo.pszInfPath = InfPath;
+
+    /* A package directory with an open file cannot be renamed, so the package is neither deleted nor replaced without the lock */
+    hPin = CreateFileW(InfPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (hPin == INVALID_HANDLE_VALUE)
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto Cleanup;
+    }
+    ReleasePackageLock(Namespace, Lock);
+    *Locked = FALSE;
+
+    if (!AddPrinterDriverExW(NULL, 8, (PBYTE)&DriverInfo,
+                             APD_COPY_FROM_DIRECTORY |
+                             ((dwFlags & IPDFP_COPY_ALL_FILES) ? APD_COPY_ALL_FILES : APD_COPY_NEW_FILES)))
+    {
+        hr = HRESULT_FROM_WIN32(GetLastError());
+        goto Cleanup;
+    }
+
+    hr = S_OK;
+
+Cleanup:
+    if (hPin != INVALID_HANDLE_VALUE)
+        CloseHandle(hPin);
+    if (DependentFiles)
+        DllFreeSplMem(DependentFiles);
+    for (i = 0; i < Staged.Count; i++)
+        DeleteFileW(Staged.Names[i]);
+    if (*StagingDir)
+        RemoveDirectoryW(StagingDir);
+    FreePackageFiles(&Staged);
+    FreePackageFiles(&Files);
+    FreePackageFiles(&Owned);
+    FreePackageFiles(&Foreign);
+    FreePackageFiles(&Sections);
+    FreePackageFiles(&Includes);
+    SetupCloseInfFile(hPackage);
+    SetupCloseInfFile(hInf);
+    return hr;
+}
+
+HRESULT WINAPI
+InstallPrinterDriverFromPackageW(LPCWSTR pszServer, LPCWSTR pszInfPath, LPCWSTR pszDriverName,
+                                 LPCWSTR pszEnvironment, DWORD dwFlags)
+{
+    HANDLE Namespace, Lock;
+    PCWSTR Environment;
+    WORD Architecture;
+    BOOL Locked = TRUE;
+    HRESULT hr;
+
+    TRACE("InstallPrinterDriverFromPackageW(%S, %S, %S, %S, 0x%lx)\n",
+          pszServer, pszInfPath, pszDriverName, pszEnvironment, dwFlags);
+
+    /* Windows 11 installs for flags it does not define as well */
+    if (!pszDriverName || !*pszDriverName)
+        return E_INVALIDARG;
+
+    /* Without an INF Windows 11 looks the driver up in the packages it ships with; there are none here */
+    if (!pszInfPath)
+        return HRESULT_FROM_WIN32(ERROR_UNKNOWN_PRINTER_DRIVER);
+
+    hr = CheckLocalRequest(pszServer, pszEnvironment, &Environment, &Architecture);
+    if (FAILED(hr))
+        return hr;
+
+    /* The lock is held while the package is read; the print provider takes it again to copy the files and register the driver */
+    if (!AcquirePackageLock(&Namespace, &Lock))
+        return HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+
+    hr = InstallFromPackage(pszInfPath, pszDriverName, Environment, Architecture, dwFlags, Namespace, Lock, &Locked);
+
+    if (Locked)
+        ReleasePackageLock(Namespace, Lock);
+    return hr;
+}

@@ -564,9 +564,91 @@ cleanup:
         CloseServiceHandle(hScm);
 }
 
+#define PRESHUTDOWN_SERVICE L"ApitestPreshutdown"
+#define PRESHUTDOWN_ABSENT  0xdeadbeef
+
+static void CheckPreshutdownTimeout(SC_HANDLE hService, HKEY hKey, DWORD dwExpected, DWORD dwExpectedStored)
+{
+    SERVICE_PRESHUTDOWN_INFO Info = { 0xdeadbeef };
+    DWORD dwNeeded = 0xdeadbeef, dwStored = PRESHUTDOWN_ABSENT, dwSize = sizeof(dwStored), dwType = REG_NONE;
+    BOOL bRet;
+    LONG lRet;
+
+    bRet = QueryServiceConfig2W(hService, SERVICE_CONFIG_PRESHUTDOWN_INFO, (LPBYTE)&Info, sizeof(Info), &dwNeeded);
+    ok(bRet, "QueryServiceConfig2W failed, error=0x%08lx\n", GetLastError());
+    ok(dwNeeded == sizeof(Info), "dwNeeded = %lu\n", dwNeeded);
+    ok(Info.dwPreshutdownTimeout == dwExpected, "dwPreshutdownTimeout = %lu, expected %lu\n", Info.dwPreshutdownTimeout, dwExpected);
+
+    lRet = RegQueryValueExW(hKey, L"PreshutdownTimeout", NULL, &dwType, (LPBYTE)&dwStored, &dwSize);
+    if (dwExpectedStored == PRESHUTDOWN_ABSENT)
+    {
+        ok(lRet == ERROR_FILE_NOT_FOUND, "RegQueryValueExW returned %ld\n", lRet);
+    }
+    else
+    {
+        ok(lRet == ERROR_SUCCESS && dwType == REG_DWORD, "RegQueryValueExW returned %ld, type %lu\n", lRet, dwType);
+        ok(dwStored == dwExpectedStored, "PreshutdownTimeout = %lu, expected %lu\n", dwStored, dwExpectedStored);
+    }
+}
+
+static void Test_PreshutdownTimeout(void)
+{
+    static const DWORD Timeouts[] = { 0, 5000, 0xffffffff };
+    SERVICE_PRESHUTDOWN_INFO Info;
+    SC_HANDLE hScm, hService;
+    HKEY hKey = NULL;
+    BOOL bRet;
+    LONG lRet;
+    ULONG i;
+
+    hScm = OpenSCManagerW(NULL, NULL, SC_MANAGER_CREATE_SERVICE);
+    if (!hScm)
+    {
+        skip("Cannot create services, error=0x%08lx\n", GetLastError());
+        return;
+    }
+
+    hService = CreateServiceW(hScm, PRESHUTDOWN_SERVICE, PRESHUTDOWN_SERVICE, SERVICE_ALL_ACCESS, SERVICE_WIN32_OWN_PROCESS,
+                              SERVICE_DEMAND_START, SERVICE_ERROR_IGNORE, L"cmd.exe", NULL, NULL, NULL, NULL, NULL);
+    ok(hService != NULL, "CreateServiceW failed, error=0x%08lx\n", GetLastError());
+    if (!hService)
+    {
+        CloseServiceHandle(hScm);
+        return;
+    }
+
+    lRet = RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\" PRESHUTDOWN_SERVICE, 0,
+                         KEY_QUERY_VALUE | KEY_SET_VALUE, &hKey);
+    ok(lRet == ERROR_SUCCESS, "RegOpenKeyExW returned %ld\n", lRet);
+    if (lRet != ERROR_SUCCESS)
+        goto cleanup;
+
+    CheckPreshutdownTimeout(hService, hKey, 10000, PRESHUTDOWN_ABSENT);
+
+    for (i = 0; i < _countof(Timeouts); i++)
+    {
+        Info.dwPreshutdownTimeout = Timeouts[i];
+        bRet = ChangeServiceConfig2W(hService, SERVICE_CONFIG_PRESHUTDOWN_INFO, &Info);
+        ok(bRet, "ChangeServiceConfig2W(%lu) failed, error=0x%08lx\n", Timeouts[i], GetLastError());
+        CheckPreshutdownTimeout(hService, hKey, Timeouts[i], Timeouts[i]);
+    }
+
+    lRet = RegDeleteValueW(hKey, L"PreshutdownTimeout");
+    ok(lRet == ERROR_SUCCESS, "RegDeleteValueW returned %ld\n", lRet);
+    CheckPreshutdownTimeout(hService, hKey, 10000, PRESHUTDOWN_ABSENT);
+
+cleanup:
+    if (hKey)
+        RegCloseKey(hKey);
+    ok(DeleteService(hService), "DeleteService failed, error=0x%08lx\n", GetLastError());
+    CloseServiceHandle(hService);
+    CloseServiceHandle(hScm);
+}
+
 
 START_TEST(QueryServiceConfig2)
 {
     Test_QueryServiceConfig2W();
     Test_QueryServiceConfig2A();
+    Test_PreshutdownTimeout();
 }

@@ -14,6 +14,7 @@ list(APPEND SOURCE
     InterfaceIndexLuid.c
     NotifyIpInterfaceChange.c
     SendARP.c
+    SetIpInterfaceEntry.c
     UnicastIpAddressChange.c
     UnicastIpAddressTimeChange.c
     testlist.c)

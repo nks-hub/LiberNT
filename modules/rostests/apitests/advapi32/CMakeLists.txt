@@ -55,10 +55,12 @@ list(APPEND SOURCE
     SaferRules.c
     SeclogonCaller.c
     ServiceArgs.c
+    ServiceChangeNotify.c
     ServiceCrash.c
     ServiceEnv.c
     ServiceNetwork.c
     ServicePowerSetting.c
+    ServiceSidInfo.c
     StartServiceCtrlDispatcher.c
     TriggerInfo.c
     TokenBnoIsolation.c

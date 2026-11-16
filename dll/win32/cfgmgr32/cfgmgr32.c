@@ -142,6 +142,45 @@ static LSTATUS open_device_classes_key( HKEY root, const WCHAR *key, REGSAM acce
     return open_key( root, path, access, open, hkey );
 }
 
+#ifdef __REACTOS__
+static LSTATUS create_driver_key( HKEY dev_key, WCHAR *driver, DWORD driver_len )
+{
+    WCHAR class_guid[39];
+    DWORD len = sizeof(class_guid), type;
+    HKEY class_key, drv_key;
+    LSTATUS err;
+    UINT index;
+
+    if (RegQueryValueExW( dev_key, L"ClassGUID", NULL, &type, (BYTE *)class_guid, &len ) || type != REG_SZ)
+        return ERROR_NOT_FOUND;
+
+    if ((err = open_class_key( HKEY_LOCAL_MACHINE, class_guid, KEY_CREATE_SUB_KEY | KEY_ENUMERATE_SUB_KEYS, FALSE, &class_key )))
+        return err;
+
+    for (index = 0, err = ERROR_NO_MORE_ITEMS; index < 10000; index++)
+    {
+        WCHAR name[5];
+        DWORD disposition;
+
+        swprintf( name, ARRAY_SIZE(name), L"%04u", index );
+        err = RegCreateKeyExW( class_key, name, 0, NULL, 0, KEY_SET_VALUE, NULL, &drv_key, &disposition );
+        if (err) break;
+        RegCloseKey( drv_key );
+        if (disposition == REG_CREATED_NEW_KEY)
+        {
+            swprintf( driver, driver_len, L"%s\\%s", class_guid, name );
+            err = RegSetValueExW( dev_key, L"Driver", 0, REG_SZ, (BYTE *)driver, (wcslen( driver ) + 1) * sizeof(WCHAR) );
+            if (err) RegDeleteKeyW( class_key, name );
+            break;
+        }
+    }
+    if (index == 10000) err = ERROR_NO_MORE_ITEMS;
+
+    RegCloseKey( class_key );
+    return err;
+}
+#endif
+
 LSTATUS init_property( struct property *prop, const DEVPROPKEY *key, DEVPROPTYPE *type, void *buffer, DWORD *size, BOOL binary )
 {
     if (!key) return ERROR_INVALID_PARAMETER;
@@ -179,7 +218,11 @@ static LSTATUS query_property( HKEY root, const WCHAR *prefix, DEVPROPTYPE type,
         RegCloseKey( hkey );
     }
 
+#ifdef __REACTOS__
+    if (!err && !prop->buffer && *prop->size) err = ERROR_MORE_DATA;
+#else
     if (!err && !prop->buffer) err = ERROR_MORE_DATA;
+#endif
     if ((!err || err == ERROR_MORE_DATA) && prop->type) *prop->type = type;
     if (err == ERROR_FILE_NOT_FOUND) return ERROR_NOT_FOUND;
     return err;
@@ -2775,8 +2818,15 @@ CONFIGRET WINAPI CM_Open_DevNode_Key_Ex( DEVINST node, REGSAM access, ULONG prof
         WCHAR driver[MAX_PATH];
         DWORD len = sizeof(driver);
 
+#ifdef __REACTOS__
+        if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, open ? access : access | KEY_QUERY_VALUE | KEY_SET_VALUE,
+                                    open, &dev_key ))) return map_error( err );
+        if (RegQueryValueExW( dev_key, L"Driver", NULL, NULL, (BYTE *)driver, &len ))
+            err = open ? ERROR_NOT_FOUND : create_driver_key( dev_key, driver, ARRAY_SIZE(driver) );
+#else
         if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, access, open, &dev_key ))) return map_error( err );
         if (RegQueryValueExW( dev_key, L"Driver", NULL, NULL, (BYTE *)driver, &len )) err = ERROR_NOT_FOUND;
+#endif
         RegCloseKey( dev_key );
 
         if (!err) err = open_class_key( root, driver, access, open, hkey );
@@ -2900,6 +2950,168 @@ CONFIGRET WINAPI CM_Get_DevNode_PropertyW( DEVINST node, const DEVPROPKEY *key, 
 {
     return CM_Get_DevNode_Property_ExW( node, key, type, buffer, size, flags, NULL );
 }
+
+#ifdef __REACTOS__
+static BOOL is_valid_property_type( DEVPROPTYPE prop_type )
+{
+    DWORD type = prop_type & DEVPROP_MASK_TYPE;
+    DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
+
+    if (prop_type & ~(DEVPROP_MASK_TYPE | DEVPROP_MASK_TYPEMOD)) return FALSE;
+    if (type > MAX_DEVPROP_TYPE || typemod > MAX_DEVPROP_TYPEMOD) return FALSE;
+
+    if (typemod == DEVPROP_TYPEMOD_ARRAY &&
+        (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL ||
+         type == DEVPROP_TYPE_STRING || type == DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING))
+        return FALSE;
+
+    if (typemod == DEVPROP_TYPEMOD_LIST &&
+        type != DEVPROP_TYPE_STRING && type != DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING)
+        return FALSE;
+
+    return TRUE;
+}
+
+static BOOL is_valid_property_data( DEVPROPTYPE prop_type, const BYTE *buffer, ULONG size )
+{
+    DWORD typemod = prop_type & DEVPROP_MASK_TYPEMOD;
+    const WCHAR *str = (const WCHAR *)buffer;
+    ULONG len = size / sizeof(WCHAR), width, i;
+
+    switch (prop_type & DEVPROP_MASK_TYPE)
+    {
+        case DEVPROP_TYPE_BOOLEAN:
+            /* Windows 11 takes only DEVPROP_TRUE and DEVPROP_FALSE */
+            for (i = 0; i < size; i++)
+                if (buffer[i] != (BYTE)DEVPROP_TRUE && buffer[i] != (BYTE)DEVPROP_FALSE) return FALSE;
+            width = 1;
+            break;
+        case DEVPROP_TYPE_SBYTE:
+        case DEVPROP_TYPE_BYTE:
+            width = 1;
+            break;
+        case DEVPROP_TYPE_INT16:
+        case DEVPROP_TYPE_UINT16:
+            width = 2;
+            break;
+        case DEVPROP_TYPE_INT32:
+        case DEVPROP_TYPE_UINT32:
+        case DEVPROP_TYPE_FLOAT:
+        case DEVPROP_TYPE_DEVPROPTYPE:
+        case DEVPROP_TYPE_ERROR:
+        case DEVPROP_TYPE_NTSTATUS:
+            width = 4;
+            break;
+        case DEVPROP_TYPE_INT64:
+        case DEVPROP_TYPE_UINT64:
+        case DEVPROP_TYPE_DOUBLE:
+        case DEVPROP_TYPE_CURRENCY:
+        case DEVPROP_TYPE_DATE:
+        case DEVPROP_TYPE_FILETIME:
+            width = 8;
+            break;
+        case DEVPROP_TYPE_DECIMAL:
+        case DEVPROP_TYPE_GUID:
+            width = 16;
+            break;
+        case DEVPROP_TYPE_DEVPROPKEY:
+            width = sizeof(DEVPROPKEY);
+            break;
+        case DEVPROP_TYPE_STRING:
+        case DEVPROP_TYPE_SECURITY_DESCRIPTOR_STRING:
+        case DEVPROP_TYPE_STRING_INDIRECT:
+            if ((size % sizeof(WCHAR)) || !len || str[len - 1]) return FALSE;
+            return typemod != DEVPROP_TYPEMOD_LIST || (len >= 2 && !str[len - 2]);
+        default:
+            return TRUE;
+    }
+
+    if (typemod == DEVPROP_TYPEMOD_ARRAY) return !(size % width);
+    return size == width;
+}
+
+/***********************************************************************
+ *           CM_Set_DevNode_Property_ExW (cfgmgr32.@)
+ *
+ * The registry properties (DEVPKEY_Device_* with the DeviceDesc format id)
+ * keep their usual values; every other key is stored like
+ * SetupDiSetDevicePropertyW does, in Properties\{fmtid}\pid of the device key.
+ */
+CONFIGRET WINAPI CM_Set_DevNode_Property_ExW( DEVINST node, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags, HMACHINE machine )
+{
+    WCHAR path[MAX_PATH], guid[39];
+    HKEY dev_key, prop_key;
+    struct device dev;
+    LSTATUS err;
+
+    TRACE( "node %#lx, key %s, type %#lx, buffer %p, size %lu, flags %#lx, machine %p\n", node, debugstr_DEVPROPKEY(key), type, buffer, size, flags, machine );
+    if (!CfgmgrIsValidMachine( machine )) return CR_FAILURE;
+    if (!key) return CR_INVALID_POINTER;
+    if (flags) return CR_INVALID_FLAG;
+    if (size && !buffer) return CR_INVALID_POINTER;
+    if (!is_valid_property_type( type ) || !is_valid_property_data( type, buffer, size ) ||
+        (buffer && !size && type != DEVPROP_TYPE_EMPTY && type != DEVPROP_TYPE_NULL) ||
+        (size && (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)))
+        return CR_INVALID_DATA;
+    if (devnode_get_device( node, &dev )) return CR_INVALID_DEVNODE;
+
+    if (!memcmp( &key->fmtid, &DEVPKEY_Device_DeviceDesc.fmtid, sizeof(key->fmtid) ) && key->pid >= 2)
+    {
+        for (UINT i = 0; i < ARRAY_SIZE(device_properties); i++)
+        {
+            DEVPROPTYPE canonical = device_properties[i].type;
+
+            if (memcmp( device_properties[i].key, key, sizeof(*key) )) continue;
+            /* Windows 11 checks the type before access, takes an indirect string for a string and keeps SecuritySDS */
+            if (type == DEVPROP_TYPE_EMPTY || type == DEVPROP_TYPE_NULL)
+            {
+                if (key->pid - 1 == CM_DRP_SECURITY_SDS) return CR_INVALID_DATA;
+            }
+            else if (type != canonical && (type != DEVPROP_TYPE_STRING_INDIRECT || canonical != DEVPROP_TYPE_STRING))
+                return CR_INVALID_DATA;
+            break;
+        }
+        /* An instance key holds no class name: it is the Class value of the class key ClassGUID names */
+        if (key->pid - 1 == CM_DRP_CLASS) return CR_INVALID_PROPERTY;
+        if (type == DEVPROP_TYPE_GUID)
+        {
+            guid_string( (const GUID *)buffer, guid, ARRAY_SIZE(guid) );
+            wcsupr( guid );
+            return CM_Set_DevNode_Registry_Property_ExW( node, key->pid - 1, guid, sizeof(guid), 0, machine );
+        }
+        return CM_Set_DevNode_Registry_Property_ExW( node, key->pid - 1, buffer, size, 0, machine );
+    }
+
+    if ((err = open_device_key( HKEY_LOCAL_MACHINE, &dev, KEY_ALL_ACCESS, TRUE, &dev_key ))) return map_error( err );
+    propkey_string( key, L"Properties\\", path, ARRAY_SIZE(path) );
+
+    switch (type)
+    {
+        case DEVPROP_TYPE_EMPTY:
+            err = RegDeleteKeyW( dev_key, path );
+            break;
+        default:
+            if (!(err = RegCreateKeyExW( dev_key, path, 0, NULL, 0, KEY_SET_VALUE, NULL, &prop_key, NULL )))
+            {
+                err = RegSetValueExW( prop_key, NULL, 0, 0xffff0000 | (type & 0xffff), buffer, size );
+                RegCloseKey( prop_key );
+            }
+            break;
+    }
+    RegCloseKey( dev_key );
+
+    if (err == ERROR_FILE_NOT_FOUND) return CR_NO_SUCH_VALUE;
+    return map_error( err );
+}
+
+/***********************************************************************
+ *           CM_Set_DevNode_PropertyW (cfgmgr32.@)
+ */
+CONFIGRET WINAPI CM_Set_DevNode_PropertyW( DEVINST node, const DEVPROPKEY *key, DEVPROPTYPE type, const BYTE *buffer, ULONG size, ULONG flags )
+{
+    return CM_Set_DevNode_Property_ExW( node, key, type, buffer, size, flags, NULL );
+}
+#endif
 
 /***********************************************************************
  *           CM_Get_DevNode_Property_Keys_Ex (cfgmgr32.@)

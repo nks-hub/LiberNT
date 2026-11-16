@@ -157,9 +157,12 @@ typedef struct _SERVICE_FAILURE_ACTIONSW {
 
 cpp_quote("#endif")
 
+cpp_quote("#ifndef _SERVICE_DELAYED_AUTO_START_INFO_DEFINED_")
+cpp_quote("#define _SERVICE_DELAYED_AUTO_START_INFO_DEFINED_")
 typedef struct _SERVICE_DELAYED_AUTO_START_INFO {
-    BOOL fDelayedAutoStart;
+    BOOL fDelayedAutostart;
 } SERVICE_DELAYED_AUTO_START_INFO, *LPSERVICE_DELAYED_AUTO_START_INFO;
+cpp_quote("#endif")
 
 cpp_quote("#ifndef _SERVICE_FAILURE_ACTIONS_FLAG_DEFINED_")
 cpp_quote("#define _SERVICE_FAILURE_ACTIONS_FLAG_DEFINED_")
@@ -168,9 +171,12 @@ typedef struct _SERVICE_FAILURE_ACTIONS_FLAG {
 } SERVICE_FAILURE_ACTIONS_FLAG, *LPSERVICE_FAILURE_ACTIONS_FLAG;
 cpp_quote("#endif")
 
+cpp_quote("#ifndef _SERVICE_SID_INFO_DEFINED_")
+cpp_quote("#define _SERVICE_SID_INFO_DEFINED_")
 typedef struct _SERVICE_SID_INFO {
-    DWORD dwServicesSidType;
+    DWORD dwServiceSidType;
 } SERVICE_SID_INFO, *LPSERVICE_SID_INFO;
+cpp_quote("#endif")
 
 typedef struct _SERVICE_RPC_REQUIRED_PRIVILEGES_INFO {
     [range(0, 1024 * 4)] DWORD cbRequiredPrivileges;

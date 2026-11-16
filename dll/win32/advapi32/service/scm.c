@@ -276,6 +276,18 @@ ChangeServiceConfig2A(SC_HANDLE hService,
             Info.psti = lpInfo;
             break;
 
+        case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
+            Info.psda = lpInfo;
+            break;
+
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            Info.pssid = lpInfo;
+            break;
+
+        case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+            Info.psps = lpInfo;
+            break;
+
         default:
             WARN("Unknown info level 0x%lx\n", dwInfoLevel);
             SetLastError(ERROR_INVALID_PARAMETER);
@@ -340,6 +352,18 @@ ChangeServiceConfig2W(SC_HANDLE hService,
 
         case SERVICE_CONFIG_TRIGGER_INFO:
             Info.psti = lpInfo;
+            break;
+
+        case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
+            Info.psda = lpInfo;
+            break;
+
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+            Info.pssid = lpInfo;
+            break;
+
+        case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+            Info.psps = lpInfo;
             break;
 
         default:
@@ -2596,6 +2620,7 @@ QueryServiceConfig2A(SC_HANDLE hService,
     SERVICE_FAILURE_ACTIONSA ServiceFailureActions;
     SERVICE_FAILURE_ACTIONS_FLAG FailureActionsFlag;
     SERVICE_TRIGGER_INFO TriggerInfo;
+    DWORD DwordInfo;
     LPBYTE lpTempBuffer;
     BOOL bUseTempBuffer = FALSE;
     DWORD dwBufferSize;
@@ -2641,6 +2666,17 @@ QueryServiceConfig2A(SC_HANDLE hService,
             {
                 lpTempBuffer = (LPBYTE)&TriggerInfo;
                 dwBufferSize = sizeof(SERVICE_TRIGGER_INFO);
+                bUseTempBuffer = TRUE;
+            }
+            break;
+
+        case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+        case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+            if ((lpBuffer == NULL) || (cbBufSize < sizeof(DWORD)))
+            {
+                lpTempBuffer = (LPBYTE)&DwordInfo;
+                dwBufferSize = sizeof(DWORD);
                 bUseTempBuffer = TRUE;
             }
             break;
@@ -2737,6 +2773,7 @@ QueryServiceConfig2W(SC_HANDLE hService,
     SERVICE_FAILURE_ACTIONSW ServiceFailureActions;
     SERVICE_FAILURE_ACTIONS_FLAG FailureActionsFlag;
     SERVICE_TRIGGER_INFO TriggerInfo;
+    DWORD DwordInfo;
     LPBYTE lpTempBuffer;
     BOOL bUseTempBuffer = FALSE;
     DWORD dwBufferSize;
@@ -2782,6 +2819,17 @@ QueryServiceConfig2W(SC_HANDLE hService,
             {
                 lpTempBuffer = (LPBYTE)&TriggerInfo;
                 dwBufferSize = sizeof(SERVICE_TRIGGER_INFO);
+                bUseTempBuffer = TRUE;
+            }
+            break;
+
+        case SERVICE_CONFIG_DELAYED_AUTO_START_INFO:
+        case SERVICE_CONFIG_SERVICE_SID_INFO:
+        case SERVICE_CONFIG_PRESHUTDOWN_INFO:
+            if ((lpBuffer == NULL) || (cbBufSize < sizeof(DWORD)))
+            {
+                lpTempBuffer = (LPBYTE)&DwordInfo;
+                dwBufferSize = sizeof(DWORD);
                 bUseTempBuffer = TRUE;
             }
             break;

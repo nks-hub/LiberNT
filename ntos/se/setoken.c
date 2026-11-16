@@ -1313,7 +1313,18 @@ SeFilterToken(
     Contents.Flags = Token->TokenFlags | TOKEN_IS_FILTERED;
 
     if (Flags & SANDBOX_INERT) Contents.Flags |= TOKEN_SANDBOX_INERT;
-    if (Flags & WRITE_RESTRICTED) Contents.Flags |= TOKEN_WRITE_RESTRICTED;
+    if (RestrictedCount != Token->RestrictedSidCount)
+    {
+        /* Restricting SIDs that already decide every access are never narrowed to writes */
+        Contents.Flags &= ~TOKEN_WRITE_RESTRICTED;
+        if ((Flags & WRITE_RESTRICTED) &&
+            (Token->RestrictedSidCount == 0 || (Token->TokenFlags & TOKEN_WRITE_RESTRICTED)))
+        {
+            Contents.Flags |= TOKEN_WRITE_RESTRICTED;
+        }
+    }
+
+    ASSERT(!(Contents.Flags & TOKEN_WRITE_RESTRICTED) || RestrictedCount != 0);
 
     Status = SepAssembleToken(&Contents,
                               NULL,

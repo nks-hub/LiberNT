@@ -56,11 +56,13 @@ extern void func_SaferLevels(void);
 extern void func_SaferRules(void);
 extern void func_SeclogonCaller(void);
 extern void func_ServiceArgs(void);
+extern void func_ServiceChangeNotify(void);
 extern void func_ServiceCrash(void);
 extern void func_ServiceEnv(void);
 extern void func_TriggerInfo(void);
 extern void func_ServiceNetwork(void);
 extern void func_ServicePowerSetting(void);
+extern void func_ServiceSidInfo(void);
 extern void func_StartServiceCtrlDispatcher(void);
 extern void func_TokenBnoIsolation(void);
 extern void func_TokenLinkedToken(void);
@@ -124,11 +126,13 @@ const struct test winetest_testlist[] =
     { "SaferRules", func_SaferRules },
     { "SeclogonCaller", func_SeclogonCaller },
     { "ServiceArgs", func_ServiceArgs },
+    { "ServiceChangeNotify", func_ServiceChangeNotify },
     { "ServiceCrash", func_ServiceCrash },
     { "ServiceEnv", func_ServiceEnv },
     { "TriggerInfo", func_TriggerInfo },
     { "ServiceNetwork", func_ServiceNetwork },
     { "ServicePowerSetting", func_ServicePowerSetting },
+    { "ServiceSidInfo", func_ServiceSidInfo },
     { "StartServiceCtrlDispatcher", func_StartServiceCtrlDispatcher },
     { "TokenBnoIsolation", func_TokenBnoIsolation },
     { "TokenLinkedToken", func_TokenLinkedToken },

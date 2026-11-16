@@ -1065,6 +1065,8 @@ USBPORT_SoftInterruptDpc(IN PRKDPC Dpc,
     PDEVICE_OBJECT FdoDevice;
     PUSBPORT_DEVICE_EXTENSION FdoExtension;
 
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     DPRINT_INT("USBPORT_SoftInterruptDpc: ...\n");
 
     FdoDevice = DeferredContext;
@@ -1100,6 +1102,17 @@ USBPORT_SoftInterrupt(IN PDEVICE_OBJECT FdoDevice)
                &FdoExtension->SoftInterruptDpc);
 }
 
+static
+BOOLEAN
+USBPORT_IsControllerPolled(IN PUSBPORT_DEVICE_EXTENSION FdoExtension)
+{
+    PUSBPORT_DUMP_CONTEXT DumpContext = FdoExtension->Aux.DumpContext;
+    PUSBPORT_DUMP_CONTEXT KeyboardContext = FdoExtension->Aux.KeyboardContext;
+
+    return ((DumpContext != NULL) && DumpContext->DumpMode) ||
+           ((KeyboardContext != NULL) && KeyboardContext->DumpMode);
+}
+
 VOID
 NTAPI
 USBPORT_InvalidateControllerHandler(IN PDEVICE_OBJECT FdoDevice,
@@ -1131,6 +1144,10 @@ USBPORT_InvalidateControllerHandler(IN PDEVICE_OBJECT FdoDevice,
             break;
 
         case USBPORT_INVALIDATE_CONTROLLER_SOFT_INTERRUPT:
+            /* The crash dump and the debugger poll the controller at HIGH_LEVEL, where no timer or DPC runs. */
+            if (USBPORT_IsControllerPolled(FdoExtension))
+                break;
+
             if (InterlockedIncrement(&FdoExtension->IsrDpcCounter))
             {
                 InterlockedDecrement(&FdoExtension->IsrDpcCounter);
@@ -1244,6 +1261,8 @@ USBPORT_WorkerRequestDpc(IN PRKDPC Dpc,
     PDEVICE_OBJECT FdoDevice;
     PUSBPORT_DEVICE_EXTENSION FdoExtension;
 
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     DPRINT("USBPORT_WorkerRequestDpc: ...\n");
 
     FdoDevice = DeferredContext;
@@ -1471,6 +1490,8 @@ USBPORT_TransferFlushDpc(IN PRKDPC Dpc,
 {
     PDEVICE_OBJECT FdoDevice;
 
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     DPRINT_CORE("USBPORT_TransferFlushDpc: ...\n");
     FdoDevice = DeferredContext;
     USBPORT_FlushDoneTransfers(FdoDevice);
@@ -1769,6 +1790,8 @@ USBPORT_IsrDpc(IN PRKDPC Dpc,
     PUSBPORT_REGISTRATION_PACKET Packet;
     BOOLEAN InterruptEnable;
 
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     DPRINT_INT("USBPORT_IsrDpc: DeferredContext - %p, SystemArgument2 - %p\n",
                DeferredContext,
                SystemArgument2);
@@ -2866,6 +2889,8 @@ USBPORT_TimerDpc(IN PRKDPC Dpc,
     KIRQL OldIrql;
     KIRQL TimerOldIrql;
 
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     USBPORT_TIMER_TRACE("USBPORT_TimerDpc: Dpc - %p, DeferredContext - %p\n",
                         Dpc,
                         DeferredContext);
@@ -3265,6 +3290,9 @@ USBPORT_AddDevice(IN PDRIVER_OBJECT DriverObject,
     FdoCommonExtension->LowerPdoDevice = PhysicalDeviceObject;
     FdoCommonExtension->IsPDO = FALSE;
 
+    /* Until the resources name the bus, a controller is taken for a PCI one */
+    FdoExtension->BusInterfaceType = PCIBus;
+
     LowerDevice = IoAttachDeviceToDeviceStack(DeviceObject,
                                               PhysicalDeviceObject);
 
@@ -3433,6 +3461,7 @@ USBPORT_MiniportCompleteTransfer(IN PVOID MiniPortExtension,
 
     if (IsListEmpty(&ParentTransfer->SplitTransfersList))
     {
+        KeReleaseSpinLock(&ParentTransfer->TransferSpinLock, OldIrql);
         goto Exit;
     }
 
@@ -3472,6 +3501,8 @@ USBPORT_AsyncTimerDpc(IN PRKDPC Dpc,
     PUSBPORT_DEVICE_EXTENSION FdoExtension;
     PUSBPORT_ASYNC_CALLBACK_DATA AsyncCallbackData;
 
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     DPRINT("USBPORT_AsyncTimerDpc: ...\n");
 
     AsyncCallbackData = DeferredContext;
@@ -4520,14 +4551,6 @@ USBPORT_SubmitMapTransfer(IN PDEVICE_OBJECT FdoDevice)
                                                        USBPORT_MapTransfer,
                                                        Transfer);
 
-        if (Transfer->Endpoint &&
-            (Transfer->Endpoint->EndpointProperties.TransferType == USBPORT_TRANSFER_TYPE_BULK ||
-             TransferBufferLength >= 64))
-        {
-            DPRINT("USBPORT_FlushMapTransfers: AllocateAdapterChannel Status=0x%lx\n",
-                   Status);
-        }
-
         if (!NT_SUCCESS(Status))
         {
             PUSBPORT_DEVICE_HANDLE DeviceHandle = Transfer->Urb->UrbHeader.UsbdDeviceHandle;
@@ -4595,6 +4618,8 @@ USBPORT_MapTransferDpc(IN PRKDPC Dpc,
     PDEVICE_OBJECT FdoDevice = DeferredContext;
 
     FdoExtension = FdoDevice->DeviceExtension;
+
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
     InterlockedExchange(&FdoExtension->MapTransferCallbackState,
                         USBPORT_MAP_CALLBACK_NONE);
     USBPORT_SubmitMapTransfer(FdoDevice);
@@ -4781,8 +4806,11 @@ USBPORT_AllocateTransfer(IN PDEVICE_OBJECT FdoDevice,
     Transfer->Endpoint = PipeHandle->Endpoint;
     Transfer->FdoDevice = FdoDevice;
     Transfer->Event = Event;
-    if (Event && !Irp && Urb->UrbHeader.Function == URB_FUNCTION_CONTROL_TRANSFER)
-        Transfer->TimeOut = 5000;
+    if ((Urb->UrbControlTransfer.TransferFlags & USBD_DEFAULT_PIPE_TRANSFER) ||
+        Urb->UrbHeader.Function == URB_FUNCTION_CONTROL_TRANSFER)
+    {
+        Transfer->TimeOut = USBPORT_CONTROL_TRANSFER_TIMEOUT;
+    }
     Transfer->PortTransferLength = PortTransferLength;
     Transfer->FullTransferLength = FullTransferLength;
     Transfer->IsoBlockPtr = NULL;

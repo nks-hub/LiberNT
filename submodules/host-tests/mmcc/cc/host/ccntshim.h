@@ -24,6 +24,14 @@
 #define MAP_WAIT 1
 #define UNINITIALIZE_CACHE_MAPS 1
 #define FO_RANDOM_ACCESS 0x800
+#define FO_WRITE_THROUGH 0x00000010
+#define BooleanFlagOn(F, SF) ((BOOLEAN)(((F) & (SF)) != 0))
+#ifndef APC_LEVEL
+#define APC_LEVEL 1
+#endif
+#ifndef MM_HOST_TEST
+#define KeGetCurrentIrql() 0
+#endif
 #define STATUS_ACCESS_VIOLATION ((NTSTATUS)0xC0000005)
 #define STATUS_INVALID_USER_BUFFER ((NTSTATUS)0xC00000E8)
 #define KernelMode 0
@@ -35,7 +43,7 @@
 
 typedef LONG64 LONGLONG;
 typedef union _LARGE_INTEGER { LONG64 QuadPart; } LARGE_INTEGER, *PLARGE_INTEGER;
-typedef struct _SECTION_OBJECT_POINTERS { PVOID SharedCacheMap; PVOID DataSectionObject; PVOID ImageSectionObject; } SECTION_OBJECT_POINTERS, *PSECTION_OBJECT_POINTERS;
+typedef struct _SECTION_OBJECT_POINTERS { PVOID DataSectionObject; PVOID SharedCacheMap; PVOID ImageSectionObject; } SECTION_OBJECT_POINTERS, *PSECTION_OBJECT_POINTERS;
 typedef struct _FILE_OBJECT
 {
     PSECTION_OBJECT_POINTERS SectionObjectPointer;
@@ -79,7 +87,7 @@ typedef struct _PUBLIC_BCB
 } PUBLIC_BCB, *PPUBLIC_BCB;
 typedef struct _IO_STATUS_BLOCK { NTSTATUS Status; ULONG_PTR Information; } IO_STATUS_BLOCK, *PIO_STATUS_BLOCK;
 
-#define InterlockedIncrement(p) (CC_ATOMIC_ADD32((p), 1) + 1)
+#define InterlockedIncrement(p) __sync_add_and_fetch((p), 1)
 #define CcGetFileSizePointer(FO) ((PLARGE_INTEGER)((FO)->SectionObjectPointer->SharedCacheMap) + 1)
 
 extern ULONG CcMapDataWait, CcMapDataNoWait, CcPinReadWait, CcPinReadNoWait, CcPinMappedDataCount;
@@ -124,3 +132,4 @@ VOID CcSetDirtyPinnedData(PVOID Bcb, PLARGE_INTEGER Lsn);
 BOOLEAN CcCopyRead(PFILE_OBJECT File, PLARGE_INTEGER Offset, ULONG Length, BOOLEAN Wait, PVOID Buffer,
                    PIO_STATUS_BLOCK IoStatus);
 BOOLEAN CcCopyWrite(PFILE_OBJECT File, PLARGE_INTEGER Offset, ULONG Length, BOOLEAN Wait, PVOID Buffer);
+VOID CcFlushCache(PSECTION_OBJECT_POINTERS Pointers, PLARGE_INTEGER Offset, ULONG Length, PIO_STATUS_BLOCK IoStatus);

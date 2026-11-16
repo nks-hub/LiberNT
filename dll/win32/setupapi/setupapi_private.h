@@ -421,6 +421,20 @@ SETUPAPI_RecordDriverDatabasePackage(
     IN PCWSTR InfName,
     IN PCWSTR OemPath OPTIONAL);
 
+BOOL
+SETUPAPI_GetInfCatalogFile(
+    IN HINF hInf,
+    OUT PWSTR CatalogFileName OPTIONAL,
+    IN DWORD CatalogFileNameSize);
+
+BOOL
+SETUPAPI_IsSystemInfDirectory(
+    IN PCWSTR Directory);
+
+DWORD
+SETUPAPI_GetCatalogSignerScore(
+    IN PCWSTR CatalogPath);
+
 VOID
 SETUPAPI_DeleteDriverDatabasePackage(
     IN PCWSTR PublishedName);
@@ -515,5 +529,17 @@ BOOL SETUPAPI_InstallFromInfSectionWithIncludes(HWND owner, HINF hinf, PCWSTR se
                                                 HDEVINFO devinfo, PSP_DEVINFO_DATA devinfo_data);
 
 BOOL SETUPAPI_InstallHardwareSection(HINF hinf, PCWSTR section, HKEY hardware_key, HKEY device_key);
+
+struct DeviceExtension
+{
+    GUID ExtensionId;
+    WCHAR InfPath[MAX_PATH];
+    WCHAR Section[LINE_LEN];
+    FILETIME DriverDate;
+    DWORDLONG DriverVersion;
+};
+
+BOOL SETUPAPI_FindDeviceExtensions(PCWSTR HardwareIds, PCWSTR CompatibleIds,
+                                   struct DeviceExtension **Extensions, DWORD *Count);
 
 #endif /* __SETUPAPI_PRIVATE_H */

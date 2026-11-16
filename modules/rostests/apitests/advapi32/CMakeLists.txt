@@ -60,6 +60,7 @@ list(APPEND SOURCE
     ServiceEnv.c
     ServiceNetwork.c
     ServicePowerSetting.c
+    ServiceSidInfo.c
     StartServiceCtrlDispatcher.c
     TriggerInfo.c
     TokenBnoIsolation.c

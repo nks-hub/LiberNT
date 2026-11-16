@@ -2,7 +2,7 @@
 include(ExternalProject)
 
 function(setup_host_tools)
-    list(APPEND HOST_TOOLS asmpp bin2c gas2armasm widl gendib cabman fatten hpp isohybrid mkdiskimg mkdrvdb mkhive mkisofs obj2bin spec2def geninc mkshelllink txt2nls utf16le xml2sdb windmc wimage)
+    list(APPEND HOST_TOOLS asmpp bin2c gas2armasm widl gendib cabman fatten hpp mkdiskimg mkdrvdb mkhive mkisofs obj2bin spec2def geninc mkshelllink txt2nls utf16le xml2sdb windmc wimage)
     if(NOT CMAKE_HOST_WIN32)
         list(APPEND HOST_TOOLS ntfsimg)
     endif()
@@ -153,7 +153,7 @@ function(setup_host_tools)
                 -DTARGET_BUILD_TYPE=${CMAKE_BUILD_TYPE}
                 -DCMAKE_BUILD_TYPE=${HOST_BUILD_TYPE}
                 -DUSE_DUMMY_PSEH:BOOL=${USE_DUMMY_PSEH}
-                -DREACTOS_TARGET_NT:STRING=0x502
+                -DREACTOS_TARGET_NT:STRING=${REACTOS_TARGET_NT}
                 ${CMAKE_HOST_TOOLS_EXTRA_ARGS}
             BUILD_ALWAYS TRUE
             INSTALL_COMMAND ${CMAKE_COMMAND} -E true

@@ -57,9 +57,9 @@ elseif(ARCH STREQUAL "arm64" OR ARCH STREQUAL "riscv64")
     "Which CPU ReactOS should be optimized for.")
 endif()
 
-set(OPTIMIZE "4" CACHE STRING
+set(OPTIMIZE "0" CACHE STRING
 "What level of optimization to use.
- 0 = Off
+ 0 = Off (-O0)
  1 = Optimize for size (-Os) with some additional options
  2 = Optimize for size (-Os)
  3 = Optimize debugging experience (-Og)
@@ -262,7 +262,7 @@ cmake_dependent_option(FFMPEG_FROM_SOURCE
                        "ENABLE_FFMPEG" OFF)
 
 cmake_dependent_option(ENABLE_DXILCONV
-                       "Build dxilconv.dll, the DXBC to DXIL converter of the Direct3D 12 runtime, from the dxc feed" OFF
+                       "Build dxilconv.dll, the DXBC to DXIL converter of the Direct3D 12 runtime, from the dxc feed" ON
                        "ARCH STREQUAL i386 OR ARCH STREQUAL amd64 OR ARCH STREQUAL arm64;CMAKE_C_COMPILER_ID STREQUAL Clang;NOT MSVC" OFF)
 
 set(_wow64_default OFF)
@@ -289,10 +289,6 @@ set(RDPSERVER_DIR "" CACHE PATH
     "MinGW build of the RDP console server (install directory) to stage into the live and preinstalled images")
 set(RDPSERVER_CONFIG_DIR "" CACHE PATH
     "Directory with a private rdpserver.ini and its TLS certificate/key for the RDP console server")
-
-cmake_dependent_option(ENABLE_ROSV
-                       "Whether to build the ROSV VMX hypervisor driver and its user-mode tools." OFF
-                       "ARCH STREQUAL amd64" OFF)
 
 cmake_dependent_option(FREELDR_HTTP_BOOT
                        "Whether to build the FreeLdr UEFI HTTP boot path." OFF
@@ -351,11 +347,19 @@ if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
     option(STACK_PROTECTOR "Whether to enable the GCC stack checker while compiling" OFF)
 endif()
 
+if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
+    cmake_dependent_option(ENABLE_KERNEL_UBSAN "Whether to report undefined behavior in kernel-mode modules at run time" ON
+                           "CMAKE_BUILD_TYPE STREQUAL Debug" OFF)
+endif()
+
 set(USE_DUMMY_PSEH FALSE CACHE BOOL
 "Whether to disable PSEH support.")
 
 set(REACTOS_TARGET_NT "0xA00" CACHE STRING
-"Target NT version (e.g. 0x502, 0x600, 0x601, 0xA00)")
+"Target NT version (0xA00 or later)")
+if(REACTOS_TARGET_NT LESS 0xA00)
+    message(FATAL_ERROR "LiberNT requires NT 10 or later")
+endif()
 
 set(REACTOS_GRAPHICS_DRIVER_MODEL "WDDM" CACHE STRING
 "Display driver model to build. Specify XPDM or WDDM.")

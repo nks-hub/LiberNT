@@ -1,10 +1,10 @@
 /*
-* PROJECT:         ReactOS Kernel
-* LICENSE:         GPL - See COPYING in the top level directory
-* FILE:            ntoskrnl/include/internal/io_x.h
-* PURPOSE:         Internal Inlined Functions for the I/O Manager
-* PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
-*/
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     I/O manager inline helpers: file object locks, IRP lists, counters
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
 
 static
 __inline
@@ -14,154 +14,153 @@ IopLockFileObject(
     _In_ KPROCESSOR_MODE WaitMode)
 {
     BOOLEAN LockFailed;
+    NTSTATUS Status;
 
-    /* Lock the FO and check for contention */
     if (InterlockedExchange((PLONG)&FileObject->Busy, TRUE) == FALSE)
     {
         ObReferenceObject(FileObject);
         return STATUS_SUCCESS;
     }
-    else
-    {
-        return IopAcquireFileObjectLock(FileObject,
-                                        WaitMode,
-                                        BooleanFlagOn(FileObject->Flags, FO_ALERTABLE_IO),
-                                        &LockFailed);
-    }
+
+    Status = IopAcquireFileObjectLock(FileObject, WaitMode, BooleanFlagOn(FileObject->Flags, FO_ALERTABLE_IO), &LockFailed);
+    ASSERT((Status == STATUS_SUCCESS) == !LockFailed);
+    return Status;
 }
 
 static
 __inline
 VOID
-IopUnlockFileObject(IN PFILE_OBJECT FileObject)
+IopUnlockFileObject(
+    _In_ PFILE_OBJECT FileObject)
 {
-    /* Unlock the FO and wake any waiters up */
     NT_VERIFY(InterlockedExchange((PLONG)&FileObject->Busy, FALSE) == TRUE);
-    if (FileObject->Waiters)
-    {
+
+    if (FileObject->Waiters != 0)
         KeSetEvent(&FileObject->Lock, IO_NO_INCREMENT, FALSE);
-    }
+
     ObDereferenceObject(FileObject);
 }
 
 FORCEINLINE
 VOID
-IopQueueIrpToThread(IN PIRP Irp)
+IopQueueIrpToThread(
+    _In_ PIRP Irp)
 {
     PETHREAD Thread = Irp->Tail.Overlay.Thread;
+    KIRQL OldIrql;
 
-    /* Disable special kernel APCs so we can't race with IopCompleteRequest.
-     * IRP's thread must be the current thread */
+    /* With special kernel APCs off, IopCompleteRequest cannot run on this thread meanwhile */
     KeEnterGuardedRegionThread(&Thread->Tcb);
 
-    /* Insert it into the list */
+    KeAcquireSpinLock(&Thread->IrpListLock, &OldIrql);
     InsertHeadList(&Thread->IrpList, &Irp->ThreadListEntry);
+    KeReleaseSpinLock(&Thread->IrpListLock, OldIrql);
 
-    /* Leave the guarded region */
     KeLeaveGuardedRegionThread(&Thread->Tcb);
 }
 
 FORCEINLINE
 VOID
-IopUnQueueIrpFromThread(IN PIRP Irp)
+IopUnQueueIrpFromThread(
+    _In_ PIRP Irp)
 {
-    /* Special kernel APCs must be disabled so we can't race with
-     * IopCompleteRequest (or because we are called from there) */
+    /* The list changes only in its thread's context; the completion APC overlays Tail.Overlay.Thread */
+    PETHREAD Thread = PsGetCurrentThread();
+    KIRQL OldIrql;
+
     ASSERT(KeAreAllApcsDisabled());
 
-    /* Remove it from the list and reset it */
     if (IsListEmpty(&Irp->ThreadListEntry))
         return;
+
+    KeAcquireSpinLock(&Thread->IrpListLock, &OldIrql);
     RemoveEntryList(&Irp->ThreadListEntry);
     InitializeListHead(&Irp->ThreadListEntry);
+    KeReleaseSpinLock(&Thread->IrpListLock, OldIrql);
 }
 
 static
 __inline
 VOID
-IopUpdateOperationCount(IN IOP_TRANSFER_TYPE Type)
+IopUpdateOperationCount(
+    _In_ IOP_TRANSFER_TYPE Type)
 {
-    PLARGE_INTEGER CountToChange;
+    PEPROCESS Process;
+    PKPRCB Prcb;
 
-    /* Make sure I/O operations are being counted */
-    if (IoCountOperations)
+    if (!IoCountOperations)
+        return;
+
+    Process = PsGetCurrentProcess();
+    Prcb = KeGetCurrentPrcb();
+
+    switch (Type)
     {
-        if (Type == IopReadTransfer)
-        {
-            /* Increase read count */
-            IoReadOperationCount++;
-            CountToChange = &PsGetCurrentProcess()->ReadOperationCount;
-        }
-        else if (Type == IopWriteTransfer)
-        {
-            /* Increase write count */
-            IoWriteOperationCount++;
-            CountToChange = &PsGetCurrentProcess()->WriteOperationCount;
-        }
-        else
-        {
-            /* Increase other count */
-            IoOtherOperationCount++;
-            CountToChange = &PsGetCurrentProcess()->OtherOperationCount;
-        }
+        case IopReadTransfer:
+            InterlockedIncrement((PLONG)&Prcb->IoReadOperationCount);
+            InterlockedIncrement((PLONG)&IoReadOperationCount);
+            ExInterlockedAddLargeStatistic(&Process->ReadOperationCount, 1);
+            break;
 
-        /* Increase the process-wide count */
-        ExInterlockedAddLargeStatistic(CountToChange, 1);
+        case IopWriteTransfer:
+            InterlockedIncrement((PLONG)&Prcb->IoWriteOperationCount);
+            InterlockedIncrement((PLONG)&IoWriteOperationCount);
+            ExInterlockedAddLargeStatistic(&Process->WriteOperationCount, 1);
+            break;
+
+        default:
+            InterlockedIncrement((PLONG)&Prcb->IoOtherOperationCount);
+            InterlockedIncrement((PLONG)&IoOtherOperationCount);
+            ExInterlockedAddLargeStatistic(&Process->OtherOperationCount, 1);
+            break;
     }
 }
 
 static
 __inline
 VOID
-IopUpdateTransferCount(IN IOP_TRANSFER_TYPE Type, IN ULONG TransferCount)
+IopUpdateTransferCount(
+    _In_ IOP_TRANSFER_TYPE Type,
+    _In_ ULONG TransferCount)
 {
-    PLARGE_INTEGER CountToChange;
-    PLARGE_INTEGER TransferToChange;
+    PEPROCESS Process;
+    PKPRCB Prcb;
 
-    /* Make sure I/O operations are being counted */
-    if (IoCountOperations)
+    if (!IoCountOperations)
+        return;
+
+    Process = PsGetCurrentProcess();
+    Prcb = KeGetCurrentPrcb();
+
+    switch (Type)
     {
-        if (Type == IopReadTransfer)
-        {
-            /* Increase read count */
-            CountToChange = &PsGetCurrentProcess()->ReadTransferCount;
-            TransferToChange = &IoReadTransferCount;
-        }
-        else if (Type == IopWriteTransfer)
-        {
-            /* Increase write count */
-            CountToChange = &PsGetCurrentProcess()->WriteTransferCount;
-            TransferToChange = &IoWriteTransferCount;
-        }
-        else
-        {
-            /* Increase other count */
-            CountToChange = &PsGetCurrentProcess()->OtherTransferCount;
-            TransferToChange = &IoOtherTransferCount;
-        }
+        case IopReadTransfer:
+            ExInterlockedAddLargeStatistic(&Prcb->IoReadTransferCount, TransferCount);
+            ExInterlockedAddLargeStatistic(&IoReadTransferCount, TransferCount);
+            ExInterlockedAddLargeStatistic(&Process->ReadTransferCount, TransferCount);
+            break;
 
-        /* Increase the process-wide count */
-        ExInterlockedAddLargeStatistic(CountToChange, TransferCount);
+        case IopWriteTransfer:
+            ExInterlockedAddLargeStatistic(&Prcb->IoWriteTransferCount, TransferCount);
+            ExInterlockedAddLargeStatistic(&IoWriteTransferCount, TransferCount);
+            ExInterlockedAddLargeStatistic(&Process->WriteTransferCount, TransferCount);
+            break;
 
-        /* Increase global count */
-        ExInterlockedAddLargeStatistic(TransferToChange, TransferCount);
+        default:
+            ExInterlockedAddLargeStatistic(&Prcb->IoOtherTransferCount, TransferCount);
+            ExInterlockedAddLargeStatistic(&IoOtherTransferCount, TransferCount);
+            ExInterlockedAddLargeStatistic(&Process->OtherTransferCount, TransferCount);
+            break;
     }
 }
 
 static
 __inline
 BOOLEAN
-IopValidateOpenPacket(IN POPEN_PACKET OpenPacket)
+IopValidateOpenPacket(
+    _In_opt_ POPEN_PACKET OpenPacket)
 {
-    /* Validate the packet */
-    if (!(OpenPacket) ||
-        (OpenPacket->Type != IO_TYPE_OPEN_PACKET) ||
-        (OpenPacket->Size != sizeof(OPEN_PACKET)))
-    {
-        /* Fail */
-        return FALSE;
-    }
-
-    /* Good packet */
-    return TRUE;
+    return (BOOLEAN)(OpenPacket != NULL &&
+                     OpenPacket->Type == IO_TYPE_OPEN_PACKET &&
+                     OpenPacket->Size == sizeof(OPEN_PACKET));
 }

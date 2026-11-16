@@ -336,6 +336,7 @@ Bus_PlugInDevice (
     ULONG               index;
 	WCHAR               temp[512];
     PLIST_ENTRY         entry;
+    struct acpi_device *parent;
     BOOLEAN             multiSzBuilt = TRUE;
     BOOLEAN             hasPciExpressCid = FALSE;
     BOOLEAN             isPciRoot;
@@ -570,6 +571,16 @@ Bus_PlugInDevice (
 	RtlCopyMemory (pdoData->HardwareIDs, temp, index*sizeof(WCHAR));
 	Device->pdo = pdo;
 
+    /* TODO: report a device below the PCI function that is its namespace parent instead of the PCI root */
+    for (parent = Device->parent; parent; parent = parent->parent)
+    {
+        if (parent->pdo && BuspIsPciRootDevice(parent->pdo->DeviceExtension))
+        {
+            pdoData->ParentPciRoot = parent->pdo;
+            break;
+        }
+    }
+
     if (hasPciExpressCid)
     {
         ACPI_PCIROOT_TRACE("  |_ PCI root %hs exposes PCIe compatibility ID\n",
@@ -606,6 +617,7 @@ ACPIEnumerateDevices(PFDO_DEVICE_DATA DeviceExtension)
     {
         if (Device->status.present && Device->status.enabled &&
             Device->flags.hardware_id &&
+            _stricmp(Device->pnp.hardware_id, ACPI_PCI_LINK_HID) != 0 &&
             (!DebuggerDevice || Device->handle != DebuggerDevice))
         {
             if (BuspShouldEnumerateDevice(Device, &ProcessorUids))

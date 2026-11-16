@@ -96,6 +96,10 @@ VOID ICMPReceive(
     {
         PmtuReceive(Interface, IPPacket);
     }
+    else if (ICMPHeader->Type == ICMP_TYPE_DEST_UNREACH && ICMPHeader->Code == ICMP_CODE_DU_PORT_UNREACH)
+    {
+        UDPReceiveUnreachable(Interface, IPPacket);
+    }
 }
 
 VOID ICMPReply(
@@ -140,6 +144,7 @@ VOID ICMPReply(
         GetInterfaceSourceAddress(Interface, &IPPacket->SrcAddr, &NCE->Address, &Source);
 
     /* This is the only data needed to generate a packet */
+    RtlZeroMemory(&FakeAddrFile, sizeof(FakeAddrFile));
     FakeAddrFile.Protocol = IPPROTO_ICMP;
     FakeAddrFile.TTL = 128;
 

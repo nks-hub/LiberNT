@@ -9,6 +9,7 @@
 /* INCLUDES *******************************************************************/
 
 #include <hal.h>
+#include <acpifault.h>
 #define NDEBUG
 #include <debug.h>
 
@@ -25,7 +26,7 @@ BOOLEAN HalpPicVectorOverrideValid[16];
 
 /* This determines the HAL type */
 BOOLEAN HalDisableFirmwareMapper = TRUE;
-PWCHAR HalHardwareIdString = L"acpipic_up";
+PWCHAR HalHardwareIdString = L"acpiapic";
 PWCHAR HalName = L"ACPI Compatible Eisa/Isa HAL";
 
 /* PRIVATE FUNCTIONS **********************************************************/
@@ -302,6 +303,8 @@ HalReportResourceUsage(VOID)
 {
     INTERFACE_TYPE InterfaceType;
     UNICODE_STRING HalString;
+
+    HalpAcpiReportFaults();
 
     /* FIXME: Initialize DMA 64-bit support */
 

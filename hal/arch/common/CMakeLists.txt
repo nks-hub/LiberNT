@@ -23,6 +23,8 @@ endforeach()
 list(APPEND SOURCE
     generic/display.c
     generic/efi.c
+    generic/fdtpnp.c
+    generic/inttarget.c
     generic/memory.c
     generic/misc.c
     generic/sysinfo_stubs.c

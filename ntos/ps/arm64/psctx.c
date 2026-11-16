@@ -12,184 +12,6 @@
 
 /* FUNCTIONS ******************************************************************/
 
-static
-PVOID
-PspArm64ResolveSystemDllUserVa(
-    _Inout_ PEPROCESS Process,
-    _In_opt_ PVOID KernelOrUserAddress)
-{
-    PVOID UserAddress;
-
-    if ((Process == NULL) || (KernelOrUserAddress == NULL))
-    {
-        return NULL;
-    }
-
-    UserAddress = KiConvertSystemDllAddressToUser(KernelOrUserAddress, Process);
-    if (UserAddress != NULL)
-    {
-        return UserAddress;
-    }
-
-    if ((ULONG_PTR)KernelOrUserAddress < (ULONG_PTR)MmSystemRangeStart)
-    {
-        return KernelOrUserAddress;
-    }
-
-    return NULL;
-}
-
-static
-VOID
-PspArm64AddPrimePage(
-    _Inout_updates_(8) PVOID *Pages,
-    _Inout_ PULONG Count,
-    _In_opt_ PVOID Address)
-{
-    PVOID Page;
-    ULONG Index;
-
-    if ((Address == NULL) ||
-        ((ULONG_PTR)Address >= (ULONG_PTR)MmSystemRangeStart) ||
-        (*Count >= 8))
-    {
-        return;
-    }
-
-    Page = PAGE_ALIGN(Address);
-    for (Index = 0; Index < *Count; Index++)
-    {
-        if (Pages[Index] == Page)
-        {
-            return;
-        }
-    }
-
-    Pages[*Count] = Page;
-    (*Count)++;
-}
-
-static
-NTSTATUS
-PspArm64PrimeUserInstructionPage(
-    _In_ PVOID UserPage)
-{
-    NTSTATUS Status;
-    ULONG_PTR Address;
-
-    Address = (ULONG_PTR)UserPage;
-    ASSERT(Address < (ULONG_PTR)MmSystemRangeStart);
-    Status = MmAccessFaultEx(FALSE, UserPage, UserMode, NULL, FALSE);
-    if (NT_SUCCESS(Status))
-    {
-        ARM64_DSB(ISHST);
-        ARM64_TLBI(VAALE1IS, Address >> PAGE_SHIFT);
-        ARM64_DSB(ISH);
-        ARM64_ISB();
-
-        /*
-         * The ARM64 user mapping paths already perform cache maintenance via a
-         * kernel-writable alias when they materialize executable pages.
-         * Re-sweeping through the EL0 VA here risks cache maintenance through a
-         * read-only user alias, which can surface later as a delayed SError on
-         * the first ERET into user mode.
-         */
-    }
-
-    return Status;
-}
-
-ULONG
-NTAPI
-PsArchSystemDllProtection(
-    VOID)
-{
-    return PAGE_EXECUTE_WRITECOPY;
-}
-
-VOID
-NTAPI
-PsArchSetSystemDllBase(
-    _Inout_ PEPROCESS Process,
-    _In_opt_ PVOID ImageBase)
-{
-    /*
-     * Keep the user-mode ntdll base so kernel dispatcher entry points can be
-     * translated back into the target process mapping.
-     */
-    PspSystemDllBase = ImageBase;
-}
-
-NTSTATUS
-NTAPI
-PsArchPrimeSystemDllPages(
-    _Inout_ PEPROCESS Process)
-{
-    PVOID Pages[8];
-    ULONG Count = 0;
-    ULONG Index;
-    KAPC_STATE ApcState;
-    BOOLEAN Attached = FALSE;
-    NTSTATUS Status;
-
-    RtlZeroMemory(Pages, sizeof(Pages));
-
-    if ((Process == NULL) || (PspSystemDllBase == NULL))
-    {
-        return STATUS_SUCCESS;
-    }
-
-    PspArm64AddPrimePage(Pages, &Count, PspSystemDllBase);
-    PspArm64AddPrimePage(Pages,
-                         &Count,
-                         PspArm64ResolveSystemDllUserVa(Process, PspSystemDllEntryPoint));
-    PspArm64AddPrimePage(Pages,
-                         &Count,
-                         PspArm64ResolveSystemDllUserVa(Process, KeUserApcDispatcher));
-    PspArm64AddPrimePage(Pages,
-                         &Count,
-                         PspArm64ResolveSystemDllUserVa(Process, KeUserExceptionDispatcher));
-    PspArm64AddPrimePage(Pages,
-                         &Count,
-                         PspArm64ResolveSystemDllUserVa(Process, KeUserCallbackDispatcher));
-    PspArm64AddPrimePage(Pages,
-                         &Count,
-                         PspArm64ResolveSystemDllUserVa(Process, KeRaiseUserExceptionDispatcher));
-
-    if (Count == 0)
-    {
-        return STATUS_SUCCESS;
-    }
-
-    if (PsGetCurrentProcess() != Process)
-    {
-        KeStackAttachProcess(&Process->Pcb, &ApcState);
-        Attached = TRUE;
-    }
-
-    Status = STATUS_SUCCESS;
-    for (Index = 0; Index < Count; Index++)
-    {
-        if (!NT_SUCCESS(Status))
-        {
-            break;
-        }
-
-        Status = PspArm64PrimeUserInstructionPage(Pages[Index]);
-        if (!NT_SUCCESS(Status))
-        {
-            break;
-        }
-    }
-
-    if (Attached)
-    {
-        KeUnstackDetachProcess(&ApcState);
-    }
-
-    return Status;
-}
-
 /**
  * @brief Get a thread's context from its trap frame
  *
@@ -371,6 +193,34 @@ PspGetOrSetContextKernelRoutine(
     KeSetEvent(&GetSetContext->Event, IO_NO_INCREMENT, FALSE);
 }
 
+C_ASSERT(FIELD_OFFSET(CONTEXT, ContextFlags) == FIELD_OFFSET(WOW64_CONTEXT, ContextFlags));
+C_ASSERT(FIELD_OFFSET(WOW64_CONTEXT, SegSs) < sizeof(CONTEXT));
+
+BOOLEAN
+NTAPI
+PsArchGetWow64StartContext(
+    _In_ PCONTEXT Context,
+    _Out_ PULONG Eip,
+    _Out_ PULONG Eax,
+    _Out_ PULONG Ebx,
+    _Out_ PULONG Esp)
+{
+    PWOW64_CONTEXT Wow64Context = (PWOW64_CONTEXT)Context;
+
+    *Eip = *Eax = *Ebx = *Esp = 0;
+    if ((Context->ContextFlags & CONTEXT_ARM64) ||
+        !(Wow64Context->ContextFlags & WOW64_CONTEXT_i386))
+    {
+        return FALSE;
+    }
+
+    *Eip = Wow64Context->Eip;
+    *Eax = Wow64Context->Eax;
+    *Ebx = Wow64Context->Ebx;
+    *Esp = Wow64Context->Esp;
+    return TRUE;
+}
+
 VOID
 NTAPI
 PsArchInitializeUserThreadContext(
@@ -405,50 +255,6 @@ PspArchCopyLiveWow64Context(
 
 NTSTATUS
 NTAPI
-PspArchCopyWow64DebugRegisters(
-    _In_ PETHREAD Thread,
-    _Inout_ PWOW64_CONTEXT Context,
-    _In_ BOOLEAN SetContext)
-{
-    UNREFERENCED_PARAMETER(Thread);
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(SetContext);
-
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
-PspArchCaptureXStateContext(
-    _In_ PCONTEXT Context,
-    _In_ ULONG ContextFlags,
-    _In_ KPROCESSOR_MODE PreviousMode,
-    _In_ BOOLEAN SetContext,
-    _Out_ PVOID *XState)
-{
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(ContextFlags);
-    UNREFERENCED_PARAMETER(PreviousMode);
-    UNREFERENCED_PARAMETER(SetContext);
-
-    /* TODO: capture the extended processor state (CONTEXT_XSTATE) of the context */
-    *XState = NULL;
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
-PspArchCompleteXStateContext(
-    _In_opt_ PVOID XState,
-    _In_ BOOLEAN CopyOut)
-{
-    UNREFERENCED_PARAMETER(XState);
-    UNREFERENCED_PARAMETER(CopyOut);
-    return STATUS_SUCCESS;
-}
-
-NTSTATUS
-NTAPI
 PspArchSetInstrumentationCallback(
     _In_ PEPROCESS Process,
     _In_reads_bytes_(Length) PVOID Information,
@@ -463,16 +269,10 @@ PspArchSetInstrumentationCallback(
     return STATUS_INVALID_INFO_CLASS;
 }
 
-VOID
+BOOLEAN
 NTAPI
-PspArchInitializeUserThreadStartup(
-    _In_ PKEXCEPTION_FRAME ExceptionFrame,
-    _Inout_ PKTRAP_FRAME TrapFrame)
+PspArchManagesExecutableWrites(VOID)
 {
-    KiInitializeUserApc(ExceptionFrame,
-                        TrapFrame,
-                        PspSystemDllEntryPoint,
-                        NULL,
-                        PspSystemDllBase,
-                        NULL);
+    return TRUE;
 }
+

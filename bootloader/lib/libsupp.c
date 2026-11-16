@@ -126,6 +126,9 @@ CHECK_PAGED_CODE_RTL(
 }
 #endif
 
+BOOLEAN FwDebugScreen;
+BOOLEAN FwDebugEnabled = DBG;
+
 ULONG
 __cdecl
 DbgPrint(

@@ -38,6 +38,12 @@ FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreCompleteLocked(_In_ volatile const LONG64
     return TRUE;
 }
 
+FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreNeedsRebuildLocked(_In_ volatile const LONG64 *Generation, _In_ LONG64 RebuiltGeneration)
+{
+    ASSERT(*Generation >= RebuiltGeneration);
+    return *Generation != RebuiltGeneration;
+}
+
 FORCEINLINE LONG64 DxgkHotPlugWorkCoreBeginEnumerationEpochLocked(_Inout_ volatile LONG64 *Epoch, _Inout_ volatile LONG *Enumerated)
 {
     LONG64 NextEpoch = InterlockedIncrement64(Epoch);
@@ -73,6 +79,11 @@ FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreCanAcquireLevel3AfterRundown(_In_ volatil
 FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreIsTransientStatus(_In_ NTSTATUS Status)
 {
     return Status == STATUS_RETRY || Status == STATUS_INSUFFICIENT_RESOURCES || Status == STATUS_NO_MEMORY || Status == STATUS_DEVICE_NOT_READY || Status == STATUS_DEVICE_BUSY || Status == STATUS_IO_TIMEOUT;
+}
+
+FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreAwaitsEnumerationLocked(_In_ volatile const LONG *Enumerated)
+{
+    return *Enumerated == 0;
 }
 
 FORCEINLINE BOOLEAN DxgkHotPlugWorkCoreShouldRetry(_In_ NTSTATUS Status, _In_ ULONG RetryCount)

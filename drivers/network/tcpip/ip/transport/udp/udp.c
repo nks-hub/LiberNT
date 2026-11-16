@@ -238,11 +238,15 @@ static NTSTATUS UDPSendToAddress(
     USHORT RemotePort,
     PCHAR BufferData,
     ULONG DataSize,
-    const WFP_SHIM_TAG *Tag)
+    const WFP_SHIM_TAG *Tag,
+    IPv4_RAW_ADDRESS Source,
+    ULONG SourceSelector)
 {
     IP_PACKET Packet;
     IP_PACKET LoopPacket;
     IP_ADDRESS LocalAddress;
+    ULONG UnicastSelector;
+    ULONG Selector;
     USHORT LocalPort;
     NTSTATUS Status;
     PNEIGHBOR_CACHE_ENTRY NCE;
@@ -253,12 +257,39 @@ static NTSTATUS UDPSendToAddress(
     IsBroadcast = UDPIsBroadcastAddress(&RemoteAddress);
     IsMulticast = ((DN2H(RemoteAddress.Address.IPv4Address) & 0xf0000000) == 0xe0000000);
 
+    if (DN2H(SourceSelector) >= 0x01000000)
+        return STATUS_INVALID_ADDRESS;
+
     LockObject(AddrFile);
 
     LocalAddress = AddrFile->Address;
-    if ((DN2H(RemoteAddress.Address.IPv4Address) & 0xf0000000) == 0xe0000000)
+    UnicastSelector = SourceSelector ? SourceSelector : AddrFile->UnicastInterface;
+    Selector = IsMulticast ? (SourceSelector ? SourceSelector : AddrFile->MulticastInterface) : UnicastSelector;
+    if (Source)
+        AddrInitIPv4(&LocalAddress, Source);
+    if (Source || SourceSelector)
     {
-        ULONG Selector = AddrFile->MulticastInterface;
+        PIP_INTERFACE SourceInterface = Source ? AddrLocateInterface(&LocalAddress) : NULL;
+        PIP_INTERFACE Selected = Selector ? GetMulticastInterface(Selector) : NULL;
+
+        /* Windows refuses a source that is not on the chosen interface even when it sends as a weak host */
+        Status = STATUS_SUCCESS;
+        if (SourceSelector && !Selected)
+            Status = STATUS_INVALID_PARAMETER;
+        else if (Source && (!SourceInterface || (Selected && Selected != SourceInterface)))
+            Status = STATUS_INVALID_ADDRESS;
+        if (SourceInterface)
+            IPDereferenceInterface(SourceInterface);
+        if (Selected)
+            IPDereferenceInterface(Selected);
+        if (!NT_SUCCESS(Status))
+        {
+            UnlockObject(AddrFile);
+            return Status;
+        }
+    }
+    if (IsMulticast)
+    {
         if (!Selector) Selector = LocalAddress.Address.IPv4Address;
         NCE = RouteGetMulticastRoute(&RemoteAddress, Selector);
         if (!NCE)
@@ -268,9 +299,9 @@ static NTSTATUS UDPSendToAddress(
         }
         if (AddrIsUnspecified(&LocalAddress)) GetInterfaceSourceAddress(NCE->Interface, &RemoteAddress, &NCE->Address, &LocalAddress);
     }
-    else if (AddrFile->UnicastInterface)
+    else if (UnicastSelector)
     {
-        PIP_INTERFACE Interface = GetMulticastInterface(AddrFile->UnicastInterface);
+        PIP_INTERFACE Interface = GetMulticastInterface(UnicastSelector);
 
         NCE = Interface ? RouteGetRouteOnInterface(&RemoteAddress, Interface) : NULL;
         if (Interface)
@@ -382,6 +413,38 @@ static NTSTATUS UDPSendToAddress(
     return Status;
 }
 
+static VOID UDPGetSendPktInfo(
+    PTDI_CONNECTION_INFORMATION ConnInfo,
+    IPv4_RAW_ADDRESS *Source,
+    PULONG SourceSelector)
+{
+    PUCHAR Control = ConnInfo->Options;
+    ULONG Length = ConnInfo->OptionsLength > 0 ? (ULONG)ConnInfo->OptionsLength : 0;
+    TDI_CMSGHDR Header;
+    ULONG PktInfo[2];
+
+    *Source = 0;
+    *SourceSelector = 0;
+
+    while (Control && Length >= sizeof(Header))
+    {
+        RtlCopyMemory(&Header, Control, sizeof(Header));
+        if (Header.cmsg_len < TDI_CMSG_LEN(0) || Header.cmsg_len > Length)
+            return;
+        if (Header.cmsg_level == WS_IPPROTO_IP && Header.cmsg_type == WS_IP_PKTINFO &&
+            Header.cmsg_len >= TDI_CMSG_LEN(sizeof(PktInfo)))
+        {
+            RtlCopyMemory(PktInfo, TDI_CMSG_DATA(Control), sizeof(PktInfo));
+            *Source = PktInfo[0];
+            *SourceSelector = DH2N(PktInfo[1]);
+        }
+        if (TDI_CMSGHDR_ALIGN(Header.cmsg_len) >= Length)
+            return;
+        Length -= (ULONG)TDI_CMSGHDR_ALIGN(Header.cmsg_len);
+        Control += TDI_CMSGHDR_ALIGN(Header.cmsg_len);
+    }
+}
+
 NTSTATUS UDPSendDatagram(
     PADDRESS_FILE AddrFile,
     PTDI_CONNECTION_INFORMATION ConnInfo,
@@ -407,6 +470,8 @@ NTSTATUS UDPSendDatagram(
     ULONG SendMsgSize;
     ULONG Offset;
     ULONG Chunk;
+    IPv4_RAW_ADDRESS Source;
+    ULONG SourceSelector;
 
     TI_DbgPrint(MID_TRACE,("Sending Datagram(%x %x %x %d)\n",
 						   AddrFile, ConnInfo, BufferData, DataSize));
@@ -434,6 +499,8 @@ NTSTATUS UDPSendDatagram(
 		return STATUS_UNSUCCESSFUL;
     }
 
+    UDPGetSendPktInfo(ConnInfo, &Source, &SourceSelector);
+
     SendMsgSize = AddrFile->SendMsgSize;
     if (SendMsgSize == 0 || SendMsgSize >= DataSize)
         SendMsgSize = DataSize;
@@ -442,7 +509,7 @@ NTSTATUS UDPSendDatagram(
     do
     {
         Chunk = min(SendMsgSize, DataSize - Offset);
-        Status = UDPSendToAddress(AddrFile, RemoteAddress, RemotePort, BufferData + Offset, Chunk, &NoTag);
+        Status = UDPSendToAddress(AddrFile, RemoteAddress, RemotePort, BufferData + Offset, Chunk, &NoTag, Source, SourceSelector);
         if (!NT_SUCCESS(Status))
             return Status;
         Offset += Chunk;
@@ -542,7 +609,9 @@ static VOID UDPInjectWorker(
                                       UDPHeader->DestPort,
                                       (PCHAR)(UDPHeader + 1),
                                       Injection->Length - sizeof(UDP_HEADER),
-                                      &Injection->Tag);
+                                      &Injection->Tag,
+                                      0,
+                                      0);
         }
         DereferenceObject(AddrFile);
     }

@@ -98,6 +98,7 @@ KMT_TESTFUNC Test_TcpIpTdi;
 KMT_TESTFUNC Test_TcpIpConnect;
 KMT_TESTFUNC Test_TcpIpCancelReceive;
 KMT_TESTFUNC Test_WfpListen;
+KMT_TESTFUNC Test_WskEvents;
 KMT_TESTFUNC Test_WskName;
 KMT_TESTFUNC Test_WfpTcp;
 KMT_TESTFUNC Test_WfpUdp;
@@ -197,6 +198,7 @@ const KMT_TEST TestList[] =
     { "WfpTcp",                       Test_WfpTcp },
     { "WfpUdp",                       Test_WfpUdp },
     { "WfpUser",                      Test_WfpUser },
+    { "WskEvents",                    Test_WskEvents },
 #ifdef _M_AMD64
     { "KeContextSegments",            Test_KeContextSegments },
     { "KeNonCanonicalReturn",         Test_KeNonCanonicalReturn },

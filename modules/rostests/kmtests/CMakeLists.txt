@@ -694,6 +694,7 @@ list(APPEND KMTEST_SOURCE
     ntos_mm/NtUserPhysicalPages.c
     ntos_mm/NtProcessClone.c
     ndis/NdisSgDma_user.c
+    netio/wsk_events/wsk_events_user.c
     ntos_po/BatteryClassNotify_user.c
     ntos_po/PoDisplayState_user.c
     ntos_po/PoHibernate_user.c

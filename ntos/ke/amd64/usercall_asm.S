@@ -1,8 +1,9 @@
 /*
- * PROJECT:     ReactOS Kernel
- * LICENSE:     GPL-2.0+ (https://spdx.org/licenses/GPL-2.0+)
- * PURPOSE:     ReactOS AMD64 user mode callback helper
- * COPYRIGHT:   Timo Kreuzer (timo.kreuzer@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     amd64 user-mode callback entry, return and stack switch
+ * COPYRIGHT:   Copyright Timo Kreuzer <timo.kreuzer@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #include <ksamd64.inc>
@@ -11,63 +12,35 @@
 EXTERN KiInitiateUserApc:PROC
 EXTERN KeUserCallbackDispatcher:QWORD
 
-/*
- * NTSTATUS
- * KiUserModeCallout (
- *     _Inout_ PKCALLOUT_FRAME CalloutFrame);
- */
 EXTERN KiUserModeCallout:PROC
 
 .code64
 
-/*
- * NTSTATUS
- * KiCallUserMode (
- *     _In_ PVOID *OutputBuffer@<rcx>,
- *     _In_ PULONG OutputLength@<rdx>);
- */
+/* NTSTATUS KiCallUserMode(PVOID *OutputBuffer rcx, PULONG OutputLength rdx) */
 PUBLIC KiCallUserMode
 .PROC KiCallUserMode
 
-    /* Generate a KEXCEPTION_FRAME on the stack */
-    /* This is identical to a KCALLOUT_FRAME */
     GENERATE_EXCEPTION_FRAME
 
-    /* Save OutputBuffer and OutputLength */
     mov [rsp + ExOutputBuffer], rcx
     mov [rsp + ExOutputLength], rdx
 
-    /* Call the C function */
     mov rcx, rsp
     call KiUserModeCallout
 
-    /* Restore the registers from the KEXCEPTION_FRAME */
     RESTORE_EXCEPTION_STATE
 
-    /* Return */
     ret
 
 .ENDP
 
-
-/*!
- * \brief Exits to user mode, restores only rsp and rip, zeroes the rest.
- *
- * \todo Merge this with KiCallUserMode + KiUserModeCallout and skip the trap frame.
- *
- * DECLSPEC_NORETURN
- * VOID
- * KiUserCallbackExit(
- *     _In_ PKTRAP_FRAME TrapFrame@<rcx>);
- */
+ /* KiUserCallbackExit(PKTRAP_FRAME rcx): back to user mode with only rsp and rip restored, the rest zeroed */
  PUBLIC KiUserCallbackExit
 KiUserCallbackExit:
 
-    /* Point rsp to the trap frame */
     mov rsp, rcx
 
-    /* Zero non-volatile registers for KiUserCallbackDispatcher.
-       This must be done before dispatching a pending user APC. */
+    /* Zero the nonvolatiles for KiUserCallbackDispatcher before any pending user APC runs */
     xor rbx, rbx
     xor rdi, rdi
     xor rsi, rsi
@@ -87,11 +60,9 @@ KiUserCallbackExit:
     pxor xmm14, xmm14
     pxor xmm15, xmm15
 
-    /* Check for pending user APC */
     mov rdx, gs:[PcCurrentThread]
     HANDLE_USER_APCS rdx, rsp
 
-    /* Zero volatile registers */
     xor rax, rax
     xor rdx, rdx
     xor r8, r8
@@ -104,12 +75,14 @@ KiUserCallbackExit:
     pxor xmm4, xmm4
     pxor xmm5, xmm5
 
-    /* Disable interrupts for return */
     cli
+
+    /* The callback is the outermost user level of its own kernel stack; NtCallbackReturn restores the caller's frame */
+    mov rdx, gs:[PcCurrentThread]
+    mov qword ptr [rdx + ThTrapFrame], 0
 
     RESTORE_USER_DEBUG_REGISTERS rsp
 
-    /* Prepare user mode return address (rcx) and eflags (r11) for sysret */
     mov rcx, qword ptr KeUserCallbackDispatcher[rip]
     mov r11, EFLAGS_IF_MASK
 
@@ -123,41 +96,25 @@ KiUserCallbackExit:
 UserCallbackInstrumentationDone:
     xor edx, edx
 
-    /* Load user mode stack (It was copied to the trap frame) */
     mov rsp, [rsp + KTRAP_FRAME_Rsp]
 
-    /* Swap gs back to user */
     swapgs
 
-    /* return to user mode */
     sysretq
 
-
-/*
- * DECLSPEC_NORETURN
- * VOID
- * KiCallbackReturn (
- *     _In_ PVOID Stack,
- *     _In_ NTSTATUS Status);
- */
 PUBLIC KiCallbackReturn
 .PROC KiCallbackReturn
 
     .ENDPROLOG
 
-    /* Restore the stack */
     mov rsp, rcx
 
-    /* Set return status */
     mov eax, edx
 
-    /* Restore the registers from the KEXCEPTION_FRAME */
     RESTORE_EXCEPTION_STATE
 
-    /* Return */
     ret
 
 .ENDP
-
 
 END

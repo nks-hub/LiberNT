@@ -20,6 +20,7 @@ static EFI_SERIAL_IO_PROTOCOL* UefiSerialPorts[UEFI_SERIAL_MAX_PORTS];
 static EFI_HANDLE UefiSerialHandles[UEFI_SERIAL_MAX_PORTS];
 static ULONG UefiSerialCount;
 static BOOLEAN UefiSerialProbed;
+static BOOLEAN UefiSerialFirmwareDisabled;
 static BOOLEAN UefiSerialUseConsole;
 static BOOLEAN UefiSerialDirect;
 static BOOLEAN UefiSerialConsoleProbed;
@@ -106,6 +107,14 @@ UefiSerialIsCom1(
 }
 
 static
+BOOLEAN
+UefiSerialFirmwareIsUBoot(VOID)
+{
+    return GlobalSystemTable->FirmwareVendor &&
+           _wcsnicmp(GlobalSystemTable->FirmwareVendor, L"Das U-Boot", 10) == 0;
+}
+
+static
 VOID
 UefiSerialProbe(VOID)
 {
@@ -121,7 +130,7 @@ UefiSerialProbe(VOID)
 
     if (!EFI_ERROR(BootServices->LocateHandleBuffer(ByProtocol, &UefiSerialIoGuid, NULL, &Count, &Handles)))
     {
-        for (i = 0; i < Count && UefiSerialCount < (DBG ? UEFI_SERIAL_MAX_PORTS : 1); i++)
+        for (i = 0; i < Count && UefiSerialCount < (FwDebugEnabled ? UEFI_SERIAL_MAX_PORTS : 1); i++)
         {
             for (j = 0; j < UefiSerialCount && !UefiSerialSamePort(UefiSerialHandles[j], Handles[i]); j++)
             {
@@ -141,7 +150,7 @@ UefiSerialProbe(VOID)
         BootServices->FreePool(Handles);
     }
 
-    for (i = 0; DBG && i < UefiSerialCount; i++)
+    for (i = 0; FwDebugEnabled && i < UefiSerialCount; i++)
     {
         if (UefiSerialPorts[i]->Mode && UefiSerialPorts[i]->Mode->BaudRate == 0)
         {
@@ -154,10 +163,12 @@ UefiSerialProbe(VOID)
     if (UefiSerialCount)
         return;
 
+    /* U-Boot's console is the board's serial line and panel, so the log goes there too */
     UefiSerialUseConsole = GlobalSystemTable->ConOut &&
-                           EFI_ERROR(BootServices->LocateProtocol(&UefiGraphicsOutputGuid,
-                                                                  NULL,
-                                                                  &GraphicsOutput));
+                           (UefiSerialFirmwareIsUBoot() ||
+                            EFI_ERROR(BootServices->LocateProtocol(&UefiGraphicsOutputGuid,
+                                                                   NULL,
+                                                                   &GraphicsOutput)));
 }
 
 static
@@ -281,6 +292,7 @@ UefiSerialMirror(
 VOID
 UefiSerialDisableFirmware(VOID)
 {
+    UefiSerialFirmwareDisabled = TRUE;
     UefiSerialProbed = TRUE;
     UefiSerialCount = 0;
     UefiSerialUseConsole = FALSE;
@@ -293,6 +305,9 @@ FwDebugPrint(
 {
     PCSTR Next;
 
+    if (!FwDebugEnabled)
+        return;
+
     if (!UefiSerialProbed && !BootServicesExitedFlag)
         UefiSerialProbe();
 
@@ -304,6 +319,28 @@ FwDebugPrint(
     }
     UdpLogWrite(Text);
     BootLogWrite(Text);
+
+    if (FwDebugScreen && !BootServicesExitedFlag && GlobalSystemTable && GlobalSystemTable->ConOut)
+    {
+        CHAR16 Wide[128];
+        ULONG Count = 0;
+
+        for (Next = Text; *Next; Next++)
+        {
+            if (*Next == '\n')
+                Wide[Count++] = L'\r';
+            Wide[Count++] = (UCHAR)*Next;
+            if (Count >= RTL_NUMBER_OF(Wide) - 2)
+            {
+                Wide[Count] = UNICODE_NULL;
+                GlobalSystemTable->ConOut->OutputString(GlobalSystemTable->ConOut, Wide);
+                Count = 0;
+            }
+        }
+        Wide[Count] = UNICODE_NULL;
+        if (Count)
+            GlobalSystemTable->ConOut->OutputString(GlobalSystemTable->ConOut, Wide);
+    }
 }
 
 static
@@ -380,6 +417,17 @@ UefiSerialDescribe(
 }
 
 VOID
+FwDebugEnable(VOID)
+{
+    if (FwDebugEnabled)
+        return;
+
+    FwDebugEnabled = TRUE;
+    if (!UefiSerialFirmwareDisabled)
+        UefiSerialProbed = FALSE;
+}
+
+VOID
 FwDebugAnnounce(
     _In_ PCSTR Application,
     _In_ BOOLEAN NewLog)
@@ -387,7 +435,7 @@ FwDebugAnnounce(
     CHAR Line[UEFI_SERIAL_LINE_CHARS], Name[UEFI_SERIAL_LINE_CHARS / 2];
     ULONG Port, Adapters, i;
 
-    if (!DBG || BootServicesExitedFlag)
+    if (!FwDebugEnabled || BootServicesExitedFlag)
         return;
 
     BootLogStart(NewLog);

@@ -10,6 +10,7 @@
 #include <windef.h>
 
 #define DXGK_PRESENT_CORE_MAX_SUBRECTS 64U
+#define DXGK_PRESENT_CORE_WDDM_2_0 0x2000U
 
 typedef struct _DXGK_PRESENT_SCANOUT_RETIRE_POLICY
 {
@@ -81,6 +82,78 @@ DxgkPresentCoreEvaluateScanoutRetirement(
     }
 
     return STATUS_SUCCESS;
+}
+
+#define DXGK_START_CORE_SERVICE_DEMAND_START 3U
+
+/* Windows starts a display adapter when the first session is created, after the registry hives are loaded */
+FORCEINLINE
+BOOLEAN
+DxgkStartCoreDefersToSession(
+    _In_ BOOLEAN BasicDisplay,
+    _In_ ULONG ServiceStartType,
+    _In_ BOOLEAN SessionStarted)
+{
+    if (BasicDisplay || SessionStarted)
+        return FALSE;
+
+    /* FIXME: boot-start and system-start miniports are still started while their device is enumerated */
+    return ServiceStartType >= DXGK_START_CORE_SERVICE_DEMAND_START;
+}
+
+/* A display-only miniport starts before its children are known: its first output carries the desktop, the others get a path when a monitor is reported on them */
+FORCEINLINE
+ULONG
+DxgkVidPnCoreSeededPathCount(
+    _In_ BOOLEAN SeedDefaultTopology,
+    _In_ ULONG SourceCount,
+    _In_ ULONG TargetCount)
+{
+    if (!SeedDefaultTopology || SourceCount == 0 || TargetCount == 0)
+        return 0;
+
+    return 1;
+}
+
+/* A display-only miniport that enumerates target modes keeps the pinned one; with a single target mode its source modes carry the desktop size */
+FORCEINLINE
+BOOLEAN
+DxgkVidPnCoreDisplayOnlyTakesLargestSource(
+    _In_ SIZE_T TargetModeCount)
+{
+    return TargetModeCount <= 1;
+}
+
+#define DXGK_VIDPN_CORE_FORMAT_A8R8G8B8 21U
+#define DXGK_VIDPN_CORE_FORMAT_X8R8G8B8 22U
+
+/* The desktop is composed as B8G8R8A8: a source mode in that layout is pinned before one of the same size in another */
+FORCEINLINE
+ULONG
+DxgkVidPnCoreSourceFormatRank(
+    _In_ ULONG PixelFormat)
+{
+    if (PixelFormat == DXGK_VIDPN_CORE_FORMAT_A8R8G8B8)
+        return 0;
+    if (PixelFormat == DXGK_VIDPN_CORE_FORMAT_X8R8G8B8)
+        return 1;
+
+    return 2;
+}
+
+/* WDK: DxgkDdiSetVidPnSourceAddress switches the mode and performs MMIO flips; any other flip is the DMA buffer DxgkDdiPresent built */
+FORCEINLINE
+BOOLEAN
+DxgkPresentCoreRetiredFlipProgramsSource(
+    _In_ BOOLEAN FlipOnVSyncMmIo,
+    _In_ BOOLEAN FlipImmediateMmIo,
+    _In_ ULONG DriverWddmVersion)
+{
+    if (FlipOnVSyncMmIo || FlipImmediateMmIo)
+        return TRUE;
+
+    /* FIXME: a WDDM 2 miniport without an MMIO flip cap still gets its flip from DxgkDdiSetVidPnSourceAddress at retirement; WDDM gives it no flip at all */
+    return DriverWddmVersion >= DXGK_PRESENT_CORE_WDDM_2_0;
 }
 
 FORCEINLINE
@@ -466,6 +539,15 @@ DxgkPresentCoreCompleteUnsupportedOverlayCreate(
  * and both user-facing KMT execution paths exist.  Internal scan-out use of
  * the MPO DDI alone is not a user-mode MPO implementation.
  */
+FORCEINLINE
+BOOLEAN
+DxgkPresentCoreContextless(
+    _In_ BOOLEAN SupportContextlessPresent,
+    _In_ BOOLEAN Blt)
+{
+    return SupportContextlessPresent && !Blt;
+}
+
 FORCEINLINE
 BOOLEAN
 DxgkPresentCoreMpoV1Supported(

@@ -1234,7 +1234,7 @@ MiniReset(
    return Status;
 }
 
-static VOID
+VOID
 MiniStartHangTimer(
     PLOGICAL_ADAPTER Adapter)
 {
@@ -1260,7 +1260,7 @@ MiniStartHangTimer(
     KeReleaseSpinLock(&Adapter->HangTimerLock, OldIrql);
 }
 
-static VOID
+VOID
 MiniStopHangTimer(
     PLOGICAL_ADAPTER Adapter)
 {
@@ -1305,10 +1305,9 @@ MiniportHangDpc(
   UNREFERENCED_PARAMETER(SystemArgument1);
   UNREFERENCED_PARAMETER(SystemArgument2);
 
-  /* dev-nt6-1: NDIS 6 adapters never have the legacy WakeUpDpcTimer
-   * armed (the bridge never starts it). If we somehow get here for an
-   * NDIS 6 adapter, bail. */
-  if (Adapter == NULL || Adapter->IsNdis6)
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
+  if (Adapter == NULL)
       return;
 
   KeAcquireSpinLockAtDpcLevel(&Adapter->HangTimerLock);
@@ -2773,7 +2772,7 @@ NdisIDeviceIoControl(
   PIO_STACK_LOCATION Stack = IoGetCurrentIrpStackLocation(Irp);
   NDIS_STATUS Status = STATUS_NOT_SUPPORTED;
   ULONG ControlCode;
-  ULONG Written;
+  ULONG Written = 0;
 
   Irp->IoStatus.Information = 0;
 
@@ -3072,7 +3071,7 @@ NdisIAddDevice(
 
   RtlZeroMemory(QueryTable, sizeof(QueryTable));
   RtlInitUnicodeString(&ExportName, NULL);
-  QueryTable[0].Flags = RTL_QUERY_REGISTRY_REQUIRED | RTL_QUERY_REGISTRY_DIRECT;
+  QueryTable[0].Flags = RTL_QUERY_REGISTRY_REQUIRED | RTL_QUERY_REGISTRY_DIRECT | RTL_QUERY_REGISTRY_NOEXPAND;
   QueryTable[0].Name = L"Export";
   QueryTable[0].EntryContext = &ExportName;
 
@@ -3084,6 +3083,7 @@ NdisIAddDevice(
       NDIS_DbgPrint(MIN_TRACE, ("Can't get miniport device name. (%x)\n", Status));
       return Status;
     }
+  NdisKeepFirstMultiSzString(&ExportName);
 
   /*
    * Create the device object.

@@ -24,6 +24,10 @@ sdk/tools/wpp                   # Synced to Wine-11.14 (Module was moved into wr
 The following headers are shared with Wine.
 sdk/include/psdk/msasn1.h       # Synced to Wine-11.13-83-ge8781e7c8d0
 sdk/include/psdk/rpcproxy.h     # Synced to Wine-11.14
+sdk/include/psdk/sapi.idl       # Synced to Wine-11.14
+sdk/include/psdk/sapiaut.idl    # Synced to Wine-11.14
+sdk/include/psdk/sapiddk.idl    # Synced to Wine-11.14
+sdk/include/psdk/sperror.h      # Synced to Wine-11.14
 sdk/include/psdk/netioapi.h     # Synced to Wine-11.14 (mirrors sdk/include/wine/netioapi.h)
 sdk/include/psdk/winevt.h       # Synced to Wine-11.14
 sdk/include/psdk/wldp.h         # Synced to Wine-11.13-83-ge8781e7c8d0 (LiberNT adds the documented declarations)
@@ -31,7 +35,6 @@ sdk/include/psdk/wldp.h         # Synced to Wine-11.13-83-ge8781e7c8d0 (LiberNT 
 The following libraries are shared with Wine.
 
 dll/directx/wine/amstream       # Synced to Wine-11.14
-dll/directx/wine/d2d1           # Synced to Wine-11.14
 dll/directx/wine/d3d8           # Synced to Wine-11.14
 dll/directx/wine/d3d9           # Synced to Wine-11.14
 dll/directx/wine/d3dcompiler_43 # Synced to Wine-11.14
@@ -225,6 +228,7 @@ dll/win32/rpcrt4              # Synced to Wine-11.14
 dll/win32/rsabase             # Synced to Wine-11.14
 dll/win32/rsaenh              # Synced to Wine-11.14
 dll/win32/rtworkq             # Synced to Wine-11.14
+dll/win32/sapi                # Synced to Wine-11.14 (LiberNT drops the empty Wine default voice token)
 dll/win32/sccbase             # Synced to Wine-11.14
 dll/win32/schannel            # Synced to Wine-11.14
 dll/win32/scrrun              # Synced to Wine-11.14
@@ -278,7 +282,7 @@ dll/win32/windows.media.devices # Synced to Wine-11.14
 dll/win32/windows.media.mediacontrol # Synced to Wine-11.14
 dll/win32/windows.media.playback.backgroundmediaplayer # Synced to Wine-11.14
 dll/win32/windows.media.playback.mediaplayer # Synced to Wine-11.14
-dll/win32/windows.media.speech # Synced to Wine-11.14
+dll/win32/windows.media.speech # Synced to Wine-11.14 (LiberNT synthesizes through the SAPI voices)
 dll/win32/windows.networking  # Synced to Wine-11.14
 dll/win32/windows.networking.connectivity # Synced to Wine-11.14
 dll/win32/windows.networking.hostname # Synced to Wine-11.14
@@ -465,9 +469,9 @@ user32 -
   win32ss/user/user32/windows/text.c       # Forked (lstr.c)
   win32ss/user/user32/windows/winpos.c     # Forked
 
-  win32ss/user/user32_vista/input.c        # Synced to Wine-10.0
-  win32ss/user/user32_vista/misc.c         # Synced to Wine-10.0
-  win32ss/user/user32_vista/win.c          # Synced to Wine-10.0
+  subsystems/win/win32k/user/user32/wine/input.c        # Synced to Wine-10.0
+  subsystems/win/win32k/user/user32/wine/misc.c         # Synced to Wine-10.0
+  subsystems/win/win32k/user/user32/wine/win.c          # Synced to Wine-10.0
 schannel -
   dll/win32/schannel                    # Synced to Wine-11.14
   dll/win32/secur32/schannel.c          # Synced to Wine-11.14

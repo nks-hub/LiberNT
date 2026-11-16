@@ -2,6 +2,7 @@
 
 #define IDI_LNTDRV                   100
 #define IDB_WATERMARK                101
+#define IDM_ABOUT                    0x0010
 #define IDD_FRAME                    200
 #define IDD_DEVICES                  201
 #define IDD_PROGRESS                 202
@@ -20,8 +21,13 @@
 #define IDC_DETAILS                  1014
 #define IDC_SELECT_ALL               1016
 #define IDC_SELECT_NONE              1017
+#define IDC_CATALOG_LINK             1019
 #define IDC_PROGRESS_TEXT            1020
+#define IDC_PROGRESS_ITEM            1021
 #define IDC_PROGRESS_DETAIL          1022
+#define IDC_PROGRESS_TOTAL           1023
+#define IDC_PROGRESS_COUNT           1024
+#define IDC_PROGRESS_SPEED           1025
 #define IDC_RESULTS                  1040
 #define IDC_DONE_NOTE                1041
 #define IDC_HISTORY_LIST             1050
@@ -38,6 +44,8 @@
 #define IDS_FINISH                   2005
 #define IDS_DEVICES_TITLE            2006
 #define IDS_DEVICES_SUBTITLE         2007
+#define IDS_ABOUT_MENU               2008
+#define IDS_ABOUT_TEXT               2009
 #define IDS_INSTALL_TITLE            2012
 #define IDS_INSTALL_SUBTITLE         2013
 #define IDS_DONE_TITLE               2014
@@ -141,3 +149,9 @@
 #define IDS_SCAN_NONE                2128
 #define IDS_RESULT_UNSIGNED          2129
 #define IDS_ERROR_THROTTLED          2130
+#define IDS_SCAN_THROTTLED           2131
+#define IDS_CATALOG_LINK             2132
+#define IDS_CATALOG_NOTICE           2133
+#define IDS_PROGRESS_DOWNLOADING     2134
+#define IDS_SPEED_KB                 2135
+#define IDS_SPEED_MB                 2136

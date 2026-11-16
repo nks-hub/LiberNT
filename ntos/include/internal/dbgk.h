@@ -1,148 +1,113 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/include/internal/dbgk.h
- * PURPOSE:         Internal header for the User-Mode Debugging Backend
- * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     User-mode debugging internals
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
-//
-// Define this if you want debugging support
-//
-#define _DBGK_DEBUG_                                    0x00
+#pragma once
 
-//
-// These define the Debug Masks Supported
-//
-#define DBGK_THREAD_DEBUG                               0x01
-#define DBGK_PROCESS_DEBUG                              0x02
-#define DBGK_OBJECT_DEBUG                               0x04
-#define DBGK_MESSAGE_DEBUG                              0x08
-#define DBGK_EXCEPTION_DEBUG                            0x10
+extern FAST_MUTEX DbgkpProcessDebugPortMutex;
 
-//
-// Debug/Tracing support
-//
-#if _DBGK_DEBUG_
-#ifdef NEW_DEBUG_SYSTEM_IMPLEMENTED // enable when Debug Filters are implemented
-#define DBGKTRACE(x, ...)                                   \
-    {                                                       \
-        DbgPrintEx("%s [%.16s] - ",                         \
-                   __FUNCTION__,                            \
-                   PsGetCurrentProcess()->ImageFileName);   \
-        DbgPrintEx(__VA_ARGS__);                            \
-    }
-#else
-#define DBGKTRACE(x, ...)                                   \
-    if (x & DbgkpTraceLevel)                                \
-    {                                                       \
-        DbgPrint("%s [%.16s] - ",                           \
-                 __FUNCTION__,                              \
-                 PsGetCurrentProcess()->ImageFileName);     \
-        DbgPrint(__VA_ARGS__);                              \
-    }
-#endif
-#else
-#define DBGKTRACE(x, fmt, ...) DPRINT(fmt, ##__VA_ARGS__)
-#endif
+extern ULONG DbgkpTraceLevel;
+
+extern POBJECT_TYPE DbgkDebugObjectType;
+
+VOID
+NTAPI
+DbgkCloseThreadDebugObject(
+    _In_ PETHREAD Thread);
 
 CODE_SEG("INIT")
 VOID
 NTAPI
-DbgkInitialize(
-    VOID
-);
-
-VOID
-NTAPI
-DbgkCreateThread(
-    IN PETHREAD Thread,
-    IN PVOID StartAddress
-);
-
-VOID
-NTAPI
-DbgkExitProcess(
-    IN NTSTATUS ExitStatus
-);
-
-VOID
-NTAPI
-DbgkExitThread(
-    IN NTSTATUS ExitStatus
-);
-
-VOID
-NTAPI
-DbgkMapViewOfSection(
-    IN PVOID Section,
-    IN PVOID BaseAddress,
-    IN ULONG SectionOffset,
-    IN ULONG_PTR ViewSize
-);
-
-VOID
-NTAPI
-DbgkUnMapViewOfSection(
-    IN PVOID BaseAddress
-);
-
-BOOLEAN
-NTAPI
-DbgkpSuspendProcess(
-    VOID
-);
-
-VOID
-NTAPI
-DbgkpResumeProcess(
-    VOID
-);
+DbgkInitialize(VOID);
 
 NTSTATUS
 NTAPI
-DbgkpSendApiMessage(
-    IN OUT PDBGKM_MSG ApiMsg,
-    IN BOOLEAN SuspendProcess
-);
-
-HANDLE
-NTAPI
-DbgkpSectionToFileHandle(
-    IN PVOID Section
-);
+DbgkpQueueMessage(
+    _In_ PEPROCESS Process,
+    _In_ PETHREAD Thread,
+    _Inout_ PDBGKM_MSG ApiMsg,
+    _In_ ULONG Flags,
+    _In_opt_ PDEBUG_OBJECT TargetObject);
 
 VOID
 NTAPI
-DbgkCopyProcessDebugPort(
-    IN PEPROCESS Process,
-    IN PEPROCESS Parent
-);
-
-BOOLEAN
-NTAPI
-DbgkForwardException(
-    IN PEXCEPTION_RECORD ExceptionRecord,
-    IN BOOLEAN DebugPort,
-    IN BOOLEAN SecondChance
-);
+DbgkpWakeTarget(
+    _In_ PDEBUG_EVENT DebugEvent);
 
 NTSTATUS
 NTAPI
 DbgkClearProcessDebugObject(
-    IN PEPROCESS Process,
-    IN PDEBUG_OBJECT SourceDebugObject
-);
+    _In_ PEPROCESS Process,
+    _In_ PDEBUG_OBJECT SourceDebugObject);
+
+VOID
+NTAPI
+DbgkCopyProcessDebugPort(
+    _In_ PEPROCESS Process,
+    _In_ PEPROCESS Parent);
+
+VOID
+NTAPI
+DbgkCreateThread(
+    _In_ PETHREAD Thread,
+    _In_ PVOID StartAddress);
+
+VOID
+NTAPI
+DbgkExitProcess(
+    _In_ NTSTATUS ExitStatus);
+
+VOID
+NTAPI
+DbgkExitThread(
+    _In_ NTSTATUS ExitStatus);
+
+BOOLEAN
+NTAPI
+DbgkForwardException(
+    _In_ PEXCEPTION_RECORD ExceptionRecord,
+    _In_ BOOLEAN DebugPort,
+    _In_ BOOLEAN SecondChance);
+
+VOID
+NTAPI
+DbgkMapViewOfSection(
+    _In_ PVOID Section,
+    _In_ PVOID BaseAddress,
+    _In_ ULONG SectionOffset,
+    _In_ ULONG_PTR ViewSize);
 
 NTSTATUS
 NTAPI
 DbgkOpenProcessDebugPort(
-    IN PEPROCESS Process,
-    IN KPROCESSOR_MODE PreviousMode,
-    OUT HANDLE *DebugHandle
-);
+    _In_ PEPROCESS Process,
+    _In_ KPROCESSOR_MODE PreviousMode,
+    _Out_ HANDLE *DebugHandle);
 
-extern ULONG DbgkpTraceLevel;
-extern POBJECT_TYPE DbgkDebugObjectType;
+VOID
+NTAPI
+DbgkUnMapViewOfSection(
+    _In_ PVOID BaseAddress);
 
-/* EOF */
+VOID
+NTAPI
+DbgkpResumeProcess(VOID);
+
+HANDLE
+NTAPI
+DbgkpSectionToFileHandle(
+    _In_ PVOID Section);
+
+NTSTATUS
+NTAPI
+DbgkpSendApiMessage(
+    _Inout_ PDBGKM_MSG ApiMsg,
+    _In_ BOOLEAN SuspendProcess);
+
+BOOLEAN
+NTAPI
+DbgkpSuspendProcess(VOID);

@@ -10,6 +10,7 @@
 #include <hidclass.h>
 #include <hidpi.h>
 #include <ntddvdeo.h>
+#include <reactos/rddm/rxgkmonitor.h>
 
 DBG_DEFAULT_CHANNEL(UserInput);
 
@@ -24,8 +25,7 @@ typedef struct _HIDINPUT_ARRIVAL
 
 typedef struct _HIDINPUT_DEVICE
 {
-    HANDLE Handle;
-    PFILE_OBJECT FileObject;
+    INPUT_HOLD_FILE File;
     PHIDP_PREPARSED_DATA PreparsedData;
     PCHAR Report;
     ULONG ReportLength;
@@ -43,8 +43,7 @@ typedef struct _HIDINPUT_DEVICE
 typedef struct _HIDINPUT_RAW_READER
 {
     HANDLE hDevice;
-    HANDLE Handle;
-    PFILE_OBJECT FileObject;
+    INPUT_HOLD_FILE File;
     PUCHAR Report;
     ULONG ReportLength;
     IO_STATUS_BLOCK Iosb;
@@ -62,11 +61,14 @@ typedef struct _HIDINPUT_STATE
     FAST_MUTEX ArrivalLock;
     LIST_ENTRY Arrivals;
     PVOID NotificationEntry;
+    INPUT_HOLD Hold;
     KTIMER RepeatTimer;
     BOOLEAN RepeatArmed;
     BOOLEAN RepeatFired;
     PHIDINPUT_DEVICE RepeatDevice;
     USAGE_AND_PAGE RepeatUsage;
+    PKEVENT BrightnessKeyEvent;
+    HANDLE BrightnessKeyHandle;
     HIDINPUT_DEVICE Devices[HIDINPUT_MAX_DEVICES];
     HIDINPUT_RAW_READER RawReaders[HIDINPUT_MAX_RAW_DEVICES];
 } HIDINPUT_STATE, *PHIDINPUT_STATE;
@@ -121,6 +123,29 @@ HidInputIsRetrigger(
 }
 
 static
+VOID
+HidInputQueueArrival(
+    _In_ PHIDINPUT_STATE State,
+    _In_ PCUNICODE_STRING Path)
+{
+    PHIDINPUT_ARRIVAL Arrival;
+
+    Arrival = ExAllocatePoolWithTag(PagedPool, sizeof(*Arrival) + Path->Length, USERTAG_HIDDESC);
+    if (!Arrival)
+        return;
+
+    Arrival->Path.Buffer = (PWCH)(Arrival + 1);
+    Arrival->Path.Length = Path->Length;
+    Arrival->Path.MaximumLength = Path->Length;
+    RtlCopyMemory(Arrival->Path.Buffer, Path->Buffer, Path->Length);
+
+    ExAcquireFastMutex(&State->ArrivalLock);
+    InsertTailList(&State->Arrivals, &Arrival->ListEntry);
+    ExReleaseFastMutex(&State->ArrivalLock);
+    KeSetEvent(&State->ArrivalEvent, IO_NO_INCREMENT, FALSE);
+}
+
+static
 NTSTATUS
 NTAPI
 HidInputInterfaceNotification(
@@ -129,8 +154,6 @@ HidInputInterfaceNotification(
 {
     PDEVICE_INTERFACE_CHANGE_NOTIFICATION Notification = NotificationStructure;
     PHIDINPUT_STATE State = Context;
-    PHIDINPUT_ARRIVAL Arrival;
-    USHORT Length;
 
     if (IsEqualGUID(&Notification->Event, &HidInputInterfaceRemoval))
     {
@@ -142,20 +165,7 @@ HidInputInterfaceNotification(
         return STATUS_SUCCESS;
     InterlockedExchange(&State->DevicesChanged, 1);
 
-    Length = Notification->SymbolicLinkName->Length;
-    Arrival = ExAllocatePoolWithTag(PagedPool, sizeof(*Arrival) + Length, USERTAG_HIDDESC);
-    if (!Arrival)
-        return STATUS_SUCCESS;
-
-    Arrival->Path.Buffer = (PWCH)(Arrival + 1);
-    Arrival->Path.Length = Length;
-    Arrival->Path.MaximumLength = Length;
-    RtlCopyMemory(Arrival->Path.Buffer, Notification->SymbolicLinkName->Buffer, Length);
-
-    ExAcquireFastMutex(&State->ArrivalLock);
-    InsertTailList(&State->Arrivals, &Arrival->ListEntry);
-    ExReleaseFastMutex(&State->ArrivalLock);
-    KeSetEvent(&State->ArrivalEvent, IO_NO_INCREMENT, FALSE);
+    HidInputQueueArrival(State, Notification->SymbolicLinkName);
     return STATUS_SUCCESS;
 }
 
@@ -219,17 +229,8 @@ HidInputClose(
 {
     if (gHidInput && gHidInput->RepeatDevice == Device)
         HidInputStopRepeat(gHidInput);
-    if (Device->Handle)
-    {
-        if (Device->Status == STATUS_PENDING)
-        {
-            (void)ZwCancelIoFile(Device->Handle, &Device->Iosb);
-            KeWaitForSingleObject(&Device->FileObject->Event, Executive, KernelMode, FALSE, NULL);
-        }
-        ObCloseHandle(Device->Handle, KernelMode);
-    }
-    if (Device->FileObject)
-        ObDereferenceObject(Device->FileObject);
+    if (gHidInput && Device->File.Handle)
+        InputHoldClose(&gHidInput->Hold, &Device->File, Device->Status == STATUS_PENDING);
     if (Device->PreparsedData)
         ExFreePoolWithTag(Device->PreparsedData, USERTAG_HIDDESC);
     if (Device->Report)
@@ -314,15 +315,8 @@ VOID
 HidInputCloseRawReader(
     _Inout_ PHIDINPUT_RAW_READER Reader)
 {
-    if (Reader->Handle && Reader->Status == STATUS_PENDING)
-    {
-        (void)ZwCancelIoFile(Reader->Handle, &Reader->Iosb);
-        KeWaitForSingleObject(&Reader->FileObject->Event, Executive, KernelMode, FALSE, NULL);
-    }
-    if (Reader->Handle)
-        ObCloseHandle(Reader->Handle, KernelMode);
-    if (Reader->FileObject)
-        ObDereferenceObject(Reader->FileObject);
+    if (gHidInput && Reader->File.Handle)
+        InputHoldClose(&gHidInput->Hold, &Reader->File, Reader->Status == STATUS_PENDING);
     if (Reader->Report)
         ExFreePoolWithTag(Reader->Report, USERTAG_HIDDATA);
     RtlZeroMemory(Reader, sizeof(*Reader));
@@ -331,6 +325,7 @@ HidInputCloseRawReader(
 static
 VOID
 HidInputOpenRawReader(
+    _Inout_ PHIDINPUT_STATE State,
     _Inout_ PHIDINPUT_RAW_READER Reader,
     _In_ PRAWINPUT_HID_TARGET Target)
 {
@@ -338,12 +333,13 @@ HidInputOpenRawReader(
     if (!Reader->Report)
         return;
 
-    if (!NT_SUCCESS(HidInputOpen(&Target->Path, FILE_READ_DATA, &Reader->Handle, &Reader->FileObject)))
+    if (!NT_SUCCESS(InputHoldOpen(&Reader->File, &Target->Path, FILE_READ_DATA)))
     {
         ExFreePoolWithTag(Reader->Report, USERTAG_HIDDATA);
         RtlZeroMemory(Reader, sizeof(*Reader));
         return;
     }
+    InputHoldFollow(&State->Hold, &Reader->File, &Target->Path, Reader, gHidInputDriverObject);
 
     Reader->hDevice = Target->hDevice;
     Reader->ReportLength = Target->ReportLength;
@@ -367,7 +363,7 @@ HidInputSyncRawReaders(
     for (Index = 0; Index < HIDINPUT_MAX_RAW_DEVICES; Index++)
     {
         Reader = &State->RawReaders[Index];
-        if (!Reader->Handle)
+        if (!Reader->File.Handle)
             continue;
         for (Target = 0; Target < Count && Targets[Target].hDevice != Reader->hDevice; Target++)
             ;
@@ -381,13 +377,13 @@ HidInputSyncRawReaders(
         for (Index = 0; Index < HIDINPUT_MAX_RAW_DEVICES; Index++)
         {
             Reader = &State->RawReaders[Index];
-            if (Reader->Handle && Reader->hDevice == Targets[Target].hDevice)
+            if (Reader->File.Handle && Reader->hDevice == Targets[Target].hDevice)
                 break;
-            if (!Reader->Handle && !FreeReader)
+            if (!Reader->File.Handle && !FreeReader)
                 FreeReader = Reader;
         }
         if (Index == HIDINPUT_MAX_RAW_DEVICES && FreeReader)
-            HidInputOpenRawReader(FreeReader, &Targets[Target]);
+            HidInputOpenRawReader(State, FreeReader, &Targets[Target]);
         ExFreePoolWithTag(Targets[Target].Path.Buffer, USERTAG_HIDDESC);
     }
 }
@@ -442,7 +438,7 @@ HidInputAttach(
 
     for (Index = 0; Index < HIDINPUT_MAX_DEVICES; Index++)
     {
-        if (State->Devices[Index].Handle)
+        if (State->Devices[Index].File.Handle)
         {
             if (RtlEqualUnicodeString(&State->Devices[Index].Path, Path, TRUE))
                 return;
@@ -481,12 +477,13 @@ HidInputAttach(
     Device->Path.Length = Path->Length;
     Device->Path.MaximumLength = Path->Length;
 
-    Status = HidInputOpen(Path, FILE_READ_DATA, &Device->Handle, &Device->FileObject);
+    Status = InputHoldOpen(&Device->File, Path, FILE_READ_DATA);
     if (!NT_SUCCESS(Status))
     {
         HidInputClose(Device);
         return;
     }
+    InputHoldFollow(&State->Hold, &Device->File, Path, Device, gHidInputDriverObject);
 
     Device->Status = STATUS_SUCCESS;
     Device->Iosb.Information = 0;
@@ -531,6 +528,42 @@ HidInputInsertScanCodes(
 
 static
 VOID
+HidInputAllowWait(
+    _In_ HANDLE EventHandle)
+{
+    ULONG DaclBuffer[16];
+    PACL Dacl = (PACL)DaclBuffer;
+    SECURITY_DESCRIPTOR Descriptor;
+    NTSTATUS Status;
+
+    ASSERT(sizeof(ACL) + FIELD_OFFSET(ACCESS_ALLOWED_ACE, SidStart) + RtlLengthSid(SeExports->SeWorldSid) <=
+           sizeof(DaclBuffer));
+
+    Status = RtlCreateSecurityDescriptor(&Descriptor, SECURITY_DESCRIPTOR_REVISION);
+    if (NT_SUCCESS(Status))
+        Status = RtlCreateAcl(Dacl, sizeof(DaclBuffer), ACL_REVISION);
+    if (NT_SUCCESS(Status))
+        Status = RtlAddAccessAllowedAce(Dacl, ACL_REVISION, SYNCHRONIZE, SeExports->SeWorldSid);
+    if (NT_SUCCESS(Status))
+        Status = RtlSetDaclSecurityDescriptor(&Descriptor, TRUE, Dacl, FALSE);
+    if (NT_SUCCESS(Status))
+        Status = ZwSetSecurityObject(EventHandle, DACL_SECURITY_INFORMATION, &Descriptor);
+    if (!NT_SUCCESS(Status))
+        ERR("Brightness key event not opened to the shell: 0x%08lx\n", Status);
+}
+
+static
+VOID
+HidInputBrightnessKeyPressed(VOID)
+{
+    PHIDINPUT_STATE State = gHidInput;
+
+    if (State && State->BrightnessKeyEvent)
+        KeSetEvent(State->BrightnessKeyEvent, IO_NO_INCREMENT, FALSE);
+}
+
+static
+VOID
 HidInputStepBrightness(
     _In_ BOOLEAN Increase)
 {
@@ -548,7 +581,10 @@ HidInputStepBrightness(
     Status = ZwOpenFile(&Handle, SYNCHRONIZE | FILE_READ_DATA | FILE_WRITE_DATA, &ObjectAttributes, &Iosb,
                         FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_SYNCHRONOUS_IO_NONALERT);
     if (!NT_SUCCESS(Status))
+    {
+        HidInputBrightnessKeyPressed();
         return;
+    }
 
     Status = ZwDeviceIoControlFile(Handle, NULL, NULL, NULL, &Iosb, IOCTL_VIDEO_QUERY_SUPPORTED_BRIGHTNESS, NULL, 0,
                                    Levels, sizeof(Levels));
@@ -605,6 +641,7 @@ HidInputStepBrightness(
         }
     }
     ZwClose(Handle);
+    HidInputBrightnessKeyPressed();
 }
 
 static
@@ -680,7 +717,7 @@ HidInputRepeat(
     PHIDINPUT_DEVICE Device = State->RepeatDevice;
     USAGE_AND_PAGE Usage = State->RepeatUsage;
 
-    if (!Device || !Device->Handle || !Usage.Usage)
+    if (!Device || !Device->File.Handle || !Usage.Usage)
         return;
 
     if (Usage.Usage == HIDINPUT_USAGE_BRIGHTNESS_INCREMENT || Usage.Usage == HIDINPUT_USAGE_BRIGHTNESS_DECREMENT)
@@ -751,6 +788,7 @@ VOID
 NTAPI
 HidInputStart(VOID)
 {
+    UNICODE_STRING KeyName = RTL_CONSTANT_STRING(L"\\BaseNamedObjects\\" RXGK_MONITOR_BRIGHTNESS_KEY_EVENT);
     PHIDINPUT_STATE State;
     NTSTATUS Status;
 
@@ -763,6 +801,12 @@ HidInputStart(VOID)
     KeInitializeTimer(&State->RepeatTimer);
     ExInitializeFastMutex(&State->ArrivalLock);
     InitializeListHead(&State->Arrivals);
+    InputHoldInitialize(&State->Hold, &State->ArrivalEvent);
+    State->BrightnessKeyEvent = IoCreateSynchronizationEvent(&KeyName, &State->BrightnessKeyHandle);
+    if (State->BrightnessKeyEvent)
+        HidInputAllowWait(State->BrightnessKeyHandle);
+    else
+        ERR("Brightness key event not created\n");
     gHidInput = State;
 
     Status = IoRegisterPlugPlayNotification(EventCategoryDeviceInterfaceChange,
@@ -791,19 +835,20 @@ HidInputStop(VOID)
         return;
 
     if (State->NotificationEntry)
-        IoUnregisterPlugPlayNotification(State->NotificationEntry);
+        IoUnregisterPlugPlayNotificationEx(State->NotificationEntry);
     HidInputStopRepeat(State);
 
     for (Index = 0; Index < HIDINPUT_MAX_DEVICES; Index++)
     {
-        if (State->Devices[Index].Handle)
+        if (State->Devices[Index].File.Handle)
             HidInputClose(&State->Devices[Index]);
     }
     for (Index = 0; Index < HIDINPUT_MAX_RAW_DEVICES; Index++)
     {
-        if (State->RawReaders[Index].Handle)
+        if (State->RawReaders[Index].File.Handle)
             HidInputCloseRawReader(&State->RawReaders[Index]);
     }
+    InputHoldStop(&State->Hold);
 
     while (!IsListEmpty(&State->Arrivals))
     {
@@ -812,6 +857,8 @@ HidInputStop(VOID)
     }
 
     gHidInput = NULL;
+    if (State->BrightnessKeyEvent)
+        ZwClose(State->BrightnessKeyHandle);
     ExFreePoolWithTag(State, USERTAG_HIDDATA);
 }
 
@@ -823,7 +870,6 @@ HidInputPrepareWait(
 {
     PHIDINPUT_STATE State = gHidInput;
     PHIDINPUT_DEVICE Device;
-    LARGE_INTEGER ByteOffset;
     ULONG Expected = 1;
     ULONG Index;
 
@@ -836,43 +882,40 @@ HidInputPrepareWait(
         WaitObjects[(*WaitCount)++] = &State->RepeatTimer;
         Expected++;
     }
-    ByteOffset.QuadPart = 0;
 
     for (Index = 0; Index < HIDINPUT_MAX_DEVICES; Index++)
     {
         Device = &State->Devices[Index];
-        if (!Device->Handle)
+        if (!Device->File.Handle)
             continue;
 
         Expected++;
         if (Device->Status != STATUS_PENDING)
         {
-            Device->Status = ZwReadFile(Device->Handle, NULL, NULL, NULL, &Device->Iosb, Device->Report,
-                                        Device->ReportLength, &ByteOffset, NULL);
+            Device->Status = InputHoldRead(&State->Hold, &Device->File, &Device->Iosb, Device->Report, Device->ReportLength);
             if (Device->Status != STATUS_PENDING && NT_SUCCESS(Device->Status))
                 Device->Status = Device->Iosb.Status;
         }
         if (Device->Status == STATUS_PENDING)
-            WaitObjects[(*WaitCount)++] = &Device->FileObject->Event;
+            WaitObjects[(*WaitCount)++] = Device->File.ReadEvent;
     }
 
     for (Index = 0; Index < HIDINPUT_MAX_RAW_DEVICES; Index++)
     {
         PHIDINPUT_RAW_READER Reader = &State->RawReaders[Index];
 
-        if (!Reader->Handle)
+        if (!Reader->File.Handle)
             continue;
 
         Expected++;
         if (Reader->Status != STATUS_PENDING)
         {
-            Reader->Status = ZwReadFile(Reader->Handle, NULL, NULL, NULL, &Reader->Iosb, Reader->Report,
-                                        Reader->ReportLength, &ByteOffset, NULL);
+            Reader->Status = InputHoldRead(&State->Hold, &Reader->File, &Reader->Iosb, Reader->Report, Reader->ReportLength);
             if (Reader->Status != STATUS_PENDING && NT_SUCCESS(Reader->Status))
                 Reader->Status = Reader->Iosb.Status;
         }
         if (Reader->Status == STATUS_PENDING)
-            WaitObjects[(*WaitCount)++] = &Reader->FileObject->Event;
+            WaitObjects[(*WaitCount)++] = Reader->File.ReadEvent;
     }
     return Expected;
 }
@@ -900,7 +943,7 @@ HidInputSignaled(
     for (Index = 0; Index < HIDINPUT_MAX_DEVICES; Index++)
     {
         Device = &State->Devices[Index];
-        if (Device->Handle && Device->Status == STATUS_PENDING && Object == &Device->FileObject->Event)
+        if (Device->File.Handle && Device->Status == STATUS_PENDING && Object == Device->File.ReadEvent)
         {
             Device->Status = Device->Iosb.Status;
             return TRUE;
@@ -911,13 +954,47 @@ HidInputSignaled(
     {
         PHIDINPUT_RAW_READER Reader = &State->RawReaders[Index];
 
-        if (Reader->Handle && Reader->Status == STATUS_PENDING && Object == &Reader->FileObject->Event)
+        if (Reader->File.Handle && Reader->Status == STATUS_PENDING && Object == Reader->File.ReadEvent)
         {
             Reader->Status = Reader->Iosb.Status;
             return TRUE;
         }
     }
     return FALSE;
+}
+
+/* A removal reported for a held file: the file closes; a cancelled removal opens the device or the raw reader again */
+static
+VOID
+NTAPI
+HidInputHoldEnded(
+    _In_ PVOID Owner,
+    _In_opt_ PINPUT_HOLD_FILE File,
+    _In_ PCUNICODE_STRING Path,
+    _In_ BOOLEAN Reopen,
+    _In_opt_ PVOID Context)
+{
+    PHIDINPUT_STATE State = Context;
+    BOOLEAN Reader;
+
+    ASSERT(State != NULL);
+    Reader = ((PUCHAR)Owner >= (PUCHAR)State->RawReaders &&
+              (PUCHAR)Owner < (PUCHAR)(State->RawReaders + HIDINPUT_MAX_RAW_DEVICES));
+
+    if (File)
+    {
+        if (Reader)
+            HidInputCloseRawReader(Owner);
+        else
+            HidInputClose(Owner);
+    }
+
+    if (!Reopen)
+        return;
+    if (Reader)
+        InterlockedExchange(&State->RawDirty, 1);
+    else
+        HidInputQueueArrival(State, Path);
 }
 
 BOOLEAN
@@ -933,6 +1010,8 @@ HidInputProcess(VOID)
 
     if (!State)
         return FALSE;
+
+    InputHoldProcessRequests(&State->Hold, HidInputHoldEnded, State);
 
     for (;;)
     {
@@ -962,7 +1041,7 @@ HidInputProcess(VOID)
     {
         PHIDINPUT_RAW_READER Reader = &State->RawReaders[Index];
 
-        if (!Reader->Handle || Reader->Status == STATUS_PENDING)
+        if (!Reader->File.Handle || Reader->Status == STATUS_PENDING)
             continue;
         if (!NT_SUCCESS(Reader->Status))
         {
@@ -981,7 +1060,7 @@ HidInputProcess(VOID)
     for (Index = 0; Index < HIDINPUT_MAX_DEVICES; Index++)
     {
         Device = &State->Devices[Index];
-        if (!Device->Handle || Device->Status == STATUS_PENDING)
+        if (!Device->File.Handle || Device->Status == STATUS_PENDING)
             continue;
 
         if (NT_SUCCESS(Device->Status))

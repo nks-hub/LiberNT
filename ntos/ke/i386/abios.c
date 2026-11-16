@@ -1,51 +1,21 @@
 /*
- * PROJECT:         ReactOS Kernel
- * LICENSE:         GPL - See COPYING in the top level directory
- * FILE:            ntoskrnl/ke/i386/abios.c
- * PURPOSE:         Routines for ABIOS Support
- * PROGRAMMERS:     Alex Ionescu (alex.ionescu@reactos.org)
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     i386 ABIOS selector table and its GDT entries
+ * COPYRIGHT:   Copyright Alex Ionescu <alex.ionescu@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES *****************************************************************/
 
 #include <ntoskrnl.h>
 #define NDEBUG
 #include <debug.h>
 
-/* FUNCTIONS *****************************************************************/
-
-/*
- * @unimplemented
- */
 NTSTATUS
 NTAPI
-KeI386FlatToGdtSelector(IN ULONG Base,
-                        IN USHORT Length,
-                        IN USHORT Selector)
-{
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-/*
- * @unimplemented
- */
-NTSTATUS
-NTAPI
-KeI386ReleaseGdtSelectors(OUT PULONG SelArray,
-                          IN ULONG NumOfSelectors)
-{
-    UNIMPLEMENTED;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-/*
- * @unimplemented
- */
-NTSTATUS
-NTAPI
-KeI386AllocateGdtSelectors(OUT PULONG SelArray,
-                           IN ULONG NumOfSelectors)
+KeI386FlatToGdtSelector(
+    _In_ ULONG Base,
+    _In_ USHORT Length,
+    _In_ USHORT Selector)
 {
     UNIMPLEMENTED;
     return STATUS_NOT_IMPLEMENTED;
@@ -53,8 +23,9 @@ KeI386AllocateGdtSelectors(OUT PULONG SelArray,
 
 NTSTATUS
 NTAPI
-KeI386SetGdtSelector(IN ULONG Selector,
-                     IN PKGDTENTRY GdtValue)
+KeI386ReleaseGdtSelectors(
+    _Out_ PULONG SelArray,
+    _In_ ULONG NumOfSelectors)
 {
     UNIMPLEMENTED;
     return STATUS_NOT_IMPLEMENTED;
@@ -62,10 +33,9 @@ KeI386SetGdtSelector(IN ULONG Selector,
 
 NTSTATUS
 NTAPI
-KeI386AbiosCall(IN USHORT CallId,
-                IN PDRIVER_OBJECT DriverObject,
-                IN PULONG RequestBlock,
-                IN USHORT EntryPoint)
+KeI386AllocateGdtSelectors(
+    _Out_ PULONG SelArray,
+    _In_ ULONG NumOfSelectors)
 {
     UNIMPLEMENTED;
     return STATUS_NOT_IMPLEMENTED;
@@ -73,11 +43,9 @@ KeI386AbiosCall(IN USHORT CallId,
 
 NTSTATUS
 NTAPI
-KeI386GetLid(IN USHORT DeviceId,
-             IN USHORT RelativeLid,
-             IN BOOLEAN SharedLid,
-             IN PDRIVER_OBJECT DriverObject,
-             OUT PUSHORT LogicalId)
+KeI386SetGdtSelector(
+    _In_ ULONG Selector,
+    _In_ PKGDTENTRY GdtValue)
 {
     UNIMPLEMENTED;
     return STATUS_NOT_IMPLEMENTED;
@@ -85,8 +53,34 @@ KeI386GetLid(IN USHORT DeviceId,
 
 NTSTATUS
 NTAPI
-KeI386ReleaseLid(IN USHORT LogicalId,
-                 IN PDRIVER_OBJECT DriverObject)
+KeI386AbiosCall(
+    _In_ USHORT CallId,
+    _In_ PDRIVER_OBJECT DriverObject,
+    _In_ PULONG RequestBlock,
+    _In_ USHORT EntryPoint)
+{
+    UNIMPLEMENTED;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+NTSTATUS
+NTAPI
+KeI386GetLid(
+    _In_ USHORT DeviceId,
+    _In_ USHORT RelativeLid,
+    _In_ BOOLEAN SharedLid,
+    _In_ PDRIVER_OBJECT DriverObject,
+    _Out_ PUSHORT LogicalId)
+{
+    UNIMPLEMENTED;
+    return STATUS_NOT_IMPLEMENTED;
+}
+
+NTSTATUS
+NTAPI
+KeI386ReleaseLid(
+    _In_ USHORT LogicalId,
+    _In_ PDRIVER_OBJECT DriverObject)
 {
     UNIMPLEMENTED;
     return STATUS_NOT_IMPLEMENTED;
@@ -94,10 +88,11 @@ KeI386ReleaseLid(IN USHORT LogicalId,
 
 USHORT
 NTAPI
-KeI386Call16BitCStyleFunction(IN ULONG EntryOffset,
-                              IN ULONG EntrySelector,
-                              IN PULONG Parameters,
-                              IN ULONG Size)
+KeI386Call16BitCStyleFunction(
+    _In_ ULONG EntryOffset,
+    _In_ ULONG EntrySelector,
+    _In_ PULONG Parameters,
+    _In_ ULONG Size)
 {
     UNIMPLEMENTED;
     return 0;
@@ -105,9 +100,8 @@ KeI386Call16BitCStyleFunction(IN ULONG EntryOffset,
 
 VOID
 NTAPI
-KeI386Call16BitFunction(IN OUT PCONTEXT Context)
+KeI386Call16BitFunction(
+    _Inout_ PCONTEXT Context)
 {
     UNIMPLEMENTED;
 }
-
-/* EOF */

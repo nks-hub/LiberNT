@@ -22,6 +22,7 @@ list(APPEND SOURCE
 if(NOT ARCH STREQUAL "arm")
     list(APPEND SOURCE
         reactos_capture_engine.c
+        reactos_devicetopology.c
         reactos_capture_engine.h
         reactos_render_engine.c
         reactos_render_engine.h
@@ -43,7 +44,7 @@ if(WOW64_I386_RUNTIME)
     target_compile_definitions(mmdevapi PRIVATE WOW64_I386_RUNTIME)
 endif()
 target_link_libraries(mmdevapi uuid wine)
-add_importlibs(mmdevapi ole32 oleaut32 user32 advapi32 version setupapi msvcrt kernel32_vista kernel32 ntdll)
+add_importlibs(mmdevapi ole32 oleaut32 user32 advapi32 version setupapi msvcrt kernel32 ntdll)
 add_delay_importlibs(mmdevapi winmm)
 add_dependencies(mmdevapi dxsdk)
 add_cd_file(TARGET mmdevapi DESTINATION reactos/system32 FOR all)

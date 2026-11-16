@@ -1,0 +1,407 @@
+/*
+ * PROJECT:     LiberNT Kernel
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     What the whole registry shares: its state, its lock and its quota
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
+ */
+
+#include <ntoskrnl.h>
+#define NDEBUG
+#include <debug.h>
+
+#include "cmpriv.h"
+
+/* GLOBALS ********************************************************************/
+
+ULONG CmpTraceLevel = 0;
+
+LIST_ENTRY CmpHiveListHead;
+EX_PUSH_LOCK CmpHiveListHeadLock;
+EX_PUSH_LOCK CmpLoadHiveLock;
+
+LIST_ENTRY CmpSelfHealQueueListHead;
+KGUARDED_MUTEX CmpSelfHealQueueLock;
+
+HANDLE CmpRegistryRootHandle = NULL;
+PCM_KEY_BODY CmpRegistryRootObject = NULL;
+PCM_KEY_BODY CmpRegistryNamespaceRoot = NULL;
+
+PCMHIVE CmiVolatileHive = NULL;
+CMHIVE CmControlHive;
+
+PEPROCESS CmpSystemProcess = NULL;
+
+BOOLEAN CmpSpecialBootCondition = FALSE;
+BOOLEAN CmpFlushOnLockRelease = FALSE;
+BOOLEAN CmpShareSystemHives = FALSE;
+BOOLEAN CmpMiniNTBoot = FALSE;
+BOOLEAN CmpNoVolatileCreates = TRUE;
+BOOLEAN CmpNoWrite = FALSE;
+BOOLEAN CmpForceForceFlush = FALSE;
+BOOLEAN CmpWasSetupBoot = FALSE;
+BOOLEAN CmpProfileLoaded = FALSE;
+BOOLEAN CmpSelfHeal = TRUE;
+BOOLEAN HvShutdownComplete = FALSE;
+BOOLEAN CmpRegistryLockCreated = FALSE;
+
+ULONG CmpVolatileBoot = 0;
+ULONG CmpBootType = 0;
+ULONG CmSelfHeal = 1;
+
+ULONG CmpHashTableSize = CMP_HASH_TABLE_DEFAULT;
+ULONG CmpDelayedCloseSize = CMP_DELAYED_CLOSE_MAX;
+
+ULONG CmpGlobalQuota = 0;
+ULONG CmpGlobalQuotaAllowed = 0;
+
+ULONG CmpFlushStarveWriters = 0;
+
+PVOID CmpRegistryLockCaller = NULL;
+PVOID CmpRegistryLockCallerCaller = NULL;
+
+UNICODE_STRING CmSymbolicLinkValueName =
+    RTL_CONSTANT_STRING(L"SymbolicLinkValue");
+UNICODE_STRING CmpSystemStartOptions = {0, 0, NULL};
+UNICODE_STRING CmpLoadOptions = {0, 0, NULL};
+
+UNICODE_STRING CmpSystemFileName = RTL_CONSTANT_STRING(L"SYSTEM");
+UNICODE_STRING CmpRegistryMachineHardware =
+    RTL_CONSTANT_STRING(L"\\REGISTRY\\MACHINE\\HARDWARE");
+UNICODE_STRING CmpRegistryMachineSystem =
+    RTL_CONSTANT_STRING(L"\\REGISTRY\\MACHINE\\SYSTEM");
+UNICODE_STRING CmpRegistryMachineSystemCurrentControlSet =
+    RTL_CONSTANT_STRING(L"\\REGISTRY\\MACHINE\\SYSTEM\\CURRENTCONTROLSET");
+
+ULONG DummyData = 0;
+
+ULONG CmNtGlobalFlag = 0;
+ULONG CmTsAppCompat = 0;
+
+WCHAR CmDefaultLanguageId[12] = {0};
+ULONG CmDefaultLanguageIdLength = sizeof(CmDefaultLanguageId);
+ULONG CmDefaultLanguageIdType = REG_NONE;
+
+WCHAR CmInstallUILanguageId[12] = {0};
+ULONG CmInstallUILanguageIdLength = sizeof(CmInstallUILanguageId);
+ULONG CmInstallUILanguageIdType = REG_NONE;
+
+WCHAR CmSuiteBuffer[128] = {0};
+ULONG CmSuiteBufferLength = sizeof(CmSuiteBuffer);
+ULONG CmSuiteBufferType = REG_NONE;
+
+/* PRIVATE DATA ***************************************************************/
+
+static ULONG CmpGlobalFlagLength = sizeof(ULONG);
+static ULONG CmpGlobalQuotaLength = sizeof(ULONG);
+static ULONG CmpTsAppCompatLength = sizeof(ULONG);
+static ULONG CmpIgnoredLength = sizeof(ULONG);
+static ULONG CmpProtectionModeLength = sizeof(ULONG);
+static ULONG CmpCaseInsensitiveLength = sizeof(ULONG);
+static ULONG CmpDpcQueueDepthLength = sizeof(ULONG);
+static ULONG CmpMinimumDpcRateLength = sizeof(ULONG);
+static ULONG CmpAdjustDpcThresholdLength = sizeof(ULONG);
+static ULONG CmpIdealDpcRateLength = sizeof(ULONG);
+
+/* GLOBALS ********************************************************************/
+
+CM_SYSTEM_CONTROL_VECTOR CmControlVector[] =
+{
+    {
+        L"Session Manager",
+        L"GlobalFlag",
+        &CmNtGlobalFlag,
+        &CmpGlobalFlagLength,
+        &DummyData
+    },
+    {
+        L"Session Manager",
+        L"RegistrySizeLimit",
+        &CmpGlobalQuota,
+        &CmpGlobalQuotaLength,
+        &DummyData
+    },
+    /* TODO: the memory, I/O, power and executive settings Windows reads here are not wired yet */
+    {
+        L"Session Manager",
+        L"ProtectionMode",
+        &ObpProtectionMode,
+        &CmpProtectionModeLength,
+        &DummyData
+    },
+    {
+        L"Session Manager\\kernel",
+        L"ObCaseInsensitive",
+        &ObpCaseInsensitive,
+        &CmpCaseInsensitiveLength,
+        &DummyData
+    },
+    {
+        L"Session Manager\\kernel",
+        L"ObUnsecureGlobalNames",
+        ObpUnsecureGlobalNamesBuffer,
+        &ObpUnsecureGlobalNamesLength,
+        &DummyData
+    },
+    /* FIXME: the boot processor's PRCB took the DPC defaults before these are read */
+    {
+        L"Session Manager\\kernel",
+        L"DpcQueueDepth",
+        &KiMaximumDpcQueueDepth,
+        &CmpDpcQueueDepthLength,
+        &DummyData
+    },
+    {
+        L"Session Manager\\kernel",
+        L"MinimumDpcRate",
+        &KiMinimumDpcRate,
+        &CmpMinimumDpcRateLength,
+        &DummyData
+    },
+    {
+        L"Session Manager\\kernel",
+        L"AdjustDpcThreshold",
+        &KiAdjustDpcThreshold,
+        &CmpAdjustDpcThresholdLength,
+        &DummyData
+    },
+    {
+        L"Session Manager\\kernel",
+        L"IdealDpcRate",
+        &KiIdealDpcRate,
+        &CmpIdealDpcRateLength,
+        &DummyData
+    },
+    {
+        L"Session Manager\\Memory Management",
+        L"PagedPoolQuota",
+        &DummyData,
+        &CmpIgnoredLength,
+        &DummyData
+    },
+    {
+        L"Nls\\Language",
+        L"Default",
+        CmDefaultLanguageId,
+        &CmDefaultLanguageIdLength,
+        &CmDefaultLanguageIdType
+    },
+    {
+        L"Nls\\Language",
+        L"InstallLanguage",
+        CmInstallUILanguageId,
+        &CmInstallUILanguageIdLength,
+        &CmInstallUILanguageIdType
+    },
+    {
+        L"ProductOptions",
+        L"ProductSuite",
+        CmSuiteBuffer,
+        &CmSuiteBufferLength,
+        &CmSuiteBufferType
+    },
+    {
+        L"Terminal Server",
+        L"TSAppCompat",
+        &CmTsAppCompat,
+        &CmpTsAppCompatLength,
+        &DummyData
+    },
+    {
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        NULL
+    }
+};
+
+UNICODE_STRING CmTypeName[MaximumType + 1] =
+{
+    [ArcSystem]                = RTL_CONSTANT_STRING(L"System"),
+    [CentralProcessor]         = RTL_CONSTANT_STRING(L"CentralProcessor"),
+    [FloatingPointProcessor]   = RTL_CONSTANT_STRING(L"FloatingPointProcessor"),
+    [PrimaryIcache]            = RTL_CONSTANT_STRING(L"PrimaryICache"),
+    [PrimaryDcache]            = RTL_CONSTANT_STRING(L"PrimaryDCache"),
+    [SecondaryIcache]          = RTL_CONSTANT_STRING(L"SecondaryICache"),
+    [SecondaryDcache]          = RTL_CONSTANT_STRING(L"SecondaryDCache"),
+    [SecondaryCache]           = RTL_CONSTANT_STRING(L"SecondaryCache"),
+    [EisaAdapter]              = RTL_CONSTANT_STRING(L"EisaAdapter"),
+    [TcAdapter]                = RTL_CONSTANT_STRING(L"TcAdapter"),
+    [ScsiAdapter]              = RTL_CONSTANT_STRING(L"ScsiAdapter"),
+    [DtiAdapter]               = RTL_CONSTANT_STRING(L"DtiAdapter"),
+    [MultiFunctionAdapter]     = RTL_CONSTANT_STRING(L"MultifunctionAdapter"),
+    [DiskController]           = RTL_CONSTANT_STRING(L"DiskController"),
+    [TapeController]           = RTL_CONSTANT_STRING(L"TapeController"),
+    [CdromController]          = RTL_CONSTANT_STRING(L"CdRomController"),
+    [WormController]           = RTL_CONSTANT_STRING(L"WormController"),
+    [SerialController]         = RTL_CONSTANT_STRING(L"SerialController"),
+    [NetworkController]        = RTL_CONSTANT_STRING(L"NetworkController"),
+    [DisplayController]        = RTL_CONSTANT_STRING(L"DisplayController"),
+    [ParallelController]       = RTL_CONSTANT_STRING(L"ParallelController"),
+    [PointerController]        = RTL_CONSTANT_STRING(L"PointerController"),
+    [KeyboardController]       = RTL_CONSTANT_STRING(L"KeyboardController"),
+    [AudioController]          = RTL_CONSTANT_STRING(L"AudioController"),
+    [OtherController]          = RTL_CONSTANT_STRING(L"OtherController"),
+    [DiskPeripheral]           = RTL_CONSTANT_STRING(L"DiskPeripheral"),
+    [FloppyDiskPeripheral]     = RTL_CONSTANT_STRING(L"FloppyDiskPeripheral"),
+    [TapePeripheral]           = RTL_CONSTANT_STRING(L"TapePeripheral"),
+    [ModemPeripheral]          = RTL_CONSTANT_STRING(L"ModemPeripheral"),
+    [MonitorPeripheral]        = RTL_CONSTANT_STRING(L"MonitorPeripheral"),
+    [PrinterPeripheral]        = RTL_CONSTANT_STRING(L"PrinterPeripheral"),
+    [PointerPeripheral]        = RTL_CONSTANT_STRING(L"PointerPeripheral"),
+    [KeyboardPeripheral]       = RTL_CONSTANT_STRING(L"KeyboardPeripheral"),
+    [TerminalPeripheral]       = RTL_CONSTANT_STRING(L"TerminalPeripheral"),
+    [OtherPeripheral]          = RTL_CONSTANT_STRING(L"OtherPeripheral"),
+    [LinePeripheral]           = RTL_CONSTANT_STRING(L"LinePeripheral"),
+    [NetworkPeripheral]        = RTL_CONSTANT_STRING(L"NetworkPeripheral"),
+    [SystemMemory]             = RTL_CONSTANT_STRING(L"SystemMemory"),
+    [DockingInformation]       = RTL_CONSTANT_STRING(L"DockingInformation"),
+    [RealModeIrqRoutingTable]  = RTL_CONSTANT_STRING(L"RealModeIrqRoutingTable"),
+    [RealModePCIEnumeration]   = RTL_CONSTANT_STRING(L"RealModePCIEnumeration"),
+    [MaximumType]              = RTL_CONSTANT_STRING(L"Unknown"),
+};
+
+UNICODE_STRING CmClassName[MaximumClass + 1] =
+{
+    [SystemClass]      = RTL_CONSTANT_STRING(L"System"),
+    [ProcessorClass]   = RTL_CONSTANT_STRING(L"Processor"),
+    [CacheClass]       = RTL_CONSTANT_STRING(L"Cache"),
+    [AdapterClass]     = RTL_CONSTANT_STRING(L"Adapter"),
+    [ControllerClass]  = RTL_CONSTANT_STRING(L"Controller"),
+    [PeripheralClass]  = RTL_CONSTANT_STRING(L"Peripheral"),
+    [MemoryClass]      = RTL_CONSTANT_STRING(L"Memory"),
+    [MaximumClass]     = RTL_CONSTANT_STRING(L"Unknown"),
+};
+
+CMP_MF_TYPE CmpMultifunctionTypes[] =
+{
+    {"ISA", Isa, 0},
+    {"EISA", Eisa, 0},
+    {"MCA", MicroChannel, 0},
+    {"PCI", PCIBus, 0},
+    {"VME", VMEBus, 0},
+    {"PCMCIA", PCMCIABus, 0},
+    {"CBUS", CBus, 0},
+    {"MPIBUS", MPIBus, 0},
+    {"MPSA", MPSABus, 0},
+    {"PROCESSORINTERNAL", ProcessorInternal, 0},
+    {"INTERNAL", Internal, 0},
+    {"PNPISA", PNPISABus, 0},
+    {"ACPI", ACPIBus, 0},
+    {NULL, InterfaceTypeUndefined, 0}
+};
+
+USHORT CmpUnknownBusCount = 0;
+ULONG CmpTypeCount[MaximumType + 1] = {0};
+
+ULONG CmpConfigurationAreaSize =
+    (ULONG)FIELD_OFFSET(CM_FULL_RESOURCE_DESCRIPTOR, PartialResourceList) +
+    PAGE_SIZE * 2;
+PCM_FULL_RESOURCE_DESCRIPTOR CmpConfigurationData = NULL;
+
+/* PRIVATE DATA ***************************************************************/
+
+static ERESOURCE CmpRegistryLock;
+
+extern LCID PsDefaultThreadLocaleId;
+extern LCID PsDefaultSystemLocaleId;
+
+/* PUBLIC FUNCTIONS ***********************************************************/
+
+CODE_SEG("INIT")
+VOID
+NTAPI
+CmpInitRegistryLock(VOID)
+{
+    InitializeListHead(&CmpHiveListHead);
+    InitializeListHead(&CmpSelfHealQueueListHead);
+    KeInitializeGuardedMutex(&CmpSelfHealQueueLock);
+    ExInitializePushLock(&CmpHiveListHeadLock);
+    ExInitializePushLock(&CmpLoadHiveLock);
+    ExInitializeResourceLite(&CmpRegistryLock);
+    CmpRegistryLockCreated = TRUE;
+}
+
+/* While a flush builds its dirty vector, a reader jumps the writers' queue */
+VOID
+NTAPI
+CmpLockRegistry(VOID)
+{
+    KeEnterCriticalRegion();
+
+    if (CmpFlushStarveWriters != 0)
+    {
+        ExAcquireSharedStarveExclusive(&CmpRegistryLock, TRUE);
+        return;
+    }
+
+    ExAcquireResourceSharedLite(&CmpRegistryLock, TRUE);
+}
+
+VOID
+NTAPI
+CmpLockRegistryExclusive(VOID)
+{
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&CmpRegistryLock, TRUE);
+
+    CmpRegistryLockCallerCaller = NULL;
+    CmpRegistryLockCaller = NULL;
+    CmpFlushOnLockRelease = FALSE;
+}
+
+/* Whatever asked to be on disk gets there before anyone else sees the hive */
+VOID
+NTAPI
+CmpUnlockRegistry(VOID)
+{
+    if (CmpFlushOnLockRelease)
+    {
+        CmpDoFlushAll(TRUE);
+        CmpFlushOnLockRelease = FALSE;
+    }
+
+    ExReleaseResourceLite(&CmpRegistryLock);
+    KeLeaveCriticalRegion();
+}
+
+BOOLEAN
+NTAPI
+CmpTestRegistryLock(VOID)
+{
+    if (!CmpRegistryLockCreated) return FALSE;
+    return ExIsResourceAcquiredSharedLite(&CmpRegistryLock) != 0;
+}
+
+BOOLEAN
+NTAPI
+CmpTestRegistryLockExclusive(VOID)
+{
+    if (!CmpRegistryLockCreated) return FALSE;
+    return ExIsResourceAcquiredExclusiveLite(&CmpRegistryLock);
+}
+
+VOID
+NTAPI
+CmpBeginStarveWriters(VOID)
+{
+    InterlockedIncrement((PLONG)&CmpFlushStarveWriters);
+}
+
+VOID
+NTAPI
+CmpEndStarveWriters(VOID)
+{
+    LONG Remaining = InterlockedDecrement((PLONG)&CmpFlushStarveWriters);
+
+    ASSERT(Remaining >= 0);
+    UNREFERENCED_PARAMETER(Remaining);
+}
+
+/* Nothing is charged against the quota until its limit has been read */
+VOID
+NTAPI
+CmpSetGlobalQuotaAllowed(VOID)
+{
+    CmpGlobalQuotaAllowed = CmpGlobalQuota;
+}

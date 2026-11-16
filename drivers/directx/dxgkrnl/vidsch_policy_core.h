@@ -89,4 +89,36 @@ VidSchPolicyResubmissionAllowed(
     return EngineState == IdleState || EngineState == RunningState;
 }
 
+/* Between the reset snapshot and the end of DxgkDdiResetEngine, completion and preemption interrupts from the timed-out engine are ignored. */
+FORCEINLINE
+BOOLEAN
+VidSchPolicyIgnoreEngineInterrupt(
+    _In_ LONG EngineState,
+    _In_ LONG ResettingState)
+{
+    return EngineState == ResettingState;
+}
+
+/* A packet an engine reset aborted: after the last completed fence and up to the last aborted one, in signed 32-bit fence distance. */
+FORCEINLINE
+BOOLEAN
+VidSchPolicyResetAbortedFence(
+    _In_ ULONG FenceId,
+    _In_ ULONG LastCompletedFenceId,
+    _In_ ULONG LastAbortedFenceId)
+{
+    return (LONG)(FenceId - LastCompletedFenceId) > 0 && (LONG)(LastAbortedFenceId - FenceId) >= 0;
+}
+
+/* From timeout detection to the end of recovery, while another thread holds the miniport, display queries answer from the state the reset leaves unchanged. */
+FORCEINLINE
+BOOLEAN
+VidSchPolicyResetHoldsMiniport(
+    _In_ BOOLEAN RecoveryActive,
+    _In_opt_ PVOID ResetOwner,
+    _In_ PVOID Caller)
+{
+    return RecoveryActive && ResetOwner != Caller;
+}
+
 #endif /* _VIDSCH_POLICY_CORE_H_ */

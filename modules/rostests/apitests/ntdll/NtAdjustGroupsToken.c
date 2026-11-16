@@ -230,6 +230,52 @@ Cleanup:
 
 static
 VOID
+AdjustDenyOnlyGroup(VOID)
+{
+    NTSTATUS Status;
+    HANDLE ProcessToken, Token = NULL;
+    PTOKEN_GROUPS Before = NULL, Restricted = NULL;
+    SID_AND_ATTRIBUTES Deny;
+    TOKEN_GROUPS Enable;
+    ULONG Target;
+
+    ProcessToken = GetProcessToken(TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_GROUPS);
+    if (!ProcessToken)
+        return;
+    Before = QueryGroups(ProcessToken);
+    Target = FindDefaultOptionalGroup(Before);
+    if (Target == MAXULONG)
+        goto Cleanup;
+
+    Deny.Sid = Before->Groups[Target].Sid;
+    Deny.Attributes = 0;
+    if (!CreateRestrictedToken(ProcessToken, 0, 1, &Deny, 0, NULL, 0, NULL, &Token))
+    {
+        skip("CreateRestrictedToken failed (%lu)\n", GetLastError());
+        Token = NULL;
+        goto Cleanup;
+    }
+    Restricted = QueryGroups(Token);
+    ok(Restricted != NULL, "Querying the restricted token failed\n");
+    if (!Restricted)
+        goto Cleanup;
+
+    Enable.GroupCount = 1;
+    Enable.Groups[0].Sid = Deny.Sid;
+    Enable.Groups[0].Attributes = SE_GROUP_ENABLED;
+    Status = NtAdjustGroupsToken(Token, FALSE, &Enable, 0, NULL, NULL);
+    ok_hex(Status, STATUS_CANT_ENABLE_DENY_ONLY);
+    CheckGroupsUnchanged(Token, Restricted);
+
+Cleanup:
+    if (Restricted) RtlFreeHeap(RtlGetProcessHeap(), 0, Restricted);
+    if (Before) RtlFreeHeap(RtlGetProcessHeap(), 0, Before);
+    if (Token) CloseHandle(Token);
+    CloseHandle(ProcessToken);
+}
+
+static
+VOID
 AdjustWithPreviousState(VOID)
 {
     NTSTATUS Status;
@@ -587,6 +633,7 @@ START_TEST(NtAdjustGroupsToken)
 
     AdjustOneGroup();
     AdjustMandatoryGroup();
+    AdjustDenyOnlyGroup();
     AdjustWithPreviousState();
     AdjustAndResetWithPreviousState();
     AdjustUserSid();

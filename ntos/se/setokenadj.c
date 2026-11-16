@@ -546,6 +546,16 @@ NtAdjustGroupsToken(
                     return STATUS_CANT_DISABLE_MANDATORY;
                 }
 
+                if ((Attributes & SE_GROUP_USE_FOR_DENY_ONLY) &&
+                    (Request[Entry].Attributes & SE_GROUP_ENABLED))
+                {
+                    SepReleaseTokenLock(Token);
+                    ExFreePoolWithTag(Changes, TAG_SE);
+                    SeReleaseSidAndAttributesArray(Request, PreviousMode, TRUE);
+                    ObDereferenceObject(Token);
+                    return STATUS_CANT_ENABLE_DENY_ONLY;
+                }
+
                 Changes[ChangeCount].Index = Index;
                 Changes[ChangeCount].Remove = FALSE;
 

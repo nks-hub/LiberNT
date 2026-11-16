@@ -2293,6 +2293,10 @@ typedef enum _DRIVER_DIRECTORY_TYPE {
   DriverDirectoryData,
   DriverDirectorySharedData
 } DRIVER_DIRECTORY_TYPE, *PDRIVER_DIRECTORY_TYPE;
+
+typedef enum _DEVICE_DIRECTORY_TYPE {
+  DeviceDirectoryData = 0,
+} DEVICE_DIRECTORY_TYPE, *PDEVICE_DIRECTORY_TYPE;
 #endif
 
 #define DRVO_UNLOAD_INVOKED               0x00000001
@@ -5702,7 +5706,8 @@ typedef union _PCI_EXPRESS_DEVICE_CAPABILITIES_REGISTER {
     ULONG Rsvd1:2;
     ULONG CapturedSlotPowerLimit:8;
     ULONG CapturedSlotPowerLimitScale:2;
-    ULONG Rsvd2:4;
+    ULONG FunctionLevelResetCapability:1;
+    ULONG Rsvd2:3;
   } DUMMYSTRUCTNAME;
   ULONG AsULONG;
 } PCI_EXPRESS_DEVICE_CAPABILITIES_REGISTER, *PPCI_EXPRESS_DEVICE_CAPABILITIES_REGISTER;
@@ -5724,6 +5729,10 @@ typedef union _PCI_EXPRESS_DEVICE_CONTROL_REGISTER {
     USHORT MaxReadRequestSize:3;
     USHORT BridgeConfigRetryEnable:1;
   } DUMMYSTRUCTNAME;
+  _ANONYMOUS_STRUCT struct {
+    USHORT :15;
+    USHORT InitiateFunctionLevelReset:1;
+  } DUMMYSTRUCTNAME2;
   USHORT AsUSHORT;
 } PCI_EXPRESS_DEVICE_CONTROL_REGISTER, *PPCI_EXPRESS_DEVICE_CONTROL_REGISTER;
 
@@ -8027,6 +8036,11 @@ typedef struct _REPARSE_GUID_DATA_BUFFER {
 #define IO_REPARSE_TAG_SYMLINK                  (0xA000000CL)
 #define IO_REPARSE_TAG_IIS_CACHE                (0xA0000010L)
 #define IO_REPARSE_TAG_DFSR                     (0x80000012L)
+#define IO_REPARSE_TAG_LX_SYMLINK               (0xA000001DL)
+#define IO_REPARSE_TAG_AF_UNIX                  (0x80000023L)
+#define IO_REPARSE_TAG_LX_FIFO                  (0x80000024L)
+#define IO_REPARSE_TAG_LX_CHR                   (0x80000025L)
+#define IO_REPARSE_TAG_LX_BLK                   (0x80000026L)
 
 #pragma pack(4)
 typedef struct _REPARSE_INDEX_KEY {

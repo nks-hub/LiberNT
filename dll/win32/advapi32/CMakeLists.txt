@@ -22,6 +22,8 @@ list(APPEND SOURCE
     misc/hwprofiles.c
     misc/logon.c
     misc/msi.c
+    misc/perflib.c
+    misc/seclogon.c
     misc/shutdown.c
     misc/sysfunc.c
     misc/unicode.c
@@ -85,10 +87,8 @@ add_library(advapi32 MODULE
 
 set_module_type(advapi32 win32dll UNICODE ENTRYPOINT DllMain 12)
 target_link_libraries(advapi32 win32_registry cryptlib csprng wine ${PSEH_LIB})
-if(DLL_EXPORT_VERSION GREATER_EQUAL 0x600)
-    target_link_libraries(advapi32 etwtrace)
-endif()
+target_link_libraries(advapi32 etwtrace)
 add_delay_importlibs(advapi32 cryptsp netapi32 secur32 user32 userenv)
-add_importlibs(advapi32 sechost kernelbase advapi32_vista rpcrt4 msvcrt kernel32 ntdll)
+add_importlibs(advapi32 sechost kernelbase rpcrt4 msvcrt kernel32 ntdll)
 add_pch(advapi32 advapi32.h "${PCH_SKIP_SOURCE}")
 add_cd_file(TARGET advapi32 DESTINATION reactos/system32 FOR all)

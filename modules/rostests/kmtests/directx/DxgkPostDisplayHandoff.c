@@ -123,10 +123,42 @@ DxgkPostDisplayTestNonRestartableFailure(VOID)
     ok_eq_long(Completion, DxgkPostDisplayCompletionNone);
 }
 
+static
+VOID
+DxgkPostDisplayTestFirmwareScanout(VOID)
+{
+    ok_bool_true(DxgkPostDisplayCoreFirmwareScanout(TRUE, FALSE), "a display-only driver presents through the firmware framebuffer");
+    ok_bool_true(DxgkPostDisplayCoreFirmwareScanout(TRUE, TRUE), "a committed display-only driver still scans out the firmware framebuffer");
+    ok_bool_true(DxgkPostDisplayCoreFirmwareScanout(FALSE, FALSE), "a full miniport without a committed path leaves the firmware image on screen");
+    ok_bool_false(DxgkPostDisplayCoreFirmwareScanout(FALSE, TRUE), "a full miniport with a committed path scans out its own primary");
+}
+
+static
+VOID
+DxgkPostDisplayTestUefiRangeSegment(VOID)
+{
+    ULONG Index = MAXULONG;
+
+    ok_eq_uint(DxgkPostDisplayCoreUefiRangeSegment(1), 0);
+    ok_eq_uint(DxgkPostDisplayCoreUefiRangeSegment(3), 2);
+    ok_bool_true(DxgkPostDisplayCoreUefiRangeSegmentIndex(0, 3, &Index), "the miniport releases the first segment's firmware ranges as segment 0");
+    ok_eq_ulong(Index, 0UL);
+    ok_bool_true(DxgkPostDisplayCoreUefiRangeSegmentIndex(2, 3, &Index), "the last segment is still in range");
+    ok_eq_ulong(Index, 2UL);
+    ok_bool_false(DxgkPostDisplayCoreUefiRangeSegmentIndex(3, 3, &Index), "a position past the last segment is refused");
+    ok_eq_ulong(Index, 0UL);
+    ok_bool_false(DxgkPostDisplayCoreUefiRangeSegmentIndex(0, 0, &Index), "an adapter without segments has no firmware ranges to release");
+    ok_bool_false(DxgkPostDisplayCoreUefiUnblockDeferred(PASSIVE_LEVEL), "a release at passive level is applied at once");
+    ok_bool_false(DxgkPostDisplayCoreUefiUnblockDeferred(APC_LEVEL), "a release at APC level is applied at once");
+    ok_bool_true(DxgkPostDisplayCoreUefiUnblockDeferred(DISPATCH_LEVEL), "a release from a DPC is handed to a worker");
+}
+
 START_TEST(DxgkPostDisplayHandoff)
 {
     DxgkPostDisplayTestRestartableFailure();
     DxgkPostDisplayTestSuccessfulClaimant();
     DxgkPostDisplayTestNonRestartableFailure();
     DxgkPostDisplayTestPostDevice();
+    DxgkPostDisplayTestFirmwareScanout();
+    DxgkPostDisplayTestUefiRangeSegment();
 }

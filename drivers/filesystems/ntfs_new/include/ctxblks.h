@@ -44,6 +44,8 @@ typedef struct _VolumeContextBlock
     LIST_ENTRY StreamList;
     LIST_ENTRY StreamHash[256];
     LIST_ENTRY LinkHash[256];
+    /* Open links change under the exclusive metadata lock, or under the shared one while this is held */
+    FAST_MUTEX OpenLinkMutex;
     PNOTIFY_SYNC NotifySync;
     LIST_ENTRY NotifyList;
     TUNNEL Tunnel;
@@ -86,6 +88,16 @@ typedef struct _VolumeContextBlock
     FAST_MUTEX IdleFcbMutex;
     LIST_ENTRY IdleFcbList;
     ULONG IdleFcbCount;
+
+    FAST_MUTEX TxfMutex;
+    LIST_ENTRY TxfTransactions;
+    LONG TxfActiveCount;
+    ULONG TxfNextId;
+    EX_PUSH_LOCK TxfStagingLock;
+    BOOLEAN TxfStagingReady;
+    UNICODE_STRING TxfDeviceName;
+    LONG TxfRecoveryPending;
+    PETHREAD TxfRecoveryThread;
 } VolumeContextBlock, *PVolumeContextBlock;
 
 #define NTFS_MAX_MISSING_NAMES 256
@@ -350,6 +362,7 @@ typedef struct _FCB
     BOOLEAN IsVolumeOpen;
     BOOLEAN CleanupComplete;
     BOOLEAN ManageVolumeAccess;
+    BOOLEAN RestoreAccess;
     BOOLEAN DismountedVolume;
     ULONG CreateOptions;
     ACCESS_MASK DesiredAccess;
@@ -397,6 +410,8 @@ typedef struct _FCB
     /* NTFS does not store dot entries; expose them before the real index. */
     UCHAR DirDotIndex;
     BOOLEAN DirRealScanStarted;
+    BOOLEAN DirRecordCurrent;
+    LONG DirRecordGeneration;
 
     /* The search pattern belongs to the handle: it is supplied once and
      * every later query without a name reuses it. */
@@ -412,6 +427,13 @@ typedef struct _FCB
     struct _NtfsCachedRecord* CachedRecord;
 
     struct _NTFS_PAGING_FILE* PagingFile;
+
+    struct _NTFS_TXF_TRANSACTION* Txf;
+    UNICODE_STRING TxfLogicalName;
+    ULONGLONG TxfReaderReference;
+    PVOID TxfDeleteChange;
+    ULONG TxfInjectIndex;
+    BOOLEAN TxfPhysicalDone;
 
     /* Links this block into the volume's idle list while it is not in use. */
     LIST_ENTRY IdleLink;
@@ -453,6 +475,16 @@ NtfsGetPagingIoResource(_In_ PFileContextBlock FileCB)
 
 NTSTATUS
 NtfsCheckRecordAccess(
+    _In_ PNtfsFileRecord File,
+    _In_ PSECURITY_SUBJECT_CONTEXT SubjectContext,
+    _In_ ACCESS_MASK DesiredAccess,
+    _In_ ACCESS_MASK PreviouslyGrantedAccess,
+    _In_ KPROCESSOR_MODE AccessMode,
+    _Out_ PACCESS_MASK GrantedAccess,
+    _Out_ PPRIVILEGE_SET* Privileges);
+
+NTSTATUS
+NtfsCheckCachedRecordAccess(
     _In_ PNtfsFileRecord File,
     _In_ PSECURITY_SUBJECT_CONTEXT SubjectContext,
     _In_ ACCESS_MASK DesiredAccess,
@@ -572,6 +604,34 @@ VOID
 NtfsCancelShrink(_In_ PVolumeContextBlock VolCB,
                  _In_ PFILE_OBJECT FileObject);
 
+/*
+ * Work out which volume offset backs a range of a stream, and transfer it.
+ * The mapping needs the volume metadata lock; the transfer must not hold it,
+ * so the two are separate calls. The caller keeps the file's own resource for
+ * the whole request, which is what stops the mapping moving in between.
+ */
+NTSTATUS
+NtfsMapDirectIo(_In_ PVolumeContextBlock VolCB,
+                _In_ PFileContextBlock FileCB,
+                _Inout_ PIRP Irp,
+                _In_ ULONGLONG FileOffset,
+                _In_ ULONG Length,
+                _In_ LOCK_OPERATION Operation,
+                _Out_ PULONGLONG MappedOffset,
+                _Out_ PBOOLEAN Handled);
+
+NTSTATUS
+NtfsSubmitDirectIo(_In_ PVolumeContextBlock VolCB,
+                   _Inout_ PIRP Irp,
+                   _In_ UCHAR MajorFunction,
+                   _In_ ULONGLONG DiskOffset,
+                   _In_ ULONG Length);
+
+NTSTATUS
+NtfsLockTransferBuffer(_Inout_ PIRP Irp,
+                       _In_ ULONG Length,
+                       _In_ LOCK_OPERATION Operation);
+
 NTSTATUS
 NtfsRefreshDirectoryRecord(_In_ PVolumeContextBlock VolCB,
                             _In_ PFileContextBlock FileCB);
@@ -604,11 +664,173 @@ NtfsAcquireMetadata(_In_ PVolumeContextBlock VolCB)
 
 static inline
 VOID
+NtfsReleaseMetadataShared(_In_ PVolumeContextBlock VolCB);
+
+static inline
+VOID
 NtfsReleaseMetadata(_In_ PVolumeContextBlock VolCB)
 {
-    BOOLEAN Last = ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource) == 1;
+    BOOLEAN Last;
 
+    if (!ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource))
+    {
+        NtfsReleaseMetadataShared(VolCB);
+        return;
+    }
+
+    Last = ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource) == 1;
     ExReleaseResourceLite(&VolCB->MetadataResource);
     if (Last)
         ExfReleasePushLockExclusive(&VolCB->MetadataGate);
 }
+
+static inline
+VOID
+NtfsAcquireMetadataShared(_In_ PVolumeContextBlock VolCB)
+{
+    ASSERT(!ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource));
+    ExfAcquirePushLockShared(&VolCB->MetadataGate);
+    ExAcquireResourceSharedLite(&VolCB->MetadataResource, TRUE);
+}
+
+static inline
+VOID
+NtfsReleaseMetadataShared(_In_ PVolumeContextBlock VolCB)
+{
+    ASSERT(ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource) == 1);
+    ASSERT(!ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ExReleaseResourceLite(&VolCB->MetadataResource);
+    ExfReleasePushLockShared(&VolCB->MetadataGate);
+}
+
+static inline
+VOID
+NtfsAcquireCreateMetadata(_In_ PVolumeContextBlock VolCB,
+                          _In_ BOOLEAN Shared)
+{
+    if (Shared)
+        NtfsAcquireMetadataShared(VolCB);
+    else
+        NtfsAcquireMetadata(VolCB);
+}
+
+static inline
+VOID
+NtfsUpgradeCreateMetadata(_In_ PVolumeContextBlock VolCB,
+                          _Inout_ PBOOLEAN Shared)
+{
+    if (!*Shared)
+        return;
+    NtfsReleaseMetadataShared(VolCB);
+    NtfsAcquireMetadata(VolCB);
+    *Shared = FALSE;
+}
+
+static inline
+BOOLEAN
+NtfsAcquireMetadataSharedUnlessHeld(_In_ PVolumeContextBlock VolCB)
+{
+    if (ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource))
+        return FALSE;
+    NtfsAcquireMetadataShared(VolCB);
+    return TRUE;
+}
+
+static inline
+BOOLEAN
+NtfsLockOpenLinks(_In_ PVolumeContextBlock VolCB)
+{
+    if (ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource))
+        return FALSE;
+    ASSERT(ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource));
+    ExAcquireFastMutex(&VolCB->OpenLinkMutex);
+    return TRUE;
+}
+
+static inline
+VOID
+NtfsUnlockOpenLinks(_In_ PVolumeContextBlock VolCB,
+                    _In_ BOOLEAN Locked)
+{
+    if (Locked)
+        ExReleaseFastMutex(&VolCB->OpenLinkMutex);
+}
+
+typedef struct _NTFS_TXF_OPEN
+{
+    struct _NTFS_TXF_TRANSACTION* Txf;
+    UNICODE_STRING LogicalName;
+    BOOLEAN Reader;
+    BOOLEAN Staged;
+} NTFS_TXF_OPEN, *PNTFS_TXF_OPEN;
+
+VOID
+NtfsTxfInitializeVolume(_Inout_ PVolumeContextBlock VolCB);
+
+BOOLEAN
+NtfsTxfVolumeSupported(_In_ PVolumeContextBlock VolCB);
+
+NTSTATUS
+NtfsTxfPrepareCreate(_In_ PDEVICE_OBJECT VolumeDeviceObject,
+                     _In_ PIRP Irp,
+                     _Inout_ PNTFS_TXF_OPEN Open);
+
+NTSTATUS
+NtfsTxfCheckOpen(_In_ PVolumeContextBlock VolCB,
+                 _Inout_ PFileContextBlock FileCB,
+                 _In_ PIO_STACK_LOCATION IrpSp,
+                 _Inout_ PNTFS_TXF_OPEN Open);
+
+VOID
+NtfsTxfReleaseOpen(_Inout_ PNTFS_TXF_OPEN Open);
+
+VOID
+NtfsTxfReleaseFileContext(_In_ PVolumeContextBlock VolCB,
+                          _Inout_ PFileContextBlock FileCB);
+
+VOID
+NtfsTxfCleanup(_In_ PVolumeContextBlock VolCB,
+               _Inout_ PFileContextBlock FileCB);
+
+NTSTATUS
+NtfsTxfSetDisposition(_In_ PVolumeContextBlock VolCB,
+                      _Inout_ PFileContextBlock FileCB,
+                      _In_ ULONG Flags,
+                      _Out_ PBOOLEAN Handled);
+
+NTSTATUS
+NtfsTxfRename(_In_ PVolumeContextBlock VolCB,
+              _Inout_ PFileContextBlock FileCB,
+              _In_opt_ PFileContextBlock TargetFileCB,
+              _In_ PCUNICODE_STRING LeafName,
+              _In_ BOOLEAN ReplaceIfExists,
+              _In_ BOOLEAN Link);
+
+NTSTATUS
+NtfsTxfCheckNewName(_In_ PVolumeContextBlock VolCB,
+                    _In_ PCUNICODE_STRING NewName);
+
+PCUNICODE_STRING
+NtfsTxfDisplayName(_In_ PFileContextBlock FileCB);
+
+NTSTATUS
+NtfsTxfNormalizedName(_In_ PVolumeContextBlock VolCB,
+                      _In_ PFileContextBlock FileCB,
+                      _Out_writes_(Capacity) PWCHAR Path,
+                      _In_ ULONG Capacity,
+                      _Out_ PULONG PathLength);
+
+BOOLEAN
+NtfsTxfKeepDirectoryEntry(_In_ PVolumeContextBlock VolCB,
+                          _In_ PFileContextBlock FileCB,
+                          _In_reads_(NameLength) PCWSTR Name,
+                          _In_ USHORT NameLength);
+
+NTSTATUS
+NtfsTxfNextDirectoryEntry(_In_ PVolumeContextBlock VolCB,
+                          _Inout_ PFileContextBlock FileCB,
+                          _In_opt_ PUNICODE_STRING FileNameFilter,
+                          _In_ FILE_INFORMATION_CLASS InformationClass,
+                          _Out_writes_bytes_(*Length) PVOID Buffer,
+                          _Inout_ PULONG Length,
+                          _Out_ PULONG EntrySize);

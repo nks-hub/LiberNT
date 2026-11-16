@@ -109,6 +109,8 @@ MiSegmentLinkChunksLocked(
     PMI_CHUNK_INDEX Index;
     ULONG i;
 
+    ASSERT(Segment != NULL);
+
     for (Index = Segment->ChunkIndex; Index != NULL && !Index->Linked; Index = Index->Next)
     {
         for (i = 0; i < Index->PageCount; i++)
@@ -245,6 +247,8 @@ MiSegmentUnlinkChunksLocked(
 {
     PMI_CHUNK_INDEX Index;
     ULONG i;
+
+    ASSERT(Segment != NULL);
 
     for (Index = Segment->ChunkIndex; Index != NULL; Index = Index->Next)
     {
@@ -815,7 +819,7 @@ MiSegmentAdoptFrame(
     PMI_PTE Proto;
     MI_PTE Pte;
 
-    if (Segment->Kind != MiSegmentPageFileBacked || Frame >= System->Pfn.FrameCount)
+    if (Segment->Kind != MiSegmentPageFileBacked || !MiPfnTracked(&System->Pfn, Frame))
         return STATUS_INVALID_PARAMETER;
 
     MI_MUTEX_ACQUIRE(&Segment->Lock);
@@ -967,8 +971,8 @@ MiSegmentRelease(
     }
 
     MI_ASSERT(Segment->State == MI_SEGMENT_ACTIVE);
-    if (AllowCache && System->UnusedSegmentLimit != 0 && Segment->Kind != MiSegmentPageFileBacked &&
-        Segment->FileOps.Release != NULL)
+    if (AllowCache && !Segment->CloseWhenUnused && System->UnusedSegmentLimit != 0 &&
+        Segment->Kind != MiSegmentPageFileBacked && Segment->FileOps.Release != NULL)
     {
         Segment->State = MI_SEGMENT_UNUSED;
         InsertTailList(&System->UnusedSegmentList, &Segment->UnusedLink);
@@ -1008,6 +1012,20 @@ MiSegmentDereferenceAndClose(
     _Inout_ PMI_SEGMENT Segment)
 {
     return MiSegmentRelease(Segment, FALSE, NULL);
+}
+
+VOID
+MiSegmentCloseWhenUnused(
+    _Inout_ PMI_SEGMENT Segment)
+{
+    PMI_SYSTEM System = Segment->System;
+    KIRQL OldIrql;
+
+    MI_SPIN_ACQUIRE(&System->SegmentListLock, &OldIrql);
+    MI_ASSERT(Segment->State == MI_SEGMENT_ACTIVE);
+    MI_ASSERT(MI_ATOMIC_READ32(&Segment->ReferenceCount) > 0);
+    Segment->CloseWhenUnused = TRUE;
+    MI_SPIN_RELEASE(&System->SegmentListLock, OldIrql);
 }
 
 ULONG
@@ -1565,7 +1583,8 @@ MiReleaseViewPageEx(
     if (Clones && MiCloneDeletePage(Space, VirtualAddress, Slot, TableFrame, NewValue))
         return;
 
-    if (!MiArchPteIsValid(Pte) || !(MI_PFN_FLAGS(&System->Pfn.Pfn[MiArchPteFrame(Pte)]) & MI_PFN_FLAG_PROTOTYPE))
+    if (!MiArchPteIsValid(Pte) || !MiPfnTracked(&System->Pfn, MiArchPteFrame(Pte)) ||
+        !(MI_PFN_FLAGS(&System->Pfn.Pfn[MiArchPteFrame(Pte)]) & MI_PFN_FLAG_PROTOTYPE))
     {
         if (Pte == NewValue)
             return;
@@ -1580,8 +1599,7 @@ MiReleaseViewPageEx(
     Frame = (ULONG)MiArchPteFrame(Pte);
     Page = Vad->SegmentPageOffset + ((VirtualAddress - MI_VAD_START(Vad)) >> PAGE_SHIFT);
 
-    MiPtWrite(Space, VirtualAddress, Slot, TableFrame, NewValue);
-
+    Pte = MiPtInvalidate(Space, VirtualAddress, Slot, TableFrame, NewValue);
     if (MiArchPteIsDirty(Pte))
         MiPfnSetModified(&System->Pfn, Frame);
 
@@ -1629,7 +1647,7 @@ MiTlbBatchFlush(
 
         MI_ASSERT((Entry->Va & (PAGE_SIZE - 1)) == 0);
         MI_ASSERT(i == 0 || Batch->Entry[i - 1].Va <= Entry->Va);
-        MI_ASSERT(Entry->Frame < System->Pfn.FrameCount);
+        MI_ASSERT(MiPfnTracked(&System->Pfn, Entry->Frame));
         MI_ASSERT(MI_ATOMIC_READ32(&System->Pfn.Pfn[Entry->Frame].ShareCount) > 0);
         MI_ASSERT((Entry->Segment == NULL) == (Entry->Proto == NULL));
         MI_ASSERT(Entry->Clone == NULL || (Entry->Segment == NULL && !Entry->Private));
@@ -1718,7 +1736,7 @@ MiTlbBatchInsert(
 
     MI_ASSERT(Batch != NULL && Batch->Count < MI_TLB_BATCH_SIZE);
     MI_ASSERT((VirtualAddress & (PAGE_SIZE - 1)) == 0);
-    MI_ASSERT(Frame < Space->System->Pfn.FrameCount);
+    MI_ASSERT(MiPfnTracked(&Space->System->Pfn, Frame));
     MI_ASSERT(MI_ATOMIC_READ32(&Space->System->Pfn.Pfn[Frame].ShareCount) > 0);
     MI_ASSERT((Segment == NULL) == (Proto == NULL));
     MI_ASSERT(Clone == NULL || (Segment == NULL && !Private));
@@ -1913,15 +1931,9 @@ MiCopyOnWrite(
     if (Vad->Type == MiVadPrivate || !(MI_PFN_FLAGS(&System->Pfn.Pfn[OldFrame]) & MI_PFN_FLAG_PROTOTYPE))
         return STATUS_ACCESS_VIOLATION;
 
-    if (!MiChargeCommit(Space, 1))
-        return STATUS_COMMITMENT_LIMIT;
-
     Frame = MiPfnAllocatePage(&System->Pfn, Space->IsSystem ? 0 : MI_ALLOCATE_HIGH);
     if (Frame == MI_FRAME_INVALID)
-    {
-        MiReturnCommit(Space, 1);
         return STATUS_NO_MEMORY;
-    }
 
     Source = MiPfnMapFrame(&System->Pfn, OldFrame);
     Target = MiPfnMapFrame(&System->Pfn, Frame);
@@ -1937,7 +1949,6 @@ MiCopyOnWrite(
         if (!NT_SUCCESS(Status))
         {
             MiPfnShareDecrement(&System->Pfn, Frame, TRUE);
-            MiReturnCommit(Space, 1);
             return Status;
         }
         Protection |= Cache;
@@ -2078,7 +2089,8 @@ MiSetMappedViewProtection(
             continue;
 
         if (Pte == 0 || MiSoftKind(Pte) == MiSoftPrototype ||
-            (MiArchPteIsValid(Pte) && (MI_PFN_FLAGS(&System->Pfn.Pfn[MiArchPteFrame(Pte)]) & MI_PFN_FLAG_PROTOTYPE)))
+            (MiArchPteIsValid(Pte) && MiPfnTracked(&System->Pfn, MiArchPteFrame(Pte)) &&
+             (MI_PFN_FLAGS(&System->Pfn.Pfn[MiArchPteFrame(Pte)]) & MI_PFN_FLAG_PROTOTYPE)))
         {
             MiReleaseViewPage(Space, Vad, Va, Slot, TableFrame, MiSoftMake(MiSoftPrototype, Protection, 0));
         }
@@ -2166,7 +2178,6 @@ MiDetachMappedView(
     Space->TlbBatch->DeferTables = Deferred;
     MiTlbBatchEnd(Space, Owner);
     MiReturnCommit(Space, Vad->CommitCharge);
-    MiLockRangeRemove(Space, MI_VAD_START(Vad), MI_VAD_END(Vad));
     MiVadRemove(&Space->VadRoot, &Vad->Node);
 
     MiAdjustSegmentCount(&Segment->MappedViews, -1);
@@ -2403,6 +2414,11 @@ MiUnmapViewEx(
     }
     if (Vad != NULL && Vad->Type == MiVadLarge && Vad->Segment != NULL)
     {
+        if (!NT_SUCCESS(MiLockRangeRemove(Space, MI_VAD_START(Vad), MI_VAD_END(Vad))))
+        {
+            MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
         Segment = MiReleaseLargePagesLocked(Space, Vad);
         MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
         MiSegmentDereference(Segment);
@@ -2414,6 +2430,11 @@ MiUnmapViewEx(
         return STATUS_NOT_MAPPED_VIEW;
     }
 
+    if (!NT_SUCCESS(MiLockRangeRemove(Space, MI_VAD_START(Vad), MI_VAD_END(Vad))))
+    {
+        MI_RW_RELEASE_EXCLUSIVE(&Space->Lock);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
     StartingVpn = Vad->Node.StartingVpn;
     EndingVpn = Vad->Node.EndingVpn;
     Segment = MiDetachMappedView(Space, Vad, TRUE);
@@ -2660,7 +2681,7 @@ MiSegmentFlush(
     ULONG64 First = Offset >> PAGE_SHIFT;
     ULONG64 Last;
     ULONG64 Page;
-    ULONG Limit = Segment->FileOps.WriteFrames != NULL ? MI_MAX_FILE_WRITE_PAGES : 1;
+    ULONG Limit = Segment->FileOps.WriteFrames != NULL ? MI_MAX_FILE_FLUSH_PAGES : 1;
 
     if (Segment->Kind != MiSegmentDataFile || Length == 0)
         return STATUS_SUCCESS;
@@ -2677,7 +2698,7 @@ MiSegmentFlush(
 
     for (Page = First; Page < Last;)
     {
-        ULONG Frames[MI_MAX_FILE_WRITE_PAGES];
+        ULONG Frames[MI_MAX_FILE_FLUSH_PAGES];
         ULONG Count = 0;
         ULONG Bytes = 0;
         ULONG64 RunPage = Page;
@@ -2711,7 +2732,8 @@ MiSegmentFlush(
                 Page >= BridgeEnd)
             {
                 ULONG64 Next;
-                ULONG64 End = (Last < RunPage + Limit) ? Last : RunPage + Limit;
+                ULONG64 Bridge = RunPage + ((Limit < MI_MAX_FILE_WRITE_PAGES) ? Limit : MI_MAX_FILE_WRITE_PAGES);
+                ULONG64 End = (Last < Bridge) ? Last : Bridge;
 
                 if (Count == 0)
                     break;
@@ -2898,7 +2920,7 @@ MiAssertPendingReads(
         MI_ASSERT(Link->Flink->Blink == Link && Link->Blink->Flink == Link);
         MI_ASSERT(Read->Segment == Segment && Read->Proto != NULL && Read->Mapping != NULL);
         MI_ASSERT(MiSoftKind(Read->Original) == MiSoftSubsection);
-        MI_ASSERT(Read->Frame < Segment->System->Pfn.FrameCount && Read->Bytes <= PAGE_SIZE);
+        MI_ASSERT(MiPfnTracked(&Segment->System->Pfn, Read->Frame) && Read->Bytes <= PAGE_SIZE);
         for (OtherLink = Segment->PendingReads.Flink; OtherLink != Link; OtherLink = OtherLink->Flink)
         {
             PMI_SEGMENT_READ Other = CONTAINING_RECORD(OtherLink, MI_SEGMENT_READ, Link);
@@ -3353,10 +3375,17 @@ MiWritePrototypePage(
 
         if (NT_SUCCESS(Status))
         {
-            MI_MUTEX_ACQUIRE(&Segment->FlushLock);
-            Status = MiSegmentWritePage(Segment, Page, Frame, Entry->OriginalPte);
-            MiPfnWriteComplete(&System->Pfn, Frame, Entry->OriginalPte, (BOOLEAN)NT_SUCCESS(Status));
-            MI_MUTEX_RELEASE(&Segment->FlushLock);
+            if (MI_MUTEX_TRY_ACQUIRE(&Segment->FlushLock))
+            {
+                Status = MiSegmentWritePage(Segment, Page, Frame, Entry->OriginalPte);
+                MiPfnWriteComplete(&System->Pfn, Frame, Entry->OriginalPte, (BOOLEAN)NT_SUCCESS(Status));
+                MI_MUTEX_RELEASE(&Segment->FlushLock);
+            }
+            else
+            {
+                Status = STATUS_CANT_WAIT;
+                MiPfnWriteComplete(&System->Pfn, Frame, Entry->OriginalPte, FALSE);
+            }
 
             if (Segment->FileOps.ReleaseForModWrite != NULL)
                 Segment->FileOps.ReleaseForModWrite(Segment->FileContext, ModWriteToken);

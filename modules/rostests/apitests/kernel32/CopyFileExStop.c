@@ -7,6 +7,7 @@
 
 #include "precomp.h"
 #include <sddl.h>
+#include <winioctl.h>
 
 #define SOURCE_SIZE (6 * 1024 * 1024)
 #define STOP_AT (2 * 1024 * 1024)
@@ -112,6 +113,29 @@ SameAsSource(void)
     return Same;
 }
 
+/* What a stop at the first report keeps on Windows 11: a destination of the source size, all zeros */
+static BOOL
+IsZeroedCopy(LPCWSTR Path)
+{
+    static UCHAR Buffer[65536];
+    LONGLONG Size = 0;
+    HANDLE File;
+    DWORD Read, i;
+    BOOL Zero = TRUE;
+
+    File = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (File == INVALID_HANDLE_VALUE)
+        return FALSE;
+    while (Zero && ReadFile(File, Buffer, sizeof(Buffer), &Read, NULL) && Read)
+    {
+        for (i = 0; i < Read; i++)
+            Zero = Zero && !Buffer[i];
+        Size += Read;
+    }
+    CloseHandle(File);
+    return Zero && Size == SOURCE_SIZE;
+}
+
 static void
 test_Stop(DWORD Flags, DWORD Action)
 {
@@ -167,6 +191,9 @@ test_StopPoints(LPCWSTR From, LPCWSTR To, DWORD RemoteFiles)
                    From, To, Flags, Action, Stops[i], StoppedAt);
                 ok(Left == Kept, "%S to %S, flags 0x%lx, action %lu, stop %I64d: destination left %d, expected %d\n",
                    From, To, Flags, Action, Stops[i], Left, Kept);
+                if (Kept && Stops[i] < 0)
+                    ok(IsZeroedCopy(Dest), "%S to %S, flags 0x%lx: the destination kept at the first report is not the zeroed source size\n",
+                       From, To, Flags);
             }
         }
     }
@@ -376,14 +403,15 @@ test_NoDeleteAccess(LPCWSTR Dir, LPCWSTR FileSystem)
     RemoveNoDeleteDir(SubDir);
 }
 
-/* A move to another volume is a copy; on Windows 11 a stop removes the partial file there and keeps the source */
+/* A move to another volume is a copy: Windows 11 keeps the source and, as for a copy, only what a stop at the first report leaves */
 static void
 test_MoveToOtherVolume(LPCWSTR Root)
 {
+    static const LONGLONG Stops[] = { -1, STOP_AT, SOURCE_SIZE };
     WCHAR Other[] = L"A:\\", Moved[MAX_PATH];
-    DWORD Drives = GetLogicalDrives(), Action, Error;
+    DWORD Drives = GetLogicalDrives(), Action, Error, Replace, i;
     HANDLE File = INVALID_HANDLE_VALUE;
-    BOOL Ret;
+    BOOL Ret, Kept;
 
     for (; Other[0] <= L'Z'; Other[0]++)
     {
@@ -401,34 +429,85 @@ test_MoveToOtherVolume(LPCWSTR Root)
     }
     CloseHandle(File);
 
-    for (Action = PROGRESS_CANCEL; Action <= PROGRESS_STOP; Action++)
+    /* After any stop the file that a replacing move was to replace is gone */
+    for (Replace = 0; Replace <= MOVEFILE_REPLACE_EXISTING; Replace += MOVEFILE_REPLACE_EXISTING)
     {
-        StopAt = STOP_AT;
-        StopAction = Action;
-        StoppedAt = FirstReport = FirstChunk = -1;
-        SetLastError(0xdeadbeef);
-        Ret = MoveFileWithProgressW(Source, Moved, Progress, NULL, MOVEFILE_COPY_ALLOWED);
-        Error = GetLastError();
-        ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Action %lu: move to %S returned %d (%lu)\n", Action, Other, Ret, Error);
-        ok(GetFileAttributesW(Source) != INVALID_FILE_ATTRIBUTES, "Action %lu: the source is gone after the stopped move\n", Action);
-        ok(GetFileAttributesW(Moved) == INVALID_FILE_ATTRIBUTES, "Action %lu: the stopped move left its destination\n", Action);
-        DeleteFileW(Moved);
-
-        /* The file that the move was to replace is gone as well */
-        File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
-        ok(File != INVALID_HANDLE_VALUE, "Action %lu: cannot create %S (%lu)\n", Action, Moved, GetLastError());
-        if (File == INVALID_HANDLE_VALUE)
-            continue;
-        CloseHandle(File);
-        StoppedAt = FirstReport = FirstChunk = -1;
-        SetLastError(0xdeadbeef);
-        Ret = MoveFileWithProgressW(Source, Moved, Progress, NULL, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING);
-        Error = GetLastError();
-        ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Action %lu: move over a file on %S returned %d (%lu)\n", Action, Other, Ret, Error);
-        ok(GetFileAttributesW(Source) != INVALID_FILE_ATTRIBUTES, "Action %lu: the source is gone after the stopped replacing move\n", Action);
-        ok(GetFileAttributesW(Moved) == INVALID_FILE_ATTRIBUTES, "Action %lu: the stopped move left the file it was to replace\n", Action);
-        DeleteFileW(Moved);
+        for (Action = PROGRESS_CANCEL; Action <= PROGRESS_STOP; Action++)
+        {
+            for (i = 0; i < ARRAYSIZE(Stops); i++)
+            {
+                DeleteFileW(Moved);
+                if (Replace)
+                {
+                    File = CreateFileW(Moved, GENERIC_WRITE, 0, NULL, CREATE_NEW, 0, NULL);
+                    ok(File != INVALID_HANDLE_VALUE, "Cannot create %S (%lu)\n", Moved, GetLastError());
+                    if (File == INVALID_HANDLE_VALUE)
+                        continue;
+                    CloseHandle(File);
+                }
+                StopAt = Stops[i];
+                StopAction = Action;
+                StoppedAt = FirstReport = FirstChunk = -1;
+                SetLastError(0xdeadbeef);
+                Ret = MoveFileWithProgressW(Source, Moved, Progress, NULL, MOVEFILE_COPY_ALLOWED | Replace);
+                Error = GetLastError();
+                Kept = Action == PROGRESS_STOP && Stops[i] < 0;
+                ok(!Ret && Error == ERROR_REQUEST_ABORTED, "Replace %lu, action %lu, stop %I64d: move to %S returned %d (%lu)\n",
+                   Replace, Action, Stops[i], Other, Ret, Error);
+                ok(StoppedAt >= 0 && StoppedAt >= Stops[i], "Replace %lu, action %lu, stop %I64d: stopped at %I64d\n",
+                   Replace, Action, Stops[i], StoppedAt);
+                ok(GetFileAttributesW(Source) != INVALID_FILE_ATTRIBUTES, "Replace %lu, action %lu, stop %I64d: the source is gone\n",
+                   Replace, Action, Stops[i]);
+                ok((GetFileAttributesW(Moved) != INVALID_FILE_ATTRIBUTES) == Kept, "Replace %lu, action %lu, stop %I64d: destination left %d\n",
+                   Replace, Action, Stops[i], !Kept);
+                if (Kept)
+                    ok(IsZeroedCopy(Moved), "Replace %lu: the destination kept at the first report is not the zeroed source size\n", Replace);
+            }
+        }
     }
+    DeleteFileW(Moved);
+}
+
+/* Windows 11 sizes the destination before the first report: a source larger than the free space fails there, and nothing is left */
+static void
+test_DiskFull(LPCWSTR Dir, LPCWSTR Root)
+{
+    WCHAR Big[MAX_PATH];
+    ULARGE_INTEGER Free;
+    LARGE_INTEGER Size;
+    HANDLE File;
+    DWORD Bytes, Error;
+    BOOL Ret;
+
+    StringCchPrintfW(Big, ARRAYSIZE(Big), L"%sCopyFileExStop-big.bin", Dir);
+    File = CreateFileW(Big, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+    ok(File != INVALID_HANDLE_VALUE, "Cannot create %S (%lu)\n", Big, GetLastError());
+    if (File == INVALID_HANDLE_VALUE)
+        return;
+    Ret = GetDiskFreeSpaceExW(Root, &Free, NULL, NULL) && DeviceIoControl(File, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &Bytes, NULL);
+    Size.QuadPart = Free.QuadPart + 1024 * 1024 * 1024;
+    Ret = Ret && SetFilePointerEx(File, Size, NULL, FILE_BEGIN) && SetEndOfFile(File);
+    Error = GetLastError();
+    CloseHandle(File);
+    if (!Ret)
+    {
+        skip("Cannot make a sparse file larger than the free space on %S (%lu)\n", Root, Error);
+        DeleteFileW(Big);
+        return;
+    }
+
+    DeleteFileW(Dest);
+    StopAt = -1;
+    StopAction = PROGRESS_CANCEL;
+    StoppedAt = FirstReport = FirstChunk = -1;
+    SetLastError(0xdeadbeef);
+    Ret = CopyFileExW(Big, Dest, Progress, NULL, NULL, 0);
+    Error = GetLastError();
+    ok(!Ret && Error == ERROR_DISK_FULL, "Copy larger than the free space returned %d (%lu)\n", Ret, Error);
+    ok(FirstReport < 0, "Copy larger than the free space reported progress at %I64d\n", FirstReport);
+    ok(DestMissing(), "Copy larger than the free space left its destination (%lu)\n", GetLastError());
+    DeleteFileW(Dest);
+    DeleteFileW(Big);
 }
 
 START_TEST(CopyFileExStop)
@@ -487,6 +566,7 @@ START_TEST(CopyFileExStop)
     test_StopAfterRename();
     test_Remote();
     test_MoveToOtherVolume(Root);
+    test_DiskFull(Dir, Root);
 
     DeleteFileW(Dest);
     test_NoDeleteAccess(Dir, FileSystem);

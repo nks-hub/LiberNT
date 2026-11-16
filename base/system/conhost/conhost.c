@@ -780,6 +780,264 @@ static void read_from_buffer( struct console *console, size_t out_size )
         free( console->read_buffer );
 }
 
+#ifdef __REACTOS__
+static BOOL is_history_line( const struct history_line *line, const WCHAR *str, size_t len )
+{
+    return line->len == len && !memcmp( line->text, str, len );
+}
+
+static void append_input_history( struct console *console, const WCHAR *str, size_t len )
+{
+    struct history_line *ptr, **lines;
+    unsigned int i, capacity;
+
+    if (!console->history_size || !len) return;
+    if (console->history_index && is_history_line( console->history[console->history_index - 1], str, len ))
+        return;
+
+    if (console->history_mode)
+    {
+        for (i = 0; i < console->history_index; i++)
+            if (is_history_line( console->history[i], str, len )) break;
+        if (i < console->history_index)
+        {
+            ptr = console->history[i];
+            memmove( &console->history[i], &console->history[i + 1],
+                     (console->history_index - i - 1) * sizeof(*console->history) );
+            console->history[console->history_index - 1] = ptr;
+            return;
+        }
+    }
+
+    if (console->history_index == console->history_size)
+    {
+        free( console->history[0] );
+        memmove( &console->history[0], &console->history[1],
+                 (console->history_index - 1) * sizeof(*console->history) );
+        console->history_index--;
+    }
+    else if (console->history_index == console->history_capacity)
+    {
+        capacity = min( max( console->history_capacity * 2, 16 ), console->history_size );
+        if (!(lines = realloc( console->history, capacity * sizeof(*lines) ))) return;
+        console->history = lines;
+        console->history_capacity = capacity;
+    }
+
+    if (!(ptr = malloc( offsetof( struct history_line, text[len / sizeof(WCHAR)] )))) return;
+    ptr->len = len;
+    memcpy( ptr->text, str, len );
+    console->history[console->history_index++] = ptr;
+}
+
+static void history_save( struct console *console )
+{
+    struct history_buffer *hist = console->history_active;
+    unsigned int i;
+
+    if (hist)
+    {
+        hist->lines    = console->history;
+        hist->size     = console->history_size;
+        hist->count    = console->history_index;
+        hist->capacity = console->history_capacity;
+        return;
+    }
+    for (i = 0; i < console->history_index; i++) free( console->history[i] );
+    free( console->history );
+    console->history = NULL;
+    console->history_size = console->history_index = console->history_capacity = 0;
+}
+
+static void history_load( struct console *console )
+{
+    struct history_buffer *hist = console->history_active;
+
+    console->history          = hist ? hist->lines : NULL;
+    console->history_size     = hist ? hist->size : 0;
+    console->history_index    = hist ? hist->count : 0;
+    console->history_capacity = hist ? hist->capacity : 0;
+    if (console->edit_line.history_index > console->history_index)
+        console->edit_line.history_index = console->history_index;
+}
+
+static void resize_history( struct history_buffer *hist, unsigned int size )
+{
+    while (hist->count > size) free( hist->lines[--hist->count] );
+    hist->size = size;
+}
+
+static void move_history_to_front( struct console *console, struct history_buffer *hist )
+{
+    struct history_buffer **link;
+
+    for (link = &console->history_buffers; *link != hist; link = &(*link)->next);
+    *link = hist->next;
+    hist->next = console->history_buffers;
+    console->history_buffers = hist;
+}
+
+static BOOL is_history_app( const struct history_buffer *hist, const WCHAR *app )
+{
+    return CompareStringOrdinal( hist->app, -1, app, -1, TRUE ) == CSTR_EQUAL;
+}
+
+static struct history_buffer *find_history_by_pid( struct console *console, unsigned int pid )
+{
+    struct history_buffer *hist;
+
+    for (hist = console->history_buffers; hist; hist = hist->next)
+        if (hist->allocated && hist->pid == pid) return hist;
+    return NULL;
+}
+
+static struct history_buffer *find_history_by_app( struct console *console, const WCHAR *app )
+{
+    struct history_buffer *hist;
+
+    for (hist = console->history_buffers; hist; hist = hist->next)
+        if (hist->allocated && is_history_app( hist, app )) return hist;
+    return NULL;
+}
+
+static WCHAR *get_process_app_name( unsigned int pid )
+{
+    WCHAR path[MAX_PATH], *name;
+    DWORD size = ARRAY_SIZE(path);
+    HANDLE process;
+    BOOL ret = FALSE;
+
+    if ((process = OpenProcess( PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid )))
+    {
+        ret = QueryFullProcessImageNameW( process, 0, path, &size );
+        CloseHandle( process );
+    }
+    if (!ret) return wcsdup( L"" );
+    name = wcsrchr( path, '\\' );
+    return wcsdup( name ? name + 1 : path );
+}
+
+static struct history_buffer *allocate_history( struct console *console, unsigned int pid )
+{
+    struct history_buffer *hist, *best = NULL;
+    unsigned int total = 0, i;
+    WCHAR *app;
+
+    if (!(app = get_process_app_name( pid ))) return NULL;
+    for (hist = console->history_buffers; hist; hist = hist->next)
+    {
+        total++;
+        if (!best && !hist->allocated && is_history_app( hist, app )) best = hist;
+    }
+
+    if (!best && total < console->history_buffer_count)
+    {
+        if (!(hist = calloc( 1, sizeof(*hist) )))
+        {
+            free( app );
+            return NULL;
+        }
+        hist->app = app;
+        hist->pid = pid;
+        hist->allocated = TRUE;
+        hist->size = console->history_buffer_size;
+        hist->next = console->history_buffers;
+        console->history_buffers = hist;
+        return hist;
+    }
+
+    if (best) free( app );
+    else
+    {
+        for (hist = console->history_buffers; hist; hist = hist->next)
+            if (!hist->allocated && (!hist->count || !best || best->count)) best = hist;
+        if (!best)
+        {
+            free( app );
+            return NULL;
+        }
+        for (i = 0; i < best->count; i++) free( best->lines[i] );
+        best->count = 0;
+        free( best->app );
+        best->app = app;
+    }
+    best->pid = pid;
+    best->allocated = TRUE;
+    move_history_to_front( console, best );
+    return best;
+}
+
+static unsigned int *get_console_processes( struct console *console, unsigned int *count )
+{
+    unsigned int *pids, size = 64;
+    IO_STATUS_BLOCK io;
+    NTSTATUS status;
+
+    if (!(pids = malloc( size * sizeof(*pids) ))) return NULL;
+    status = NtDeviceIoControlFile( console->server, NULL, NULL, NULL, &io, IOCTL_CONDRV_GET_PROCESS_LIST,
+                                    NULL, 0, pids, size * sizeof(*pids) );
+    if (status == STATUS_BUFFER_OVERFLOW)
+    {
+        size = pids[0] + 16;
+        free( pids );
+        if (!(pids = malloc( size * sizeof(*pids) ))) return NULL;
+        status = NtDeviceIoControlFile( console->server, NULL, NULL, NULL, &io, IOCTL_CONDRV_GET_PROCESS_LIST,
+                                        NULL, 0, pids, size * sizeof(*pids) );
+    }
+    if (status)
+    {
+        free( pids );
+        return NULL;
+    }
+    *count = io.Information / sizeof(*pids);
+    return pids;
+}
+
+static void refresh_histories( struct console *console )
+{
+    struct history_buffer *hist;
+    unsigned int *pids, count, i;
+
+    if (!(pids = get_console_processes( console, &count ))) return;
+    for (hist = console->history_buffers; hist; hist = hist->next)
+    {
+        if (!hist->allocated) continue;
+        for (i = 0; i < count; i++)
+            if (pids[i] == hist->pid) break;
+        if (i == count) hist->allocated = FALSE;
+    }
+    for (i = 0; i < count; i++)
+        if (!find_history_by_pid( console, pids[i] )) allocate_history( console, pids[i] );
+    free( pids );
+}
+
+static void select_input_history( struct console *console )
+{
+    IO_STATUS_BLOCK io;
+    ULONG pid = 0;
+
+    history_save( console );
+    console->history_active = NULL;
+    if (!NtDeviceIoControlFile( console->server, NULL, NULL, NULL, &io, IOCTL_CONDRV_GET_CLIENT_PROCESS,
+                                NULL, 0, &pid, sizeof(pid) ) && pid)
+    {
+        refresh_histories( console );
+        if (!(console->history_active = find_history_by_pid( console, pid )))
+            console->history_active = allocate_history( console, pid );
+    }
+    history_load( console );
+}
+
+void set_history_buffer_size( struct console *console, unsigned int size )
+{
+    struct history_buffer *hist;
+
+    history_save( console );
+    console->history_buffer_size = size;
+    for (hist = console->history_buffers; hist; hist = hist->next) resize_history( hist, size );
+    history_load( console );
+}
+#else
 static void append_input_history( struct console *console, const WCHAR *str, size_t len )
 {
     struct history_line *ptr;
@@ -808,6 +1066,7 @@ static void append_input_history( struct console *console, const WCHAR *str, siz
         console->history[console->history_size - 1] = ptr;
     }
 }
+#endif
 
 static void edit_line_update( struct console *console, unsigned int begin, unsigned int length )
 {
@@ -1450,12 +1709,46 @@ static const struct edit_line_key_map win32_key_map[] =
 };
 #undef CTRL
 
+#ifdef __REACTOS__
+static unsigned int edit_line_char_width( WCHAR ch )
+{
+    if (ch < ' ') return 2;
+    if (ch >= 0xd800 && ch <= 0xdfff) return 1;
+    return console_char_width( ch );
+}
+
+static unsigned int edit_line_string_width( const WCHAR *str, unsigned int len)
+{
+    unsigned int i, offset = 0;
+    for (i = 0; i < len; i++) offset += edit_line_char_width( str[i] );
+    return offset;
+}
+
+static unsigned int edit_line_advance( struct console *console, unsigned int offset, WCHAR ch )
+{
+    struct screen_buffer *screen_buffer = console->active;
+    unsigned int width = edit_line_char_width( ch );
+
+    if (ch >= ' ' && width == 2 && screen_buffer->width >= 2 && (screen_buffer->mode & ENABLE_WRAP_AT_EOL_OUTPUT) &&
+        (console->edit_line.home_x + offset) % screen_buffer->width == screen_buffer->width - 1)
+        offset++;
+    return offset + width;
+}
+
+static unsigned int edit_line_offset( struct console *console, unsigned int len )
+{
+    unsigned int i, offset = 0;
+    for (i = 0; i < len; i++) offset = edit_line_advance( console, offset, console->edit_line.buf[i] );
+    return offset;
+}
+#else
 static unsigned int edit_line_string_width( const WCHAR *str, unsigned int len)
 {
     unsigned int i, offset = 0;
     for (i = 0; i < len; i++) offset += str[i] < ' ' ? 2 : 1;
     return offset;
 }
+#endif
 
 static void update_read_output( struct console *console, BOOL newline )
 {
@@ -1473,7 +1766,11 @@ static void update_read_output( struct console *console, BOOL newline )
 
         hide_tty_cursor( screen_buffer->console );
 
+#ifdef __REACTOS__
+        offset = edit_line_offset( console, ctx->update_begin );
+#else
         offset = edit_line_string_width( ctx->buf, ctx->update_begin );
+#endif
         screen_buffer->cursor_x = (ctx->home_x + offset) % screen_buffer->width;
         screen_buffer->cursor_y = ctx->home_y + (ctx->home_x + offset) / screen_buffer->width;
         for (j = ctx->update_begin; j <= ctx->update_end; j++)
@@ -1489,7 +1786,11 @@ static void update_read_output( struct console *console, BOOL newline )
             else
             {
                 write_char( screen_buffer, ctx->buf[j], &update_rect, &ctx->home_y );
+#ifdef __REACTOS__
+                offset = edit_line_advance( console, offset, ctx->buf[j] );
+#else
                 offset++;
+#endif
             }
         }
         end_offset = ctx->end_offset;
@@ -1507,7 +1808,11 @@ static void update_read_output( struct console *console, BOOL newline )
 
     if (newline)
     {
+#ifdef __REACTOS__
+        offset = edit_line_offset( console, ctx->len );
+#else
         offset = edit_line_string_width( ctx->buf, ctx->len );
+#endif
         screen_buffer->cursor_x = 0;
         screen_buffer->cursor_y = ctx->home_y + (ctx->home_x + offset) / screen_buffer->width;
 #ifdef __REACTOS__
@@ -1518,7 +1823,11 @@ static void update_read_output( struct console *console, BOOL newline )
     }
     else
     {
+#ifdef __REACTOS__
+        offset = edit_line_offset( console, ctx->cursor );
+#else
         offset = edit_line_string_width( ctx->buf, ctx->cursor );
+#endif
         screen_buffer->cursor_y = ctx->home_y + (ctx->home_x + offset) / screen_buffer->width;
         if (screen_buffer->cursor_y < screen_buffer->height)
         {
@@ -1633,9 +1942,13 @@ static NTSTATUS process_console_input( struct console *console )
             }
         }
 
+#ifdef __REACTOS__
+        ctx->insert_mode = console->insert_mode ^ ctx->insert_key;
+#else
         ctx->insert_mode = ((console->mode & (ENABLE_INSERT_MODE | ENABLE_EXTENDED_FLAGS)) ==
                             (ENABLE_INSERT_MODE | ENABLE_EXTENDED_FLAGS))
             ^ ctx->insert_key;
+#endif
 
         if (func) func( console );
         else if (ir.Event.KeyEvent.uChar.UnicodeChar)
@@ -1673,7 +1986,12 @@ static NTSTATUS process_console_input( struct console *console )
         }
         else
         {
-            if (ctx->len) append_input_history( console, ctx->buf, ctx->len * sizeof(WCHAR) );
+#ifdef __REACTOS__
+            if (ctx->len && (console->mode & ENABLE_ECHO_INPUT))
+#else
+            if (ctx->len)
+#endif
+                append_input_history( console, ctx->buf, ctx->len * sizeof(WCHAR) );
             if (edit_line_grow(console, 2))
             {
                 ctx->buf[ctx->len++] = '\r';
@@ -1718,6 +2036,9 @@ static NTSTATUS read_console( struct console *console, unsigned int ioctl, size_
         return STATUS_SUCCESS;
     }
 
+#ifdef __REACTOS__
+    select_input_history( console );
+#endif
     ctx->history_index = console->history_index;
     ctx->home_x = console->active->cursor_x;
     ctx->home_y = console->active->cursor_y;
@@ -1745,7 +2066,12 @@ static NTSTATUS read_console( struct console *console, unsigned int ioctl, size_
         memcpy( ctx->buf, initial, initial_len * sizeof(WCHAR) );
         ctx->buf[initial_len] = 0;
         ctx->len = initial_len;
+#ifdef __REACTOS__
+        /* FIXME: home_x above ignores the padding of a wide character in the initial characters */
+        ctx->end_offset = edit_line_offset( console, initial_len );
+#else
         ctx->end_offset = initial_len;
+#endif
     }
     else if (edit_line_grow( console, 1 )) ctx->buf[0] = 0;
     ctx->ctrl_mask = ctrl_mask;
@@ -3608,6 +3934,96 @@ static NTSTATUS get_console_alias_exes( struct console *console, size_t *out_siz
     free( list );
     return status;
 }
+
+static struct history_buffer *find_request_history( struct console *console, const void *in_data, size_t in_size,
+                                                    unsigned int *count, NTSTATUS *status )
+{
+    const struct condrv_history_params *params = in_data;
+    size_t header = offsetof( struct condrv_history_params, exe );
+    struct history_buffer *hist;
+    WCHAR *app;
+
+    if (in_size < header || (in_size - header) % sizeof(WCHAR))
+    {
+        *status = STATUS_INVALID_PARAMETER;
+        return NULL;
+    }
+    if (!(app = alias_string( params->exe, in_size - header, FALSE )))
+    {
+        *status = STATUS_NO_MEMORY;
+        return NULL;
+    }
+    if (count) *count = params->count;
+    *status = STATUS_SUCCESS;
+    refresh_histories( console );
+    hist = find_history_by_app( console, app );
+    free( app );
+    return hist;
+}
+
+static NTSTATUS get_console_history( struct console *console, const void *in_data, size_t in_size,
+                                     size_t *out_size )
+{
+    struct history_buffer *hist;
+    WCHAR *list = NULL, *pos;
+    size_t size = 0;
+    unsigned int i;
+    NTSTATUS status;
+
+    history_save( console );
+    hist = find_request_history( console, in_data, in_size, NULL, &status );
+    if (hist)
+    {
+        for (i = 0; i < hist->count; i++) size += hist->lines[i]->len + sizeof(WCHAR);
+        if (size && !(list = malloc( size ))) status = STATUS_NO_MEMORY;
+        for (pos = list, i = 0; list && i < hist->count; i++)
+        {
+            memcpy( pos, hist->lines[i]->text, hist->lines[i]->len );
+            pos += hist->lines[i]->len / sizeof(WCHAR);
+            *pos++ = 0;
+        }
+    }
+    if (!status) status = write_alias_result( list, size, out_size );
+    free( list );
+    history_load( console );
+    return status;
+}
+
+static NTSTATUS expunge_console_history( struct console *console, const void *in_data, size_t in_size )
+{
+    struct history_buffer *hist;
+    NTSTATUS status;
+
+    history_save( console );
+    if ((hist = find_request_history( console, in_data, in_size, NULL, &status )))
+        while (hist->count) free( hist->lines[--hist->count] );
+    history_load( console );
+    return status;
+}
+
+static NTSTATUS set_console_history_commands( struct console *console, const void *in_data, size_t in_size )
+{
+    struct history_buffer *hist;
+    unsigned int count = 0;
+    NTSTATUS status;
+
+    history_save( console );
+    if ((hist = find_request_history( console, in_data, in_size, &count, &status )))
+    {
+        if (count > INT_MAX)
+        {
+            /* FIXME: the error Windows reports for a count above INT_MAX is unknown */
+            status = STATUS_INVALID_PARAMETER;
+        }
+        else
+        {
+            resize_history( hist, count );
+            move_history_to_front( console, hist );
+        }
+    }
+    history_load( console );
+    return status;
+}
 #endif
 
 static NTSTATUS console_input_ioctl( struct console *console, unsigned int code, const void *in_data,
@@ -3634,6 +4050,10 @@ static NTSTATUS console_input_ioctl( struct console *console, unsigned int code,
 #ifdef __REACTOS__
         if (console->mode & ENABLE_EXTENDED_FLAGS)
             set_window_quick_edit( console, (console->mode & ENABLE_QUICK_EDIT_MODE) != 0 );
+        if (console->mode & (ENABLE_INSERT_MODE | ENABLE_EXTENDED_FLAGS))
+            console->insert_mode = (console->mode & ENABLE_INSERT_MODE) != 0;
+        if (console->mode & ENABLE_INSERT_MODE)
+            console->mode |= ENABLE_EXTENDED_FLAGS;
 #endif
         return STATUS_SUCCESS;
 
@@ -3800,6 +4220,26 @@ static NTSTATUS console_input_ioctl( struct console *console, unsigned int code,
     case IOCTL_CONDRV_GET_ALIAS_EXES:
         if (in_size) return STATUS_INVALID_PARAMETER;
         return get_console_alias_exes( console, out_size );
+
+    case IOCTL_CONDRV_GET_HISTORY:
+        return get_console_history( console, in_data, in_size, out_size );
+
+    case IOCTL_CONDRV_EXPUNGE_HISTORY:
+        if (*out_size) return STATUS_INVALID_PARAMETER;
+        return expunge_console_history( console, in_data, in_size );
+
+    case IOCTL_CONDRV_SET_HISTORY_COMMANDS:
+        if (*out_size) return STATUS_INVALID_PARAMETER;
+        return set_console_history_commands( console, in_data, in_size );
+
+    case IOCTL_CONDRV_GET_MOUSE_BUTTONS:
+        {
+            DWORD *buttons;
+            if (in_size || *out_size != sizeof(*buttons)) return STATUS_INVALID_PARAMETER;
+            if (!(buttons = alloc_ioctl_buffer( sizeof(*buttons) ))) return STATUS_NO_MEMORY;
+            *buttons = GetSystemMetrics( SM_CMOUSEBUTTONS );
+            return STATUS_SUCCESS;
+        }
 #endif
 
     default:
@@ -3889,6 +4329,69 @@ static BOOL is_key_message( const MSG *msg )
            msg->message == WM_KEYUP   || msg->message == WM_SYSKEYUP;
 }
 
+#ifdef __REACTOS__
+static void resize_pty( struct console *console, unsigned int width, unsigned int height )
+{
+    struct screen_buffer *screen_buffer = console->active;
+    unsigned int scroll;
+    RECT update_rect;
+
+    if (!width || !height || width > SHRT_MAX || height > SHRT_MAX) return;
+    if (screen_buffer->cursor_y >= height)
+    {
+        scroll = screen_buffer->cursor_y - height + 1;
+        memmove( screen_buffer->data, screen_buffer->data + scroll * screen_buffer->width,
+                 (screen_buffer->height - scroll) * screen_buffer->width * sizeof(*screen_buffer->data) );
+        move_cell_colors( screen_buffer, 0, scroll * screen_buffer->width,
+                          (screen_buffer->height - scroll) * screen_buffer->width );
+        move_wrapped_rows( screen_buffer, 0, scroll, screen_buffer->height - scroll );
+        screen_buffer->cursor_y -= scroll;
+    }
+    if (change_screen_buffer_size( screen_buffer, width, height )) return;
+    screen_buffer->win.left   = 0;
+    screen_buffer->win.top    = 0;
+    screen_buffer->win.right  = width - 1;
+    screen_buffer->win.bottom = height - 1;
+    screen_buffer->max_width  = width;
+    screen_buffer->max_height = height;
+    if (screen_buffer->cursor_x >= width) screen_buffer->cursor_x = width - 1;
+    notify_screen_buffer_size( screen_buffer );
+    SetRect( &update_rect, 0, 0, width - 1, height - 1 );
+    update_output( screen_buffer, &update_rect );
+    tty_sync( console );
+}
+
+static int process_pty_signal( struct console *console, HANDLE signal, HANDLE event, IO_STATUS_BLOCK *io,
+                               unsigned short *signal_id )
+{
+    IO_STATUS_BLOCK size_io;
+    unsigned short size[2];
+    NTSTATUS status;
+
+    if (io->Status || io->Information != sizeof(*signal_id))
+    {
+        TRACE( "signaled quit\n" );
+        return 0;
+    }
+    if (*signal_id == CONDRV_PTY_SIGNAL_RESIZE_WINDOW)
+    {
+        status = NtReadFile( signal, event, NULL, NULL, &size_io, size, sizeof(size), NULL, NULL );
+        if (status == STATUS_PENDING)
+        {
+            WaitForSingleObject( event, INFINITE );
+            status = size_io.Status;
+        }
+        if (status || size_io.Information != sizeof(size)) return 0;
+        EnterCriticalSection( &console_section );
+        resize_pty( console, size[0], size[1] );
+        LeaveCriticalSection( &console_section );
+    }
+    else FIXME( "unimplemented signal %x\n", *signal_id );
+    status = NtReadFile( signal, event, NULL, NULL, io, signal_id, sizeof(*signal_id), NULL, NULL );
+    return (status && status != STATUS_PENDING) ? -1 : 1;
+}
+#endif
+
 static int main_loop( struct console *console, HANDLE signal )
 {
     HANDLE signal_event = NULL;
@@ -3939,6 +4442,14 @@ static int main_loop( struct console *console, HANDLE signal )
         switch (res)
         {
         case WAIT_OBJECT_0:
+#ifdef __REACTOS__
+            /* a resize written before a client request must reach that request first */
+            if (signal && !WaitForSingleObject( signal_event, 0 ))
+            {
+                int ret = process_pty_signal( console, signal, signal_event, &signal_io, &signal_id );
+                if (ret <= 0) return ret < 0;
+            }
+#endif
             EnterCriticalSection( &console_section );
             status = process_console_ioctls( console );
             LeaveCriticalSection( &console_section );
@@ -3946,6 +4457,12 @@ static int main_loop( struct console *console, HANDLE signal )
             break;
 
         case WAIT_OBJECT_0 + 1:
+#ifdef __REACTOS__
+            {
+                int ret = process_pty_signal( console, signal, signal_event, &signal_io, &signal_id );
+                if (ret <= 0) return ret < 0;
+            }
+#else
             if (signal_io.Status || signal_io.Information != sizeof(signal_id))
             {
                 TRACE( "signaled quit\n" );
@@ -3955,6 +4472,7 @@ static int main_loop( struct console *console, HANDLE signal )
             status = NtReadFile( signal, signal_event, NULL, NULL, &signal_io, &signal_id,
                                  sizeof(signal_id), NULL, NULL );
             if (status && status != STATUS_PENDING) return 1;
+#endif
             break;
 
         default:
@@ -3992,8 +4510,17 @@ int __cdecl wmain(int argc, WCHAR *argv[])
                    ENABLE_ECHO_INPUT | ENABLE_MOUSE_INPUT | ENABLE_INSERT_MODE |
                    ENABLE_QUICK_EDIT_MODE | ENABLE_EXTENDED_FLAGS | ENABLE_AUTO_POSITION;
     console.input_cp = console.output_cp = GetOEMCP();
+#ifdef __REACTOS__
+    console.insert_mode = TRUE;
+#endif
     console.history_size = 50;
     if (!(console.history = calloc( console.history_size, sizeof(*console.history) ))) return 1;
+#ifdef __REACTOS__
+    console.history_capacity = console.history_size;
+    console.history_buffer_size = console.history_size;
+    /* TODO: read NumberOfHistoryBuffers from the console settings */
+    console.history_buffer_count = 4;
+#endif
 
     for (i = 1; i < argc; i++)
     {

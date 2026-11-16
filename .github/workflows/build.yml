@@ -1,5 +1,12 @@
 name: Build
-on: [push, pull_request]
+on:
+  push:
+    branches: [main-nt10]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -24,6 +31,9 @@ jobs:
             arch: ppc
       fail-fast: false
     runs-on: ubuntu-24.04
+    env:
+      BUILD_TYPE: ${{ github.event_name == 'pull_request' && 'debug' || 'release' }}
+      CCACHE_KEY: ccache-${{ github.event_name != 'pull_request' && 'release-' || '' }}${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-
     steps:
     - name: Free disk space
       run: |
@@ -62,16 +72,18 @@ jobs:
       uses: actions/cache/restore@v5
       with:
         path: ccache
-        key: ccache-${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-${{github.run_id}}-${{github.run_attempt}}
+        key: ${{env.CCACHE_KEY}}${{github.run_id}}-${{github.run_attempt}}
         restore-keys: |
-          ccache-${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-
+          ${{env.CCACHE_KEY}}
 
     - name: Set ccache settings
       run: |
         echo "CCACHE_BASEDIR=${{github.workspace}}" >> $GITHUB_ENV
         echo "CCACHE_DIR=${{github.workspace}}/ccache" >> $GITHUB_ENV
-        echo "CCACHE_MAXSIZE=1G" >> $GITHUB_ENV
+        echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
         echo "CCACHE_SLOPPINESS=time_macros" >> $GITHUB_ENV
+        # The statistics printed after the build are this run's alone
+        CCACHE_DIR=${{github.workspace}}/ccache ccache -z
 
     - name: Configure
       id: configure
@@ -80,16 +92,16 @@ jobs:
       run: |
         . "$HOME/.local/opt/rosbe/rosbe-env.sh"
         FLAGS=""
+        [ "$BUILD_TYPE" = "release" ] && FLAGS="$FLAGS --release"
         [ "${{matrix.compiler}}" = "clang" ] && FLAGS="$FLAGS --clang"
         [ "${{matrix.compiler}}" = "gcc" ] && FLAGS="$FLAGS --gcc"
         [ -n "${{matrix.profile}}" ] && FLAGS="$FLAGS -DROSCONFIG_PROFILE=${{matrix.profile}}"
         [ "${{matrix.compiler}}" = "clang" ] && case "${{matrix.arch}}" in amd64|arm64|riscv64) FLAGS="$FLAGS -DENABLE_MESA_LLVMPIPE=ON" ;; esac
         ./configure.sh $FLAGS -a ${{matrix.arch}} \
           -DREACTOS_TARGET_NT=0xA00 \
-          -DDIAGDATA_CHANNEL= \
           -DENABLE_CCACHE=1
         ENV_NAME=$([ "${{matrix.compiler}}" = "clang" ] && echo Clang || echo GCC)
-        echo "outdir=output-$ENV_NAME-${{matrix.arch}}-debug" >> "$GITHUB_OUTPUT"
+        echo "outdir=output-$ENV_NAME-${{matrix.arch}}-$BUILD_TYPE" >> "$GITHUB_OUTPUT"
 
     - name: Build submodules
       run: |
@@ -99,26 +111,29 @@ jobs:
     - name: Build images
       run: |
         . "$HOME/.local/opt/rosbe/rosbe-env.sh"
-        ninja -C ${{steps.configure.outputs.outdir}} bootcd liberntimg liberntvhd -k0
+        TARGETS=bootcd
+        [ "$BUILD_TYPE" = "debug" ] && TARGETS="$TARGETS liberntimg liberntvhd"
+        ninja -C ${{steps.configure.outputs.outdir}} $TARGETS -k0
 
     - name: Print ccache statistics
       if: ${{ always() && steps.ccache_restore.outcome == 'success' }}
       run: ccache -s
 
+    # A cancelled build holds a partial cache: saving it would make it the newest and prune the full one
     - name: Save ccache
       id: ccache_save
-      if: ${{ always() && steps.ccache_restore.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.ccache_restore.outcome == 'success' }}
       uses: actions/cache/save@v5
       with:
         path: ccache
         key: ${{ steps.ccache_restore.outputs.cache-primary-key }}
 
     - name: Prune older ccache entries
-      if: ${{ always() && steps.ccache_save.outcome == 'success' }}
+      if: ${{ !cancelled() && steps.ccache_save.outcome == 'success' }}
       continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
-        CACHE_KEY_PREFIX: ccache-${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-
+        CACHE_KEY_PREFIX: ${{env.CCACHE_KEY}}
         CACHE_KEY_KEEP: ${{ steps.ccache_restore.outputs.cache-primary-key }}
       run: |
         gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "$CACHE_KEY_PREFIX" --limit 100 --json id,key \
@@ -129,7 +144,9 @@ jobs:
 
     - name: Name artifacts
       id: images
-      run: echo "tag=${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}-${GITHUB_SHA::11}" >> "$GITHUB_OUTPUT"
+      run: |
+        [ "$BUILD_TYPE" = "release" ] && TYPE=-release || TYPE=
+        echo "tag=${{matrix.compiler}}-${{matrix.arch}}${{matrix.variant}}$TYPE-${GITHUB_SHA::11}" >> "$GITHUB_OUTPUT"
 
     - name: Upload bootcd.iso
       uses: actions/upload-artifact@v7
@@ -138,18 +155,21 @@ jobs:
         path: ${{steps.configure.outputs.outdir}}/bootcd.iso
 
     - name: Upload LiberNT.img
+      if: ${{ env.BUILD_TYPE == 'debug' }}
       uses: actions/upload-artifact@v7
       with:
         name: LiberNT-img-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.img
 
     - name: Upload LiberNT.vhd
+      if: ${{ env.BUILD_TYPE == 'debug' }}
       uses: actions/upload-artifact@v7
       with:
         name: LiberNT-vhd-${{steps.images.outputs.tag}}
         path: ${{steps.configure.outputs.outdir}}/LiberNT.vhd
 
     - name: Upload LiberNT.vhdx
+      if: ${{ env.BUILD_TYPE == 'debug' }}
       uses: actions/upload-artifact@v7
       with:
         name: LiberNT-vhdx-${{steps.images.outputs.tag}}
@@ -204,7 +224,7 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ github.token }}
       run: |
-        call configure.cmd /arch=${{matrix.arch}} -DREACTOS_TARGET_NT=0xA00 -DDIAGDATA_CHANNEL= -DENABLE_CCACHE=0
+        call configure.cmd /arch=${{matrix.arch}} -DREACTOS_TARGET_NT=0xA00 -DENABLE_CCACHE=0
         echo outdir=output-VS-${{matrix.arch}}-debug>> "%GITHUB_OUTPUT%"
 
     - name: Build submodules

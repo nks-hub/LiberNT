@@ -52,6 +52,8 @@
 #define WDI_TLV_BAND_CHANNEL                        0x2C
 #define WDI_TLV_BANDID                              0x39
 #define WDI_TLV_BSS_ENTRY_CHANNEL_INFO              0x3A
+#define WDI_TLV_CHANNEL_NUMBER                      0x121
+#define WDI_TLV_6_GHZ_BAND_CHANNEL                  0x16D
 #define WDI_TLV_SSID                                0x3B
 #define WDI_TLV_AUTH_ALGO_LIST                      0x3C
 #define WDI_TLV_MULTICAST_CIPHER_ALGO_LIST          0x3D
@@ -145,6 +147,7 @@
 #define WDI_ASSOC_STATUS_DISASSOCIATE_BY_DEVICE_RESET 60
 
 #define NDIS6_WDI_MAX_BSS           64
+#define NDIS6_WDI_MAX_6GHZ_TARGETS  16
 #define NDIS6_WDI_MAX_CANDIDATES    8
 #define NDIS6_WDI_MAX_ALGO_PAIRS    32
 #define NDIS6_WDI_MAX_PHY_TYPES     8
@@ -392,6 +395,9 @@ struct _NDIS6_WDI_ADAPTER
     KEVENT IndicationEvent;
     PKTHREAD IndicationThread;
     volatile LONG IndicationStop;
+    LONG64 IndicationsQueued;
+    volatile LONG64 IndicationsProcessed;
+    KEVENT IndicationProcessedEvent;
 
     UCHAR PermanentAddress[6];
     UCHAR CurrentAddress[6];
@@ -402,6 +408,7 @@ struct _NDIS6_WDI_ADAPTER
     ULONG MaxRxRateKbps;
     BOOLEAN HardwareRadioOn;
     BOOLEAN SoftwareRadioOn;
+    BOOLEAN BssListCached;
     BOOLEAN BssTransitionSupported;
     WDI_TXRX_CAPABILITIES TxRxCaps;
     UCHAR MaxNumPeers;
@@ -489,6 +496,7 @@ Ndis6WdiTask(
     _In_opt_ PVOID Context);
 
 BOOLEAN Ndis6WdiAbortTask(_In_ PNDIS6_WDI_ADAPTER Wdi, _In_ ULONG MessageId);
+VOID Ndis6WdiWaitForQueuedIndications(_In_ PNDIS6_WDI_ADAPTER Wdi);
 
 VOID Ndis6WdiIndicateStatusUp(_In_ PNDIS6_WDI_ADAPTER Wdi, _In_ NDIS_STATUS Code, _In_reads_bytes_(Length) PVOID Buffer, _In_ ULONG Length);
 VOID Ndis6WdiIndicateLinkState(_In_ PNDIS6_WDI_ADAPTER Wdi, _In_ BOOLEAN Connected);

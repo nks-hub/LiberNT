@@ -36,6 +36,7 @@ extern void func_ConsoleProcessInheritance(void);
 extern void func_ConsoleReadSharedInput(void);
 extern void func_ConsoleVirtualTerminal(void);
 extern void func_CopyContext(void);
+extern void func_CopyFileExStop(void);
 extern void func_CpuSetsApi(void);
 extern void func_CreateAfterMissingName(void);
 extern void func_CreateDirectoryRoot(void);
@@ -258,6 +259,7 @@ const struct test winetest_testlist[] =
     { "ConsoleReadSharedInput",      func_ConsoleReadSharedInput },
     { "ConsoleVirtualTerminal",      func_ConsoleVirtualTerminal },
     { "CopyContext",                 func_CopyContext },
+    { "CopyFileExStop",              func_CopyFileExStop },
     { "CpuSetsApi",                  func_CpuSetsApi },
     { "CreateAfterMissingName",      func_CreateAfterMissingName },
     { "CreateDirectoryRoot",         func_CreateDirectoryRoot },

@@ -140,10 +140,52 @@ TestLookasideEx(VOID)
     ExFreePoolWithTag(List, TAG_TEST);
 }
 
+static
+VOID
+TestLookasideExParameters(VOID)
+{
+    static const struct
+    {
+        POOL_TYPE PoolType;
+        ULONG Flags;
+        NTSTATUS Expected;
+    } Tests[] =
+    {
+        { NonPagedPoolNx, 0, STATUS_SUCCESS },
+        { NonPagedPool, EX_LOOKASIDE_LIST_EX_FLAGS_RAISE_ON_FAIL, STATUS_SUCCESS },
+        { NonPagedPoolNx, EX_LOOKASIDE_LIST_EX_FLAGS_FAIL_NO_RAISE, STATUS_SUCCESS },
+        { PagedPool, 0x4, STATUS_INVALID_PARAMETER_5 },
+        { NonPagedPoolMustSucceed, 0, STATUS_INVALID_PARAMETER_4 },
+    };
+    PLOOKASIDE_LIST_EX List;
+    PVOID Block;
+    NTSTATUS Status;
+    ULONG Index;
+
+    List = ExAllocatePoolWithTag(NonPagedPool, sizeof(*List), TAG_TEST);
+    ok(List != NULL, "no pool for LOOKASIDE_LIST_EX\n");
+    if (List == NULL) return;
+
+    for (Index = 0; Index < RTL_NUMBER_OF(Tests); Index++)
+    {
+        Status = ExInitializeLookasideListEx(List, NULL, NULL, Tests[Index].PoolType, Tests[Index].Flags, 96, TAG_TEST, 0);
+        ok(Status == Tests[Index].Expected, "%lu: pool type %d, flags 0x%lx: status 0x%lx, expected 0x%lx\n",
+           Index, Tests[Index].PoolType, Tests[Index].Flags, Status, Tests[Index].Expected);
+        if (!NT_SUCCESS(Status)) continue;
+
+        Block = ExAllocateFromLookasideListEx(List);
+        ok(Block != NULL, "%lu: allocation failed\n", Index);
+        if (Block) ExFreeToLookasideListEx(List, Block);
+        ExDeleteLookasideListEx(List);
+    }
+    ExFreePoolWithTag(List, TAG_TEST);
+}
+
 START_TEST(ExLookaside)
 {
     TestNPagedLookaside();
     TestPagedLookaside();
     TestCustomRoutines();
     TestLookasideEx();
+    TestLookasideExParameters();
 }

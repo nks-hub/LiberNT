@@ -153,6 +153,22 @@ static void test_keep_attributes(void)
 
     }
 
+#ifdef __REACTOS__
+static void test_restartable(void)
+{
+    DWORD rc;
+
+    rc = runcmd("xcopy /Z xcopy1 xcopytest");
+    ok(rc == 0, "xcopy /Z test failed rc=%lu\n", rc);
+    ok(GetFileAttributesA("xcopytest\\xcopy1") != INVALID_FILE_ATTRIBUTES,
+       "xcopy /Z did not create xcopytest\\xcopy1\n");
+    DeleteFileA("xcopytest\\xcopy1");
+
+    rc = runcmd("xcopy /Z xcopy1 xcopy1");
+    ok(rc == 4, "xcopy /Z file to self returned rc=%lu\n", rc);
+}
+#endif
+
 START_TEST(xcopy)
 {
     char tmpdir[MAX_PATH];
@@ -176,6 +192,9 @@ START_TEST(xcopy)
     test_date_format();
     test_parms_syntax();
     test_keep_attributes();
+#ifdef __REACTOS__
+    test_restartable();
+#endif
 
     DeleteFileA("xcopy1");
     RemoveDirectoryA("xcopytest");

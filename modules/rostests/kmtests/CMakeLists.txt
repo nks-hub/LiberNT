@@ -131,6 +131,8 @@ list(APPEND KMTEST_DRV_SOURCE
     hal/HalRealTimeClock.c
     hal/HalSystemInfo.c
     hdaudbus/HdAudBusInterface.c
+    ks/KsCreateItemSlot.c
+    ks/KsDispatchFileObject.c
     ndis/NdisIfProvider.c
     ndis/NdisRwLock.c
     ndis/NdisWdiStationCaps.c
@@ -404,6 +406,7 @@ list(APPEND KMTEST_DRV_SOURCE
     rtl/RtlBitmapKM.c
     rtl/RtlBitmapEx.c
     rtl/RtlAtomEx.c
+    rtl/RtlAssertUnanswered.c
     rtl/RtlGenericTableKM.c
     rtl/RtlTableElementKM.c
     rtl/RtlGuidKM.c
@@ -582,7 +585,7 @@ else()
     target_link_options(kmtest_drv PRIVATE -Wl,--forceinteg)
 endif()
 target_link_libraries(kmtest_drv kmtest_printf chkstk memcmp poguid wdmguid arblib wdmsec ${PSEH_LIB})
-add_importlibs(kmtest_drv battc ksecdd ndis smclib ntoskrnl hal)
+add_importlibs(kmtest_drv battc ks ksecdd ndis smclib ntoskrnl hal)
 if(REACTOS_USE_WDDM)
     add_importlibs(kmtest_drv dxgkrnl dxgmms2)
 endif()

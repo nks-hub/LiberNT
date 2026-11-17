@@ -30,6 +30,7 @@ list(APPEND SOURCE
     LookupAccountSid.c
     MachineGuid.c
     NotifyBootConfigStatus.c
+    NsiService.c
     WindowsVersionValues.c
     OpenTrace.c
     PrivilegeNames.c

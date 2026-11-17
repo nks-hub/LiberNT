@@ -59,6 +59,7 @@ list(APPEND SOURCE
     ServiceChangeNotify.c
     ServiceCrash.c
     ServiceEnv.c
+    ServiceRegistryState.c
     ServiceNetwork.c
     ServicePowerSetting.c
     ServiceSidInfo.c

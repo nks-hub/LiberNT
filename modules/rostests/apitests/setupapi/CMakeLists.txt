@@ -20,6 +20,7 @@ list(APPEND SOURCE
     NewDeviceInstall.c
     ParentIdPrefix.c
     PciBridgeWindows.c
+    PciDebuggerDevice.c
     PciDeviceIds.c
     ProcessorDeviceIds.c
     SetupCommitFileQueue.c
@@ -31,6 +32,7 @@ list(APPEND SOURCE
     SetupInstallServicesFromInfSectionEx.c
     SoftwareComponent.c
     SysButtonDevices.c
+    UsbHubInformation.c
     UsbInterfaceIds.c
     testlist.c)
 

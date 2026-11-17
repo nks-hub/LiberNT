@@ -122,6 +122,13 @@ SmpExecuteImage(IN PUNICODE_STRING FileName,
     /* If the application is deferred (suspended), there's nothing to do */
     if (Flags & SMP_DEFERRED_FLAG)
     {
+        /* A native command started before the first session exists has none to join; it runs without, as a non-deferred one does */
+        if (!NT_SUCCESS(Status) && !(Flags & SMP_SUBSYSTEM_FLAG) &&
+            ProcessInfo->ImageInformation.SubSystemType == IMAGE_SUBSYSTEM_NATIVE)
+        {
+            Status = STATUS_SUCCESS;
+        }
+
         if (!NT_SUCCESS(Status))
         {
             NTSTATUS TerminateStatus = NtTerminateProcess(ProcessInfo->ProcessHandle, Status);

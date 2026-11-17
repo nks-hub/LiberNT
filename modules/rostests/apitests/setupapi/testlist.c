@@ -23,6 +23,7 @@ extern void func_NetInterfaceNames(void);
 extern void func_NewDeviceInstall(void);
 extern void func_ParentIdPrefix(void);
 extern void func_PciBridgeWindows(void);
+extern void func_PciDebuggerDevice(void);
 extern void func_PciDeviceIds(void);
 extern void func_ProcessorDeviceIds(void);
 extern void func_SetupInstallServicesFromInfSectionEx(void);
@@ -33,6 +34,7 @@ extern void func_SetupDiOpenDeviceInterface(void);
 extern void func_SetupInstallFile(void);
 extern void func_SetupInstallRegisterDlls(void);
 extern void func_SysButtonDevices(void);
+extern void func_UsbHubInformation(void);
 extern void func_UsbInterfaceIds(void);
 
 const struct test winetest_testlist[] =
@@ -58,6 +60,7 @@ const struct test winetest_testlist[] =
     { "NewDeviceInstall", func_NewDeviceInstall },
     { "ParentIdPrefix", func_ParentIdPrefix },
     { "PciBridgeWindows", func_PciBridgeWindows },
+    { "PciDebuggerDevice", func_PciDebuggerDevice },
     { "PciDeviceIds", func_PciDeviceIds },
     { "ProcessorDeviceIds", func_ProcessorDeviceIds },
     { "SetupInstallServicesFromInfSectionEx", func_SetupInstallServicesFromInfSectionEx},
@@ -68,6 +71,7 @@ const struct test winetest_testlist[] =
     { "SetupInstallFile", func_SetupInstallFile },
     { "SetupInstallRegisterDlls", func_SetupInstallRegisterDlls },
     { "SysButtonDevices", func_SysButtonDevices },
+    { "UsbHubInformation", func_UsbHubInformation },
     { "UsbInterfaceIds", func_UsbInterfaceIds },
     { 0, 0 }
 };

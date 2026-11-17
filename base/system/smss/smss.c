@@ -120,7 +120,28 @@ SmpExecuteImage(IN PUNICODE_STRING FileName,
     Status = SmpSetProcessMuSessionId(ProcessInfo->ProcessHandle, MuSessionId);
 
     /* If the application is deferred (suspended), there's nothing to do */
-    if (Flags & SMP_DEFERRED_FLAG) return Status;
+    if (Flags & SMP_DEFERRED_FLAG)
+    {
+        /* A native command started before the first session exists has none to join; it runs without, as a non-deferred one does */
+        if (!NT_SUCCESS(Status) && !(Flags & SMP_SUBSYSTEM_FLAG) &&
+            ProcessInfo->ImageInformation.SubSystemType == IMAGE_SUBSYSTEM_NATIVE)
+        {
+            Status = STATUS_SUCCESS;
+        }
+
+        if (!NT_SUCCESS(Status))
+        {
+            NTSTATUS TerminateStatus = NtTerminateProcess(ProcessInfo->ProcessHandle, Status);
+
+            if (NT_SUCCESS(TerminateStatus))
+                TerminateStatus = NtWaitForSingleObject(ProcessInfo->ProcessHandle, FALSE, NULL);
+            if (!NT_SUCCESS(TerminateStatus))
+                DPRINT1("SMSS: Cannot terminate %wZ: %lx\n", FileName, TerminateStatus);
+            NtClose(ProcessInfo->ThreadHandle);
+            NtClose(ProcessInfo->ProcessHandle);
+        }
+        return Status;
+    }
 
     /* Otherwise, get ready to start it, but make sure it's a native app */
     if (ProcessInfo->ImageInformation.SubSystemType == IMAGE_SUBSYSTEM_NATIVE)

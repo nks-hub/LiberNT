@@ -91,6 +91,7 @@ list(APPEND SOURCE
     NtApphelpCacheControl.c
     NtCompareTokens.c
     NtCreateFile.c
+    NtCancelIoFileEx.c
     NtCreateKey.c
     NtCreateKeyCached.c
     NtCreateProfile.c
@@ -98,6 +99,7 @@ list(APPEND SOURCE
     NtCreateSection_CachedRead.c
     NtCreateSection_ConcurrentImage.c
     NtCreateThread.c
+    NtCreateToken.c
     NtDeleteKey.c
     NtDuplicateObject.c
     NtDuplicateToken.c

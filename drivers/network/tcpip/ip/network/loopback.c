@@ -127,6 +127,7 @@ NDIS_STATUS LoopRegisterAdapter(
   BindInfo.MTU = 16384;
   BindInfo.Address = NULL;
   BindInfo.AddressLength = 0;
+  BindInfo.LinkType = IP_LINK_LOOPBACK;
   BindInfo.Transmit = LoopTransmit;
 
   Loopback = IPCreateInterface(&BindInfo);

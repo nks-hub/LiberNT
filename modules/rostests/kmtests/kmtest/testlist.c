@@ -32,6 +32,7 @@ KMT_TESTFUNC Test_FltMgrLoad;
 KMT_TESTFUNC Test_FltMgrReg;
 KMT_TESTFUNC Test_HidPDescription;
 KMT_TESTFUNC Test_IoAddDeviceUnload;
+KMT_TESTFUNC Test_IoCancelSync;
 KMT_TESTFUNC Test_IoFilterRequirements;
 KMT_TESTFUNC Test_IoCreateFile;
 KMT_TESTFUNC Test_IoDeviceObject;
@@ -78,6 +79,7 @@ KMT_TESTFUNC Test_PoIrp;
 KMT_TESTFUNC Test_PoBatteryState;
 KMT_TESTFUNC Test_PoFxState;
 KMT_TESTFUNC Test_NdisSgDma;
+KMT_TESTFUNC Test_NetioIpHlp;
 KMT_TESTFUNC Test_IoDeviceNumaNode;
 KMT_TESTFUNC Test_ExWddmPoFx;
 KMT_TESTFUNC Test_RtlAvlTree;
@@ -97,6 +99,7 @@ KMT_TESTFUNC Test_TcpIpTdi;
 KMT_TESTFUNC Test_TcpIpConnect;
 KMT_TESTFUNC Test_TcpIpCancelReceive;
 KMT_TESTFUNC Test_WfpListen;
+KMT_TESTFUNC Test_WskEvents;
 KMT_TESTFUNC Test_WskName;
 KMT_TESTFUNC Test_WfpTcp;
 KMT_TESTFUNC Test_WfpUdp;
@@ -131,6 +134,7 @@ const KMT_TEST TestList[] =
     { "-FltMgrReg",                   Test_FltMgrReg }, // TODO: WIP/untested/crashes.
     { "HidPDescription",              Test_HidPDescription },
     { "IoAddDeviceUnload",            Test_IoAddDeviceUnload },
+    { "IoCancelSync",                 Test_IoCancelSync },
     { "IoFilterRequirements",         Test_IoFilterRequirements },
     { "IoCreateFile",                 Test_IoCreateFile },
     { "IoDeviceObject",               Test_IoDeviceObject },
@@ -158,6 +162,7 @@ const KMT_TEST TestList[] =
     { "MmMapLockedPagesSpecifyCache", Test_MmMapLockedPagesSpecifyCache },
     { "NtCreateSection",              Test_NtCreateSection },
     { "NdisSgDma",                    Test_NdisSgDma },
+    { "NetioIpHlp",                   Test_NetioIpHlp },
     { "NtSystemDebugControl",         Test_NtSystemDebugControl },
     { "NtUserPhysicalPages",          Test_NtUserPhysicalPages },
     { "NtProcessClone",               Test_NtProcessClone },
@@ -195,6 +200,7 @@ const KMT_TEST TestList[] =
     { "WfpTcp",                       Test_WfpTcp },
     { "WfpUdp",                       Test_WfpUdp },
     { "WfpUser",                      Test_WfpUser },
+    { "WskEvents",                    Test_WskEvents },
 #ifdef _M_AMD64
     { "KeContextSegments",            Test_KeContextSegments },
     { "KeNonCanonicalReturn",         Test_KeNonCanonicalReturn },

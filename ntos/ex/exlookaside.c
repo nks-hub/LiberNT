@@ -374,19 +374,20 @@ ExInitializeLookasideListEx(
     PKSPIN_LOCK Lock;
     KIRQL OldIrql;
 
-    if ((Flags & ~POOL_RAISE_IF_ALLOCATION_FAILURE) != 0)
+    if ((Flags & ~(EX_LOOKASIDE_LIST_EX_FLAGS_RAISE_ON_FAIL | EX_LOOKASIDE_LIST_EX_FLAGS_FAIL_NO_RAISE)) != 0)
     {
         return STATUS_INVALID_PARAMETER_5;
     }
 
-    if ((PoolType != NonPagedPool) && (PoolType != PagedPool))
+    /* A driver that opted in to NX pool through ExInitializeDriverRuntime passes NonPagedPoolNx for NonPagedPool */
+    if ((PoolType != NonPagedPool) && (PoolType != NonPagedPoolNx) && (PoolType != PagedPool))
     {
         return STATUS_INVALID_PARAMETER_4;
     }
 
     ExpInitializeLookasideCommon(&Lookaside->L,
                                  PoolType,
-                                 Flags,
+                                 (Flags & EX_LOOKASIDE_LIST_EX_FLAGS_RAISE_ON_FAIL) ? POOL_RAISE_IF_ALLOCATION_FAILURE : 0,
                                  Size,
                                  Tag,
                                  Depth);
@@ -422,8 +423,8 @@ ExDeleteLookasideListEx(
 
     ExpDrainLookasideListEx(Lookaside, 0);
 
-    Lock = (Lookaside->L.Type == PagedPool) ? &ExpPagedLookasideListLock :
-                                              &ExpNonPagedLookasideListLock;
+    Lock = ((Lookaside->L.Type & ~POOL_RAISE_IF_ALLOCATION_FAILURE) == PagedPool) ? &ExpPagedLookasideListLock :
+                                                                                  &ExpNonPagedLookasideListLock;
 
     ExpUnlinkLookaside(&Lookaside->L.ListEntry, Lock);
 }

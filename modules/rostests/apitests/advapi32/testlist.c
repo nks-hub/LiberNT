@@ -31,6 +31,7 @@ extern void func_LookupAccountName(void);
 extern void func_LookupAccountSid(void);
 extern void func_MachineGuid(void);
 extern void func_NotifyBootConfigStatus(void);
+extern void func_NsiService(void);
 extern void func_WindowsVersionValues(void);
 extern void func_OpenTrace(void);
 extern void func_PrivilegeNames(void);
@@ -56,12 +57,14 @@ extern void func_SaferLevels(void);
 extern void func_SaferRules(void);
 extern void func_SeclogonCaller(void);
 extern void func_ServiceArgs(void);
+extern void func_ServiceChangeNotify(void);
 extern void func_ServiceCrash(void);
 extern void func_ServiceEnv(void);
 extern void func_ServiceRegistryState(void);
 extern void func_TriggerInfo(void);
 extern void func_ServiceNetwork(void);
 extern void func_ServicePowerSetting(void);
+extern void func_ServiceSidInfo(void);
 extern void func_StartServiceCtrlDispatcher(void);
 extern void func_TokenBnoIsolation(void);
 extern void func_TokenLinkedToken(void);
@@ -100,6 +103,7 @@ const struct test winetest_testlist[] =
     { "LookupAccountSid", func_LookupAccountSid },
     { "MachineGuid", func_MachineGuid },
     { "NotifyBootConfigStatus", func_NotifyBootConfigStatus },
+    { "NsiService", func_NsiService },
     { "WindowsVersionValues", func_WindowsVersionValues },
     { "OpenTrace", func_OpenTrace },
     { "PrivilegeNames", func_PrivilegeNames },
@@ -125,12 +129,14 @@ const struct test winetest_testlist[] =
     { "SaferRules", func_SaferRules },
     { "SeclogonCaller", func_SeclogonCaller },
     { "ServiceArgs", func_ServiceArgs },
+    { "ServiceChangeNotify", func_ServiceChangeNotify },
     { "ServiceCrash", func_ServiceCrash },
     { "ServiceEnv", func_ServiceEnv },
     { "ServiceRegistryState", func_ServiceRegistryState },
     { "TriggerInfo", func_TriggerInfo },
     { "ServiceNetwork", func_ServiceNetwork },
     { "ServicePowerSetting", func_ServicePowerSetting },
+    { "ServiceSidInfo", func_ServiceSidInfo },
     { "StartServiceCtrlDispatcher", func_StartServiceCtrlDispatcher },
     { "TokenBnoIsolation", func_TokenBnoIsolation },
     { "TokenLinkedToken", func_TokenLinkedToken },

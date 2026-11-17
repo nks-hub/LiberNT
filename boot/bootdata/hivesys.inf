@@ -2035,6 +2035,17 @@ HKLM,"SYSTEM\CurrentControlSet\Services\ConDrv","ImagePath",0x00020000,"system32
 HKLM,"SYSTEM\CurrentControlSet\Services\ConDrv","Start",0x00010001,0x00000001
 HKLM,"SYSTEM\CurrentControlSet\Services\ConDrv","Type",0x00010001,0x00000001
 
+; Network Store Interface Service
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","DependOnService",0x00010000,"Tcpip"
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","Description",0x00000000,"Runs while the network store answers. Services that depend on it start after the network store."
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","DisplayName",0x00000000,"Network Store Interface Service"
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","ErrorControl",0x00010001,0x00000001
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","ImagePath",0x00020000,"%SystemRoot%\system32\svchost.exe -k LocalService"
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","ObjectName",0x00000000,"NT AUTHORITY\LocalService"
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","Start",0x00010001,0x00000002
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi","Type",0x00010001,0x00000020
+HKLM,"SYSTEM\CurrentControlSet\Services\Nsi\Parameters","ServiceDll",0x00020000,"%SystemRoot%\system32\nsisvc.dll"
+
 ; Null device driver
 HKLM,"SYSTEM\CurrentControlSet\Services\Null","ErrorControl",0x00010001,0x00000000
 HKLM,"SYSTEM\CurrentControlSet\Services\Null","Group",0x00000000,"Base"

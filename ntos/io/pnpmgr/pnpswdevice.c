@@ -20,6 +20,12 @@ typedef struct _PNP_SW_DEVICE
     UNICODE_STRING Name;
     UNICODE_STRING InstanceId;
     BOOLEAN Reported;
+    BOOLEAN Api;
+    BOOLEAN Removable;
+    BOOLEAN SilentInstall;
+    BOOLEAN NoDisplayInUI;
+    BOOLEAN RawDeviceOK;
+    BOOLEAN SurpriseRemovalOK;
 } PNP_SW_DEVICE, *PPNP_SW_DEVICE;
 
 typedef struct _PNP_SW_PDO_EXTENSION
@@ -110,6 +116,9 @@ PnpSwOpenComponentKey(
     ASSERT(Device->Parent != NULL);
 
     *ComponentKey = NULL;
+
+    /* What the creator of a device of the software device API recorded is in the device's own instance key */
+    if (Device->Api) return PnpDeviceObjectToDeviceInstance(Device->PhysicalDeviceObject, ComponentKey, KEY_READ);
 
     Status = PnpDeviceObjectToDeviceInstance(Device->Parent, &InstanceKey, KEY_READ);
     if (!NT_SUCCESS(Status)) return Status;
@@ -244,6 +253,13 @@ PnpSwCopyString(
 
 static
 NTSTATUS
+PnpSwQueryString(
+    _In_ PPNP_SW_DEVICE Device,
+    _In_ PWSTR ValueName,
+    _Out_ PWSTR *Text);
+
+static
+NTSTATUS
 PnpSwQueryId(
     _In_ PPNP_SW_DEVICE Device,
     _In_ BUS_QUERY_ID_TYPE IdType,
@@ -256,6 +272,11 @@ PnpSwQueryId(
     switch (IdType)
     {
         case BusQueryDeviceID:
+            if (Device->Api)
+            {
+                ASSERT(Device->Name.Buffer[Device->Name.Length / sizeof(WCHAR)] == UNICODE_NULL);
+                return PnpSwCopyString(Device->Name.Buffer, Id);
+            }
             return PnpSwCopyString(PnpSwDeviceId, Id);
 
         case BusQueryInstanceID:
@@ -263,12 +284,15 @@ PnpSwQueryId(
             return PnpSwCopyString(Device->InstanceId.Buffer, Id);
 
         case BusQueryHardwareIDs:
-            return PnpSwQueryIds(Device, L"HardwareIds", PnpSwNoIds, sizeof(PnpSwNoIds), Id);
+            return PnpSwQueryIds(Device, Device->Api ? L"HardwareID" : L"HardwareIds", PnpSwNoIds, sizeof(PnpSwNoIds), Id);
 
         case BusQueryCompatibleIDs:
+            if (Device->Api) return PnpSwQueryIds(Device, L"CompatibleIDs", PnpSwNoIds, sizeof(PnpSwNoIds), Id);
             return PnpSwQueryIds(Device, L"CompatibleIds", PnpSwCompatibleIds, sizeof(PnpSwCompatibleIds), Id);
 
         case BusQueryContainerID:
+            /* The container a creator gave its device stays when the device is set up again */
+            if (Device->Api) return PnpSwQueryString(Device, L"ContainerID", Id);
             return PnpSwCopyString(PnpSwContainerId, Id);
 
         default:
@@ -278,8 +302,9 @@ PnpSwQueryId(
 
 static
 NTSTATUS
-PnpSwQueryDescription(
+PnpSwQueryString(
     _In_ PPNP_SW_DEVICE Device,
+    _In_ PWSTR ValueName,
     _Out_ PWSTR *Text)
 {
     PKEY_VALUE_FULL_INFORMATION Information;
@@ -291,7 +316,7 @@ PnpSwQueryDescription(
 
     *Text = NULL;
 
-    Status = PnpSwQueryValue(Device, L"Description", REG_SZ, &Information);
+    Status = PnpSwQueryValue(Device, ValueName, REG_SZ, &Information);
     if (!NT_SUCCESS(Status)) return STATUS_NOT_SUPPORTED;
 
     Chars = Information->DataLength / sizeof(WCHAR);
@@ -332,7 +357,7 @@ PnpSwFindDevice(
     {
         Device = CONTAINING_RECORD(Entry, PNP_SW_DEVICE, ListEntry);
 
-        if (Device->Parent == Parent && RtlEqualUnicodeString(&Device->Name, Name, TRUE)) return Device;
+        if (Device->Parent == Parent && !Device->Api && RtlEqualUnicodeString(&Device->Name, Name, TRUE)) return Device;
     }
 
     return NULL;
@@ -383,7 +408,8 @@ static
 PPNP_SW_DEVICE
 PnpSwCreateDevice(
     _In_ PDEVICE_NODE ParentNode,
-    _In_ PCUNICODE_STRING Name)
+    _In_ PCUNICODE_STRING Name,
+    _In_opt_ PCUNICODE_STRING InstanceId)
 {
     PPNP_SW_PDO_EXTENSION Extension;
     PPNP_SW_DEVICE Device;
@@ -407,7 +433,20 @@ PnpSwCreateDevice(
     Device->Name.MaximumLength = Name->Length + sizeof(WCHAR);
     RtlCopyUnicodeString(&Device->Name, Name);
 
-    Status = PnpSwFormatInstanceId(ParentNode, Name, &Device->InstanceId);
+    if (InstanceId != NULL)
+    {
+        Device->InstanceId.Buffer = ExAllocatePoolZero(PagedPool, InstanceId->Length + sizeof(WCHAR), TAG_PNP_SWDEVICE);
+        Status = (Device->InstanceId.Buffer != NULL) ? STATUS_SUCCESS : STATUS_INSUFFICIENT_RESOURCES;
+        if (NT_SUCCESS(Status))
+        {
+            Device->InstanceId.MaximumLength = InstanceId->Length + sizeof(WCHAR);
+            RtlCopyUnicodeString(&Device->InstanceId, InstanceId);
+        }
+    }
+    else
+    {
+        Status = PnpSwFormatInstanceId(ParentNode, Name, &Device->InstanceId);
+    }
     if (!NT_SUCCESS(Status))
     {
         DPRINT1("PnP: component %wZ of %wZ gets no instance (%lx)\n", Name, &ParentNode->InstancePath, Status);
@@ -606,9 +645,9 @@ PnpSwDevicePnp(
             KeEnterCriticalRegion();
             ExAcquireResourceSharedLite(&PnpSwDeviceLock, TRUE);
             Device = Extension->Device;
-            if (Device != NULL)
+            if (Device != NULL && !Device->Api)
             {
-                Status = PnpSwQueryDescription(Device, &Text);
+                Status = PnpSwQueryString(Device, L"Description", &Text);
                 if (Status == STATUS_NOT_SUPPORTED) Status = Irp->IoStatus.Status;
                 else if (NT_SUCCESS(Status)) Irp->IoStatus.Information = (ULONG_PTR)Text;
             }
@@ -632,6 +671,20 @@ PnpSwDevicePnp(
             Capabilities->SurpriseRemovalOK = TRUE;
             Capabilities->Address = MAXULONG;
             Capabilities->UINumber = MAXULONG;
+
+            KeEnterCriticalRegion();
+            ExAcquireResourceSharedLite(&PnpSwDeviceLock, TRUE);
+            Device = Extension->Device;
+            if (Device != NULL && Device->Api)
+            {
+                Capabilities->Removable = Device->Removable;
+                Capabilities->SilentInstall = Device->SilentInstall;
+                Capabilities->NoDisplayInUI = Device->NoDisplayInUI;
+                Capabilities->RawDeviceOK = Device->RawDeviceOK;
+                Capabilities->SurpriseRemovalOK = Device->SurpriseRemovalOK;
+            }
+            ExReleaseResourceLite(&PnpSwDeviceLock);
+            KeLeaveCriticalRegion();
 
             Status = STATUS_SUCCESS;
             break;
@@ -666,7 +719,18 @@ PnpSwDevicePnp(
         case IRP_MN_QUERY_STOP_DEVICE:
         case IRP_MN_CANCEL_STOP_DEVICE:
         case IRP_MN_SURPRISE_REMOVAL:
+            Status = STATUS_SUCCESS;
+            break;
+
         case IRP_MN_QUERY_PNP_DEVICE_STATE:
+            KeEnterCriticalRegion();
+            ExAcquireResourceSharedLite(&PnpSwDeviceLock, TRUE);
+            Device = Extension->Device;
+            if (Device != NULL && Device->NoDisplayInUI)
+                Irp->IoStatus.Information |= PNP_DEVICE_DONT_DISPLAY_IN_UI;
+            ExReleaseResourceLite(&PnpSwDeviceLock);
+            KeLeaveCriticalRegion();
+
             Status = STATUS_SUCCESS;
             break;
 
@@ -784,24 +848,30 @@ PnpSwDeviceAddChildren(
     ASSERT(Parent != NULL);
 
     if (!NT_SUCCESS(QueryStatus) && QueryStatus != STATUS_NOT_SUPPORTED) return QueryStatus;
-    if (PnpSwDriverObject == NULL || DeviceNode == IopRootDeviceNode) return QueryStatus;
+    if (PnpSwDriverObject == NULL) return QueryStatus;
 
     Relations = DeviceNode->OverUsed1.PendingDeviceRelations;
     ASSERT(NT_SUCCESS(QueryStatus) || Relations == NULL);
 
-    Status = PnpSwReadComponentNames(Parent, &Names, &Count);
-    if (!NT_SUCCESS(Status)) Count = 0;
+    if (DeviceNode != IopRootDeviceNode)
+    {
+        Status = PnpSwReadComponentNames(Parent, &Names, &Count);
+        if (!NT_SUCCESS(Status)) Count = 0;
+    }
 
     KeEnterCriticalRegion();
     ExAcquireResourceExclusiveLite(&PnpSwDeviceLock, TRUE);
 
-    /* A component stays reported only while the parent's instance key lists it */
+    /* A component stays reported only while the parent's instance key lists it, a device of the API until it is withdrawn */
     for (Entry = PnpSwDeviceList.Flink; Entry != &PnpSwDeviceList; Entry = Entry->Flink)
     {
         Device = CONTAINING_RECORD(Entry, PNP_SW_DEVICE, ListEntry);
         if (Device->Parent != Parent) continue;
 
-        Device->Reported = FALSE;
+        if (!Device->Api)
+            Device->Reported = FALSE;
+        else if (Device->Reported)
+            Reported++;
         Existing++;
     }
 
@@ -816,7 +886,7 @@ PnpSwDeviceAddChildren(
     for (Index = 0; Index < Count; Index++)
     {
         Device = PnpSwFindDevice(Parent, &Names[Index]);
-        if (Device == NULL) Device = PnpSwCreateDevice(DeviceNode, &Names[Index]);
+        if (Device == NULL) Device = PnpSwCreateDevice(DeviceNode, &Names[Index], NULL);
         if (Device == NULL || Device->Reported) continue;
 
         Device->Reported = TRUE;
@@ -908,4 +978,139 @@ PnpSwDeviceParentRemoved(
         Entry = RemoveHeadList(&Removed);
         PnpSwDeleteDevice(CONTAINING_RECORD(Entry, PNP_SW_DEVICE, ListEntry));
     }
+}
+
+/* A device of the software device API, SWD\<enumerator>\<instance>, is a child of its parent from the parent's next
+ * enumeration until it is withdrawn */
+NTSTATUS
+PnpSwDeviceCreate(
+    _In_ PDEVICE_NODE ParentNode,
+    _In_ PCUNICODE_STRING InstancePath)
+{
+    static const UNICODE_STRING Enumerator = RTL_CONSTANT_STRING(L"SWD\\");
+    UNICODE_STRING DeviceId, Name, InstanceId;
+    PPNP_SW_DEVICE Device;
+    PLIST_ENTRY Entry;
+    USHORT Chars = (USHORT)(InstancePath->Length / sizeof(WCHAR));
+    USHORT Split;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    PAGED_CODE();
+
+    ASSERT(ParentNode->PhysicalDeviceObject != NULL);
+
+    if (PnpSwDriverObject == NULL) return STATUS_NOT_SUPPORTED;
+    if (!RtlPrefixUnicodeString(&Enumerator, InstancePath, TRUE)) return STATUS_INVALID_PARAMETER;
+
+    Split = Enumerator.Length / sizeof(WCHAR);
+    while (Split < Chars && InstancePath->Buffer[Split] != L'\\') Split++;
+    if (Split == Chars) return STATUS_INVALID_PARAMETER;
+
+    Name.Buffer = InstancePath->Buffer + Enumerator.Length / sizeof(WCHAR);
+    Name.Length = Name.MaximumLength = (USHORT)(Split * sizeof(WCHAR) - Enumerator.Length);
+    InstanceId.Buffer = InstancePath->Buffer + Split + 1;
+    InstanceId.Length = InstanceId.MaximumLength = (USHORT)(InstancePath->Length - (Split + 1) * sizeof(WCHAR));
+    if (!PnpSwIsValidName(&Name) || !PnpSwIsValidName(&InstanceId)) return STATUS_INVALID_PARAMETER;
+
+    DeviceId.Buffer = InstancePath->Buffer;
+    DeviceId.Length = DeviceId.MaximumLength = (USHORT)(Split * sizeof(WCHAR));
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&PnpSwDeviceLock, TRUE);
+
+    /* PnpSwDeviceParentRemoved, which takes this lock, follows the parent's leaving the started states */
+    if (!PiIsDevNodeStarted(ParentNode->State)) Status = STATUS_NO_SUCH_DEVICE;
+
+    for (Entry = PnpSwDeviceList.Flink; Entry != &PnpSwDeviceList && NT_SUCCESS(Status); Entry = Entry->Flink)
+    {
+        Device = CONTAINING_RECORD(Entry, PNP_SW_DEVICE, ListEntry);
+        if (Device->Api && Device->Reported && RtlEqualUnicodeString(&Device->Name, &DeviceId, TRUE) &&
+            RtlEqualUnicodeString(&Device->InstanceId, &InstanceId, TRUE))
+        {
+            Status = STATUS_OBJECT_NAME_COLLISION;
+        }
+    }
+
+    if (NT_SUCCESS(Status))
+    {
+        Device = PnpSwCreateDevice(ParentNode, &DeviceId, &InstanceId);
+        if (Device == NULL)
+        {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+        }
+        else
+        {
+            Device->Api = TRUE;
+            Device->Reported = TRUE;
+            Device->SurpriseRemovalOK = TRUE;
+        }
+    }
+
+    ExReleaseResourceLite(&PnpSwDeviceLock);
+    KeLeaveCriticalRegion();
+
+    return Status;
+}
+
+/* Returns the referenced parent of a device of the software device API, which no longer reports it */
+PDEVICE_OBJECT
+PnpSwDeviceWithdraw(
+    _In_ PDEVICE_OBJECT DeviceObject)
+{
+    PPNP_SW_DEVICE Device;
+    PDEVICE_OBJECT Parent = NULL;
+
+    PAGED_CODE();
+
+    if (DeviceObject->DriverObject != PnpSwDriverObject) return NULL;
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&PnpSwDeviceLock, TRUE);
+
+    Device = ((PPNP_SW_PDO_EXTENSION)DeviceObject->DeviceExtension)->Device;
+    if (Device != NULL && Device->Api)
+    {
+        ASSERT(Device->PhysicalDeviceObject == DeviceObject);
+        Device->Reported = FALSE;
+        Parent = Device->Parent;
+        ObReferenceObject(Parent);
+    }
+
+    ExReleaseResourceLite(&PnpSwDeviceLock);
+    KeLeaveCriticalRegion();
+
+    return Parent;
+}
+
+NTSTATUS
+PnpSwDeviceSetCapabilities(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA Capabilities)
+{
+    PPNP_SW_DEVICE Device;
+    NTSTATUS Status = STATUS_INVALID_DEVICE_REQUEST;
+
+    PAGED_CODE();
+
+    if (DeviceObject->DriverObject != PnpSwDriverObject) return STATUS_INVALID_DEVICE_REQUEST;
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&PnpSwDeviceLock, TRUE);
+
+    Device = ((PPNP_SW_PDO_EXTENSION)DeviceObject->DeviceExtension)->Device;
+    if (Device != NULL && Device->Api)
+    {
+        ASSERT(Device->PhysicalDeviceObject == DeviceObject);
+        Device->Removable = (Capabilities->Removable != FALSE);
+        Device->SilentInstall = (Capabilities->SilentInstall != FALSE);
+        Device->NoDisplayInUI = (Capabilities->NoDisplayInUI != FALSE);
+        Device->RawDeviceOK = (Capabilities->RawDeviceOK != FALSE);
+        Device->SurpriseRemovalOK = (Capabilities->SurpriseRemovalOK != FALSE);
+        Status = STATUS_SUCCESS;
+    }
+
+    ExReleaseResourceLite(&PnpSwDeviceLock);
+    KeLeaveCriticalRegion();
+
+    return Status;
 }

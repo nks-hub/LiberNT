@@ -513,7 +513,9 @@ NtPlugPlayControl(
         return STATUS_PRIVILEGE_NOT_HELD;
     }
 
-    if (PlugPlayControlClass >= MaxPlugPlayControl)
+    if (PlugPlayControlClass >= MaxPlugPlayControl &&
+        (PlugPlayControlClass < PlugPlayControlSetDeviceInterfaceState ||
+         PlugPlayControlClass > PlugPlayControlInitializeChildDevice))
     {
         return STATUS_INVALID_PARAMETER;
     }

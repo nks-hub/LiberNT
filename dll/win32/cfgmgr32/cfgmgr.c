@@ -2438,6 +2438,83 @@ CM_Enable_DevNode_Ex(
 }
 
 
+static CONFIGRET
+SoftwareDeviceAction(
+    _In_ ULONG ulMajorAction,
+    _In_ ULONG ulMinorAction,
+    _In_ PCWSTR pszInstanceId)
+{
+    RPC_BINDING_HANDLE BindingHandle = NULL;
+    CONFIGRET ret;
+
+    if (!CmpIsUserAdmin())
+        return CR_ACCESS_DENIED;
+
+    if (!PnpGetLocalHandles(&BindingHandle))
+        return CR_FAILURE;
+
+    RpcTryExcept
+    {
+        ret = PNP_DeviceInstanceAction(BindingHandle,
+                                       ulMajorAction,
+                                       ulMinorAction,
+                                       (LPWSTR)pszInstanceId,
+                                       NULL);
+    }
+    RpcExcept(EXCEPTION_EXECUTE_HANDLER)
+    {
+        ret = RpcStatusToCmStatus(RpcExceptionCode());
+    }
+    RpcEndExcept;
+
+    return ret;
+}
+
+
+CONFIGRET
+CfgmgrRemoveSoftwareDevice(
+    _In_ PCWSTR pszInstanceId,
+    _In_ ULONG ulGeneration)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, ulGeneration, pszInstanceId);
+}
+
+
+CONFIGRET
+CfgmgrRemoveAnySoftwareDevice(
+    _In_ PCWSTR pszInstanceId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_REMOVE_SOFTWARE, PNP_SOFTWARE_DEVICE_ANY_GENERATION, pszInstanceId);
+}
+
+
+CONFIGRET
+CfgmgrWatchSoftwareDevice(
+    _In_ PCWSTR pszInstanceId,
+    _In_ DWORD dwProcessId)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_WATCH_SOFTWARE, dwProcessId, pszInstanceId);
+}
+
+
+CONFIGRET
+CfgmgrSetSoftwareDeviceInterfaceState(
+    _In_ PCWSTR pszDeviceInterface,
+    _In_ BOOL bEnable)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_SOFTWARE_INTERFACE, bEnable != FALSE, pszDeviceInterface);
+}
+
+
+CONFIGRET
+CfgmgrSetSoftwareDeviceCapabilities(
+    _In_ PCWSTR pszInstanceId,
+    _In_ ULONG ulCapabilities)
+{
+    return SoftwareDeviceAction(PNP_DEVINST_SOFTWARE_CAPABILITIES, ulCapabilities, pszInstanceId);
+}
+
+
 
 
 
@@ -7032,11 +7109,12 @@ CM_Set_DevNode_Registry_Property_ExW(
 
     RpcTryExcept
     {
+        /* The buffer is a reference pointer, also for a deletion without data */
         ret = PNP_SetDeviceRegProp(BindingHandle,
                                    lpDevInst,
                                    ulProperty,
                                    ulType,
-                                   (BYTE *)Buffer,
+                                   Buffer ? (BYTE *)Buffer : (BYTE *)&ulType,
                                    ulLength,
                                    ulFlags);
     }

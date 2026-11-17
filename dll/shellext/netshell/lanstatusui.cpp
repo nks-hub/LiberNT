@@ -527,6 +527,31 @@ NetShellUpdateTimer(LANSTATUSUI_CONTEXT *pContext)
     }
 }
 
+/* An adapter that is removed and added again, such as a tunnel, gets a new interface index */
+static BOOL
+NetShellRefreshAdapterIndex(LANSTATUSUI_CONTEXT *pContext)
+{
+    NETCON_PROPERTIES *pProps = NULL;
+    NET_LUID Luid;
+    NET_IFINDEX IfIndex;
+    BOOL bFound = FALSE;
+
+    if (pContext->pNet->GetProperties(&pProps) != S_OK || !pProps)
+        return FALSE;
+    if (!ConvertInterfaceGuidToLuid(&pProps->guidId, &Luid) &&
+        !ConvertInterfaceLuidToIndex(&Luid, &IfIndex))
+    {
+        if (IfIndex != pContext->dwAdapterIndex)
+        {
+            pContext->dwAdapterIndex = IfIndex;
+            pContext->Status = (UINT)-1;
+        }
+        bFound = TRUE;
+    }
+    NcFreeNetconProperties(pProps);
+    return bFound;
+}
+
 VOID
 UpdateLanStatus(HWND hwndDlg, LANSTATUSUI_CONTEXT * pContext)
 {
@@ -536,10 +561,16 @@ UpdateLanStatus(HWND hwndDlg, LANSTATUSUI_CONTEXT * pContext)
     NETCON_PROPERTIES * pProperties = NULL;
     NLM_CONNECTIVITY Conn;
     int nQuality;
+    DWORD dwError;
 
     ZeroMemory(&IfEntry, sizeof(IfEntry));
-    IfEntry.dwIndex = pContext->dwAdapterIndex;
-    if (GetIfEntry(&IfEntry) != NO_ERROR)
+    dwError = ERROR_FILE_NOT_FOUND;
+    if (NetShellRefreshAdapterIndex(pContext))
+    {
+        IfEntry.dwIndex = pContext->dwAdapterIndex;
+        dwError = GetIfEntry(&IfEntry);
+    }
+    if (dwError != NO_ERROR)
     {
         NetShellClearTrayRank(pContext->uID, pContext->hwndStatusDlg);
         return;
@@ -1088,14 +1119,14 @@ LANStatusUiDlg(
             {
                 if (pContext)
                 {
-                    ShowNetConnectionProperties(pContext->pNet, GetParent(pContext->hwndDlg));
+                    ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), GetParent(pContext->hwndDlg));
                     BringWindowToTop(GetParent(pContext->hwndDlg));
                 }
                 break;
             }
             else if (LOWORD(wParam) == IDC_ENDISABLE)
             {
-                DisableNetworkAdapter(pContext->pNet, pContext, hwndDlg);
+                DisableNetworkAdapter(CComPtr<INetConnection>(pContext->pNet), pContext, hwndDlg);
                 break;
             }
         case WM_NOTIFY:
@@ -1237,7 +1268,7 @@ ShowStatusPropertyDialog(
         else if (pProperties->Status == NCS_MEDIA_DISCONNECTED || pProperties->Status == NCS_DISCONNECTED ||
                  pProperties->Status == NCS_HARDWARE_DISABLED)
         {
-            ShowNetConnectionProperties(pContext->pNet, pContext->hwndDlg);
+            ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), pContext->hwndDlg);
         }
 
         NcFreeNetconProperties(pProperties);
@@ -1546,11 +1577,11 @@ LANStatusDlg(
                     break;
 
                 case IDM_NETICON_REPAIR:
-                    RepairConnection(pContext->pNet, hwndDlg);
+                    RepairConnection(CComPtr<INetConnection>(pContext->pNet), hwndDlg);
                     break;
 
                 case IDM_NETICON_PROPERTIES:
-                    ShowNetConnectionProperties(pContext->pNet, hwndDlg);
+                    ShowNetConnectionProperties(CComPtr<INetConnection>(pContext->pNet), hwndDlg);
                     break;
 
                 case IDM_NETICON_OPEN_CONNECTIONS:
@@ -1657,9 +1688,14 @@ CLanStatus::EnumerateTrayConnections()
         if (pItem)
         {
             pItem->Seen = TRUE;
+            pItem->pNet->Release();
+            pItem->pNet = pNetCon.Detach();
             pContext = reinterpret_cast<LANSTATUSUI_CONTEXT *>(GetWindowLongPtrW(pItem->hwndDlg, DWLP_USER));
             if (pContext)
+            {
+                pContext->pNet = pItem->pNet;
                 UpdateLanStatus(NULL, pContext);
+            }
             NcFreeNetconProperties(pProps);
             continue;
         }
@@ -1807,6 +1843,10 @@ HRESULT
 CLanStatus::ShowStatusDialogByCLSID(const GUID *pguidCmdGroup)
 {
     NOTIFICATION_ITEM *pItem;
+
+    /* Enumerate now, on the tray thread that owns the item windows */
+    if (m_hwndWatch)
+        SendMessageW(m_hwndWatch, WM_TIMER, NETSHELL_REFRESH_TIMER, 0);
 
     pItem = m_pHead;
     while (pItem)

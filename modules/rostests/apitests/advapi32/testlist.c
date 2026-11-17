@@ -60,6 +60,7 @@ extern void func_ServiceArgs(void);
 extern void func_ServiceChangeNotify(void);
 extern void func_ServiceCrash(void);
 extern void func_ServiceEnv(void);
+extern void func_ServiceRegistryState(void);
 extern void func_TriggerInfo(void);
 extern void func_ServiceNetwork(void);
 extern void func_ServicePowerSetting(void);
@@ -131,6 +132,7 @@ const struct test winetest_testlist[] =
     { "ServiceChangeNotify", func_ServiceChangeNotify },
     { "ServiceCrash", func_ServiceCrash },
     { "ServiceEnv", func_ServiceEnv },
+    { "ServiceRegistryState", func_ServiceRegistryState },
     { "TriggerInfo", func_TriggerInfo },
     { "ServiceNetwork", func_ServiceNetwork },
     { "ServicePowerSetting", func_ServicePowerSetting },

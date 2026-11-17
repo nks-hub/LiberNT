@@ -47,6 +47,7 @@ extern void func_DisplayConfigTarget(void);
 extern void func_EnumDisplayDevices(void);
 extern void func_EnumDisplaySettings(void);
 extern void func_ForegroundAfterHide(void);
+extern void func_ForegroundHideLaunch(void);
 extern void func_ForegroundRetake(void);
 extern void func_ForegroundRight(void);
 extern void func_ForegroundStartup(void);
@@ -71,6 +72,7 @@ extern void func_HiddenChildWindowPos(void);
 extern void func_ImeWindow(void);
 extern void func_ImeWindowZOrder(void);
 extern void func_InitializeLpkHooks(void);
+extern void func_InjectTouchInput(void);
 extern void func_InputMessageSource(void);
 extern void func_InvalidHandles(void);
 extern void func_IsTopLevelWindow(void);
@@ -197,6 +199,7 @@ const struct test winetest_testlist[] =
     { "EnumDisplayDevices", func_EnumDisplayDevices },
     { "EnumDisplaySettings", func_EnumDisplaySettings },
     { "ForegroundAfterHide", func_ForegroundAfterHide },
+    { "ForegroundHideLaunch", func_ForegroundHideLaunch },
     { "ForegroundRetake", func_ForegroundRetake },
     { "ForegroundRight", func_ForegroundRight },
     { "ForegroundStartup", func_ForegroundStartup },
@@ -221,6 +224,7 @@ const struct test winetest_testlist[] =
     { "ImeWindow", func_ImeWindow },
     { "ImeWindowZOrder", func_ImeWindowZOrder },
     { "InitializeLpkHooks", func_InitializeLpkHooks },
+    { "InjectTouchInput", func_InjectTouchInput },
     { "InputMessageSource", func_InputMessageSource },
     { "InvalidHandles", func_InvalidHandles },
     { "IsTopLevelWindow", func_IsTopLevelWindow },

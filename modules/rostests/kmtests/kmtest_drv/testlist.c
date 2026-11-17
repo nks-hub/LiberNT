@@ -175,6 +175,8 @@ KMT_TESTFUNC Test_HalPortIo;
 #endif
 KMT_TESTFUNC Test_HalDmaAlignment;
 KMT_TESTFUNC Test_HdAudBusInterface;
+KMT_TESTFUNC Test_KsCreateItemSlot;
+KMT_TESTFUNC Test_KsDispatchFileObject;
 KMT_TESTFUNC Test_HalRealTimeClock;
 KMT_TESTFUNC Test_HalSystemInfo;
 KMT_TESTFUNC Test_IoContainerId;
@@ -424,6 +426,7 @@ KMT_TESTFUNC Test_SePrimaryTokenRelease;
 KMT_TESTFUNC Test_SeAccessState;
 KMT_TESTFUNC Test_RtlAvlTree;
 KMT_TESTFUNC Test_RtlAtomEx;
+KMT_TESTFUNC Test_RtlAssertUnanswered;
 KMT_TESTFUNC Test_RtlCaptureContext;
 KMT_TESTFUNC Test_RtlException;
 KMT_TESTFUNC Test_RtlGetVersion;
@@ -606,6 +609,8 @@ const KMT_TEST TestList[] =
 #endif
     { "HalDmaAlignment",                    Test_HalDmaAlignment },
     { "HdAudBusInterface",                  Test_HdAudBusInterface },
+    { "KsCreateItemSlot",                   Test_KsCreateItemSlot },
+    { "KsDispatchFileObject",               Test_KsDispatchFileObject },
     { "HalRealTimeClock",                   Test_HalRealTimeClock },
     { "HalSystemInfo",                      Test_HalSystemInfo },
     { "IoContainerId",                      Test_IoContainerId },
@@ -892,6 +897,7 @@ const KMT_TEST TestList[] =
     { "SeAccessCheckKM",                    Test_SeAccessCheckKM },
     { "RtlAvlTreeKM",                       Test_RtlAvlTree },
     { "RtlAtomEx",                          Test_RtlAtomEx },
+    { "RtlAssertUnanswered",                Test_RtlAssertUnanswered },
     { "RtlExceptionKM",                     Test_RtlException },
     { "RtlGetVersion",                      Test_RtlGetVersion },
     { "RtlIntSafeKM",                       Test_RtlIntSafe },

@@ -26,6 +26,8 @@
 #include <d3d11.h>
 #include <d3d12.h>
 
+#include "directx_probe.h"
+
 /* ------------------------------------------------------------------ */
 /*  gdi32 D3DKMT entry points                                          */
 /*                                                                     */
@@ -48,6 +50,9 @@ static PFN_D3DKMTOpenAdapterFromDeviceName pOpenAdapterFromDeviceName;
 
 static BOOL      s_available;
 static BOOL      s_identityResolved;
+static TM_DXPROBE s_dxProbes[TM_MAX_GPUS];
+static volatile LONG s_dxProbeWorker;
+static BOOL s_dxProbeWanted;
 static double    s_qpcFrequency;
 
 static BOOL LoadD3DKMT(void)
@@ -538,15 +543,15 @@ static IDXGIAdapter* FindDxgiAdapter(const LUID& luid)
     return adapter;
 }
 
-static void ProbeDirectXVersion(GpuSnapshot* gpu)
+static void ProbeDirectXVersion(const LUID& luid, WCHAR* text, int cch)
 {
     IDXGIAdapter* adapter;
     HMODULE d3d12;
     HMODULE d3d11;
 
-    StringCchCopyW(gpu->directX, _countof(gpu->directX), L"Unavailable");
+    StringCchCopyW(text, cch, L"Unavailable");
 
-    adapter = FindDxgiAdapter(gpu->luid);
+    adapter = FindDxgiAdapter(luid);
     if (!adapter)
         return;
 
@@ -570,8 +575,7 @@ static void ProbeDirectXVersion(GpuSnapshot* gpu)
             {
                 levels.MaxSupportedFeatureLevel = D3D_FEATURE_LEVEL_11_0;
             }
-            FormatDirectXVersion(12, levels.MaxSupportedFeatureLevel,
-                                 gpu->directX, _countof(gpu->directX));
+            FormatDirectXVersion(12, levels.MaxSupportedFeatureLevel, text, cch);
             device->Release();
             adapter->Release();
             return;
@@ -590,12 +594,44 @@ static void ProbeDirectXVersion(GpuSnapshot* gpu)
                                        s_featureLevels, _countof(s_featureLevels),
                                        D3D11_SDK_VERSION, &device, &level, NULL)))
         {
-            FormatDirectXVersion(11, level, gpu->directX, _countof(gpu->directX));
+            FormatDirectXVersion(11, level, text, cch);
             device->Release();
         }
     }
 
     adapter->Release();
+}
+
+/* Creating a device loads the Direct3D runtime and driver, which can take a second: never on the UI thread */
+static DWORD WINAPI DirectXProbeThread(LPVOID parameter)
+{
+    TM_DXPROBE* probe;
+    WCHAR text[_countof(s_dxProbes[0].Text)];
+
+    UNREFERENCED_PARAMETER(parameter);
+
+    while ((probe = TmDxProbeClaim(s_dxProbes, _countof(s_dxProbes))) != NULL)
+    {
+        ProbeDirectXVersion(probe->Luid, text, _countof(text));
+        TmDxProbeComplete(probe, text);
+    }
+    InterlockedExchange(&s_dxProbeWorker, 0);
+    return 0;
+}
+
+static void StartDirectXProbes(void)
+{
+    HANDLE thread;
+
+    if (InterlockedCompareExchange(&s_dxProbeWorker, 1, 0) != 0)
+        return;
+    thread = CreateThread(NULL, 0, DirectXProbeThread, NULL, 0, NULL);
+    if (thread)
+    {
+        CloseHandle(thread);
+        return;
+    }
+    DirectXProbeThread(NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -913,6 +949,29 @@ void GpuInit(void)
     ZeroMemory(g.gpus, sizeof(g.gpus));
 }
 
+void GpuWantDirectX(void)
+{
+    LUID present[TM_MAX_GPUS];
+    BOOL probesQueued = FALSE;
+    int i;
+
+    if (s_dxProbeWanted)
+        return;
+    s_dxProbeWanted = TRUE;
+    for (i = 0; i < g.gpuCount; i++)
+        present[i] = g.gpus[i].luid;
+    for (i = 0; i < g.gpuCount; i++)
+    {
+        if (!g.gpus[i].directX[0] &&
+            TmDxProbeLookup(s_dxProbes, _countof(s_dxProbes), &present[i], present, g.gpuCount))
+        {
+            probesQueued = TRUE;
+        }
+    }
+    if (probesQueued)
+        StartDirectXProbes();
+}
+
 void GpuShutdown(void)
 {
     g.gpuCount = 0;
@@ -922,6 +981,8 @@ void GpuTick(void)
 {
     D3DKMT_ENUMADAPTERS2 enumeration;
     D3DKMT_ADAPTERINFO adapters[TM_MAX_GPUS];
+    LUID present[TM_MAX_GPUS];
+    BOOL probesQueued = FALSE;
     UINT i;
     int previousCount = g.gpuCount;
 
@@ -966,6 +1027,8 @@ void GpuTick(void)
 
     g.gpuCount = (int)enumeration.NumAdapters;
     for (i = 0; i < enumeration.NumAdapters; i++)
+        present[i] = adapters[i].AdapterLuid;
+    for (i = 0; i < enumeration.NumAdapters; i++)
     {
         GpuSnapshot* gpu = &g.gpus[i];
 
@@ -974,9 +1037,16 @@ void GpuTick(void)
         CollectAdapter(gpu, adapters[i].hAdapter);
         if (!gpu->name[0])
             StringCchPrintfW(gpu->name, _countof(gpu->name), L"GPU %u", i);
-        if (!gpu->directX[0])
-            ProbeDirectXVersion(gpu);
+        if (!gpu->directX[0] && s_dxProbeWanted)
+        {
+            TM_DXPROBE* probe = TmDxProbeLookup(s_dxProbes, _countof(s_dxProbes), &gpu->luid,
+                                                present, (int)enumeration.NumAdapters);
+            if (probe && !TmDxProbeResult(probe, gpu->directX, _countof(gpu->directX)))
+                probesQueued = TRUE;
+        }
     }
+    if (probesQueued)
+        StartDirectXProbes();
 
     /*
      * Names and driver details come from the PnP tree, which does not change

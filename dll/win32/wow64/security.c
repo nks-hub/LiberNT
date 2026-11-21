@@ -145,35 +145,38 @@ NTSTATUS WINAPI wow64_NtAdjustGroupsToken( UINT *args )
     ULONG *retlen = get_ptr( &args );
 
 #ifdef __REACTOS__
+    TOKEN_GROUPS *groups64 = token_groups_32to64( groups );
     TOKEN_GROUPS *prev64;
-    ULONG i, size, ret_size = 0, count_off, sid_off;
+    ULONG i, ret_size = 0, count_off, sid_off;
     NTSTATUS status;
 
-    if (!prev || !len)
-        return NtAdjustGroupsToken( handle, reset, token_groups_32to64( groups ), len, NULL, retlen );
+    if (!prev)
+        return NtAdjustGroupsToken( handle, reset, groups64, len, NULL, retlen );
 
-    size = len * 2 + sizeof(TOKEN_GROUPS);
-    prev64 = Wow64AllocateTemp( size );
-    status = NtAdjustGroupsToken( handle, reset, token_groups_32to64( groups ), size, prev64, &ret_size );
-    if (status == STATUS_SUCCESS || status == STATUS_NOT_ALL_ASSIGNED)
+    /* as on Windows 11, a missing new state fails the call before the outputs are looked at */
+    if (!reset && !groups) return STATUS_INVALID_PARAMETER;
+
+    /* as on Windows 11, a length that cannot be written fails the call before the token is touched */
+    if (!retlen) return STATUS_ACCESS_VIOLATION;
+    for (i = 0; i < sizeof(*retlen); i++) ((volatile char *)retlen)[i] = ((volatile char *)retlen)[i];
+
+    /* as on Windows 11, the length counts for the 64-bit layout and a short buffer is told that size */
+    if (!(prev64 = Wow64AllocateTemp( len ))) return STATUS_NO_MEMORY;
+    status = NtAdjustGroupsToken( handle, reset, groups64, len, prev64, &ret_size );
+    if (status == STATUS_BUFFER_TOO_SMALL) memcpy( (char *)retlen, &ret_size, sizeof(ret_size) );
+    if (status < 0) return status;
+
+    count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );
+    sid_off = offsetof( TOKEN_GROUPS32, Groups[prev64->GroupCount] );
+    prev->GroupCount = prev64->GroupCount;
+    for (i = 0; i < prev64->GroupCount; i++)
     {
-        count_off = offsetof( TOKEN_GROUPS, Groups[prev64->GroupCount] );
-        sid_off = offsetof( TOKEN_GROUPS32, Groups[prev64->GroupCount] );
-        ret_size = ret_size - count_off + sid_off;
-        if (len < ret_size)
-        {
-            if (retlen) *retlen = ret_size;
-            return STATUS_BUFFER_TOO_SMALL;
-        }
-        prev->GroupCount = prev64->GroupCount;
-        for (i = 0; i < prev64->GroupCount; i++)
-        {
-            prev->Groups[i].Sid = PtrToUlong( prev ) + sid_off + (ULONG)((char *)prev64->Groups[i].Sid - ((char *)prev64 + count_off));
-            prev->Groups[i].Attributes = prev64->Groups[i].Attributes;
-        }
-        memcpy( (char *)prev + sid_off, (char *)prev64 + count_off, ret_size - sid_off );
+        prev->Groups[i].Sid = PtrToUlong( prev ) + sid_off + (ULONG)((char *)prev64->Groups[i].Sid - ((char *)prev64 + count_off));
+        prev->Groups[i].Attributes = prev64->Groups[i].Attributes;
     }
-    if (retlen) *retlen = ret_size;
+    memcpy( (char *)prev + sid_off, (char *)prev64 + count_off, ret_size - count_off );
+    ret_size = ret_size - count_off + sid_off;
+    memcpy( (char *)retlen, &ret_size, sizeof(ret_size) );
     return status;
 #else
     FIXME( "%p %d %p %lu %p %p\n", handle, reset, groups, len, prev, retlen );

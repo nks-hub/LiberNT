@@ -461,6 +461,7 @@ KMT_TESTFUNC Test_IoPciEnumeration;
 KMT_TESTFUNC Test_IoPciBridgeWindow;
 KMT_TESTFUNC Test_IoPciRom;
 KMT_TESTFUNC Test_IoStackLimits;
+KMT_TESTFUNC Test_IoBootDriverKey;
 KMT_TESTFUNC Test_IoVpb;
 KMT_TESTFUNC Test_SmcLib;
 KMT_TESTFUNC Test_SmcLibRemove;
@@ -707,6 +708,7 @@ const KMT_TEST TestList[] =
     { "IoPciMessageEnable",                 Test_IoPciMessageEnable },
     { "IoPagingIrpRetire",                  Test_IoPagingIrpRetire },
     { "IoStackLimits",                      Test_IoStackLimits },
+    { "IoBootDriverKey",                    Test_IoBootDriverKey },
     { "IoVpb",                              Test_IoVpb },
     { "SmcLib",                             Test_SmcLib },
     { "SmcLibRemove",                       Test_SmcLibRemove },

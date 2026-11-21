@@ -45,6 +45,7 @@ list(APPEND SOURCE
     ConsoleReadSharedInput.c
     ConsoleVirtualTerminal.c
     CopyContext.c
+    CopyFileExStop.c
     CpuSetsApi.c
     CreateAfterMissingName.c
     CreateDirectoryRoot.c

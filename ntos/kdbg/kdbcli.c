@@ -33,9 +33,6 @@ BOOLEAN ExpKdbgExtPoolFind(ULONG Argc, PCHAR Argv[]);
 
 /* GLOBALS ********************************************************************/
 
-/* The commands to run the first time the machine stops, if any were found */
-volatile PCHAR KdbInitFileBuffer = NULL;
-
 /* PRIVATE DATA ***************************************************************/
 
 #define KDB_COMMAND_MAX         1024
@@ -77,10 +74,6 @@ static BOOLEAN KdbpOutputAborted = FALSE;
 
 /* Whether the last command asked for the machine to run again */
 static BOOLEAN KdbpLeaveLoop = FALSE;
-
-/* Set once the init file has been run, so it only runs once */
-static BOOLEAN KdbpInitFileInterpreted = FALSE;
-static BOOLEAN KdbpInitFileRunning = FALSE;
 
 /* Whether a bug check was asked for at the prompt */
 
@@ -184,7 +177,7 @@ KdbpPager(
         KdbpLinesPrinted++;
 
         /* Only worth pausing while somebody is there to press a key */
-        if (!KdbActive || KdbpInitFileRunning || !KdbpPagerCanWaitForKey() ||
+        if (!KdbActive || !KdbpPagerCanWaitForKey() ||
             (KdbpLinesPrinted + 1 < Rows))
             continue;
 
@@ -371,6 +364,18 @@ KdbpGetAddressExpression(
     return TRUE;
 }
 
+/* A count may also be written the WinDbg way, as L followed by the number */
+BOOLEAN
+NTAPI
+KdbpGetCountExpression(
+    _In_ PCHAR Expression,
+    _Out_ PULONG_PTR Count)
+{
+    if (((Expression[0] == 'L') || (Expression[0] == 'l')) && (Expression[1] != ANSI_NULL))
+        return KdbpGetAddressExpression(Expression + 1, Count);
+    return KdbpGetAddressExpression(Expression, Count);
+}
+
 /*
  * Lets a component add a command of its own. The callbacks are tried after
  * every command the debugger knows itself.
@@ -480,7 +485,7 @@ KdbpStartStepping(
 
     if (!NT_SUCCESS(KdbpArchSetSingleStep(KdbCurrentTrapFrame, TRUE)))
     {
-        KdbPuts("Stepping is not supported on this processor\n");
+        KdbPuts("The next instruction cannot be stepped to\n");
         return TRUE;
     }
 
@@ -1059,18 +1064,19 @@ KdbpCmdRegisters(
     {
         ULONGLONG Value = 0;
         ULONG Size = 0;
+        ULONG Earlier;
 
-        /*
-         * The last few entries are the names that mean the same thing on
-         * every processor, and they say nothing new here.
-         */
-        if ((strcmp(KdbpRegisters[Index].Name, "pc") == 0) ||
-            (strcmp(KdbpRegisters[Index].Name, "sp") == 0) ||
-            (strcmp(KdbpRegisters[Index].Name, "fp") == 0) ||
-            (strcmp(KdbpRegisters[Index].Name, "ret") == 0))
+        /* A second name for a register already shown says nothing new */
+        for (Earlier = 0; Earlier < Index; Earlier++)
         {
-            continue;
+            if ((KdbpRegisters[Earlier].Offset == KdbpRegisters[Index].Offset) &&
+                (KdbpRegisters[Earlier].Size == KdbpRegisters[Index].Size))
+            {
+                break;
+            }
         }
+        if (Earlier != Index)
+            continue;
 
         if (!NT_SUCCESS(KdbpGetRegisterValue(Context,
                                              KdbpRegisters[Index].Name,
@@ -1321,7 +1327,8 @@ VOID
 KdbpPrintFrame(
     _In_ PKDB_KTRAP_FRAME Walk,
     _In_ PKDB_KTRAP_FRAME Context,
-    _In_ BOOLEAN Verbose)
+    _In_ BOOLEAN Verbose,
+    _In_ BOOLEAN ReturnAddress)
 {
     ULONG_PTR Pc = (ULONG_PTR)KeGetContextPc(Walk);
 
@@ -1337,7 +1344,10 @@ KdbpPrintFrame(
         KdbpPrint("%p ", (PVOID)Pc);
     }
 
-    KdbSymPrintAddress((PVOID)Pc, Context);
+    if (ReturnAddress)
+        KdbSymPrintReturnAddress((PVOID)Pc);
+    else
+        KdbSymPrintAddress((PVOID)Pc, Context);
     KdbPuts("\n");
 }
 
@@ -1352,11 +1362,11 @@ KdbpBackTrace(
     ULONG Depth = 0;
 
     Walk = *Context;
-    KdbpPrintFrame(&Walk, Context, Verbose);
+    KdbpPrintFrame(&Walk, Context, Verbose, FALSE);
 
     while ((Depth < Limit) && !KdbpIsOutputAborted() && KiUnwindFrame(&Walk, (Depth != 0)))
     {
-        KdbpPrintFrame(&Walk, Context, Verbose);
+        KdbpPrintFrame(&Walk, Context, Verbose, (Walk.ContextFlags & CONTEXT_UNWOUND_TO_CALL) != 0);
         Depth++;
     }
 }
@@ -1373,7 +1383,7 @@ KdbpThreadContext(
     if (Thread == KdbOriginalThread)
         return KdbCurrentTrapFrame;
 
-    for (Processor = 0; Processor < (ULONG)(UCHAR)KeNumberProcessors; Processor++)
+    for (Processor = 0; Processor < KeProcessorCount; Processor++)
     {
         PKPRCB Prcb = KiProcessorBlock[Processor];
 
@@ -1576,7 +1586,7 @@ KdbpDumpMemory(
     if ((Argc > 1) && !KdbpGetAddressExpression(Argv[1], &Address))
         return TRUE;
 
-    if ((Argc > 2) && !KdbpGetAddressExpression(Argv[2], &Count))
+    if ((Argc > 2) && !KdbpGetCountExpression(Argv[2], &Count))
         return TRUE;
 
     if (Count == 0)
@@ -1683,7 +1693,7 @@ KdbpCmdDumpText(
     if ((Argc > 1) && !KdbpGetAddressExpression(Argv[1], &Address))
         return TRUE;
 
-    if ((Argc > 2) && !KdbpGetAddressExpression(Argv[2], &Count))
+    if ((Argc > 2) && !KdbpGetCountExpression(Argv[2], &Count))
         return TRUE;
 
     if ((Count == 0) || (Count > KDB_MAXIMUM_DUMP_BYTES))
@@ -1810,7 +1820,7 @@ KdbpCmdDisassemble(
     if ((Argc > 1) && !KdbpGetAddressExpression(Argv[1], &Address))
         return TRUE;
 
-    if ((Argc > 2) && !KdbpGetAddressExpression(Argv[2], &Count))
+    if ((Argc > 2) && !KdbpGetCountExpression(Argv[2], &Count))
         return TRUE;
 
     if (Count > KDB_MAXIMUM_INSTRUCTIONS)
@@ -1908,6 +1918,8 @@ KdbpCmdSymbols(
     BOOLEAN Truncated = FALSE;
     PCSTR ModulePattern = "*";
     PCSTR SymbolPattern;
+    CHAR Module[64];
+    PCSTR Separator;
 
     if (Argc < 2)
     {
@@ -1921,6 +1933,23 @@ KdbpCmdSymbols(
     {
         ModulePattern = Argv[1];
         SymbolPattern = Argv[2];
+    }
+    else
+    {
+        /* module!pattern, the way WinDbg writes it */
+        Separator = strchr(Argv[1], '!');
+        if (Separator != NULL)
+        {
+            if ((ULONG_PTR)(Separator - Argv[1]) >= sizeof(Module))
+            {
+                KdbPuts("The module name is too long\n");
+                return TRUE;
+            }
+            RtlCopyMemory(Module, Argv[1], Separator - Argv[1]);
+            Module[Separator - Argv[1]] = ANSI_NULL;
+            ModulePattern = (Module[0] != ANSI_NULL) ? Module : "*";
+            SymbolPattern = Separator + 1;
+        }
     }
 
     KdbSymEnumerate(ModulePattern,
@@ -2344,14 +2373,14 @@ KdbpCmdProcessor(
     ULONG Argc,
     PCHAR Argv[])
 {
-    ULONG Current = KeGetCurrentProcessorNumber();
+    ULONG Current = KeGetCurrentPrcb()->Number;
     ULONG_PTR Number;
     ULONG Processor;
     PKPRCB Prcb;
 
     if (Argc < 2)
     {
-        for (Processor = 0; Processor < (ULONG)(UCHAR)KeNumberProcessors; Processor++)
+        for (Processor = 0; Processor < KeProcessorCount; Processor++)
         {
             Prcb = KiProcessorBlock[Processor];
             if (Prcb == NULL)
@@ -2379,7 +2408,7 @@ KdbpCmdProcessor(
         return TRUE;
     }
 
-    if ((Number >= (ULONG)(UCHAR)KeNumberProcessors) || (KiProcessorBlock[Number] == NULL))
+    if ((Number >= KeProcessorCount) || (KiProcessorBlock[Number] == NULL))
     {
         KdbpPrint("There is no processor %Iu\n", Number);
         return TRUE;
@@ -2699,11 +2728,14 @@ KdbpCmdBugCheck(
     UNREFERENCED_PARAMETER(Argc);
     UNREFERENCED_PARAMETER(Argv);
 
+    ASSERT(KdbActive);
+    ASSERT(!KdbBugCheckRequested);
+
     KdbpSetContinueType(kdHandleException);
     KdbpLeaveLoop = TRUE;
+    KdbBugCheckRequested = TRUE;
 
     KdbPuts("Crashing on request\n");
-    KeBugCheckEx(MANUALLY_INITIATED_CRASH, 0, 0, 0, 0);
 
     return TRUE;
 }
@@ -3571,8 +3603,7 @@ KdbpCliInterpretCommand(
         return FALSE;
     }
 
-    if (!KdbpInitFileRunning || (KdbpCommandDepth != 0))
-        KdbpTranscriptCommand(Command);
+    KdbpTranscriptCommand(Command);
 
     KdbpCommandDepth++;
     Leave = KdbpRunCommand(Command,
@@ -3583,55 +3614,17 @@ KdbpCliInterpretCommand(
     return Leave;
 }
 
-/*
- * Runs the commands that were found in the start-up file. They run once, the
- * first time the machine stops.
- */
-VOID
-KdbpCliInterpretInitFile(VOID)
-{
-    PCHAR Current = (PCHAR)KdbInitFileBuffer;
-
-    if ((Current == NULL) || KdbpInitFileInterpreted)
-        return;
-
-    KdbpInitFileInterpreted = TRUE;
-    KdbpInitFileRunning = TRUE;
-
-    while (*Current != ANSI_NULL)
-    {
-        PCHAR Line = Current;
-
-        while ((*Current != ANSI_NULL) && (*Current != '\n') && (*Current != '\r'))
-            Current++;
-
-        while ((*Current == '\n') || (*Current == '\r'))
-            *Current++ = ANSI_NULL;
-
-        /* A blank line or a remark says nothing */
-        if ((*Line == ANSI_NULL) || (*Line == '#'))
-            continue;
-
-        KdbpPagerReset();
-        KdbpPrint("kdb:> %s\n", Line);
-        if (KdbpCliInterpretCommand(Line))
-            break;
-    }
-
-    KdbpInitFileRunning = FALSE;
-}
-
 static
 VOID
 KdbpReportUnresponsiveProcessor(VOID)
 {
-    ULONG Current = KeGetCurrentProcessorNumber();
+    ULONG Current = KeGetCurrentPrcb()->Number;
     ULONG Processor;
 
     if (KiBugCheckData[0] != CLOCK_WATCHDOG_TIMEOUT)
         return;
 
-    for (Processor = 0; Processor < (ULONG)(UCHAR)KeNumberProcessors; Processor++)
+    for (Processor = 0; Processor < KeProcessorCount; Processor++)
     {
         PKPRCB Prcb = KiProcessorBlock[Processor];
 
@@ -3802,12 +3795,7 @@ KdbpCliMainLoop(
     if (KdbpRunDisplays())
         return;
 
-    /* Whatever the machine was told to do at the first stop is done here */
-    KdbpLeaveLoop = FALSE;
-    KdbpCliInterpretInitFile();
     KdbpPersistSessionLog();
-    if (KdbpLeaveLoop)
-        return;
 
     for (;;)
     {
@@ -3853,86 +3841,6 @@ KdbpCliInit(VOID)
 }
 
 /*
- * Reads the start-up file, if there is one. It is read once the system root
- * is mounted, because that is the first moment there is a file to read.
- */
-static
-VOID
-KdbpReadInitFile(VOID)
-{
-    UNICODE_STRING FileName = RTL_CONSTANT_STRING(
-        L"\\SystemRoot\\system32\\drivers\\etc\\kdbinit");
-    OBJECT_ATTRIBUTES ObjectAttributes;
-    IO_STATUS_BLOCK IoStatusBlock;
-    FILE_STANDARD_INFORMATION Information;
-    HANDLE Handle = NULL;
-    PCHAR Buffer;
-    ULONG Size;
-    NTSTATUS Status;
-
-    if (KdbInitFileBuffer != NULL)
-        return;
-
-    InitializeObjectAttributes(&ObjectAttributes,
-                               &FileName,
-                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
-                               NULL,
-                               NULL);
-
-    Status = ZwOpenFile(&Handle,
-                        GENERIC_READ | SYNCHRONIZE,
-                        &ObjectAttributes,
-                        &IoStatusBlock,
-                        FILE_SHARE_READ,
-                        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE);
-    if (!NT_SUCCESS(Status))
-        return;
-
-    Status = ZwQueryInformationFile(Handle,
-                                    &IoStatusBlock,
-                                    &Information,
-                                    sizeof(Information),
-                                    FileStandardInformation);
-    if (!NT_SUCCESS(Status) ||
-        (Information.EndOfFile.HighPart != 0) ||
-        (Information.EndOfFile.LowPart == 0) ||
-        (Information.EndOfFile.LowPart > 0x10000))
-    {
-        ZwClose(Handle);
-        return;
-    }
-
-    Size = Information.EndOfFile.LowPart;
-
-    Buffer = ExAllocatePoolWithTag(NonPagedPool, Size + 1, 'IBdK');
-    if (Buffer == NULL)
-    {
-        ZwClose(Handle);
-        return;
-    }
-
-    Status = ZwReadFile(Handle,
-                        NULL,
-                        NULL,
-                        NULL,
-                        &IoStatusBlock,
-                        Buffer,
-                        Size,
-                        NULL,
-                        NULL);
-    ZwClose(Handle);
-
-    if (!NT_SUCCESS(Status))
-    {
-        ExFreePoolWithTag(Buffer, 'IBdK');
-        return;
-    }
-
-    Buffer[IoStatusBlock.Information] = ANSI_NULL;
-    KdbInitFileBuffer = Buffer;
-}
-
-/*
  * The interactive debugger as one of the things the debug output can be sent
  * to. It is not a way out for output of its own, so it never joins the list
  * of providers; it only needs to know how far the boot has got.
@@ -3955,9 +3863,6 @@ KdbInitialize(
 
         return Status;
     }
-
-    if (BootPhase == KDP_BOOT_PHASE_SYSTEM_ROOT)
-        KdbpReadInitFile();
 
     return STATUS_SUCCESS;
 }

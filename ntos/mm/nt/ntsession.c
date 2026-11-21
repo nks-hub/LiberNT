@@ -554,6 +554,15 @@ MmGetSessionById(
 NTSTATUS
 NTAPI
 MmSetProcessSession(
+    _In_ PEPROCESS Process,
+    _In_ ULONG SessionId)
+{
+    return MmGetSessionId(Process) == SessionId ? STATUS_SUCCESS : STATUS_ACCESS_DENIED;
+}
+
+NTSTATUS
+NTAPI
+MmMoveProcessToSession(
     _Inout_ PEPROCESS Process,
     _In_ ULONG SessionId)
 {
@@ -561,6 +570,8 @@ MmSetProcessSession(
     PLIST_ENTRY Entry;
     BOOLEAN Free = FALSE;
     NTSTATUS Status = STATUS_SUCCESS;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
 
     MiSessionLockAcquire();
     Current = MiSessionOfProcess(Process);
@@ -585,6 +596,7 @@ MmSetProcessSession(
             if (Current != NULL)
                 Free = MiSessionLeaveLocked(Process);
             MiSessionJoinLocked(Target, Process);
+            ASSERT(MiSessionOfProcess(Process) == Target && Target->SessionId == SessionId);
         }
     }
     KeReleaseGuardedMutex(&MiSessionLock);

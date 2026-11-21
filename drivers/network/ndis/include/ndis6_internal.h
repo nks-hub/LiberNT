@@ -1076,8 +1076,9 @@ typedef struct _NDIS6_PROTOCOL_BINDING
     PNDIS6_PROTOCOL_DRIVER_BLOCK            DriverBlock;
     PLOGICAL_ADAPTER                        Adapter;
     NDIS_HANDLE                             ProtocolBindingContext;
+    BOOLEAN                                 IsLegacyMiniport;
     /* Links this binding into the owning adapter's Ext->ProtocolBindingList
-     * (inserted by NdisOpenAdapterEx, removed by NdisCloseAdapterEx). */
+     * (or the legacy adapter's separate binding list). */
     LIST_ENTRY                              AdapterLink;
     /* D4: list of in-flight async OID requests issued by this protocol
      * binding. Each pending NdisOidRequest adds an entry; the matching
@@ -1090,6 +1091,12 @@ typedef struct _NDIS6_PROTOCOL_BINDING
 } NDIS6_PROTOCOL_BINDING, *PNDIS6_PROTOCOL_BINDING;
 
 #define NDIS6_PROTOCOL_BINDING_SIGNATURE 'bPNn'
+
+VOID Ndis6LegacySendNetBufferLists(PNDIS6_PROTOCOL_BINDING Binding,
+                                   PNET_BUFFER_LIST NetBufferLists,
+                                   NDIS_PORT_NUMBER PortNumber,
+                                   ULONG SendFlags,
+                                   ULONG SendCompleteFlags);
 
 #define NDIS6_PROTOCOL_STATE_PAUSED     0
 #define NDIS6_PROTOCOL_STATE_RESTARTING 1

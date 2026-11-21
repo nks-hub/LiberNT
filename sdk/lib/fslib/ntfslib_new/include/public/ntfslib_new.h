@@ -84,6 +84,7 @@ enum FileRecordNumbers
 #define FILE_PERM_NOT_INDXED 0x2000
 #define FILE_PERM_ENCRYPTED  0x4000
 #define FILE_PERM_RECALL_ON_OPEN 0x00040000
+#define FILE_PERM_EA             0x00040000
 
 typedef struct
 {
@@ -624,9 +625,42 @@ NtfsFileRecordSetFileDataSize(
     _In_opt_ PWSTR StreamName,
     _In_ ULONGLONG NewSize);
 
+NTSTATUS
+NtfsFileRecordSetWriteSize(_In_ PNtfsFileRecord File, _In_ AttributeType Type,
+                           _In_opt_ PWSTR Name, _In_ ULONGLONG EndOffset, _In_ ULONGLONG AllocationFloor);
+
 ULONGLONG
 NtfsFileRecordGetAllocationSignature(
     _In_ NtfsFileRecord *FileRecord);
+
+struct DataRun;
+
+struct DataRun *
+NtfsFileRecordSnapshotRuns(_In_ NtfsFileRecord *FileRecord, _In_ PAttribute Attribute);
+
+typedef NTSTATUS NTFS_WRITE_VOLUME_ROUTINE(_In_opt_ void *Context, _In_ ULONG BytesPerSector,
+                                           _In_ ULONGLONG Offset, _In_ ULONG Length, _Inout_ PUCHAR Buffer);
+
+typedef NTSTATUS NTFS_TRANSFER_RESIDENT_WRITE(_In_ void *Context, _In_ struct DataRun *Runs,
+                                              _In_opt_ PUCHAR Prefix, _In_ ULONG PrefixLength);
+
+NTSTATUS
+NtfsFileRecordWriteResident(_In_ NtfsFileRecord *File, _In_ PUCHAR Buffer, _In_ ULONG Length, _In_ ULONGLONG Offset,
+                            _In_ NTFS_TRANSFER_RESIDENT_WRITE *Transfer, _In_ void *Context, _Out_ PBOOLEAN Handled);
+
+NTSTATUS
+NtfsWriteReservedRuns(_In_ NtfsVolume *Volume, _In_ struct DataRun *Runs,
+                      _In_opt_ PUCHAR Prefix, _In_ ULONG PrefixLength, _In_ ULONGLONG Offset,
+                      _In_reads_bytes_(Length) PUCHAR Buffer, _In_ ULONG Length, _In_ NTFS_WRITE_VOLUME_ROUTINE *Write);
+
+NTSTATUS
+NtfsWriteAndFreeRunSnapshot(_In_ NtfsVolume *Volume, _In_ struct DataRun *Runs, _In_ ULONGLONG Valid,
+                            _In_ ULONGLONG Offset, _In_reads_bytes_(Length) PUCHAR Data, _In_ ULONG Length,
+                            _In_opt_ NTFS_WRITE_VOLUME_ROUTINE *Write);
+
+NTSTATUS
+NtfsGetAttributeRecordRange(_In_ PNtfsFileRecord File, _In_ PAttribute Attribute,
+                            _Out_ PULONGLONG Offset, _Out_ PULONG Length);
 
 NTSTATUS
 NtfsFileRecordGetDiskRange(
@@ -782,6 +816,9 @@ NtfsMasterFileTableIsDescendantDirectory(
     _In_ ULONGLONG AncestorReference,
     _Out_ PBOOLEAN Descendant);
 
+BOOLEAN
+NtfsGetAllocationRecordOffset(_In_ PNtfsMasterFileTable Mft, _Out_ PULONGLONG Offset, _Out_ PULONG Size);
+
 NTSTATUS
 NtfsMasterFileTableGetFileRecordFromQuery(
     _In_ PNtfsMasterFileTable Mft,
@@ -846,6 +883,21 @@ NtfsMasterFileTableCreateFile(
     _Out_ PNtfsFileRecord* File);
 
 /*
+ * As NtfsMasterFileTableCreateFile, with the new file's security descriptor
+ * applied while its record is built instead of inherited from the parent.
+ */
+NTSTATUS
+NtfsMasterFileTableCreateFileEx(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_reads_(QueryLength) PWCHAR Query,
+    _In_ ULONG QueryLength,
+    _In_ BOOLEAN IsDirectory,
+    _In_ ULONG FileAttributes,
+    _In_opt_ const UCHAR* SecurityDescriptor,
+    _In_ ULONG SecurityDescriptorLength,
+    _Out_ PNtfsFileRecord* File);
+
+/*
  * Creates one entry in a directory whose record the caller already holds.
  * Name is one counted path component. NameKnownMissing may be TRUE only when
  * the caller has just checked the same parent while serializing namespace
@@ -862,6 +914,25 @@ NtfsMasterFileTableCreateFileInDirectory(
     _In_ BOOLEAN NameKnownMissing,
     _In_opt_ PCWSTR ShortName,
     _In_ ULONG ShortNameLength,
+    _Out_ PNtfsFileRecord* File);
+
+/*
+ * As NtfsMasterFileTableCreateFileInDirectory, with the new file's security
+ * descriptor applied while its record is built.
+ */
+NTSTATUS
+NtfsMasterFileTableCreateFileInDirectoryEx(
+    _In_ PNtfsMasterFileTable Mft,
+    _In_ PNtfsFileRecord Parent,
+    _In_reads_(NameLength) PWCHAR Name,
+    _In_ ULONG NameLength,
+    _In_ BOOLEAN IsDirectory,
+    _In_ ULONG FileAttributes,
+    _In_ BOOLEAN NameKnownMissing,
+    _In_opt_ PCWSTR ShortName,
+    _In_ ULONG ShortNameLength,
+    _In_opt_ const UCHAR* SecurityDescriptor,
+    _In_ ULONG SecurityDescriptorLength,
     _Out_ PNtfsFileRecord* File);
 
 /*

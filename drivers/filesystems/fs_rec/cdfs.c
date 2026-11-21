@@ -1,115 +1,86 @@
 /*
- * PROJECT:     ReactOS File System Recognizer
- * LICENSE:     GPL-2.0 (https://spdx.org/licenses/GPL-2.0)
- * PURPOSE:     CDFS Recognizer
- * COPYRIGHT:   Copyright 2002 Eric Kohl
- *              Copyright 2007 Alex Ionescu <alex.ionescu@reactos.org>
- *              Copyright 2017 Colin Finck <colin@reactos.org>
+ * PROJECT:     LiberNT File System Recognizer
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     ISO 9660 and High Sierra volume recognizer
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES *****************************************************************/
 
 #include "fs_rec.h"
 
 #define NDEBUG
 #include <debug.h>
 
-#include "cdfs.h"
+#define CDFS_LOGICAL_SECTOR_SIZE 2048
+#define CDFS_FIRST_DESCRIPTOR_SECTOR 16
+#define CDFS_ISO_ID_OFFSET 1
+#define CDFS_ISO_ID "CD001"
+#define CDFS_HSG_ID_OFFSET 9
+#define CDFS_HSG_ID "CDROM"
+#define CDFS_ID_LENGTH 5
 
-/* FUNCTIONS ****************************************************************/
+C_ASSERT(sizeof(CDFS_ISO_ID) - 1 == CDFS_ID_LENGTH);
+C_ASSERT(sizeof(CDFS_HSG_ID) - 1 == CDFS_ID_LENGTH);
+C_ASSERT(CDFS_HSG_ID_OFFSET + CDFS_ID_LENGTH <= CDFS_LOGICAL_SECTOR_SIZE);
 
+static
 BOOLEAN
-NTAPI
-FsRecIsCdfsVolume(IN PDEVICE_OBJECT DeviceObject,
-                  IN ULONG SectorSize)
+FsRecIsCdfsVolume(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ ULONG SectorSize)
 {
-    BOOLEAN bReturnValue = FALSE;
+    PUCHAR Descriptor = NULL;
     LARGE_INTEGER Offset;
-    PVD_HEADER pVdHeader = NULL;
-    PAGED_CODE();
+    ULONG Length;
+    BOOLEAN Recognized = FALSE;
 
-    // Read the Primary Volume Descriptor.
-    Offset.QuadPart = VD_HEADER_OFFSET;
-    if (!FsRecReadBlock(DeviceObject, &Offset, sizeof(VD_HEADER), SectorSize, (PVOID*)&pVdHeader, NULL))
+    PAGED_CODE();
+    ASSERT(SectorSize != 0);
+
+    Offset.QuadPart = (LONGLONG)CDFS_FIRST_DESCRIPTOR_SECTOR * CDFS_LOGICAL_SECTOR_SIZE;
+    if (Offset.QuadPart % SectorSize != 0)
+        return FALSE;
+
+    Length = max(SectorSize, CDFS_LOGICAL_SECTOR_SIZE);
+    Length = ROUND_UP(Length, SectorSize);
+
+    if (FsRecReadBlock(DeviceObject, &Offset, Length, SectorSize, (PVOID *)&Descriptor, NULL))
     {
-        // We cannot read this block, so no reason to let the CDFS driver try it.
-        goto Cleanup;
+        Recognized = RtlEqualMemory(Descriptor + CDFS_ISO_ID_OFFSET, CDFS_ISO_ID, CDFS_ID_LENGTH) ||
+                     RtlEqualMemory(Descriptor + CDFS_HSG_ID_OFFSET, CDFS_HSG_ID, CDFS_ID_LENGTH);
     }
 
-    // Verify the fields.
-    if (pVdHeader->Type != VD_TYPE_PRIMARY)
-        goto Cleanup;
+    if (Descriptor != NULL)
+        ExFreePool(Descriptor);
 
-    DPRINT("pVdHeader->Type verified!\n");
-
-    if (RtlCompareMemory(pVdHeader->Identifier, VD_IDENTIFIER, VD_IDENTIFIER_LENGTH) != VD_IDENTIFIER_LENGTH)
-        goto Cleanup;
-
-    DPRINT("pVdHeader->Identifier verified!\n");
-
-    if (pVdHeader->Version != VD_VERSION)
-        goto Cleanup;
-
-    DPRINT("pVdHeader->Version verified! This is a CDFS volume!\n");
-
-    bReturnValue = TRUE;
-
-Cleanup:
-    if (pVdHeader)
-        ExFreePool(pVdHeader);
-
-    return bReturnValue;
+    return Recognized;
 }
 
 NTSTATUS
 NTAPI
-FsRecCdfsFsControl(IN PDEVICE_OBJECT DeviceObject,
-                   IN PIRP Irp)
+FsRecCdfsFsControl(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PIRP Irp)
 {
-    PDEVICE_OBJECT MountDevice;
-    ULONG SectorSize;
     PIO_STACK_LOCATION Stack;
-    NTSTATUS Status;
+    ULONG SectorSize;
+
     PAGED_CODE();
 
-    /* Get the I/O Stack and check the function type */
     Stack = IoGetCurrentIrpStackLocation(Irp);
     switch (Stack->MinorFunction)
     {
         case IRP_MN_MOUNT_VOLUME:
-
-            /* Assume failure */
-            Status = STATUS_UNRECOGNIZED_VOLUME;
-
-            /* Get the device object and request the sector size */
-            MountDevice = Stack->Parameters.MountVolume.DeviceObject;
-            if (FsRecGetDeviceSectorSize(MountDevice, &SectorSize))
+            if (FsRecGetDeviceSectorSize(Stack->Parameters.MountVolume.DeviceObject, &SectorSize) &&
+                FsRecIsCdfsVolume(Stack->Parameters.MountVolume.DeviceObject, SectorSize))
             {
-                /* Check if it's an actual CDFS (ISO-9660) volume */
-                if (FsRecIsCdfsVolume(MountDevice, SectorSize))
-                {
-                    /* It is! */
-                    Status = STATUS_FS_DRIVER_REQUIRED;
-                }
+                return STATUS_FS_DRIVER_REQUIRED;
             }
-
-            break;
+            return STATUS_UNRECOGNIZED_VOLUME;
 
         case IRP_MN_LOAD_FILE_SYSTEM:
-
-            /* Load the file system */
-            Status = FsRecLoadFileSystem(DeviceObject,
-                                         L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\Cdfs");
-            break;
-
-        default:
-
-            /* Invalid request */
-            Status = STATUS_INVALID_DEVICE_REQUEST;
+            return FsRecLoadFileSystem(DeviceObject,
+                                       L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\Cdfs");
     }
 
-    /* Return Status */
-    return Status;
+    return STATUS_INVALID_DEVICE_REQUEST;
 }
-
-/* EOF */

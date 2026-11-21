@@ -51,6 +51,42 @@ NtfsDiskEndDirectWriteKm(_In_ PDEVICE_OBJECT DeviceObject,
                          _In_ ULONGLONG Offset,
                          _In_ ULONG Length);
 
+/* After a transfer that bypassed the block cache: drop clean copies of the bytes it replaced. */
+VOID
+NtfsDiskDropCleanRangeKm(_In_ PDEVICE_OBJECT DeviceObject,
+                         _In_ ULONGLONG Offset,
+                         _In_ ULONG Length);
+
+NTFS_WRITE_VOLUME_ROUTINE NtfsWriteDiskRangeKm;
+
+NTSTATUS
+NtfsDiskFlushMediaKm(_In_ PDEVICE_OBJECT DeviceObject);
+
+BOOLEAN
+NtfsClustersCoverCacheBlocksKm(_In_ ULONGLONG ClusterBytes);
+
+typedef struct _NTFS_BLOCK_READ NTFS_BLOCK_READ;
+
+NTFS_BLOCK_READ *
+NtfsPrepareBlockReadKm(_In_ PDEVICE_OBJECT Device, _In_ ULONGLONG Offset, _In_ ULONG Length);
+
+VOID
+NtfsFetchBlockKm(_Inout_ NTFS_BLOCK_READ *Read);
+
+ULONG
+NtfsCountUncachedBlocksKm(_In_ PDEVICE_OBJECT Device,
+                          _In_ ULONGLONG Offset,
+                          _In_ ULONGLONG Length,
+                          _In_ ULONG Limit);
+
+/* Reads up to Limit uncached blocks of the range into the block cache; returns how many it read */
+ULONG
+NtfsReadAheadBlocksKm(_In_ PDEVICE_OBJECT Device,
+                      _In_ ULONGLONG Offset,
+                      _In_ ULONGLONG Length,
+                      _In_ ULONG Limit);
+
+
 NTSTATUS
 NtfsDiskReadKm(_In_ PDEVICE_OBJECT DeviceObject,
                _In_ ULONG SectorBytes,

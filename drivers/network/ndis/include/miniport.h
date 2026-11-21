@@ -33,7 +33,7 @@ typedef struct _NDIS_M_DRIVER_BLOCK {
 /* There must be some defined struct to do this... */
 typedef struct _NDIS_M_DEVICE_BLOCK {
     PDEVICE_OBJECT DeviceObject;
-    PNDIS_STRING   SymbolicName;
+    NDIS_STRING    SymbolicName;
     PDRIVER_DISPATCH MajorFunction[IRP_MJ_MAXIMUM_FUNCTION+1];
 } NDIS_M_DEVICE_BLOCK, *PNDIS_M_DEVICE_BLOCK;
 
@@ -104,6 +104,25 @@ typedef struct _LOGICAL_ADAPTER
      * NDIS 6 miniport driver. */
     BOOLEAN                     IsNdis6;                /* TRUE if NDIS 6 miniport */
     PVOID                       Ndis6Context;           /* PNDIS6_ADAPTER_EXT */
+
+    LIST_ENTRY                  Ndis6LegacyBindingList;
+    KSPIN_LOCK                  Ndis6LegacyBindingLock;
+    EX_RUNDOWN_REF              Ndis6LegacyLifecycleRundown;
+    volatile LONG               Ndis6LegacyBindingsClosing;
+
+    LIST_ENTRY                  Ndis6LegacyTxPendingList;
+    KSPIN_LOCK                  Ndis6LegacyTxPendingLock;
+    volatile LONG               Ndis6LegacyTxSerializedBusy;
+    LIST_ENTRY                  Ndis6LegacyTxDeferredList;
+    BOOLEAN                     Ndis6LegacyTxStalled;
+    ULONG                       Ndis6LegacyTxResumeCount;
+    NDIS_HANDLE                 Ndis6LegacyTxPacketPool;
+    NDIS_HANDLE                 Ndis6LegacyRxNblPool;
+
+    ULONG                       Ndis6LegacyMtu;
+    ULONGLONG                   Ndis6LegacyLinkSpeed;
+    NDIS_MEDIA_STATE            Ndis6LegacyMediaState;
+
     PVOID                       WdfReserved[4];         /* NdisGetDeviceReservedExtension area
                                                            (NDIS-WDF miniports stash their
                                                            framework context here) */
@@ -111,6 +130,7 @@ typedef struct _LOGICAL_ADAPTER
     EX_RUNDOWN_REF              HangTimerRundown;       /* Keeps adapter alive through queued DPCs */
     BOOLEAN                     HangTimerInitialized;
     BOOLEAN                     HangTimerStopping;
+    EX_RUNDOWN_REF              AddressingResetRundown; /* Keeps the miniport from halting under a queued addressing reset */
 
     /* Cached lookahead buffer for the legacy (NDIS_STATUS_RESOURCES) receive
      * path. Allocated on first use and reused for the life of the adapter so
@@ -118,6 +138,10 @@ typedef struct _LOGICAL_ADAPTER
      * holding NdisMiniportBlock.Lock. Guarded by that same lock. */
     PVOID                       LookaheadCache;
     UINT                        LookaheadCacheSize;
+
+    /* One slot for every processor: NDIS_MINIPORT_BLOCK only has room for the first MAXIMUM_PROCESSORS */
+    ULONG                       IndicatedPacketSlots;
+    PNDIS_PACKET                IndicatedPackets[ANYSIZE_ARRAY];
 } LOGICAL_ADAPTER, *PLOGICAL_ADAPTER;
 
 #define GET_LOGICAL_ADAPTER(Handle)((PLOGICAL_ADAPTER)Handle)
@@ -126,6 +150,20 @@ extern LIST_ENTRY MiniportListHead;
 extern KSPIN_LOCK MiniportListLock;
 extern LIST_ENTRY AdapterListHead;
 extern KSPIN_LOCK AdapterListLock;
+
+VOID Ndis6BindAllProtocolsToAdapter(PLOGICAL_ADAPTER Adapter);
+VOID Ndis6UnbindAllProtocolsFromAdapter(PLOGICAL_ADAPTER Adapter);
+
+BOOLEAN Ndis6LegacyDatapathStart(PLOGICAL_ADAPTER Adapter);
+VOID Ndis6LegacyDatapathStop(PLOGICAL_ADAPTER Adapter);
+BOOLEAN Ndis6LegacyTxComplete(PLOGICAL_ADAPTER Adapter, PNDIS_PACKET Packet, NDIS_STATUS Status);
+VOID Ndis6LegacyTxResume(PLOGICAL_ADAPTER Adapter);
+VOID Ndis6LegacyRxIndicatePackets(PLOGICAL_ADAPTER Adapter, PPNDIS_PACKET Packets, UINT Count);
+VOID Ndis6LegacyIndicateMediaStatus(PLOGICAL_ADAPTER Adapter, NDIS_STATUS GeneralStatus);
+VOID Ndis6LegacyRxIndicateLookahead(PLOGICAL_ADAPTER Adapter,
+                                   PVOID Header, UINT HeaderLength,
+                                   PVOID Lookahead, UINT LookaheadLength,
+                                   UINT PacketLength);
 
 
 #if DBG
@@ -153,6 +191,14 @@ MiniAdapterHasAddress(
 PLOGICAL_ADAPTER
 MiniLocateDevice(
     PNDIS_STRING AdapterName);
+
+NDIS_STATUS
+MiniSetInformation(
+    PLOGICAL_ADAPTER    Adapter,
+    NDIS_OID            Oid,
+    ULONG               Size,
+    PVOID               Buffer,
+    PULONG              BytesRead);
 
 NDIS_STATUS
 MiniQueryInformation(

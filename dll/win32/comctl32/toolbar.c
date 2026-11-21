@@ -192,7 +192,6 @@ typedef struct
     IDropTarget *pDropTarget;
     INT      nDropItem;
     BOOL     bDropRegistered;
-    INT      iDropDownGap;
 #endif
 } TOOLBAR_INFO, *PTOOLBAR_INFO;
 
@@ -1939,10 +1938,6 @@ TOOLBAR_LayoutToolbar(TOOLBAR_INFO *infoPtr)
                   TOOLBAR_IsValidBitmapIndex(infoPtr, infoPtr->buttons[i].iBitmap),
                   validImageList);
               cx = sizeButton.cx;
-#ifdef __REACTOS__
-              if (sz.cx && button_has_ddarrow(infoPtr, btnPtr))
-                  cx += infoPtr->iDropDownGap;
-#endif
             }
             else
 	      cx = infoPtr->nButtonWidth;
@@ -3741,8 +3736,7 @@ TOOLBAR_GetButton (const TOOLBAR_INFO *infoPtr, INT nIndex, TBBUTTON *lpTbb)
     lpTbb->idCommand = btnPtr->idCommand;
     lpTbb->fsState   = btnPtr->fsState;
     lpTbb->fsStyle   = btnPtr->fsStyle;
-    lpTbb->bReserved[0] = 0;
-    lpTbb->bReserved[1] = 0;
+    memset(lpTbb->bReserved, 0, sizeof(lpTbb->bReserved));
     lpTbb->dwData    = btnPtr->dwData;
     lpTbb->iString   = btnPtr->iString;
 
@@ -5719,16 +5713,14 @@ TOOLBAR_GetIdealSize (const TOOLBAR_INFO *infoPtr, WPARAM wParam, LPARAM lParam)
 static LRESULT TOOLBAR_Unkwn464(HWND hwnd, WPARAM wParam, LPARAM lParam)
 {
 #ifdef __REACTOS__
-    TOOLBAR_INFO *infoPtr = (TOOLBAR_INFO *)GetWindowLongPtrW(hwnd, 0);
-
-    infoPtr->iDropDownGap = (INT)wParam;
-    TOOLBAR_CalcToolbar(infoPtr);
+    /* Windows 11 leaves the toolbar as it is and returns 0 */
+    return 0;
 #else
     FIXME("hwnd %p, wParam %Ix, lParam %Ix\n", hwnd, wParam, lParam);
-#endif
 
     InvalidateRect(hwnd, NULL, TRUE);
     return 1;
+#endif
 }
 
 

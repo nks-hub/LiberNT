@@ -182,6 +182,7 @@ static volatile LONG KiArm64ClockOwnerState = KI_ARM64_CLOCK_STATE(0, KI_ARM64_C
 static volatile LONG KiArm64DynamicTickEnabled;
 static ULONGLONG KiArm64ClockOwnerCounter;
 static ULONGLONG KiArm64ClockOwnerRemainder;
+static ULONGLONG KiArm64ClockStopCounter;
 static KDPC KiArm64ClockDeadlineDpc[MAXIMUM_PROCESSORS];
 
 /* Include nested and secondary dispatches in interrupt-object rundown. */
@@ -619,6 +620,57 @@ KiArm64ProfilingActive(VOID)
     return ReadPointerNoFence((PVOID const volatile *)&KiProfileSourceListHead.Flink) != &KiProfileSourceListHead;
 }
 
+VOID
+NTAPI
+KiArm64StopClockAccounting(VOID)
+{
+    ASSERT(KeGetCurrentIrql() == HIGH_LEVEL);
+    ASSERT((ARM64_READ_SYSREG(DAIF) & ARM64_PSTATE_IRQ_MASK) != 0);
+
+    KiArm64ClockStopCounter = KiArm64ReadCounter();
+}
+
+/* The counter ran on while the machine was stopped: move every baseline past the stop so that no processor charges it as clock time */
+VOID
+NTAPI
+KiArm64RestartClockAccounting(
+    _In_ KAFFINITY Processors)
+{
+    ULONGLONG Stopped, Counter;
+    ULONG Cpu, Owner;
+
+    ASSERT(KeGetCurrentIrql() == HIGH_LEVEL);
+    ASSERT((ARM64_READ_SYSREG(DAIF) & ARM64_PSTATE_IRQ_MASK) != 0);
+    ASSERT(KiArm64ClockStopCounter != 0);
+    ASSERT(Processors & KeGetCurrentPrcb()->SetMember);
+
+    Counter = KiArm64ReadCounter();
+    ASSERT(Counter >= KiArm64ClockStopCounter);
+    Stopped = Counter - KiArm64ClockStopCounter;
+    KiArm64ClockStopCounter = 0;
+
+    for (Cpu = 0; Cpu < (ULONG)KeNumberProcessors; Cpu++)
+    {
+        PKI_ARM64_TIMER_STATE TimerState = &KiArm64TimerState[Cpu];
+
+        if ((KiProcessorBlock[Cpu] == NULL) || !(Processors & KiProcessorBlock[Cpu]->SetMember))
+            continue;
+        ASSERT(TimerState->LastCounter + Stopped <= Counter);
+        TimerState->LastCounter += Stopped;
+        if (TimerState->PeriodicDeadline != 0)
+            TimerState->PeriodicDeadline += Stopped;
+    }
+
+    Owner = KI_ARM64_CLOCK_OWNER(ReadAcquire(&KiArm64ClockOwnerState));
+    if ((KiArm64ClockOwnerCounter != 0) && (KiProcessorBlock[Owner] != NULL) &&
+        (Processors & KiProcessorBlock[Owner]->SetMember))
+    {
+        ASSERT(KiArm64ClockOwnerCounter + Stopped <= Counter);
+        KiArm64ClockOwnerCounter += Stopped;
+    }
+    KeMemoryBarrier();
+}
+
 static
 ULONGLONG
 KiArm64ClockDeadlineCompare(
@@ -1002,7 +1054,7 @@ KiArm64ClockArmForIdle(
     {
         ASSERT(State == KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_RUNNING));
         ASSERT(TimerState->Owner);
-        if ((KeActiveProcessors & ~(KiIdleSummary | Prcb->SetMember)) != 0)
+        if ((KeActiveProcessors.Bitmap[0] & ~(KiIdleSummary[0] | Prcb->SetMember)) != 0)
             return;
         Previous = InterlockedCompareExchange(&KiArm64ClockOwnerState,
                                               KI_ARM64_CLOCK_STATE(Cpu, KI_ARM64_CLOCK_ARMING),

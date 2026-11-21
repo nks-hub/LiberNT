@@ -271,6 +271,7 @@ struct _BTreeKey
 };
 
 /* Private macros */
+#define NTFS_METADATA_BLOCK_SIZE 4096u
 #define BytesPerCluster(Volume) (Volume->BytesPerSector * Volume->SectorsPerCluster)
 
 #define FileRef(Key) ((Key)->Entry->Data.Directory.IndexedFile)
@@ -304,7 +305,7 @@ FileRecordNumber < ((DiskVolume->SectorsPerCluster * DiskVolume->BytesPerSector)
 
 #define MFTDiskOffset (MFTLCN * BytesPerCluster(DiskVolume))
 #define MFTMirrDiskOffset (MFTMirrLCN * BytesPerCluster(DiskVolume))
-#define FileRecordOffset(FileRecordNumber) (FileRecordNumber * FileRecordSize)
+#define FileRecordOffset(FileRecordNumber) ((ULONGLONG)(FileRecordNumber) * FileRecordSize)
 
 #define GetOffset(LCN) (LCN * BytesPerCluster(DiskVolume))
 #define GetRunSize(Run) (Run->Length * BytesPerCluster(DiskVolume))
@@ -809,9 +810,8 @@ public:
      * @return
      * STATUS_SUCCESS if successful.
      */
-    NTSTATUS WriteVolume(_In_    ULONGLONG Offset,
-                         _In_    ULONG Length,
-                         _Inout_ PUCHAR Buffer);
+    NTSTATUS WriteVolume(_In_ ULONGLONG Offset, _In_ ULONG Length, _Inout_ PUCHAR Buffer,
+                         _In_ NTFS_WRITE_VOLUME_ROUTINE *Write = NtfsWriteVolumeContext);
 
     NTSTATUS FlushVolume();
 
@@ -912,6 +912,45 @@ FileRecordHeaderHasNumber(_In_ const FileRecordHeader* Header)
 {
     return Header->Header.UpdateSequenceOffset >= FIELD_OFFSET(FileRecordHeader, MFTRecordNumber) + sizeof(ULONG);
 }
+
+/* NTFS keeps the packed EA size in the low and the unpacked surplus in the high half of the $FILE_NAME EA field */
+static inline ULONG
+NtfsMakeFileNameEaInformation(_In_ USHORT PackedEaSize,
+                              _In_ ULONG UnpackedEaSize)
+{
+    ULONG Surplus;
+
+    if (PackedEaSize == 0)
+        return 0;
+    Surplus = UnpackedEaSize > PackedEaSize ? UnpackedEaSize - PackedEaSize : 0;
+    if (Surplus > 0xFFFF)
+        Surplus = 0xFFFF;
+    return (ULONG)PackedEaSize | (Surplus << 16);
+}
+
+static inline void
+NtfsSetFileNameEaInformation(_Inout_ PFileNameEx FileName,
+                             _In_ ULONG EaInformation)
+{
+    FileName->Extended.EAInfo.PackedEASize = (USHORT)(EaInformation & 0xFFFF);
+    FileName->Extended.EAInfo.Padding = (USHORT)(EaInformation >> 16);
+    if (FileName->Extended.EAInfo.PackedEASize != 0)
+        FileName->Flags |= FILE_PERM_EA;
+    else
+        FileName->Flags &= ~(UINT32)FILE_PERM_EA;
+}
+
+static inline ULONG
+NtfsFileNameEaSize(_In_ const FileNameEx *FileName)
+{
+    if (FileName->Extended.EAInfo.PackedEASize == 0)
+        return 0;
+    return (ULONG)FileName->Extended.EAInfo.PackedEASize + FileName->Extended.EAInfo.Padding;
+}
+
+BOOLEAN
+ValidateSecurityDescriptor(_In_ const UCHAR* Descriptor,
+                           _In_ ULONG DescriptorLength);
 
 typedef class FileRecord
 {
@@ -1049,7 +1088,8 @@ public:
     NTSTATUS
     SetFileDataSize(_In_ AttributeType AttrType,
                     _In_opt_ PWSTR StreamName,
-                    _In_ ULONGLONG NewSize);
+                    _In_ ULONGLONG NewSize,
+                    _In_ ULONGLONG AllocationFloor = 0);
 
     NTSTATUS SetFileValidDataLength(_In_ AttributeType AttrType, _In_opt_ PWSTR StreamName, _In_ ULONGLONG NewValidDataLength);
 
@@ -1104,6 +1144,10 @@ public:
         _Inout_ PULONG StreamCount);
 
     NTSTATUS
+    WriteResident(_In_ PUCHAR Buffer, _In_ ULONG Length, _In_ ULONGLONG Offset,
+                  _In_ NTFS_TRANSFER_RESIDENT_WRITE *Transfer, _In_ void *Context, _Out_ PBOOLEAN Handled);
+
+    NTSTATUS
     UpdateResidentData(_In_ PAttribute TargetAttribute,
                        _In_ PUCHAR Buffer,
                        _In_ PULONG Length,
@@ -1126,8 +1170,7 @@ public:
     GetAllocationSignature();
 
     NTSTATUS
-    GetRecordDiskRange(_Out_ PULONGLONG Offset,
-                       _Out_ PULONG Length);
+    GetRecordDiskRange(_Out_ PULONGLONG Offset, _Out_ PULONG Length, _In_opt_ PAttribute Target = NULL);
 
 private:
     friend class Directory;
@@ -1225,6 +1268,9 @@ private:
         _Out_opt_ PULONG DataLength);
 
     NTSTATUS
+    SetStandardEaFlag(_In_ BOOLEAN HasExtendedAttributes);
+
+    NTSTATUS
     GetStandardInformationForUpdate(
         _Out_ PAttribute* Attribute,
         _Out_ PStandardInformationEx* Standard);
@@ -1244,7 +1290,9 @@ private:
         _In_ ULONG NameLength,
         _In_ BOOLEAN IsDirectory,
         _In_ ULONG FileAttributes,
-        _Out_ PFileNameEx* CreatedName);
+        _Out_ PFileNameEx* CreatedName,
+        _In_opt_ const UCHAR* SecurityDescriptor = NULL,
+        _In_ ULONG SecurityDescriptorLength = 0);
 
     NTSTATUS
     ReplaceListedExtendedAttributes(
@@ -1384,7 +1432,8 @@ private:
                         _In_ ULONG Length,
                         _In_ ULONGLONG Offset,
                         _In_ ULONGLONG NewDataSize,
-                        _In_ ULONGLONG RequestedAllocationSize);
+                        _In_ ULONGLONG RequestedAllocationSize,
+                        _In_opt_ NTFS_TRANSFER_RESIDENT_WRITE *Transfer = NULL, _In_opt_ void *Context = NULL);
 
     NTSTATUS
     ExtendNonResidentData(_In_ PAttribute TargetAttribute,
@@ -1392,9 +1441,6 @@ private:
                           _In_ ULONG Length,
                           _In_ ULONGLONG Offset);
 
-    NTSTATUS
-    ResizeNonResidentData(_In_ PAttribute TargetAttribute,
-                          _In_ ULONGLONG NewDataSize);
 
     NTSTATUS
     ResizeSparseData(_In_ PAttribute TargetAttribute,
@@ -1414,14 +1460,14 @@ private:
                         _In_ ULONGLONG DataSize);
 
     NTSTATUS
-    UpdateFileNameEaSize(_In_ USHORT PackedEaSize);
+    UpdateFileNameEaSize(_In_ ULONG EaInformation);
 
     NTSTATUS
     UpdateFileNameInformation(
         _In_ UINT32 Fields,
         _In_ ULONGLONG AllocatedSize,
         _In_ ULONGLONG DataSize,
-        _In_ USHORT PackedEaSize,
+        _In_ ULONG EaInformation,
         _In_ ULONG ReparseTag,
         _In_ ULONG StorageFlags);
 
@@ -1433,14 +1479,14 @@ private:
                              _In_ ULONGLONG DataSize);
 
     NTSTATUS
-    SynchronizeFileNameEaSize(_In_ USHORT PackedEaSize);
+    SynchronizeFileNameEaSize(_In_ ULONG EaInformation);
 
     NTSTATUS
     SynchronizeFileNameInformation(
         _In_ UINT32 Fields,
         _In_ ULONGLONG AllocatedSize,
         _In_ ULONGLONG DataSize,
-        _In_ USHORT PackedEaSize,
+        _In_ ULONG EaInformation,
         _In_ ULONG ReparseTag,
         _In_ ULONG StorageFlags);
 
@@ -1451,7 +1497,7 @@ private:
         _In_ UINT32 Fields,
         _In_ ULONGLONG AllocatedSize,
         _In_ ULONGLONG DataSize,
-        _In_ USHORT PackedEaSize,
+        _In_ ULONG EaInformation,
         _In_ ULONG ReparseTag,
         _In_ ULONG StorageFlags);
 
@@ -1812,6 +1858,9 @@ public:
     WriteFileRecordToMFT(_In_ PFileRecord File);
 
     NTSTATUS
+    FindAllocationCandidate(_Out_ PULONGLONG Number);
+
+    NTSTATUS
     GetFileRecordDiskOffset(_In_ ULONGLONG RecordNumber,
                             _Out_ PULONGLONG DiskOffset);
 
@@ -1870,7 +1919,9 @@ public:
         _In_ ULONG FileAttributes,
         _Out_ PFileRecord* File,
         _In_opt_ PCWSTR ShortName = NULL,
-        _In_ ULONG ShortNameLength = 0);
+        _In_ ULONG ShortNameLength = 0,
+        _In_opt_ const UCHAR* SecurityDescriptor = NULL,
+        _In_ ULONG SecurityDescriptorLength = 0);
 
     NTSTATUS
     CreateFileInDirectory(
@@ -1882,7 +1933,9 @@ public:
         _In_ BOOLEAN NameKnownMissing,
         _Out_ PFileRecord* File,
         _In_opt_ PCWSTR PreferredShortName = NULL,
-        _In_ ULONG PreferredShortNameLength = 0);
+        _In_ ULONG PreferredShortNameLength = 0,
+        _In_opt_ const UCHAR* SecurityDescriptor = NULL,
+        _In_ ULONG SecurityDescriptorLength = 0);
 
     // ./namespace.cpp
     NTSTATUS

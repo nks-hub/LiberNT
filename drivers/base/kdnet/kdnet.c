@@ -18,7 +18,9 @@ KDNET_OPTIONS KdNetOptions;
 volatile BOOLEAN KdNetReady;
 BOOLEAN KdNetBroadcasting;
 
+#if DBG
 static ULONG64 KdpLinkSince;
+#endif
 static LARGE_INTEGER KdpFrequency;
 static LONGLONG KdpLastCounter;
 static ULONG64 KdpClockOffset;
@@ -57,10 +59,21 @@ KdNetTime(VOID)
 
 static
 BOOLEAN
+KdpHostUnresolved(VOID)
+{
+#ifdef REMOTE_ASSISTANCE
+    return KdNetOptions.HostName[0] && !KdNetOptions.HostIp;
+#else
+    return FALSE;
+#endif
+}
+
+static
+BOOLEAN
 KdpIsConnected(VOID)
 {
     /* TODO: the relay acknowledges nothing, so reaching it means having an address and the relay's resolved name */
-    return KdNetReady && KdIpAddress && (KdNetOptions.HostIp || !KdNetOptions.HostName[0]);
+    return KdNetReady && KdIpAddress && !KdpHostUnresolved();
 }
 
 static
@@ -76,6 +89,7 @@ KdpShowHost(VOID)
     KdNetHost.ShowPrompt(NULL);
 }
 
+#if DBG
 static
 VOID
 KdpUpdateBroadcast(
@@ -103,6 +117,7 @@ KdpUpdateBroadcast(
     if (Now - KdpLinkSince >= KDNET_ADDRESS_WAIT)
         KdNetBroadcasting = TRUE;
 }
+#endif
 
 VOID
 KdNetService(VOID)
@@ -125,7 +140,9 @@ KdNetService(VOID)
     }
 
     Now = KdNetTime();
+#if DBG
     KdpUpdateBroadcast(Now);
+#endif
     KdIpTimer(Now);
     KdSessionTimer(Now);
     KdpShowHost();
@@ -191,20 +208,33 @@ KdpParseOptions(
     ULONG Values[4], i;
     PCSTR Text;
     PCHAR Secret;
+#if DBG
     BOOLEAN NoHost;
+#endif
 
     RtlZeroMemory(&KdNetOptions, sizeof(KdNetOptions));
     KdNetOptions.HostPort = KDNET_DEFAULT_PORT;
+#if !DBG
+    /* DHCP, a host address and the relay serve remote assistance, so a release build debugs over a cable only */
+    KdNetOptions.Broadcast = TRUE;
+    KdNetBroadcasting = TRUE;
+#endif
     if (!Options)
         return;
 
-    NoHost = !KdpFindOption(Options, "HOST_IP") && !KdpFindOption(Options, "HOST_NAME");
+#if DBG
+    NoHost = !KdpFindOption(Options, "HOST_IP");
+#ifdef REMOTE_ASSISTANCE
+    NoHost = NoHost && !KdpFindOption(Options, "HOST_NAME");
+#endif
     Text = KdpFindOption(Options, "LOCAL_BROADCAST");
     KdNetOptions.Broadcast = Text && *Text == '1';
     KdNetOptions.BroadcastFallback = NoHost && !Text;
     KdNetBroadcasting = KdNetOptions.Broadcast;
+#ifdef REMOTE_ASSISTANCE
     if (NoHost && !KdNetOptions.Broadcast)
         RtlCopyMemory(KdNetOptions.HostName, KDNET_DEFAULT_HOST, sizeof(KDNET_DEFAULT_HOST));
+#endif
 
     Text = KdpFindOption(Options, "HOST_IP");
     if (Text && KdpParseNumbers(Text, '.', Values, 4) &&
@@ -212,7 +242,9 @@ KdpParseOptions(
     {
         KdNetOptions.HostIp = KDNET_IP(Values[0], Values[1], Values[2], Values[3]);
     }
+#endif
 
+#ifdef REMOTE_ASSISTANCE
     Text = KdpFindOption(Options, "HOST_NAME");
     if (Text && !KdNetOptions.HostIp)
     {
@@ -221,6 +253,7 @@ KdpParseOptions(
 
         KdNetOptions.HostName[i] = ANSI_NULL;
     }
+#endif
 
     Text = KdpFindOption(Options, "HOST_PORT");
     if (Text && KdpParseNumbers(Text, ANSI_NULL, Values, 1) && Values[0])
@@ -297,7 +330,9 @@ KdpTerminalInitialize(
     _In_ PLOADER_PARAMETER_BLOCK LoaderBlock)
 {
     NTSTATUS Status;
+#if DBG
     ULONG64 Start, Notice;
+#endif
 
     if (KdNetReady)
         return STATUS_SUCCESS;
@@ -314,9 +349,10 @@ KdpTerminalInitialize(
     KdCryptoAddEntropy(KdNicAddress, sizeof(KdNicAddress));
     KdIpInitialize();
 
+#if DBG
     Start = KdNetTime();
     Notice = Start;
-    while (!KdNetOptions.Broadcast && (!KdIpAddress || (KdNetOptions.HostName[0] && !KdNetOptions.HostIp)) &&
+    while (!KdNetOptions.Broadcast && (!KdIpAddress || KdpHostUnresolved()) &&
            KdNicLinkState && KdNetTime() - Start < KDNET_ADDRESS_WAIT)
     {
         if (KdNetTime() >= Notice)
@@ -328,6 +364,7 @@ KdpTerminalInitialize(
         KdNetService();
         KeStallExecutionProcessor(500);
     }
+#endif
 
     KdSessionInitialize();
     KeMemoryBarrier();
@@ -420,13 +457,15 @@ KdpTerminalQueryStatus(
                            KdNicAddress[3], KdNicAddress[4], KdNicAddress[5],
                            KdNetOptions.BroadcastFallback ? ", broadcasts to UDP port 6666 without one" : "");
     }
-    else if (!Host && KdNetOptions.HostName[0])
+#ifdef REMOTE_ASSISTANCE
+    else if (KdpHostUnresolved())
     {
         Length = _snprintf(Buffer, Size,
                            "Network debugger: %lu.%lu.%lu.%lu cannot resolve %s yet",
                            KdIpAddress >> 24, (KdIpAddress >> 16) & 255, (KdIpAddress >> 8) & 255,
                            KdIpAddress & 255, KdNetOptions.HostName);
     }
+#endif
     else if (Host)
     {
         Length = _snprintf(Buffer, Size,

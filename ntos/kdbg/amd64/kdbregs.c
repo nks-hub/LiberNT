@@ -254,4 +254,29 @@ const KDB_STEP_SAMPLE KdbpArchStepSamples[] =
 
 const ULONG KdbpArchStepSampleCount = RTL_NUMBER_OF(KdbpArchStepSamples);
 
+/* The processor steps by itself here: no stop is a step the debugger has to take back */
+KDB_STEP_HIT
+NTAPI
+KdbpArchTranslateStep(
+    _In_opt_ PEXCEPTION_RECORD64 ExceptionRecord,
+    _Inout_ PCONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(ExceptionRecord);
+    UNREFERENCED_PARAMETER(Context);
+    return KdbStepNotHit;
+}
+
+BOOLEAN
+NTAPI
+KdbpArchIsBreakInstruction(
+    _In_ ULONG_PTR Address)
+{
+    UCHAR Byte;
+
+    if (!NT_SUCCESS(KdbpSafeReadMemory(&Byte, (PVOID)Address, sizeof(Byte))))
+        return TRUE;
+
+    return Byte == 0xCC;
+}
+
 /* EOF */

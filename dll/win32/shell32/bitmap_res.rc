@@ -1,4 +1,4 @@
-IDB_REACTOS BITMAP "res/bitmaps/reactos.bmp"
+IDB_ABOUT_BANNER BITMAP "res/bitmaps/aboutbanner.bmp"
 IDB_LINEBAR BITMAP "res/bitmaps/line.bmp"
 
 IDB_SHELL_IEXPLORE_LG        BITMAP "res/bitmaps/204.bmp"

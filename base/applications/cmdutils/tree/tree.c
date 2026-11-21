@@ -1,386 +1,385 @@
 /*
- * PROJECT:     ReactOS
- * LICENSE:     GNU GPLv2 only as published by the Free Software Foundation
- * PURPOSE:     Implements tree.com command similar to Windows
- * PROGRAMMERS: Asif Bahrainwala (asif_bahrainwala@hotmail.com)
+ * PROJECT:     LiberNT Tree Command
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Graphically display the folder structure of a drive or path
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
-#include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
-
 #include <windef.h>
 #include <winbase.h>
-
-#include <conutils.h>
+#include <winnls.h>
+#include <wincon.h>
+#include <winuser.h>
 
 #include "resource.h"
 
-#define STR_MAX 2048
+#define TREE_PATH_CHARS 32768
 
-static VOID GetDirectoryStructure(PWSTR strPath, UINT width, PCWSTR prevLine);
-
-/* If this flag is set to true, files will also be listed within the folder structure */
-BOOL bShowFiles = FALSE;
-
-/* If this flag is true, ASCII characters will be used instead of UNICODE ones */
-BOOL bUseAscii = FALSE;
-
-/**
-* @name: HasSubFolder
-*
-* @param strPath
-* Must specify folder name
-*
-* @return
-* true if folder has sub-folders, else will return false
-*/
-static BOOL HasSubFolder(PCWSTR strPath1)
+typedef struct _TREE_GLYPHS
 {
-    BOOL ret = FALSE;
-    WIN32_FIND_DATAW FindFileData;
-    HANDLE hFind = NULL;
-    static WCHAR strPath[STR_MAX] = L"";
-    ZeroMemory(strPath, sizeof(strPath));
+    PCWSTR Branch;
+    PCWSTR Last;
+    PCWSTR Vertical;
+    PCWSTR Space;
+} TREE_GLYPHS;
 
-    wcscat(strPath, strPath1);
-    wcscat(strPath, L"\\*.");
+static const TREE_GLYPHS TreeUnicodeGlyphs = { L"\x251C\x2500\x2500\x2500", L"\x2514\x2500\x2500\x2500", L"\x2502   ", L"    " };
+static const TREE_GLYPHS TreeAsciiGlyphs = { L"+---", L"\\---", L"|   ", L"    " };
 
-    hFind = FindFirstFileW(strPath, &FindFileData);
-    do
-    {
-        if (FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-        {
-            if (wcscmp(FindFileData.cFileName, L".") == 0 ||
-                wcscmp(FindFileData.cFileName, L"..") == 0 )
-            {
-                continue;
-            }
+static HANDLE TreeOutput;
+static BOOL TreeConsole;
+static BOOL TreeShowFiles;
+static const TREE_GLYPHS *TreeGlyphs = &TreeUnicodeGlyphs;
 
-            ret = TRUE;  // Sub-folder found
-            break;
-        }
-    }
-    while (FindNextFileW(hFind, &FindFileData));
-
-    FindClose(hFind);
-    return ret;
-}
-
-/**
- * @name: DrawTree
- *
- * @param strPath
- * Must specify folder name
- *
- * @param arrFolder
- * must be a list of folder names to be drawn in tree format
- *
- * @param width
- * specifies drawing distance for correct formatting of tree structure being drawn on console screen
- * used internally for adding spaces
- *
- * @param prevLine
- * used internally for formatting reasons
- *
- * @return
- * void
- */
-static VOID DrawTree(PCWSTR strPath,
-                     const WIN32_FIND_DATAW* arrFolder,
-                     const size_t szArr,
-                     UINT width,
-                     PCWSTR prevLine,
-                     BOOL drawfolder)
-{
-    BOOL bHasSubFolder = HasSubFolder(strPath);
-    UINT i = 0;
-
-    /* This will format the spaces required for correct formatting */
-    for (i = 0; i < szArr; ++i)
-    {
-        PWSTR consoleOut = (PWSTR)malloc(STR_MAX * sizeof(WCHAR));
-        UINT j = 0;
-        static WCHAR str[STR_MAX];
-
-        /* As we do not seem to have the _s functions properly set up, use the non-secure version for now */
-        //wcscpy_s(consoleOut, STR_MAX, L"");
-        //wcscpy_s(str, STR_MAX, L"");
-        wcscpy(consoleOut, L"");
-        wcscpy(str, L"");
-
-        for (j = 0; j < width - 1; ++j)
-        {
-            /* If the previous line has '├' or '│' then the current line will
-               add '│' to continue the connecting line */
-            if (prevLine[j] == L'\x251C' || prevLine[j] == L'\x2502' ||
-                prevLine[j] == L'+' || prevLine[j] == L'|')
-            {
-                if (!bUseAscii)
-                {
-                    wcscat(consoleOut, L"\x2502");
-                }
-                else
-                {
-                    wcscat(consoleOut, L"|");
-                }
-            }
-            else
-            {
-                wcscat(consoleOut, L" ");
-            }
-        }
-
-        if (szArr - 1 != i)
-        {
-            if (drawfolder)
-            {
-                /* Add '├───Folder name' (\xC3\xC4\xC4\xC4 or \x251C\x2500\x2500\x2500) */
-                if (bUseAscii)
-                    _swprintf(str, L"+---%s", arrFolder[i].cFileName);
-                else
-                    _swprintf(str, L"\x251C\x2500\x2500\x2500%s", arrFolder[i].cFileName);
-            }
-            else
-            {
-                if (bHasSubFolder)
-                {
-                    /* Add '│   FileName' (\xB3 or \x2502) */
-                    // This line is added to connect the below-folder sub-structure
-                    if (bUseAscii)
-                        _swprintf(str, L"|   %s", arrFolder[i].cFileName);
-                    else
-                        _swprintf(str, L"\x2502   %s", arrFolder[i].cFileName);
-                }
-                else
-                {
-                    /* Add '    FileName' */
-                    _swprintf(str, L"    %s", arrFolder[i].cFileName);
-                }
-            }
-        }
-        else
-        {
-            if (drawfolder)
-            {
-                /* '└───Folder name' (\xC0\xC4\xC4\xC4 or \x2514\x2500\x2500\x2500) */
-                if (bUseAscii)
-                    _swprintf(str, L"\\---%s", arrFolder[i].cFileName);
-                else
-                    _swprintf(str, L"\x2514\x2500\x2500\x2500%s", arrFolder[i].cFileName);
-            }
-            else
-            {
-                if (bHasSubFolder)
-                {
-                    /* '│   FileName' (\xB3 or \x2502) */
-                    if (bUseAscii)
-                        _swprintf(str, L"|   %s", arrFolder[i].cFileName);
-                    else
-                        _swprintf(str, L"\x2502   %s", arrFolder[i].cFileName);
-                }
-                else
-                {
-                    /* '    FileName' */
-                    _swprintf(str, L"    %s", arrFolder[i].cFileName);
-                }
-            }
-        }
-
-        wcscat(consoleOut, str);
-        ConPrintf(StdOut, L"%s\n", consoleOut);
-
-        if (drawfolder)
-        {
-            PWSTR str = (PWSTR)malloc(STR_MAX * sizeof(WCHAR));
-            ZeroMemory(str, STR_MAX * sizeof(WCHAR));
-
-            wcscat(str, strPath);
-            wcscat(str, L"\\");
-            wcscat(str, arrFolder[i].cFileName);
-            GetDirectoryStructure(str, width + 4, consoleOut);
-
-            free(str);
-        }
-        free(consoleOut);
-    }
-}
-
-/**
- * @name: GetDirectoryStructure
- *
- * @param strPath
- * Must specify folder name
- *
- * @param width
- * specifies drawing distance for correct formatting of tree structure being drawn on console screen
- *
- * @param prevLine
- * specifies the previous line written on console, is used for correct formatting
- * @return
- * void
- */
 static VOID
-GetDirectoryStructure(PWSTR strPath, UINT width, PCWSTR prevLine)
+TreeWriteChunk(
+    _In_reads_(Length) PCWSTR Text,
+    _In_ DWORD Length)
 {
-    WIN32_FIND_DATAW FindFileData;
-    HANDLE hFind = NULL;
-    //DWORD err = 0;
-    /* Fill up with names of all sub-folders */
-    WIN32_FIND_DATAW *arrFolder = NULL;
-    UINT arrFoldersz = 0;
-    /* Fill up with names of all sub-folders */
-    WIN32_FIND_DATAW *arrFile = NULL;
-    UINT arrFilesz = 0;
+    DWORD Written;
+    int Bytes;
+    PSTR Buffer;
 
-    ZeroMemory(&FindFileData, sizeof(FindFileData));
-
-    {
-        static WCHAR tmp[STR_MAX] = L"";
-        ZeroMemory(tmp, sizeof(tmp));
-        wcscat(tmp, strPath);
-        wcscat(tmp, L"\\*.*");
-        hFind = FindFirstFileW(tmp, &FindFileData);
-        //err = GetLastError();
-    }
-
-    if (hFind == INVALID_HANDLE_VALUE)
+    if (Length == 0)
         return;
 
-    do
+    if (TreeConsole)
     {
-        if (FindFileData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-        {
-            if (wcscmp(FindFileData.cFileName, L".") == 0 ||
-                wcscmp(FindFileData.cFileName, L"..") == 0)
-                continue;
-
-            ++arrFoldersz;
-            arrFolder = (WIN32_FIND_DATAW*)realloc(arrFolder, arrFoldersz * sizeof(FindFileData));
-
-            if (arrFolder == NULL)
-                exit(-1);
-
-            arrFolder[arrFoldersz - 1] = FindFileData;
-
-        }
-        else
-        {
-            ++arrFilesz;
-            arrFile = (WIN32_FIND_DATAW*)realloc(arrFile, arrFilesz * sizeof(FindFileData));
-
-            if(arrFile == NULL)
-                exit(-1);
-
-            arrFile[arrFilesz - 1] = FindFileData;
-        }
-    }
-    while (FindNextFileW(hFind, &FindFileData));
-
-    FindClose(hFind);
-
-    if (bShowFiles)
-    {
-        /* Will free(arrFile) */
-        DrawTree(strPath, arrFile, arrFilesz, width, prevLine, FALSE);
+        WriteConsoleW(TreeOutput, Text, Length, &Written, NULL);
+        return;
     }
 
-    /* Will free(arrFile) */
-    DrawTree(strPath, arrFolder, arrFoldersz, width, prevLine, TRUE);
-
-    free(arrFolder);
-    free(arrFile);
+    Bytes = WideCharToMultiByte(CP_ACP, 0, Text, (int)Length, NULL, 0, NULL, NULL);
+    if (Bytes <= 0)
+        return;
+    Buffer = HeapAlloc(GetProcessHeap(), 0, Bytes);
+    if (Buffer == NULL)
+        return;
+    WideCharToMultiByte(CP_ACP, 0, Text, (int)Length, Buffer, Bytes, NULL, NULL);
+    WriteFile(TreeOutput, Buffer, (DWORD)Bytes, &Written, NULL);
+    HeapFree(GetProcessHeap(), 0, Buffer);
 }
 
-/**
-* @name: main
-* standard main functionality as required by C/C++ for application startup
-*
-* @return
-* error /success value
-*/
-int wmain(int argc, WCHAR* argv[])
+static VOID
+TreeWrite(
+    _In_ PCWSTR Text)
 {
-    DWORD dwSerial = 0;
-    WCHAR t = 0;
-    PWSTR strPath = NULL;
-    DWORD sz = 0;
-    //PWSTR context = NULL;
-    PWSTR driveLetter = NULL;
+    PCWSTR Start = Text;
+    PCWSTR Current;
 
-    int i;
-
-    /* Initialize the Console Standard Streams */
-    ConInitStdStreams();
-
-    /* Parse the command line */
-    for (i = 1; i < argc; ++i)
+    for (Current = Text; *Current != UNICODE_NULL; Current++)
     {
-        if (argv[i][0] == L'-' || argv[i][0] == L'/')
+        if (*Current == L'\n' && (Current == Text || Current[-1] != L'\r'))
         {
-            switch (towlower(argv[i][1]))
+            TreeWriteChunk(Start, (DWORD)(Current - Start));
+            TreeWriteChunk(L"\r\n", 2);
+            Start = Current + 1;
+        }
+    }
+    TreeWriteChunk(Start, (DWORD)(Current - Start));
+}
+
+static VOID
+TreeWriteLine(
+    _In_ PCWSTR Prefix,
+    _In_ PCWSTR Text)
+{
+    TreeWriteChunk(Prefix, (DWORD)wcslen(Prefix));
+    TreeWriteChunk(Text, (DWORD)wcslen(Text));
+    TreeWriteChunk(L"\r\n", 2);
+}
+
+static VOID
+TreeMessage(
+    _In_ UINT Id,
+    ...)
+{
+    WCHAR Format[1024];
+    PWSTR Text = NULL;
+    va_list Arguments;
+
+    if (LoadStringW(GetModuleHandleW(NULL), Id, Format, _countof(Format)) == 0)
+        return;
+
+    va_start(Arguments, Id);
+    FormatMessageW(FORMAT_MESSAGE_FROM_STRING | FORMAT_MESSAGE_ALLOCATE_BUFFER,
+                   Format, 0, 0, (PWSTR)&Text, 0, &Arguments);
+    va_end(Arguments);
+
+    if (Text != NULL)
+    {
+        TreeWrite(Text);
+        LocalFree(Text);
+    }
+}
+
+typedef struct _TREE_LIST
+{
+    PWSTR *Names;
+    ULONG Count;
+    ULONG Capacity;
+} TREE_LIST;
+
+static BOOL
+TreeListAdd(
+    _Inout_ TREE_LIST *List,
+    _In_ PCWSTR Name)
+{
+    SIZE_T Size = (wcslen(Name) + 1) * sizeof(WCHAR);
+    PWSTR Copy;
+
+    if (List->Count == List->Capacity)
+    {
+        ULONG Capacity = List->Capacity ? List->Capacity * 2 : 16;
+        PWSTR *Names = List->Names ?
+            HeapReAlloc(GetProcessHeap(), 0, List->Names, Capacity * sizeof(PWSTR)) :
+            HeapAlloc(GetProcessHeap(), 0, Capacity * sizeof(PWSTR));
+        if (Names == NULL)
+            return FALSE;
+        List->Names = Names;
+        List->Capacity = Capacity;
+    }
+
+    Copy = HeapAlloc(GetProcessHeap(), 0, Size);
+    if (Copy == NULL)
+        return FALSE;
+    CopyMemory(Copy, Name, Size);
+    List->Names[List->Count++] = Copy;
+    return TRUE;
+}
+
+static VOID
+TreeListFree(
+    _Inout_ TREE_LIST *List)
+{
+    ULONG i;
+
+    for (i = 0; i < List->Count; i++)
+        HeapFree(GetProcessHeap(), 0, List->Names[i]);
+    if (List->Names != NULL)
+        HeapFree(GetProcessHeap(), 0, List->Names);
+    ZeroMemory(List, sizeof(*List));
+}
+
+static ULONG
+TreeDirectory(
+    _Inout_updates_(TREE_PATH_CHARS) PWSTR Path,
+    _In_ SIZE_T PathLength,
+    _Inout_updates_(TREE_PATH_CHARS) PWSTR Prefix,
+    _In_ SIZE_T PrefixLength)
+{
+    TREE_LIST Directories = { 0 }, Files = { 0 };
+    WIN32_FIND_DATAW FindData;
+    HANDLE hFind;
+    ULONG i;
+
+    if (PathLength + 3 >= TREE_PATH_CHARS)
+        return 0;
+
+    Path[PathLength] = L'\\';
+    Path[PathLength + 1] = L'*';
+    Path[PathLength + 2] = UNICODE_NULL;
+    hFind = FindFirstFileW(Path, &FindData);
+    Path[PathLength] = UNICODE_NULL;
+    if (hFind != INVALID_HANDLE_VALUE)
+    {
+        do
+        {
+            if (FindData.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
+                continue;
+            if (FindData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             {
-                case L'?':
-                    /* Print help and exit after */
-                    ConResPuts(StdOut, IDS_USAGE);
-                    return 0;
-
-                case L'f':
-                    bShowFiles = TRUE;
-                    break;
-
-                case L'a':
-                    bUseAscii = TRUE;
-                    break;
-
-                default:
-                    break;
+                if (wcscmp(FindData.cFileName, L".") != 0 && wcscmp(FindData.cFileName, L"..") != 0)
+                    TreeListAdd(&Directories, FindData.cFileName);
             }
+            else if (TreeShowFiles)
+            {
+                TreeListAdd(&Files, FindData.cFileName);
+            }
+        } while (FindNextFileW(hFind, &FindData));
+        FindClose(hFind);
+    }
+
+    if (Files.Count != 0 && PrefixLength + 4 < TREE_PATH_CHARS)
+    {
+        wcscpy(Prefix + PrefixLength, Directories.Count ? TreeGlyphs->Vertical : TreeGlyphs->Space);
+        for (i = 0; i < Files.Count; i++)
+            TreeWriteLine(Prefix, Files.Names[i]);
+        TreeWriteLine(Prefix, L"");
+        Prefix[PrefixLength] = UNICODE_NULL;
+    }
+
+    for (i = 0; i < Directories.Count; i++)
+    {
+        BOOL Last = (i + 1 == Directories.Count);
+        SIZE_T NameLength = wcslen(Directories.Names[i]);
+
+        TreeWriteChunk(Prefix, (DWORD)PrefixLength);
+        TreeWriteLine(Last ? TreeGlyphs->Last : TreeGlyphs->Branch, Directories.Names[i]);
+
+        if (PathLength + 1 + NameLength + 3 >= TREE_PATH_CHARS || PrefixLength + 4 >= TREE_PATH_CHARS)
+            continue;
+
+        Path[PathLength] = L'\\';
+        wcscpy(Path + PathLength + 1, Directories.Names[i]);
+        wcscpy(Prefix + PrefixLength, Last ? TreeGlyphs->Space : TreeGlyphs->Vertical);
+        TreeDirectory(Path, PathLength + 1 + NameLength, Prefix, PrefixLength + 4);
+        Path[PathLength] = UNICODE_NULL;
+        Prefix[PrefixLength] = UNICODE_NULL;
+    }
+
+    i = Directories.Count;
+    TreeListFree(&Directories);
+    TreeListFree(&Files);
+    return i;
+}
+
+static PWSTR
+TreeNextArgument(
+    _Inout_ PWSTR *Cursor)
+{
+    PWSTR Source = *Cursor, Destination, Argument;
+    BOOL Quoted = FALSE;
+
+    while (*Source == L' ' || *Source == L'\t')
+        Source++;
+    if (*Source == UNICODE_NULL)
+    {
+        *Cursor = Source;
+        return NULL;
+    }
+
+    Argument = Destination = Source;
+    while (*Source != UNICODE_NULL && (Quoted || (*Source != L' ' && *Source != L'\t')))
+    {
+        if (*Source == L'"')
+            Quoted = !Quoted;
+        else
+            *Destination++ = *Source;
+        Source++;
+    }
+    if (*Source != UNICODE_NULL)
+        Source++;
+    *Destination = UNICODE_NULL;
+    *Cursor = Source;
+    return Argument;
+}
+
+int
+wmain(
+    int argc,
+    WCHAR *argv[])
+{
+    PCWSTR Argument = NULL;
+    PWSTR Path, Prefix, CommandLine, Cursor, Token;
+    WCHAR Root[MAX_PATH], Label[MAX_PATH + 1], Display[MAX_PATH + 3];
+    DWORD Mode, Serial = 0, Attributes, Length;
+
+    UNREFERENCED_PARAMETER(argc);
+    UNREFERENCED_PARAMETER(argv);
+
+    TreeOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    TreeConsole = GetConsoleMode(TreeOutput, &Mode);
+
+    CommandLine = HeapAlloc(GetProcessHeap(), 0, (wcslen(GetCommandLineW()) + 1) * sizeof(WCHAR));
+    if (CommandLine == NULL)
+        return 1;
+    wcscpy(CommandLine, GetCommandLineW());
+    Cursor = CommandLine;
+    TreeNextArgument(&Cursor);
+
+    while ((Token = TreeNextArgument(&Cursor)) != NULL)
+    {
+        if (Token[0] == L'/')
+        {
+            if (_wcsicmp(Token, L"/F") == 0)
+            {
+                TreeShowFiles = TRUE;
+            }
+            else if (_wcsicmp(Token, L"/A") == 0)
+            {
+                TreeGlyphs = &TreeAsciiGlyphs;
+            }
+            else if (wcscmp(Token, L"/?") == 0)
+            {
+                TreeMessage(IDS_USAGE);
+                return 0;
+            }
+            else
+            {
+                TreeMessage(IDS_INVALID_SWITCH, Token);
+                return 0;
+            }
+        }
+        else if (Argument != NULL)
+        {
+            TreeMessage(IDS_TOO_MANY_PARAMETERS, Token);
+            return 0;
         }
         else
         {
-            /* This must be path to some folder */
-
-            /* Set the current directory for this executable */
-            BOOL b = SetCurrentDirectoryW(argv[i]);
-            if (b == FALSE)
-            {
-                ConResPuts(StdOut, IDS_NO_SUBDIRECTORIES);
-                return 1;
-            }
+            Argument = Token;
         }
     }
 
-    ConResPuts(StdOut, IDS_FOLDER_PATH);
+    Path = HeapAlloc(GetProcessHeap(), 0, TREE_PATH_CHARS * sizeof(WCHAR));
+    Prefix = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, TREE_PATH_CHARS * sizeof(WCHAR));
+    if (Path == NULL || Prefix == NULL)
+        return 1;
 
-    GetVolumeInformationW(NULL, NULL, 0, &dwSerial, NULL, NULL, NULL, 0);
-    ConResPrintf(StdOut, IDS_VOL_SERIAL, dwSerial >> 16, dwSerial & 0xffff);
+    Length = GetFullPathNameW(Argument ? Argument : L".", TREE_PATH_CHARS, Path, NULL);
+    if (Length == 0 || Length >= TREE_PATH_CHARS)
+        return 1;
+    if (Length > 3 && Path[Length - 1] == L'\\')
+        Path[--Length] = UNICODE_NULL;
 
-    /* get the buffer size */
-    sz = GetCurrentDirectoryW(1, &t);
-    /* must not return before calling delete[] */
-    strPath = (PWSTR)malloc(sz * sizeof(WCHAR));
+    if (!GetVolumePathNameW(Path, Root, _countof(Root)))
+    {
+        Root[0] = Path[0];
+        Root[1] = L':';
+        Root[2] = L'\\';
+        Root[3] = UNICODE_NULL;
+    }
+    Label[0] = UNICODE_NULL;
+    GetVolumeInformationW(Root, Label, _countof(Label), &Serial, NULL, NULL, NULL, 0);
 
-    /* get the current directory */
-    GetCurrentDirectoryW(sz, strPath);
+    if (Label[0] != UNICODE_NULL)
+        TreeMessage(IDS_FOLDER_LISTING_VOLUME, Label);
+    else
+        /* FIXME: the header of a volume without a label is not verified against Windows 11 */
+        TreeMessage(IDS_FOLDER_LISTING);
+    /* FIXME: Windows 11 prints a varying value of unknown meaning before the serial number */
+    TreeMessage(IDS_VOLUME_SERIAL, 0, HIWORD(Serial), LOWORD(Serial));
 
-    /* get the drive letter , must not return before calling delete[] */
-    driveLetter = (PWSTR)malloc(sz * sizeof(WCHAR));
+    if (Argument != NULL)
+    {
+        lstrcpynW(Display, Path, _countof(Display));
+        CharUpperW(Display);
+    }
+    else
+    {
+        Display[0] = Path[0];
+        Display[1] = L':';
+        Display[2] = L'.';
+        Display[3] = UNICODE_NULL;
+        CharUpperW(Display);
+    }
+    TreeWriteLine(L"", Display);
 
-    /* As we do not seem to have the _s functions properly set up, use the non-secure version for now */
-    //wcscpy_s(driveLetter,sz,strPath);
-    //wcstok_s(driveLetter,L":", &context); //parse for the drive letter
-    wcscpy(driveLetter, strPath);
-    wcstok(driveLetter, L":");
+    Attributes = GetFileAttributesW(Path);
+    if (Attributes == INVALID_FILE_ATTRIBUTES || !(Attributes & FILE_ATTRIBUTE_DIRECTORY))
+    {
+        lstrcpynW(Display, Path + 2, _countof(Display));
+        CharUpperW(Display);
+        TreeMessage(IDS_INVALID_PATH, Display);
+        TreeMessage(IDS_NO_SUBFOLDERS);
+        return 0;
+    }
 
-    ConPrintf(StdOut, L"%s:.\n", driveLetter);
-
-    free(driveLetter);
-
-    /* get the sub-directories within this current folder */
-    GetDirectoryStructure(strPath, 1, L"          ");
-
-    free(strPath);
-    ConPuts(StdOut, L"\n");
+    if (TreeDirectory(Path, (Path[Length - 1] == L'\\') ? Length - 1 : Length, Prefix, 0) == 0)
+        TreeMessage(IDS_NO_SUBFOLDERS);
 
     return 0;
 }

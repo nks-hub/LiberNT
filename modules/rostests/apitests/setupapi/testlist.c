@@ -9,6 +9,7 @@ extern void func_DeviceClassName(void);
 extern void func_DeviceDescription(void);
 extern void func_DeviceExtension(void);
 extern void func_DriverFeatureScore(void);
+extern void func_DriverFilesNeedReboot(void);
 extern void func_DriverPackageSignerScore(void);
 extern void func_DevicePdoName(void);
 extern void func_DevicePowerOnDisable(void);
@@ -25,6 +26,8 @@ extern void func_ParentIdPrefix(void);
 extern void func_PciBridgeWindows(void);
 extern void func_PciDebuggerDevice(void);
 extern void func_PciDeviceIds(void);
+extern void func_DisableableParents(void);
+extern void func_HalDeviceIds(void);
 extern void func_ProcessorDeviceIds(void);
 extern void func_SetupInstallServicesFromInfSectionEx(void);
 extern void func_SoftwareComponent(void);
@@ -46,6 +49,7 @@ const struct test winetest_testlist[] =
     { "DeviceDescription", func_DeviceDescription },
     { "DeviceExtension", func_DeviceExtension },
     { "DriverFeatureScore", func_DriverFeatureScore },
+    { "DriverFilesNeedReboot", func_DriverFilesNeedReboot },
     { "DriverPackageSignerScore", func_DriverPackageSignerScore },
     { "DevicePdoName", func_DevicePdoName },
     { "DevicePowerOnDisable", func_DevicePowerOnDisable },
@@ -62,6 +66,8 @@ const struct test winetest_testlist[] =
     { "PciBridgeWindows", func_PciBridgeWindows },
     { "PciDebuggerDevice", func_PciDebuggerDevice },
     { "PciDeviceIds", func_PciDeviceIds },
+    { "DisableableParents", func_DisableableParents },
+    { "HalDeviceIds", func_HalDeviceIds },
     { "ProcessorDeviceIds", func_ProcessorDeviceIds },
     { "SetupInstallServicesFromInfSectionEx", func_SetupInstallServicesFromInfSectionEx},
     { "SoftwareComponent", func_SoftwareComponent },

@@ -670,6 +670,12 @@ NTAPI
 MmIsSessionAddress(
     _In_ PVOID Address);
 
+NTSTATUS
+NTAPI
+MmMoveProcessToSession(
+    _Inout_ PEPROCESS Process,
+    _In_ ULONG SessionId);
+
 VOID
 NTAPI
 MmQuitNextSession(
@@ -688,7 +694,7 @@ MmSessionDelete(
 NTSTATUS
 NTAPI
 MmSetProcessSession(
-    _Inout_ PEPROCESS Process,
+    _In_ PEPROCESS Process,
     _In_ ULONG SessionId);
 
 _IRQL_requires_max_(APC_LEVEL)

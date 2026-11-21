@@ -456,6 +456,14 @@ XhciInitialize(
         return STATUS_NOT_SUPPORTED;
     }
 
+    if (!(Capabilities & XHCI_HCC_AC64) &&
+        (ULONG64)Adapter->KdNet->Device->Memory.Start.QuadPart + Adapter->KdNet->Device->Memory.Length > 0x100000000ULL)
+    {
+        UsbNetTrace("USB debugger: the controller addresses 32 bits and the debugger memory at %I64x is above 4 GB\n",
+                    (ULONG64)Adapter->KdNet->Device->Memory.Start.QuadPart);
+        return STATUS_NOT_SUPPORTED;
+    }
+
     XhciTakeOwnership(Adapter, Capabilities);
     Status = XhciReset(Adapter);
     if (!NT_SUCCESS(Status))
@@ -528,18 +536,22 @@ ULONG
 XhciWaitForConnections(
     _In_ PUSBNET_ADAPTER Adapter)
 {
-    ULONG Count = 0, Previous = 0, Stable = 0, Port, i;
+    ULONG Count = 0, Previous = 0, Stable = 0, Training, Value, Port, i;
 
     for (i = 0; i < XHCI_CONNECT_WAIT / 10; i++)
     {
         Count = 0;
+        Training = 0;
         for (Port = 1; Port <= Adapter->MaxPorts; Port++)
         {
-            if (XhciRead(Adapter->Operational + XHCI_OP_PORTSC(Port)) & XHCI_PORT_CONNECTED)
+            Value = XhciRead(Adapter->Operational + XHCI_OP_PORTSC(Port));
+            if (Value & XHCI_PORT_CONNECTED)
                 Count++;
+            else if ((Value & XHCI_PORT_LINK_STATE_MASK) == XHCI_PORT_LINK_POLLING)
+                Training++;
         }
 
-        if (Count && Count == Previous)
+        if (!Training && Count == Previous)
         {
             Stable += 10;
             if (Stable >= XHCI_CONNECT_STABLE)
@@ -656,6 +668,7 @@ XhciShareController(
 
     Share->Dcbaa = XhciPhysical(Adapter->Dcbaa);
     Share->ScratchpadArray = Adapter->Dcbaa[0];
+    Share->Registers = XhciPhysical(Adapter->Registers);
     Adapter->Shared = TRUE;
     Adapter->KdNet->Device->OemData = Share;
     Adapter->KdNet->Device->OemDataLength = sizeof(*Share);

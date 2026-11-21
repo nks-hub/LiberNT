@@ -3006,6 +3006,9 @@ typedef struct {
 #endif
 #if (_WIN32_WINNT >= 0x0501)
 #define PW_CLIENTONLY 0x00000001
+#if (_WIN32_WINNT >= 0x0603)
+#define PW_RENDERFULLCONTENT 0x00000002
+#endif
 #define RIM_INPUT     0x00000000
 #define RIM_INPUTSINK 0x00000001
 #define RIM_TYPEMOUSE    0x00000000
@@ -3607,6 +3610,7 @@ typedef struct tagMINIMIZEDMETRICS {
 
 #define WDA_NONE    0x0
 #define WDA_MONITOR 0x1
+#define WDA_EXCLUDEFROMCAPTURE 0x11
 
 typedef struct tagMOUSEKEYS{
 	UINT cbSize;

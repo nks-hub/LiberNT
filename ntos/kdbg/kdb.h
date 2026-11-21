@@ -67,8 +67,6 @@ typedef enum _KD_CONTINUE_TYPE
     kdHandleException
 } KD_CONTINUE_TYPE;
 
-extern volatile PCHAR KdbInitFileBuffer;
-
 extern PEPROCESS KdbCurrentProcess;
 
 extern PETHREAD KdbCurrentThread;
@@ -80,6 +78,8 @@ extern EXCEPTION_RECORD64 KdbCurrentExceptionRecord;
 extern BOOLEAN KdbCurrentExceptionRecordValid;
 
 extern BOOLEAN KdbActive;
+
+extern BOOLEAN KdbBugCheckRequested;
 
 extern LONG KdbLastBreakPointNr;
 
@@ -160,9 +160,6 @@ NTSTATUS
 KdbpCliInit(VOID);
 
 VOID
-KdbpCliInterpretInitFile(VOID);
-
-VOID
 KdbpCliMainLoop(
     _In_ BOOLEAN EnteredOnSingleStep);
 
@@ -171,6 +168,12 @@ NTAPI
 KdbpGetAddressExpression(
     _In_ PCHAR Expression,
     _Out_ PULONG_PTR Address);
+
+BOOLEAN
+NTAPI
+KdbpGetCountExpression(
+    _In_ PCHAR Expression,
+    _Out_ PULONG_PTR Count);
 
 BOOLEAN
 NTAPI
@@ -387,6 +390,10 @@ BOOLEAN
 KdbSymPrintAddress(
     _In_ PVOID Address,
     _In_ PCONTEXT Context);
+
+BOOLEAN
+KdbSymPrintReturnAddress(
+    _In_ PVOID Address);
 
 BOOLEAN
 KdbSymPrintNearest(

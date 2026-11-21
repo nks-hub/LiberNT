@@ -12,6 +12,7 @@
 PKDNET_EXTENSIBILITY_IMPORTS KdNetExtensibilityImports;
 BOOLEAN UsbNetLocalBroadcast;
 
+#if DBG
 static
 BOOLEAN
 UsbNetOptionIsOne(
@@ -29,6 +30,7 @@ UsbNetOptionIsOne(
 
     return FALSE;
 }
+#endif
 
 static
 VOID
@@ -45,6 +47,7 @@ KdInitializeLibrary(
     _Inout_ PDEBUG_DEVICE_DESCRIPTOR Device)
 {
     PKDNET_EXTENSIBILITY_EXPORTS Exports;
+    NTSTATUS Status;
 
     if (!ImportTable || ImportTable->FunctionCount != KDNET_EXT_IMPORTS)
         return STATUS_INVALID_PARAMETER;
@@ -59,8 +62,16 @@ KdInitializeLibrary(
         return STATUS_NOT_SUPPORTED;
     }
 
+    Status = UsbNetGlueAttach(Device);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
     KdNetExtensibilityImports = ImportTable;
+#if DBG
     UsbNetLocalBroadcast = UsbNetOptionIsOne(LoaderOptions, "LOCAL_BROADCAST=");
+#else
+    UsbNetLocalBroadcast = TRUE;
+#endif
     Exports->KdInitializeController = UsbNetInitializeController;
     Exports->KdShutdownController = UsbNetShutdownController;
     Exports->KdSetHibernateRange = UsbNetSetHibernateRange;

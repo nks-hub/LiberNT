@@ -523,10 +523,18 @@ IntCompositionWakeFlushWaiters(VOID)
 }
 
 NTSTATUS
-IntCompositionDwmPresented(VOID)
+IntCompositionDwmPresented(_In_ DWORD_PTR Param)
 {
     if (!g_DwmAttached || PsGetCurrentProcess() != g_DwmProcess)
         return STATUS_ACCESS_DENIED;
+    if (Param == DWM_PRESENTED_OCCLUDED)
+    {
+        /* An occluded compositor pulls no frames but is alive: keep the watchdog from tearing composition down */
+        g_DwmLastFrameTime = (LONGLONG)KeQueryInterruptTime();
+        return STATUS_SUCCESS;
+    }
+    if (Param != DWM_PRESENTED_FRAME)
+        return STATUS_INVALID_PARAMETER;
     g_DwmFramePresented = g_DwmFrameIssued;
     IntCompositionWakeFlushWaiters();
     return STATUS_SUCCESS;
@@ -2529,8 +2537,10 @@ IntCompositionCancelRedirectedBltPresent(
         return STATUS_INVALID_PARAMETER;
     }
 
-    Entry->Redirect.GdiAdmittedUpdateId =
-        Entry->Redirect.GdiConsumedUpdateId;
+    /* Retire the cancelled admitted update so future GDI updates
+     * are not blocked by an issued-but-unpublished update. */
+    Entry->Redirect.GdiConsumedUpdateId = Present->UpdateId;
+    Entry->Redirect.GdiAdmittedUpdateId = Present->UpdateId;
     return STATUS_SUCCESS;
 }
 
@@ -5168,6 +5178,69 @@ IntCompositionRestoreDC(_Inout_ PDC pdc)
  * absolutely from the window rects, so re-running it (UserGetDCEx reuse,
  * DceResetActiveDCEs after a move/resize) always yields the current state.
  */
+/* PrintWindow without composition gives the printed top-level window a backing for the length of the call */
+static PWND g_PrintRedirectWnd = NULL;
+
+BOOL
+IntCompositionBeginPrintRedirect(_In_ PWND Wnd)
+{
+    REDIRECT_ENTRY *e;
+
+    ASSERT(UserIsEnteredExclusive());
+    ASSERT(Wnd != NULL);
+
+    if (gbCompositionEnabled || g_PrintRedirectWnd != NULL)
+        return FALSE;
+    if (Wnd == UserGetDesktopWindow() || Wnd->spwndParent != UserGetDesktopWindow())
+        return FALSE;
+
+    e = IntCompositionFind(Wnd);
+    ASSERT(e == NULL);
+    if (e == NULL)
+        e = IntCompositionAlloc(Wnd);
+    if (e == NULL)
+        return FALSE;
+
+    if (IntCompositionEnsureSurface(Wnd, &e->Redirect) == NULL)
+    {
+        IntCompositionFreeSurface(&e->Redirect, FALSE);
+        e->Wnd = NULL;
+        g_RedirectWnds[e - g_Redirects] = NULL;
+        return FALSE;
+    }
+
+    g_PrintRedirectWnd = Wnd;
+    DceResetActiveDCEs(Wnd);
+    return TRUE;
+}
+
+VOID
+IntCompositionEndPrintRedirect(_In_ PWND Wnd)
+{
+    REDIRECT_ENTRY *e;
+
+    ASSERT(UserIsEnteredExclusive());
+    ASSERT(Wnd != NULL);
+    ASSERT(g_PrintRedirectWnd == Wnd);
+
+    g_PrintRedirectWnd = NULL;
+
+    /* Composition switched on during the paint keeps the backing as its own */
+    if (gbCompositionEnabled)
+        return;
+
+    DceUnredirectAllDCs();
+    e = IntCompositionFind(Wnd);
+    if (e != NULL)
+    {
+        IntCompositionFreeSurface(&e->Redirect, FALSE);
+        IntCompositionFreeBlur(e);
+        e->Wnd = NULL;
+        g_RedirectWnds[e - g_Redirects] = NULL;
+    }
+    DceResetActiveDCEs(Wnd);
+}
+
 VOID
 IntCompositionRedirectDC(_In_opt_ PWND Wnd, _In_ HDC hDC, _In_ ULONG DcxFlags, _In_opt_ HRGN hrgnClip, _In_ BOOL Revalidate)
 {
@@ -5180,7 +5253,8 @@ IntCompositionRedirectDC(_In_opt_ PWND Wnd, _In_ HDC hDC, _In_ ULONG DcxFlags, _
     BOOL bRedirect = FALSE;
     BOOL Virtual;
 
-    if (gbCompositionEnabled && Wnd != NULL)
+    if (Wnd != NULL &&
+        (gbCompositionEnabled || (g_PrintRedirectWnd != NULL && IntCompositionTopLevel(Wnd) == g_PrintRedirectWnd)))
     {
         ancestor = IntCompositionTopLevel(Wnd);
         if (ancestor != NULL)

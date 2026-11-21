@@ -8,6 +8,7 @@
 #include <ntoskrnl.h>
 #include "../kdb.h"
 #include "../kdbpriv.h"
+#include "riscv64-decode.h"
 #define NDEBUG
 #include <debug.h>
 
@@ -18,6 +19,7 @@
 const KDB_REGISTER KdbpRegisters[] =
 {
     KDB_REG("ra", Ra),
+    KDB_REG("sp", Sp),
     KDB_REG("gp", Gp),
     KDB_REG("tp", Tp),
     KDB_REG("t0", T0),
@@ -47,11 +49,10 @@ const KDB_REGISTER KdbpRegisters[] =
     KDB_REG("t4", T4),
     KDB_REG("t5", T5),
     KDB_REG("t6", T6),
+    KDB_REG("pc", Pc),
     KDB_REG("fcsr", Fcsr),
 
     /* The names that mean the same thing on every architecture */
-    KDB_REG("pc", Pc),
-    KDB_REG("sp", Sp),
     KDB_REG("fp", S0),
     KDB_REG("ret", A0)
 };
@@ -100,19 +101,369 @@ const ULONG KdbpFloatingRegisterCount = RTL_NUMBER_OF(KdbpFloatingRegisters);
 /* PUBLIC FUNCTIONS ***********************************************************/
 
 /*
- * Stepping one instruction at a time is not yet driven on this architecture.
+ * The processor has no step trap in supervisor mode, so a step is a breakpoint
+ * at the instruction that runs next, written over it and taken back when the
+ * stepping thread reaches it. Each thread has its own.
  */
+#define KDB_RISCV_EBREAK            0x00100073UL
+#define KDB_RISCV_SRET              0x10200073UL
+#define KDB_RISCV_DISPLACED_SLOTS   8
+#define KDB_RISCV_DISPLACED_SIZE    8
+
+typedef struct _KDB_RISCV_DISPLACED
+{
+    ULONG_PTR ResumePc;
+    PKTHREAD Thread;
+    ULONG Length;
+    BOOLEAN InUse;
+} KDB_RISCV_DISPLACED;
+
+extern UCHAR KiRiscvTrapEntryEnd[];
+
+typedef struct _KDB_RISCV_STEP
+{
+    ULONG_PTR Address;
+    PKTHREAD Thread;
+    ULONG_PTR Stack;
+    KD_BREAKPOINT_TYPE Saved;
+    BOOLEAN Armed;
+} KDB_RISCV_STEP;
+
+static KDB_RISCV_STEP KdbpRiscvSteps[MAXIMUM_PROCESSORS];
+static KDB_RISCV_DISPLACED KdbpRiscvDisplaced[KDB_RISCV_DISPLACED_SLOTS];
+
+C_ASSERT(KDB_RISCV_DISPLACED_SLOTS * KDB_RISCV_DISPLACED_SIZE == 64);
+C_ASSERT(sizeof(ULONG) + KD_BREAKPOINT_SIZE <= KDB_RISCV_DISPLACED_SIZE);
+
+/* Other code that runs into a step's breakpoint runs the instruction it covers here, one slot each */
+__attribute__((naked, aligned(KDB_RISCV_DISPLACED_SIZE)))
+static
+VOID
+KdbpRiscvDisplacedCode(VOID)
+{
+    __asm__ __volatile__(".rept 32\n\t.2byte 0x9002\n\t.endr");
+}
+
+static
+NTSTATUS
+KdbpRiscvCopyCode(
+    _In_ ULONG_PTR Address,
+    _Inout_updates_bytes_(Size) PVOID Value,
+    _In_ ULONG Size,
+    _In_ BOOLEAN Write)
+{
+    NTSTATUS Status;
+
+    Status = KdpCopyProcessMemoryChunks(NULL,
+                                        (ULONG64)Address,
+                                        Value,
+                                        Size,
+                                        0,
+                                        MMDBG_COPY_UNSAFE | (Write ? MMDBG_COPY_WRITE : 0),
+                                        NULL);
+    if (NT_SUCCESS(Status) && Write)
+        KeSweepICache((PVOID)Address, Size);
+    return Status;
+}
+
+static
+LONG
+KdbpRiscvFindStep(
+    _In_ PKTHREAD Thread)
+{
+    LONG Index;
+
+    for (Index = 0; Index < (LONG)RTL_NUMBER_OF(KdbpRiscvSteps); Index++)
+    {
+        if (KdbpRiscvSteps[Index].Armed && (KdbpRiscvSteps[Index].Thread == Thread))
+            return Index;
+    }
+
+    return -1;
+}
+
+/* Another armed step at the same address, which holds the instruction the breakpoint covers */
+static
+LONG
+KdbpRiscvStepAt(
+    _In_ ULONG_PTR Address,
+    _In_ LONG Except)
+{
+    LONG Index;
+
+    for (Index = 0; Index < (LONG)RTL_NUMBER_OF(KdbpRiscvSteps); Index++)
+    {
+        if ((Index != Except) && KdbpRiscvSteps[Index].Armed && (KdbpRiscvSteps[Index].Address == Address))
+            return Index;
+    }
+
+    return -1;
+}
+
+static
+VOID
+KdbpRiscvDisarmStep(
+    _In_ LONG Index)
+{
+    KDB_RISCV_STEP *Step;
+
+    if (Index < 0)
+        return;
+
+    ASSERT(Index < (LONG)RTL_NUMBER_OF(KdbpRiscvSteps));
+    Step = &KdbpRiscvSteps[Index];
+    ASSERT(Step->Armed);
+    Step->Armed = FALSE;
+
+    if (KdbpRiscvStepAt(Step->Address, Index) >= 0)
+        return;
+
+    if (!NT_SUCCESS(KdbpRiscvCopyCode(Step->Address, &Step->Saved, sizeof(Step->Saved), TRUE)))
+        KdbpPrint("The instruction at %p could not be put back after a step\n", (PVOID)Step->Address);
+}
+
 NTSTATUS
 NTAPI
 KdbpArchSetSingleStep(
     _Inout_ PCONTEXT Context,
     _In_ BOOLEAN Enable)
 {
-    UNREFERENCED_PARAMETER(Context);
-    UNREFERENCED_PARAMETER(Enable);
+    KD_BREAKPOINT_TYPE Instruction = KD_BREAKPOINT_VALUE;
+    PKTHREAD Thread = KeGetCurrentThread();
+    KDB_RISCV_STEP *Step;
+    ULONG_PTR NextPc;
+    PCSTR Reason;
+    NTSTATUS Status;
+    LONG Index, Shared;
 
-    /* TODO: single stepping needs this architecture's own debug state */
-    return STATUS_NOT_SUPPORTED;
+    KdbpRiscvDisarmStep(KdbpRiscvFindStep(Thread));
+    if (!Enable)
+        return STATUS_SUCCESS;
+
+    if (!KdbpRiscvGetNextPc(Context, &NextPc, &Reason))
+        return STATUS_NOT_SUPPORTED;
+
+    /* The debugger's own trap returns through that code: a breakpoint there would stop the debugger itself */
+    if ((NextPc >= (ULONG_PTR)KiRiscvTrapEntry) && (NextPc < (ULONG_PTR)KiRiscvTrapEntryEnd))
+        return STATUS_NOT_SUPPORTED;
+
+    for (Index = 0; Index < (LONG)RTL_NUMBER_OF(KdbpRiscvSteps); Index++)
+    {
+        if (!KdbpRiscvSteps[Index].Armed)
+            break;
+    }
+    if (Index == (LONG)RTL_NUMBER_OF(KdbpRiscvSteps))
+        return STATUS_INSUFFICIENT_RESOURCES;
+
+    Step = &KdbpRiscvSteps[Index];
+    Shared = KdbpRiscvStepAt(NextPc, Index);
+    if (Shared >= 0)
+    {
+        Step->Saved = KdbpRiscvSteps[Shared].Saved;
+    }
+    else
+    {
+        Status = KdbpRiscvCopyCode(NextPc, &Step->Saved, sizeof(Step->Saved), FALSE);
+        if (!NT_SUCCESS(Status))
+            return Status;
+
+        Status = KdbpRiscvCopyCode(NextPc, &Instruction, sizeof(Instruction), TRUE);
+        if (!NT_SUCCESS(Status))
+            return Status;
+    }
+
+    Step->Address = NextPc;
+    Step->Thread = Thread;
+    Step->Stack = (ULONG_PTR)Context->Sp;
+    Step->Armed = TRUE;
+    return STATUS_SUCCESS;
+}
+
+static
+BOOLEAN
+KdbpRiscvStepInstruction(
+    _In_ LONG Index,
+    _Out_ PULONG Inst,
+    _Out_ PLONG Length)
+{
+    KDB_RISCV_STEP *Step = &KdbpRiscvSteps[Index];
+    USHORT High;
+
+    ASSERT(Step->Armed);
+    *Inst = Step->Saved;
+    *Length = 2;
+    if ((Step->Saved & 3) != 3)
+        return TRUE;
+
+    if (!NT_SUCCESS(KdbpRiscvCopyCode(Step->Address + sizeof(USHORT), &High, sizeof(High), FALSE)))
+        return FALSE;
+    *Inst |= (ULONG)High << 16;
+    *Length = 4;
+    return TRUE;
+}
+
+static
+BOOLEAN
+KdbpRiscvIsBreakInstruction(
+    _In_ ULONG Inst,
+    _In_ LONG Length)
+{
+    return (Length == 2) ? (Inst == KD_BREAKPOINT_VALUE) : (Inst == KDB_RISCV_EBREAK);
+}
+
+/* Moves code that reached the step's breakpoint past the instruction under it, and leaves the breakpoint for the stepping thread */
+static
+BOOLEAN
+KdbpRiscvDisplace(
+    _Inout_ PCONTEXT Context,
+    _In_ ULONG Inst,
+    _In_ LONG Length)
+{
+    UCHAR Code[sizeof(ULONG) + KD_BREAKPOINT_SIZE];
+    KD_BREAKPOINT_TYPE Break = KD_BREAKPOINT_VALUE;
+    ULONG_PTR Slot;
+    ULONG Index;
+
+    ASSERT((Length == 2) || (Length == 4));
+    ASSERT(!KdbpRiscvIsBreakInstruction(Inst, Length));
+
+    if (KdbpRiscvEmulateRelative(Context, Inst, Length))
+        return TRUE;
+
+    if (Inst == KDB_RISCV_SRET)
+        return FALSE;
+
+    /* TODO: user-mode code has no slot to run in; the step is given up */
+    if ((ULONG_PTR)Context->Pc < (ULONG_PTR)MmSystemRangeStart)
+        return FALSE;
+
+    for (Index = 0; Index < KDB_RISCV_DISPLACED_SLOTS; Index++)
+    {
+        if (!KdbpRiscvDisplaced[Index].InUse)
+            break;
+    }
+    if (Index == KDB_RISCV_DISPLACED_SLOTS)
+        return FALSE;
+
+    RtlCopyMemory(Code, &Inst, Length);
+    RtlCopyMemory(Code + Length, &Break, sizeof(Break));
+    Slot = (ULONG_PTR)KdbpRiscvDisplacedCode + Index * KDB_RISCV_DISPLACED_SIZE;
+    if (!NT_SUCCESS(KdbpRiscvCopyCode(Slot, Code, Length + sizeof(Break), TRUE)))
+        return FALSE;
+
+    /* FIXME: an exception raised by the moved instruction is dispatched from the slot, outside its function's handlers */
+    KdbpRiscvDisplaced[Index].ResumePc = (ULONG_PTR)Context->Pc + Length;
+    KdbpRiscvDisplaced[Index].Thread = KeGetCurrentThread();
+    KdbpRiscvDisplaced[Index].Length = (ULONG)Length;
+    KdbpRiscvDisplaced[Index].InUse = TRUE;
+    Context->Pc = Slot;
+    return TRUE;
+}
+
+static
+BOOLEAN
+KdbpRiscvFinishDisplaced(
+    _Inout_ PCONTEXT Context)
+{
+    ULONG_PTR Base = (ULONG_PTR)KdbpRiscvDisplacedCode;
+    ULONG_PTR Pc = (ULONG_PTR)Context->Pc;
+    KDB_RISCV_DISPLACED *Displaced;
+    ULONG Index;
+
+    if ((Pc < Base) || (Pc >= Base + KDB_RISCV_DISPLACED_SLOTS * KDB_RISCV_DISPLACED_SIZE))
+        return FALSE;
+
+    Index = (ULONG)((Pc - Base) / KDB_RISCV_DISPLACED_SIZE);
+    Displaced = &KdbpRiscvDisplaced[Index];
+    if (!Displaced->InUse || (Pc != Base + Index * KDB_RISCV_DISPLACED_SIZE + Displaced->Length))
+        return FALSE;
+
+    ASSERT(Displaced->Thread == KeGetCurrentThread());
+    ASSERT((Displaced->Length == 2) || (Displaced->Length == 4));
+    Context->Pc = Displaced->ResumePc;
+    Displaced->InUse = FALSE;
+    return TRUE;
+}
+
+BOOLEAN
+NTAPI
+KdbpArchIsBreakInstruction(
+    _In_ ULONG_PTR Address)
+{
+    USHORT Code[2];
+
+    if (!NT_SUCCESS(KdbpSafeReadMemory(&Code[0], (PVOID)Address, sizeof(Code[0]))))
+        return TRUE;
+
+    if ((Code[0] & 3) != 3)
+        return Code[0] == KD_BREAKPOINT_VALUE;
+
+    if (!NT_SUCCESS(KdbpSafeReadMemory(&Code[1], (PVOID)(Address + sizeof(USHORT)), sizeof(Code[1]))))
+        return TRUE;
+
+    return ((ULONG)Code[0] | ((ULONG)Code[1] << 16)) == KDB_RISCV_EBREAK;
+}
+
+KDB_STEP_HIT
+NTAPI
+KdbpArchTranslateStep(
+    _In_opt_ PEXCEPTION_RECORD64 ExceptionRecord,
+    _Inout_ PCONTEXT Context)
+{
+    PKTHREAD Thread = KeGetCurrentThread();
+    ULONG_PTR Pc = (ULONG_PTR)Context->Pc;
+    ULONG_PTR Address, Distance;
+    KDB_RISCV_STEP *Step;
+    ULONG Inst;
+    LONG Index, Length;
+
+    if ((ExceptionRecord == NULL) || (ExceptionRecord->ExceptionCode != (NTSTATUS)STATUS_BREAKPOINT))
+        return KdbStepNotHit;
+
+    if (KdbpRiscvFinishDisplaced(Context))
+        return KdbStepForeignHit;
+
+    Index = KdbpRiscvStepAt(Pc, -1);
+    if (Index < 0)
+        return KdbStepNotHit;
+
+    Address = KdbpRiscvSteps[Index].Address;
+    Context->Pc = Address;
+
+    /* An interrupt runs on its own stack, and in the thread it interrupted */
+    for (Index = 0; Index < (LONG)RTL_NUMBER_OF(KdbpRiscvSteps); Index++)
+    {
+        Step = &KdbpRiscvSteps[Index];
+        if (!Step->Armed || (Step->Address != Address) || (Step->Thread != Thread))
+            continue;
+
+        Distance = ((ULONG_PTR)Context->Sp > Step->Stack) ? (ULONG_PTR)Context->Sp - Step->Stack
+                                                          : Step->Stack - (ULONG_PTR)Context->Sp;
+        if (Distance < KERNEL_LARGE_STACK_SIZE)
+        {
+            KdbpRiscvDisarmStep(Index);
+            return KdbStepDone;
+        }
+    }
+
+    Index = KdbpRiscvStepAt(Address, -1);
+    ASSERT(Index >= 0);
+    if (!KdbpRiscvStepInstruction(Index, &Inst, &Length))
+        return KdbStepNotHit;
+
+    /* FIXME: a breakpoint of the debugger's own under the step is handled for the other thread, and can take the step's instruction back with it */
+    if (KdbpRiscvIsBreakInstruction(Inst, Length))
+        return KdbStepNotHit;
+
+    if (KdbpRiscvDisplace(Context, Inst, Length))
+        return KdbStepForeignHit;
+
+    for (Index = 0; Index < (LONG)RTL_NUMBER_OF(KdbpRiscvSteps); Index++)
+    {
+        if (KdbpRiscvSteps[Index].Armed && (KdbpRiscvSteps[Index].Address == Address))
+            KdbpRiscvDisarmStep(Index);
+    }
+    return KdbStepAbandoned;
 }
 
 ULONG

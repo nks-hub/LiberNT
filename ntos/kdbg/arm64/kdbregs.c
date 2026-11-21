@@ -291,4 +291,33 @@ KdbpArchPrepareContinue(
     State->u.Continue2.ControlSet.CurrentSymbolStart = 1;
 }
 
+/* The processor steps by itself here: no stop is a step the debugger has to take back */
+KDB_STEP_HIT
+NTAPI
+KdbpArchTranslateStep(
+    _In_opt_ PEXCEPTION_RECORD64 ExceptionRecord,
+    _Inout_ PCONTEXT Context)
+{
+    UNREFERENCED_PARAMETER(ExceptionRecord);
+    UNREFERENCED_PARAMETER(Context);
+    return KdbStepNotHit;
+}
+
+/* BRK #imm16 in the A64 encoding */
+#define KDB_ARM64_BRK_MASK  0xFFE0001FUL
+#define KDB_ARM64_BRK       0xD4200000UL
+
+BOOLEAN
+NTAPI
+KdbpArchIsBreakInstruction(
+    _In_ ULONG_PTR Address)
+{
+    ULONG Instruction;
+
+    if (!NT_SUCCESS(KdbpSafeReadMemory(&Instruction, (PVOID)Address, sizeof(Instruction))))
+        return TRUE;
+
+    return (Instruction & KDB_ARM64_BRK_MASK) == KDB_ARM64_BRK;
+}
+
 /* EOF */

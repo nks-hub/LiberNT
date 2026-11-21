@@ -31,13 +31,16 @@ enum SM2RCMD
     SM2C_COMPUTER,
     SM2C_CONTROL,
     SM2C_PRINTERS,
+#ifdef REMOTE_ASSISTANCE
     SM2C_ASSIST,
+#endif
     SM2C_GAP
 };
 
 enum
 {
     SM2_TIMER_ANIM = 1,
+    SM2_TIMER_WARM = 2,
     SM2_IDC_SEARCH = 1000,
     SM2_CONTEXT_FIRST = 1,
     SM2_CONTEXT_LAST = 0x6FFF,
@@ -46,7 +49,7 @@ enum
     SM2M_FLYOUTGONE = WM_APP + 42
 };
 
-enum SM2ANIMPHASE { SM2A_NONE, SM2A_OPEN, SM2A_CLOSE };
+enum SM2ANIMPHASE { SM2A_NONE, SM2A_CLOSE };
 
 struct SM2PALETTE
 {
@@ -226,6 +229,7 @@ struct SM2ITEM
     CStringW szPath;
     CStringW szTargetPath;
     ULONGLONG Created;
+    ULONGLONG Written;
     BOOL bFolder;
     BOOL bExpanded;
     HICON hSmallIcon;
@@ -234,7 +238,7 @@ struct SM2ITEM
     BOOL bTargetTried;
     CAtlArray<SM2ITEM*> Children;
 
-    SM2ITEM() : Created(0), bFolder(FALSE), bExpanded(FALSE), hSmallIcon(NULL), hLargeIcon(NULL),
+    SM2ITEM() : Created(0), Written(0), bFolder(FALSE), bExpanded(FALSE), hSmallIcon(NULL), hLargeIcon(NULL),
                 bSmallTried(FALSE), bTargetTried(FALSE) {}
 
     ~SM2ITEM()
@@ -348,6 +352,8 @@ SM2EnumFolder(LPCWSTR pszDir, SM2ITEM *pParent, BOOL bFilesOnly)
             pItem->szPath = szFull;
             pItem->Created = ((ULONGLONG)wfd.ftCreationTime.dwHighDateTime << 32) |
                              wfd.ftCreationTime.dwLowDateTime;
+            pItem->Written = ((ULONGLONG)wfd.ftLastWriteTime.dwHighDateTime << 32) |
+                             wfd.ftLastWriteTime.dwLowDateTime;
             pParent->Children.Add(pItem);
         }
     } while (FindNextFileW(hFind, &wfd));
@@ -387,6 +393,41 @@ SM2FlattenTree(SM2ITEM *pParent, CAtlArray<SM2ITEM*> &Flat)
             SM2FlattenTree(p, Flat);
         else
             Flat.Add(p);
+    }
+}
+
+static VOID
+SM2AdoptCaches(const CAtlArray<SM2ITEM*> &Flat, const CAtlArray<SM2ITEM*> &Old)
+{
+    SIZE_T Next = 0;
+
+    for (SIZE_T i = 0; i < Flat.GetCount() && Old.GetCount(); i++)
+    {
+        SM2ITEM *pItem = Flat[i];
+        SM2ITEM *pOld = NULL;
+
+        for (SIZE_T n = 0; n < Old.GetCount(); n++)
+        {
+            SIZE_T k = (Next + n) % Old.GetCount();
+            if (Old[k]->Written == pItem->Written && !Old[k]->szPath.CompareNoCase(pItem->szPath))
+            {
+                pOld = Old[k];
+                Next = k + 1;
+                break;
+            }
+        }
+        if (!pOld)
+            continue;
+
+        ATLASSERT(!pItem->bFolder && !pOld->bFolder);
+        ATLASSERT(!pItem->hSmallIcon && !pItem->hLargeIcon && !pItem->bTargetTried);
+        pItem->szTargetPath = pOld->szTargetPath;
+        pItem->bTargetTried = pOld->bTargetTried;
+        pItem->bSmallTried = pOld->bSmallTried;
+        pItem->hSmallIcon = pOld->hSmallIcon;
+        pItem->hLargeIcon = pOld->hLargeIcon;
+        pOld->hSmallIcon = NULL;
+        pOld->hLargeIcon = NULL;
     }
 }
 
@@ -732,6 +773,7 @@ SM2OpenGames(VOID)
     SM2OpenCsidlFolder(CSIDL_PROGRAMS);
 }
 
+#ifdef REMOTE_ASSISTANCE
 static BOOL
 SM2NetworkAssistanceEnabled(VOID)
 {
@@ -743,6 +785,7 @@ SM2NetworkAssistanceEnabled(VOID)
         RegCloseKey(hKey);
     return lError == ERROR_SUCCESS || lError == ERROR_ACCESS_DENIED;
 }
+#endif
 
 static VOID
 SM2ExecRightCmd(int nCmd)
@@ -757,7 +800,9 @@ SM2ExecRightCmd(int nCmd)
         case SM2C_COMPUTER:  SM2OpenCsidlIdList(CSIDL_DRIVES); break;
         case SM2C_CONTROL:   ShellExecuteW(NULL, NULL, L"ms-settings:", NULL, NULL, SW_SHOWNORMAL); break;
         case SM2C_PRINTERS:  ShellExecuteW(NULL, NULL, L"ms-settings:devices", NULL, NULL, SW_SHOWNORMAL); break;
+#ifdef REMOTE_ASSISTANCE
         case SM2C_ASSIST:    ShellExecuteW(NULL, NULL, L"netassist.exe", NULL, NULL, SW_SHOWNORMAL); break;
+#endif
     }
 }
 
@@ -778,7 +823,9 @@ static const SM2RIGHTDEF g_SM2RightDefs[] =
     { 0,                       SM2C_GAP },
     { IDS_SM2_SETTINGS,        SM2C_CONTROL },
     { IDS_SM2_DEVICES,         SM2C_PRINTERS },
+#ifdef REMOTE_ASSISTANCE
     { IDS_SM2_ASSIST,          SM2C_ASSIST },
+#endif
 };
 
 struct SM2ROW
@@ -1184,6 +1231,8 @@ public:
     CStartMenu2UserPic m_UserPic;
     HWND m_hwndFlyout;
     ULONGLONG m_LastDismiss;
+    SIZE_T m_WarmNext;
+    BOOL m_bWarmTree;
     UINT m_uPosition;
     WCHAR m_szUser[128];
     BOOL m_bTracking;
@@ -1199,7 +1248,7 @@ public:
         m_bScrollVis(FALSE), m_bDragScroll(FALSE), m_nDragOff(0),
         m_iHot(-1), m_iSel(-1), m_iPressed(-1),
         m_AnimPhase(SM2A_NONE), m_AnimT0(0), m_dxSlide(0), m_dySlide(0),
-        m_hwndFlyout(NULL), m_LastDismiss(0), m_uPosition(ABE_BOTTOM),
+        m_hwndFlyout(NULL), m_LastDismiss(0), m_WarmNext(0), m_bWarmTree(FALSE), m_uPosition(ABE_BOTTOM),
         m_bTracking(FALSE), m_bInContextMenu(FALSE)
     {
         ZeroMemory(&m_HotIn, sizeof(m_HotIn));
@@ -1494,8 +1543,11 @@ public:
         RegCloseKey(hKey);
     }
 
-    VOID RebuildData()
+    VOID RebuildTree()
     {
+        SM2ITEM Old;
+        CAtlArray<SM2ITEM*> OldFlat;
+
         ClearHotAnims();
         ClearViewAnim();
         ClearRecentExecutables();
@@ -1505,8 +1557,47 @@ public:
         m_TreeVis.SetCount(0);
         m_TreeDepth.SetCount(0);
         m_Rows.SetCount(0);
+
+        /* Shortcuts whose file did not change keep their resolved target and icons */
+        for (SIZE_T i = 0; i < m_Root.Children.GetCount(); i++)
+            Old.Children.Add(m_Root.Children[i]);
+        m_Root.Children.SetCount(0);
+        SM2FlattenTree(&Old, OldFlat);
+
         SM2BuildTree(&m_Root);
         SM2FlattenTree(&m_Root, m_Flat);
+        SM2AdoptCaches(m_Flat, OldFlat);
+    }
+
+    VOID WarmStep()
+    {
+        if (IsWindowVisible())
+        {
+            KillTimer(SM2_TIMER_WARM);
+            return;
+        }
+
+        if (!m_bWarmTree)
+        {
+            RebuildTree();
+            m_bWarmTree = TRUE;
+            m_WarmNext = 0;
+            SetTimer(SM2_TIMER_WARM, 15, NULL);
+        }
+
+        for (UINT n = 0; n < 8 && m_WarmNext < m_Flat.GetCount(); n++, m_WarmNext++)
+            SM2GetTargetPath(m_Flat[m_WarmNext]);
+
+        if (m_WarmNext >= m_Flat.GetCount())
+        {
+            KillTimer(SM2_TIMER_WARM);
+            RebuildData();
+        }
+    }
+
+    VOID RebuildData()
+    {
+        RebuildTree();
         AddRecentlyAddedList();
         AddRecentlyAdded();
         AddRecentExecutables();
@@ -1670,8 +1761,10 @@ public:
                 y += Sc(12);
                 continue;
             }
+#ifdef REMOTE_ASSISTANCE
             if (g_SM2RightDefs[i].nCmd == SM2C_ASSIST && !SM2NetworkAssistanceEnabled())
                 continue;
+#endif
             RECT rc = { rx, y, rw, y + RightRowH() };
             AddRow(rc, SM2R_RIGHT, NULL, g_SM2RightDefs[i].nCmd);
             y += RightRowH();
@@ -2164,13 +2257,11 @@ public:
         ::ShowWindow(m_hwndEdit, SW_SHOW);
         LayoutRows();
 
-        m_AnimPhase = SM2A_OPEN;
-        m_AnimT0 = now;
+        m_AnimPhase = SM2A_NONE;
 
         SetLayeredWindowAttributes(m_hWnd, 0, 0, LWA_ALPHA);
-        SetWindowPos(HWND_TOPMOST, x + m_dxSlide, y + m_dySlide, w, h,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
-        PositionUserPic(x + m_dxSlide, y + m_dySlide, 0);
+        SetWindowPos(HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        PositionUserPic(x, y, 255);
         if (m_UserPic.IsWindow())
             m_UserPic.SetWindowPos(HWND_TOPMOST, 0, 0, 0, 0,
                                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
@@ -2179,7 +2270,8 @@ public:
         ::SetFocus(m_hwndEdit);
 
         InvalidateRect(NULL, FALSE);
-        StartAnimTimer();
+        UpdateWindow();
+        SetLayeredWindowAttributes(m_hWnd, 0, 255, LWA_ALPHA);
         return S_OK;
     }
 
@@ -2852,12 +2944,14 @@ public:
         m_UserPic.Create(m_hWnd, CWindow::rcDefault, NULL);
 #endif
 
+        SetTimer(SM2_TIMER_WARM, 2000, NULL);
         return 0;
     }
 
     LRESULT OnDestroy(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
     {
         KillTimer(SM2_TIMER_ANIM);
+        KillTimer(SM2_TIMER_WARM);
         CloseFlyout();
         if (m_hwndEdit)
         {
@@ -2890,28 +2984,18 @@ public:
 
     LRESULT OnTimer(UINT uMsg, WPARAM wParam, LPARAM lParam, BOOL &bHandled)
     {
+        if (wParam == SM2_TIMER_WARM)
+        {
+            WarmStep();
+            return 0;
+        }
         if (wParam != SM2_TIMER_ANIM)
             return 0;
 
         ULONGLONG now = GetTickCount64();
         BOOL bActive = FALSE;
 
-        if (m_AnimPhase == SM2A_OPEN)
-        {
-            double t = (double)(now - m_AnimT0) / 170.0;
-            double e = SM2Ease(t);
-            BYTE alpha = (BYTE)(255.0 * e);
-            int x = m_ptFinal.x + (int)(m_dxSlide * (1.0 - e));
-            int y = m_ptFinal.y + (int)(m_dySlide * (1.0 - e));
-            SetLayeredWindowAttributes(m_hWnd, 0, alpha, LWA_ALPHA);
-            SetWindowPos(NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-            PositionUserPic(x, y, alpha);
-            if (t >= 1.0)
-                m_AnimPhase = SM2A_NONE;
-            else
-                bActive = TRUE;
-        }
-        else if (m_AnimPhase == SM2A_CLOSE)
+        if (m_AnimPhase == SM2A_CLOSE)
         {
             double t = (double)(now - m_AnimT0) / 170.0;
             if (t > 1.0) t = 1.0;

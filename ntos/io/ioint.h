@@ -290,6 +290,9 @@ NTSTATUS IopQueryDeviceInformation(_In_ PFILE_OBJECT FileObject,
 NTSTATUS IopGetBasicInformationFile(_In_ PFILE_OBJECT FileObject,
                                     _Out_ PFILE_BASIC_INFORMATION BasicInfo);
 VOID IopCloseLocalFileObject(_Inout_ PDUMMY_FILE_OBJECT LocalFileObject);
+NTSTATUS IopOpenByNameWithoutHandle(_In_ POBJECT_ATTRIBUTES ObjectAttributes,
+                                    _In_ ACCESS_MASK DesiredAccess,
+                                    _Inout_ POPEN_PACKET OpenPacket);
 NTSTATUS IopQueryAttributesFile(_In_ POBJECT_ATTRIBUTES ObjectAttributes,
                                 _In_ FILE_INFORMATION_CLASS FileInformationClass,
                                 _In_ ULONG FileInformationSize,
@@ -393,6 +396,7 @@ NTSTATUS IopDoLoadUnloadDriver(_In_opt_ PUNICODE_STRING DriverServiceName,
                                _Inout_ PDRIVER_OBJECT *DriverObject);
 NTSTATUS IopUnloadDriver(_In_ PUNICODE_STRING DriverServiceName, _In_ BOOLEAN UnloadPnpDrivers);
 NTSTATUS IopTryUnloadDriver(_In_ PDRIVER_OBJECT DriverObject, _In_ BOOLEAN Force);
+VOID IopUnloadUnusedPnpDriver(_In_ PDRIVER_OBJECT DriverObject);
 NTSTATUS IopNormalizeImagePath(_Inout_ PUNICODE_STRING ImagePath,
                                _In_ PUNICODE_STRING ServiceName);
 BOOLEAN IopCheckSafeBootDriver(_In_ HANDLE ServiceHandle, _In_ PUNICODE_STRING ServiceName);

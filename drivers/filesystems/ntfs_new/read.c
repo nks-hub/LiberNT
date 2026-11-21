@@ -79,6 +79,19 @@ NtfsDirectIoCompletion(
     return STATUS_MORE_PROCESSING_REQUIRED;
 }
 
+/* A write-through file or a non-cached write marked write-through must reach the media, so the device is told to bypass its cache */
+static
+BOOLEAN
+NtfsIsWriteThrough(_In_ PIRP Irp)
+{
+    PIO_STACK_LOCATION IrpSp = IoGetCurrentIrpStackLocation(Irp);
+
+    if (BooleanFlagOn(Irp->Flags, IRP_PAGING_IO))
+        return FALSE;
+    return (IrpSp->FileObject && BooleanFlagOn(IrpSp->FileObject->Flags, FO_WRITE_THROUGH)) ||
+           (BooleanFlagOn(Irp->Flags, IRP_NOCACHE) && BooleanFlagOn(IrpSp->Flags, SL_WRITE_THROUGH));
+}
+
 NTSTATUS
 NtfsSubmitDirectIo(
     _In_ PVolumeContextBlock VolCB,
@@ -106,6 +119,8 @@ NtfsSubmitDirectIo(
     IoStack->MajorFunction = MajorFunction;
     IoStack->MinorFunction = 0;
     IoStack->Flags = SL_OVERRIDE_VERIFY_VOLUME;
+    if (MajorFunction == IRP_MJ_WRITE && NtfsIsWriteThrough(Irp))
+        IoStack->Flags |= SL_WRITE_THROUGH;
     IoStack->Control = 0;
     IoStack->FileObject = NULL;
     if (MajorFunction == IRP_MJ_WRITE)
@@ -139,7 +154,107 @@ NtfsSubmitDirectIo(
 
     NT_ASSERT(ReadContext.IoStatus.Status != STATUS_PENDING);
     Irp->IoStatus = ReadContext.IoStatus;
-    return ReadContext.IoStatus.Status;
+    if (NT_SUCCESS(Irp->IoStatus.Status) && Irp->IoStatus.Information != Length)
+    {
+        Irp->IoStatus.Status = STATUS_DATA_ERROR;
+        Irp->IoStatus.Information = 0;
+    }
+    return Irp->IoStatus.Status;
+}
+
+static
+NTSTATUS
+NtfsSubmitDirectIoRun(_In_ PVolumeContextBlock VolCB,
+                      _In_ PIRP MasterIrp,
+                      _In_ UCHAR MajorFunction,
+                      _In_ ULONG BufferOffset,
+                      _In_ PNTFS_DIRECT_IO_RUN Run)
+{
+    NTFS_SYNC_READ_CONTEXT RunContext;
+    PIO_STACK_LOCATION IoStack;
+    PUCHAR RunVa;
+    PMDL Mdl;
+    PIRP Irp;
+    NTSTATUS Status;
+
+    ASSERT(MmGetMdlByteCount(MasterIrp->MdlAddress) >= BufferOffset + Run->Length);
+    Irp = IoAllocateIrp(VolCB->StorageDevice->StackSize, FALSE);
+    if (!Irp)
+        return STATUS_INSUFFICIENT_RESOURCES;
+    RunVa = (PUCHAR)MmGetMdlVirtualAddress(MasterIrp->MdlAddress) + BufferOffset;
+    Mdl = IoAllocateMdl(RunVa, Run->Length, FALSE, FALSE, NULL);
+    if (!Mdl)
+    {
+        IoFreeIrp(Irp);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    IoBuildPartialMdl(MasterIrp->MdlAddress, Mdl, RunVa, Run->Length);
+
+    Irp->MdlAddress = Mdl;
+    Irp->Flags = IRP_NOCACHE | (MasterIrp->Flags & (IRP_PAGING_IO | IRP_SYNCHRONOUS_PAGING_IO));
+    Irp->RequestorMode = KernelMode;
+    Irp->Tail.Overlay.Thread = PsGetCurrentThread();
+    IoStack = IoGetNextIrpStackLocation(Irp);
+    IoStack->MajorFunction = MajorFunction;
+    IoStack->Flags = SL_OVERRIDE_VERIFY_VOLUME;
+    if (MajorFunction == IRP_MJ_WRITE && NtfsIsWriteThrough(MasterIrp))
+        IoStack->Flags |= SL_WRITE_THROUGH;
+    if (MajorFunction == IRP_MJ_WRITE)
+    {
+        IoStack->Parameters.Write.Length = Run->Length;
+        IoStack->Parameters.Write.ByteOffset.QuadPart = Run->DiskOffset;
+    }
+    else
+    {
+        IoStack->Parameters.Read.Length = Run->Length;
+        IoStack->Parameters.Read.ByteOffset.QuadPart = Run->DiskOffset;
+    }
+    KeInitializeEvent(&RunContext.Event, NotificationEvent, FALSE);
+    RunContext.IoStatus.Status = STATUS_PENDING;
+    RunContext.IoStatus.Information = 0;
+    IoSetCompletionRoutine(Irp, NtfsDirectIoCompletion, &RunContext, TRUE, TRUE, TRUE);
+
+    Status = IoCallDriver(VolCB->StorageDevice, Irp);
+    if (Status == STATUS_PENDING)
+        KeWaitForSingleObject(&RunContext.Event, Executive, KernelMode, FALSE, NULL);
+    NT_ASSERT(RunContext.IoStatus.Status != STATUS_PENDING);
+    Status = RunContext.IoStatus.Status;
+    if (NT_SUCCESS(Status) && RunContext.IoStatus.Information != Run->Length)
+        Status = STATUS_DATA_ERROR;
+
+    MmPrepareMdlForReuse(Mdl);
+    IoFreeMdl(Mdl);
+    IoFreeIrp(Irp);
+    return Status;
+}
+
+/* A transfer that spans several runs goes to the device one run at a time, each through its own IRP */
+NTSTATUS
+NtfsSubmitDirectIoMap(_In_ PVolumeContextBlock VolCB,
+                      _Inout_ PIRP Irp,
+                      _In_ UCHAR MajorFunction,
+                      _In_ PNTFS_DIRECT_IO_MAP Map)
+{
+    ULONG BufferOffset = 0;
+    ULONG Index;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    NT_ASSERT(MajorFunction == IRP_MJ_READ || MajorFunction == IRP_MJ_WRITE);
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+    ASSERT(Map->RunCount != 0 && Map->RunCount <= NTFS_DIRECT_IO_RUNS);
+
+    if (Map->RunCount == 1)
+        return NtfsSubmitDirectIo(VolCB, Irp, MajorFunction, Map->Runs[0].DiskOffset, Map->Runs[0].Length);
+
+    for (Index = 0; Index < Map->RunCount && NT_SUCCESS(Status); Index++)
+    {
+        Status = NtfsSubmitDirectIoRun(VolCB, Irp, MajorFunction, BufferOffset, &Map->Runs[Index]);
+        if (NT_SUCCESS(Status))
+            BufferOffset += Map->Runs[Index].Length;
+    }
+    Irp->IoStatus.Status = Status;
+    Irp->IoStatus.Information = NT_SUCCESS(Status) ? BufferOffset : 0;
+    return Status;
 }
 
 NTSTATUS
@@ -198,7 +313,8 @@ NtfsMapDirectIo(
     _In_ ULONGLONG FileOffset,
     _In_ ULONG Length,
     _In_ LOCK_OPERATION Operation,
-    _Out_ PULONGLONG MappedOffset,
+    _In_ BOOLEAN AllowPastValidData,
+    _Out_ PNTFS_DIRECT_IO_MAP Map,
     _Out_ PBOOLEAN Handled)
 {
     PAttribute Attribute;
@@ -210,7 +326,11 @@ NtfsMapDirectIo(
     ULONGLONG Available;
     ULONGLONG PhysicalCluster;
     ULONGLONG DiskOffset;
+    ULONGLONG ValidDataLength;
+    ULONGLONG DataSize;
     ULONG ExtentCount;
+    ULONG Mapped;
+    ULONG Piece;
     NTSTATUS Status;
 
     NT_ASSERT(ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource));
@@ -218,7 +338,12 @@ NtfsMapDirectIo(
     NT_ASSERT(Length != 0);
 
     *Handled = FALSE;
-    *MappedOffset = 0;
+    Map->RunCount = 0;
+    Map->TransferLength = Length;
+    Map->ValidLength = Length;
+    Map->DataLength = Length;
+    if (FileCB->StreamCB && FileCB->StreamCB->Deleted)
+        return STATUS_SUCCESS;
     if (!Irp->MdlAddress &&
         !Irp->AssociatedIrp.SystemBuffer)
     {
@@ -248,10 +373,40 @@ NtfsMapDirectIo(
     if (!Attribute ||
         !Attribute->IsNonResident ||
         (Attribute->Flags & (ATTR_COMPRESSION_MASK | ATTR_ENCRYPTED)) ||
-        FileOffset > ~(ULONGLONG)0 - Length ||
-        FileOffset + Length > Attribute->NonResident.InitalizedDataSize)
+        FileOffset > ~(ULONGLONG)0 - Length)
     {
         return STATUS_SUCCESS;
+    }
+    ValidDataLength = Attribute->NonResident.InitalizedDataSize;
+    DataSize = Attribute->NonResident.DataSize;
+    /* The valid data length cannot pass the recorded size, so data written past it would later be zeroed over */
+    if (FileOffset + Length > ValidDataLength)
+    {
+        if (!AllowPastValidData ||
+            Attribute->Flags != 0 ||
+            ValidDataLength > DataSize)
+        {
+            return STATUS_SUCCESS;
+        }
+        if (Operation == IoReadAccess)
+        {
+            if (FileOffset > ValidDataLength || FileOffset + Length > DataSize)
+                return STATUS_SUCCESS;
+        }
+        else
+        {
+            /* Only the sectors holding valid data come from the device: what follows them reads as zeros, as the library returns it */
+            if (FileOffset >= ValidDataLength)
+                return STATUS_SUCCESS;
+            Map->ValidLength = (ULONG)(ValidDataLength - FileOffset);
+            Map->DataLength = (ULONG)min((ULONGLONG)Length, DataSize - FileOffset);
+            Map->TransferLength = (Map->ValidLength + VolCB->BytesPerSector - 1) /
+                                  VolCB->BytesPerSector * VolCB->BytesPerSector;
+            ASSERT(Map->ValidLength < Length);
+            ASSERT(Map->ValidLength <= Map->DataLength);
+            ASSERT(Map->TransferLength >= Map->ValidLength);
+            ASSERT(Map->TransferLength <= Length);
+        }
     }
 
     ClusterSize = (ULONGLONG)VolCB->BytesPerSector *
@@ -259,53 +414,99 @@ NtfsMapDirectIo(
     if (!ClusterSize)
         return STATUS_SUCCESS;
 
-    StartingVcn = FileOffset / ClusterSize;
-    InClusterOffset = FileOffset % ClusterSize;
-    ExtentCount = 1;
-    Status = NtfsFileRecordQueryRetrievalPointers(FileCB->FileRec,
-                                                  FileCB->RequestedType,
-                                                  FileCB->RequestedStream,
-                                                  StartingVcn,
-                                                  &ReturnedStartingVcn,
-                                                  &Extent,
-                                                  &ExtentCount);
-    if ((!NT_SUCCESS(Status) && Status != STATUS_BUFFER_OVERFLOW) ||
-        ExtentCount != 1 ||
-        ReturnedStartingVcn > StartingVcn ||
-        Extent.NextVcn <= StartingVcn ||
-        Extent.Lcn < 0)
+    for (Mapped = 0; Mapped < Map->TransferLength; Mapped += Piece)
     {
-        return STATUS_SUCCESS;
+        StartingVcn = (FileOffset + Mapped) / ClusterSize;
+        InClusterOffset = (FileOffset + Mapped) % ClusterSize;
+        ExtentCount = 1;
+        Status = NtfsFileRecordQueryRetrievalPointers(FileCB->FileRec,
+                                                      FileCB->RequestedType,
+                                                      FileCB->RequestedStream,
+                                                      StartingVcn,
+                                                      &ReturnedStartingVcn,
+                                                      &Extent,
+                                                      &ExtentCount);
+        if ((!NT_SUCCESS(Status) && Status != STATUS_BUFFER_OVERFLOW) ||
+            ExtentCount != 1 ||
+            ReturnedStartingVcn > StartingVcn ||
+            Extent.NextVcn <= StartingVcn ||
+            Extent.Lcn < 0)
+        {
+            Map->RunCount = 0;
+            return STATUS_SUCCESS;
+        }
+
+        Available = Extent.NextVcn - StartingVcn;
+        if (Available > ~(ULONGLONG)0 / ClusterSize)
+            Available = ~(ULONGLONG)0 / ClusterSize;
+        Available *= ClusterSize;
+        ASSERT(Available > InClusterOffset);
+        Available -= InClusterOffset;
+        Piece = (ULONG)min(Available, (ULONGLONG)(Map->TransferLength - Mapped));
+        ASSERT(Piece != 0);
+        ASSERT(Piece % VolCB->BytesPerSector == 0);
+
+        PhysicalCluster = StartingVcn - ReturnedStartingVcn;
+        if ((ULONGLONG)Extent.Lcn > ~(ULONGLONG)0 - PhysicalCluster)
+        {
+            Map->RunCount = 0;
+            return STATUS_SUCCESS;
+        }
+        PhysicalCluster += (ULONGLONG)Extent.Lcn;
+        if (PhysicalCluster > (~(ULONGLONG)0 - InClusterOffset) / ClusterSize)
+        {
+            Map->RunCount = 0;
+            return STATUS_SUCCESS;
+        }
+        DiskOffset = PhysicalCluster * ClusterSize + InClusterOffset;
+        NT_ASSERT(DiskOffset % VolCB->BytesPerSector == 0);
+
+        if (Map->RunCount != 0 &&
+            Map->Runs[Map->RunCount - 1].DiskOffset + Map->Runs[Map->RunCount - 1].Length == DiskOffset)
+        {
+            Map->Runs[Map->RunCount - 1].Length += Piece;
+        }
+        else if (Map->RunCount < NTFS_DIRECT_IO_RUNS)
+        {
+            Map->Runs[Map->RunCount].DiskOffset = DiskOffset;
+            Map->Runs[Map->RunCount].Length = Piece;
+            Map->RunCount++;
+        }
+        else
+        {
+            Map->RunCount = 0;
+            return STATUS_SUCCESS;
+        }
     }
 
-    Available = Extent.NextVcn - StartingVcn;
-    if (Available > ~(ULONGLONG)0 / ClusterSize)
-        return STATUS_SUCCESS;
-    Available *= ClusterSize;
-    if (Available < InClusterOffset ||
-        Available - InClusterOffset < Length)
-    {
-        return STATUS_SUCCESS;
-    }
-
-    PhysicalCluster = StartingVcn - ReturnedStartingVcn;
-    if ((ULONGLONG)Extent.Lcn >
-        ~(ULONGLONG)0 - PhysicalCluster)
-    {
-        return STATUS_SUCCESS;
-    }
-    PhysicalCluster += (ULONGLONG)Extent.Lcn;
-    if (PhysicalCluster > ~(ULONGLONG)0 / ClusterSize)
-        return STATUS_SUCCESS;
-    DiskOffset = PhysicalCluster * ClusterSize;
-    if (DiskOffset > ~(ULONGLONG)0 - InClusterOffset)
-        return STATUS_SUCCESS;
-    DiskOffset += InClusterOffset;
-    NT_ASSERT(DiskOffset % VolCB->BytesPerSector == 0);
-
+    ASSERT(Map->RunCount != 0);
+    ASSERT(Mapped == Map->TransferLength);
     *Handled = TRUE;
-    *MappedOffset = DiskOffset;
     return STATUS_SUCCESS;
+}
+
+NTSTATUS
+NtfsFlushDirectIoMap(_In_ PVolumeContextBlock VolCB,
+                     _In_ PNTFS_DIRECT_IO_MAP Map)
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+    ULONG Index;
+
+    ASSERT(Map->RunCount != 0 && Map->RunCount <= NTFS_DIRECT_IO_RUNS);
+    for (Index = 0; Index < Map->RunCount && NT_SUCCESS(Status); Index++)
+        Status = NtfsDiskFlushRangeKm(VolCB->StorageDevice, Map->Runs[Index].DiskOffset, Map->Runs[Index].Length);
+    return Status;
+}
+
+VOID
+NtfsDropDirectIoMap(_In_ PVolumeContextBlock VolCB,
+                    _In_ PNTFS_DIRECT_IO_MAP Map)
+{
+    ULONG Index;
+
+    ASSERT(Map->RunCount != 0 && Map->RunCount <= NTFS_DIRECT_IO_RUNS);
+    for (Index = 0; Index < Map->RunCount; Index++)
+        NtfsDiskDropCleanRangeKm(VolCB->StorageDevice, Map->Runs[Index].DiskOffset, Map->Runs[Index].Length);
 }
 
 #define NTFS_POSTED_READ ((PVOID)(ULONG_PTR)0x4E524450)
@@ -398,7 +599,7 @@ NtfsFsdRead(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     BOOLEAN ResourceAcquired = FALSE;
     BOOLEAN PagingIo = FALSE;
     BOOLEAN DirectRead;
-    ULONGLONG DirectOffset = 0;
+    NTFS_DIRECT_IO_MAP DirectMap;
 
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
     FileObject = IrpSp->FileObject;
@@ -502,29 +703,45 @@ NtfsFsdRead(_In_ PDEVICE_OBJECT VolumeDeviceObject,
                                  (ULONGLONG)ReadOffset.QuadPart,
                                  RequestedLength,
                                  IoWriteAccess,
-                                 &DirectOffset,
+                                 TRUE,
+                                 &DirectMap,
                                  &DirectRead);
         NtfsReleaseMetadata(VolCB);
         if (DirectRead)
         {
+            PUCHAR ZeroBase = NULL;
+
             /* The stream resource held shared excludes every path that frees or moves this stream's clusters. */
             ASSERT(ExIsResourceAcquiredSharedLite(PagingIo ? NtfsGetPagingIoResource(FileCB)
                                                            : NtfsGetMainResource(FileCB)));
+            if (NT_SUCCESS(Status) && DirectMap.ValidLength < RequestedLength)
+            {
+                ASSERT(DirectMap.TransferLength <= RequestedLength);
+                ASSERT(DirectMap.DataLength <= RequestedLength);
+                ZeroBase = MmGetSystemAddressForMdlSafe(Irp->MdlAddress, NormalPagePriority | MdlMappingNoExecute);
+                if (!ZeroBase)
+                    Status = STATUS_INSUFFICIENT_RESOURCES;
+            }
             if (NT_SUCCESS(Status))
             {
                 /* Small file writes may still be in the library's block cache.
                  * Paging and unbuffered reads bypass it, so commit only the
                  * overlapping blocks before sending this IRP to the device. */
-                Status = NtfsDiskFlushRangeKm(VolCB->StorageDevice,
-                                              DirectOffset,
-                                              RequestedLength);
+                Status = NtfsFlushDirectIoMap(VolCB, &DirectMap);
                 if (NT_SUCCESS(Status))
+                    Status = NtfsSubmitDirectIoMap(VolCB, Irp, IRP_MJ_READ, &DirectMap);
+            }
+            if (NT_SUCCESS(Status) && ZeroBase)
+            {
+                if (Irp->IoStatus.Information != DirectMap.TransferLength)
                 {
-                    Status = NtfsSubmitDirectIo(VolCB,
-                                                Irp,
-                                                IRP_MJ_READ,
-                                                DirectOffset,
-                                                RequestedLength);
+                    Status = STATUS_DATA_ERROR;
+                }
+                else
+                {
+                    RtlZeroMemory(ZeroBase + DirectMap.ValidLength,
+                                  max(DirectMap.TransferLength, DirectMap.DataLength) - DirectMap.ValidLength);
+                    Irp->IoStatus.Information = DirectMap.DataLength;
                 }
             }
             if (NT_SUCCESS(Status))

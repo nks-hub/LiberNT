@@ -108,6 +108,7 @@ static NTSTATUS WriteDisk(_In_ PDEVICE_OBJECT DeviceObject, _In_ ULONGLONG Offse
  */
 #define NTFS_CACHE_BLOCK_SHIFT 12
 #define NTFS_CACHE_BLOCK_SIZE  (1UL << NTFS_CACHE_BLOCK_SHIFT)
+C_ASSERT(NTFS_CACHE_BLOCK_SIZE == NTFS_METADATA_BLOCK_SIZE);
 #define NTFS_CACHE_SLOTS       4096
 #define NTFS_CACHE_WAYS        2
 #define NTFS_CACHE_SETS        (NTFS_CACHE_SLOTS / NTFS_CACHE_WAYS)
@@ -136,6 +137,7 @@ static ULONG NtfsCacheDirtyCount = 0;
 #define NTFS_CACHE_DIRTY_LIMIT 1280
 #define NTFS_CACHE_DIRTY_SLICE 128
 static FAST_MUTEX NtfsCacheMutex;
+static ULONGLONG NtfsCacheWriteVersion[NTFS_CACHE_SETS];
 /* Serialize disk writebacks without holding the cache mutex at APC_LEVEL. */
 static KMUTEX NtfsCacheWritebackMutex;
 static volatile LONG NtfsCacheReady = 0;
@@ -255,6 +257,7 @@ NtfsCacheInvalidateRange(_In_ PDEVICE_OBJECT Owner,
     for (; Block <= LastBlock; Block++)
     {
         NTFS_CACHE_SLOT* Slot = NtfsCacheProbe(Owner, Block);
+        ++NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
 
         if (Slot)
         {
@@ -263,6 +266,38 @@ NtfsCacheInvalidateRange(_In_ PDEVICE_OBJECT Owner,
                 Slot->Dirty = FALSE;
                 NtfsCacheDirtyCount--;
             }
+            Slot->Tag = NTFS_CACHE_EMPTY;
+            Slot->Generation++;
+            ObDereferenceObjectDeferDelete(Slot->Owner);
+            Slot->Owner = NULL;
+        }
+    }
+    ExReleaseFastMutex(&NtfsCacheMutex);
+}
+
+/* Held changes stay; a clean copy of bytes rewritten behind the cache's back goes */
+static
+VOID
+NtfsCacheDropCleanRange(_In_ PDEVICE_OBJECT Owner,
+                        _In_ ULONGLONG Offset,
+                        _In_ ULONG Length)
+{
+    ULONGLONG Block;
+    ULONGLONG LastBlock;
+
+    if (!NtfsCacheReady || !Length)
+        return;
+
+    Block = Offset >> NTFS_CACHE_BLOCK_SHIFT;
+    LastBlock = (Offset + Length - 1) >> NTFS_CACHE_BLOCK_SHIFT;
+    ExAcquireFastMutex(&NtfsCacheMutex);
+    for (; Block <= LastBlock; Block++)
+    {
+        NTFS_CACHE_SLOT* Slot = NtfsCacheProbe(Owner, Block);
+        ++NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
+
+        if (Slot && !Slot->Dirty)
+        {
             Slot->Tag = NTFS_CACHE_EMPTY;
             Slot->Generation++;
             ObDereferenceObjectDeferDelete(Slot->Owner);
@@ -297,6 +332,7 @@ NtfsCacheUpdateRange(_In_ PDEVICE_OBJECT Owner,
         ULONG BlockOffset = (ULONG)(Current & (NTFS_CACHE_BLOCK_SIZE - 1));
         ULONG Chunk = min(Remaining, NTFS_CACHE_BLOCK_SIZE - BlockOffset);
         NTFS_CACHE_SLOT* Slot = NtfsCacheProbe(Owner, Block);
+        ++NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
 
         if (Slot && Slot->Data)
         {
@@ -590,7 +626,8 @@ static
 VOID
 NtfsCacheInstall(_In_ PDEVICE_OBJECT Owner,
                  _In_ ULONGLONG Block,
-                 _In_reads_bytes_(NTFS_CACHE_BLOCK_SIZE) PUCHAR Data)
+                 _In_reads_bytes_(NTFS_CACHE_BLOCK_SIZE) PUCHAR Data,
+                 _In_opt_ const ULONGLONG *ExpectedVersion = NULL)
 {
     NTFS_CACHE_SLOT* Slot;
 
@@ -616,7 +653,8 @@ NtfsCacheInstall(_In_ PDEVICE_OBJECT Owner,
     }
     // A concurrent writer may have dirtied the newly selected victim.
     // Cache fills must also preserve newer dirty data for this same block.
-    if (Slot->Dirty)
+    if (Slot->Dirty || (ExpectedVersion && (*ExpectedVersion != NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK] ||
+                                            NtfsCacheProbe(Owner, Block) != NULL)))
     {
         ExReleaseFastMutex(&NtfsCacheMutex);
         return;
@@ -676,6 +714,8 @@ NtfsCacheDiscardOwner(_In_ PDEVICE_OBJECT DeviceObject)
      * that data. Preserve dirty blocks in case a mounted volume is still active.
      */
     ExAcquireFastMutex(&NtfsCacheMutex);
+    for (Index = 0; Index < NTFS_CACHE_SETS; ++Index)
+        ++NtfsCacheWriteVersion[Index];
     for (Index = 0; Index < NTFS_CACHE_SLOTS; Index++)
     {
         if (NtfsCacheSlots[Index].Owner == DeviceObject &&
@@ -853,6 +893,8 @@ NtfsPerformDiskIo(
 
     NT_ASSERT(IoContext.IoStatus.Status != STATUS_PENDING);
     Status = IoContext.IoStatus.Status;
+    if (NT_SUCCESS(Status) && IoContext.IoStatus.Information != Length)
+        Status = STATUS_DATA_ERROR;
     NtfsFreeDiskIoIrp(Irp, &IoContext);
 
     if (MajorFunction == IRP_MJ_READ &&
@@ -923,6 +965,138 @@ WriteDisk(_In_ PDEVICE_OBJECT DeviceObject,
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+struct _NTFS_BLOCK_READ
+{
+    PDEVICE_OBJECT Device;
+    ULONGLONG Block;
+    ULONGLONG Version;
+    UCHAR Data[NTFS_CACHE_BLOCK_SIZE];
+};
+
+NTFS_BLOCK_READ *
+NtfsPrepareBlockReadKm(_In_ PDEVICE_OBJECT Device, _In_ ULONGLONG Offset, _In_ ULONG Length)
+{
+    ULONGLONG Block = Offset >> NTFS_CACHE_BLOCK_SHIFT;
+    if (!NtfsCacheReady || !Length || Length > NTFS_CACHE_BLOCK_SIZE - (Offset & (NTFS_CACHE_BLOCK_SIZE - 1)))
+        return NULL;
+
+    ExAcquireFastMutex(&NtfsCacheMutex);
+    BOOLEAN Cached = NtfsCacheProbe(Device, Block) != NULL;
+    ULONGLONG Version = NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
+    ExReleaseFastMutex(&NtfsCacheMutex);
+    if (Cached)
+        return NULL;
+
+    NTFS_BLOCK_READ *Read = (NTFS_BLOCK_READ *)ExAllocatePoolUninitialized(NonPagedPoolNx, sizeof(*Read), 'CftN');
+    if (Read)
+    {
+        Read->Device = Device;
+        ObReferenceObject(Device);
+        Read->Block = Block;
+        Read->Version = Version;
+    }
+    return Read;
+}
+
+VOID
+NtfsFetchBlockKm(_Inout_ NTFS_BLOCK_READ *Read)
+{
+    NTSTATUS Status = ReadDisk(Read->Device, Read->Block << NTFS_CACHE_BLOCK_SHIFT, sizeof(Read->Data), Read->Data);
+    if (NT_SUCCESS(Status))
+        NtfsCacheInstall(Read->Device, Read->Block, Read->Data, &Read->Version);
+    ObDereferenceObject(Read->Device);
+    ExFreePoolWithTag(Read, 'CftN');
+}
+
+#define NTFS_READ_AHEAD_BLOCKS 16
+
+ULONG
+NtfsCountUncachedBlocksKm(_In_ PDEVICE_OBJECT Device,
+                          _In_ ULONGLONG Offset,
+                          _In_ ULONGLONG Length,
+                          _In_ ULONG Limit)
+{
+    ULONGLONG Block;
+    ULONGLONG LastBlock;
+    ULONG Count = 0;
+
+    NT_ASSERT(Device != NULL);
+    if (!NtfsCacheReady || !Length || Offset > ~(ULONGLONG)0 - Length)
+        return 0;
+
+    LastBlock = (Offset + Length - 1) >> NTFS_CACHE_BLOCK_SHIFT;
+    ExAcquireFastMutex(&NtfsCacheMutex);
+    for (Block = Offset >> NTFS_CACHE_BLOCK_SHIFT; Block <= LastBlock && Count < Limit; Block++)
+    {
+        if (!NtfsCacheProbe(Device, Block))
+            Count++;
+    }
+    ExReleaseFastMutex(&NtfsCacheMutex);
+    NT_ASSERT(Count <= Limit);
+    return Count;
+}
+
+ULONG
+NtfsReadAheadBlocksKm(_In_ PDEVICE_OBJECT Device,
+                      _In_ ULONGLONG Offset,
+                      _In_ ULONGLONG Length,
+                      _In_ ULONG Limit)
+{
+    ULONGLONG Versions[NTFS_READ_AHEAD_BLOCKS];
+    ULONGLONG Block;
+    ULONGLONG LastBlock;
+    ULONGLONG First;
+    ULONG Count;
+    ULONG Index;
+    ULONG Read = 0;
+    PUCHAR Buffer;
+
+    NT_ASSERT(Device != NULL);
+    NT_ASSERT(KeGetCurrentIrql() < APC_LEVEL);
+    if (!NtfsCacheReady || !Length || !Limit || Offset > ~(ULONGLONG)0 - Length)
+        return 0;
+
+    Buffer = (PUCHAR)ExAllocatePoolUninitialized(NonPagedPoolNx,
+                                                NTFS_READ_AHEAD_BLOCKS * NTFS_CACHE_BLOCK_SIZE,
+                                                'CftN');
+    if (!Buffer)
+        return 0;
+
+    Block = Offset >> NTFS_CACHE_BLOCK_SHIFT;
+    LastBlock = (Offset + Length - 1) >> NTFS_CACHE_BLOCK_SHIFT;
+    while (Block <= LastBlock && Read < Limit)
+    {
+        /* Each version is taken before the read is sent, so a write that lands meanwhile rejects the fill */
+        ExAcquireFastMutex(&NtfsCacheMutex);
+        while (Block <= LastBlock && NtfsCacheProbe(Device, Block))
+            Block++;
+        First = Block;
+        Count = 0;
+        while (Block <= LastBlock &&
+               Count < NTFS_READ_AHEAD_BLOCKS &&
+               Read + Count < Limit &&
+               !NtfsCacheProbe(Device, Block))
+        {
+            Versions[Count++] = NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
+            Block++;
+        }
+        ExReleaseFastMutex(&NtfsCacheMutex);
+        if (!Count)
+            break;
+
+        NT_ASSERT(Count <= NTFS_READ_AHEAD_BLOCKS);
+        if (!NT_SUCCESS(ReadDisk(Device, First << NTFS_CACHE_BLOCK_SHIFT, Count << NTFS_CACHE_BLOCK_SHIFT, Buffer)))
+            break;
+        for (Index = 0; Index < Count; Index++)
+            NtfsCacheInstall(Device, First + Index, Buffer + ((SIZE_T)Index << NTFS_CACHE_BLOCK_SHIFT), &Versions[Index]);
+        Read += Count;
+    }
+
+    ExFreePoolWithTag(Buffer, 'CftN');
+    NT_ASSERT(Read <= Limit);
+    return Read;
+}
 
 NTSTATUS
 NtfsReadVolumeContext(_In_opt_ void* Context,
@@ -1111,6 +1285,7 @@ NtfsWriteVolumeContext(_In_opt_ void* Context,
             {
                 RtlCopyMemory(Slot->Data + BlockOffset, Buffer, Length);
                 Slot->Generation++;
+                ++NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
                 if (!Slot->Dirty)
                 {
                     Slot->Dirty = TRUE;
@@ -1166,6 +1341,7 @@ NtfsWriteVolumeContext(_In_opt_ void* Context,
                             // Install may preserve a concurrently modified block.
                             RtlCopyMemory(Slot->Data + BlockOffset, Buffer, Length);
                             Slot->Generation++;
+                            ++NtfsCacheWriteVersion[Block & NTFS_CACHE_SET_MASK];
                             if (!Slot->Dirty)
                             {
                                 Slot->Dirty = TRUE;
@@ -1189,93 +1365,83 @@ NtfsWriteVolumeContext(_In_opt_ void* Context,
         }
     }
 
-    /* Going to the disk directly: commit anything held for these bytes. */
-    NTSTATUS FlushStatus = NtfsCacheFlushRange(DeviceObject, Offset, Length);
-    if (!NT_SUCCESS(FlushStatus))
-        return FlushStatus;
-
-    NTSTATUS Status;
-    PUCHAR WriteBuffer;
-    ULONGLONG SectorAlignedOffset;
-    ULONG SectorAlignedLength;
-
-    SectorAlignedOffset = Offset - (Offset % SectorBytes);
-    SectorAlignedLength = ALIGN_UP_BY((Offset - SectorAlignedOffset) + Length,
-                                      SectorBytes);
-
-    if (SectorAlignedOffset == Offset
-        && SectorAlignedLength == Length)
-    {
-        // Write directly to the disk using the supplied buffer.
-        Status = WriteDisk(DeviceObject,
-                           SectorAlignedOffset,
-                           SectorAlignedLength,
-                           Buffer);
-    }
-
-    else
-    {
-        ULONG Skip = (ULONG)(Offset - SectorAlignedOffset);
-        ULONG Chunk = min(SectorAlignedLength, NTFS_DISK_IO_CHUNK_SIZE);
-        ULONG Done = 0;
-
-        // Create the write buffer
-        WriteBuffer = new(NonPagedPool) UCHAR[Chunk];
-        if (!WriteBuffer)
-            return STATUS_INSUFFICIENT_RESOURCES;
-
-        Status = STATUS_SUCCESS;
-        while (NT_SUCCESS(Status) && Done < SectorAlignedLength)
-        {
-            ULONG Piece = min(Chunk, SectorAlignedLength - Done);
-            ULONG From = max(Done, Skip);
-            ULONG To = min(Done + Piece, Skip + Length);
-
-            // Fill the write buffer with what's on disk.
-            Status = ReadDisk(DeviceObject,
-                              SectorAlignedOffset + Done,
-                              Piece,
-                              WriteBuffer);
-
-            if (NT_SUCCESS(Status))
-            {
-                // Copy the buffer contents we want to write into the write buffer.
-                RtlCopyMemory(WriteBuffer + (From - Done),
-                              Buffer + (From - Skip),
-                              To - From);
-
-                // Write to the disk.
-                Status = WriteDisk(DeviceObject,
-                                   SectorAlignedOffset + Done,
-                                   Piece,
-                                   WriteBuffer);
-            }
-            Done += Piece;
-        }
-
-        // Free write buffer
-        delete[] WriteBuffer;
-    }
-
-    /* Keep whatever we still hold in step with what just went to the disk. */
-    if (NT_SUCCESS(Status))
-        NtfsCacheUpdateRange(DeviceObject, Offset, Length, Buffer);
-    else
-        NtfsCacheInvalidateRange(DeviceObject, Offset, Length);
-
-    return Status;
+    return NtfsWriteDiskRangeKm(DeviceObject, SectorBytes, Offset, Length, Buffer);
 }
 
-NTSTATUS
-NtfsReadVolume(_In_ ULONGLONG Offset,
-               _In_ ULONG Length,
-               _Inout_ PUCHAR Buffer)
+extern "C"
+BOOLEAN
+NtfsClustersCoverCacheBlocksKm(_In_ ULONGLONG ClusterBytes)
 {
-    return NtfsReadVolumeContext(PartDeviceObj,
-                                 BytesPerSector,
-                                 Offset,
-                                 Length,
-                                 Buffer);
+    return ClusterBytes != 0 && ClusterBytes % NTFS_CACHE_BLOCK_SIZE == 0;
+}
+
+extern "C"
+NTSTATUS
+NtfsDiskFlushMediaKm(_In_ PDEVICE_OBJECT DeviceObject)
+{
+    return NtfsPerformDiskIo(IRP_MJ_FLUSH_BUFFERS, DeviceObject, 0, 0, NULL);
+}
+
+extern "C"
+NTSTATUS
+NtfsWriteDiskRangeKm(_In_opt_ void *Context, _In_ ULONG SectorBytes,
+                     _In_ ULONGLONG Offset, _In_ ULONG Length, _Inout_ PUCHAR Buffer)
+{
+    PDEVICE_OBJECT Device = static_cast<PDEVICE_OBJECT>(Context);
+    if (!Device || (Length && !Buffer) || !SectorBytes || SectorBytes > NTFS_DISK_IO_CHUNK_SIZE ||
+        NTFS_DISK_IO_CHUNK_SIZE % SectorBytes || Offset > ~(ULONGLONG)0 - Length)
+        return STATUS_INVALID_PARAMETER;
+    if (!Length)
+        return STATUS_SUCCESS;
+    NTSTATUS Status = NtfsCacheFlushRange(Device, Offset, Length);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    ULONG Skip = (ULONG)(Offset % SectorBytes);
+    if (!Skip && Length % SectorBytes == 0)
+    {
+        Status = WriteDisk(Device, Offset, Length, Buffer);
+    }
+    else
+    {
+        ULONGLONG DiskOffset = Offset - Skip;
+        ULONG Tail = (ULONG)((Offset + Length) % SectorBytes);
+        ULONG Pad = Tail ? SectorBytes - Tail : 0;
+        ULONGLONG Rounded = (ULONGLONG)Skip + Length + Pad;
+        if (DiskOffset > ~(ULONGLONG)0 - Rounded)
+            return STATUS_INVALID_PARAMETER;
+        ULONG Capacity = (ULONG)min(Rounded, (ULONGLONG)NTFS_DISK_IO_CHUNK_SIZE);
+        PUCHAR Staged = new(NonPagedPool, TAG_NTFS) UCHAR[Capacity];
+        if (!Staged)
+            return STATUS_INSUFFICIENT_RESOURCES;
+        ULONG Copied = 0;
+        while (NT_SUCCESS(Status) && Rounded)
+        {
+            ULONG Piece = (ULONG)min(Rounded, (ULONGLONG)Capacity);
+            ULONG Bytes = min(Length - Copied, Piece - Skip);
+            if (Skip)
+                Status = ReadDisk(Device, DiskOffset, SectorBytes, Staged);
+            if (NT_SUCCESS(Status) && Piece == Rounded && Pad && (!Skip || Piece != SectorBytes))
+                Status = ReadDisk(Device, DiskOffset + Piece - SectorBytes, SectorBytes, Staged + Piece - SectorBytes);
+            if (NT_SUCCESS(Status))
+            {
+                RtlCopyMemory(Staged + Skip, Buffer + Copied, Bytes);
+                Status = WriteDisk(Device, DiskOffset, Piece, Staged);
+            }
+            Copied += Bytes;
+            DiskOffset += Piece;
+            Rounded -= Piece;
+            Skip = 0;
+        }
+        ASSERT(!NT_SUCCESS(Status) || Copied == Length);
+        delete[] Staged;
+    }
+
+    if (NT_SUCCESS(Status))
+        NtfsCacheUpdateRange(Device, Offset, Length, Buffer);
+    else
+        NtfsCacheDropCleanRange(Device, Offset, Length);
+    return Status;
 }
 
 NTSTATUS
@@ -1370,6 +1536,18 @@ NtfsDiskEndDirectWriteKm(_In_ PDEVICE_OBJECT DeviceObject,
     NT_ASSERT(Length != 0);
     NT_ASSERT(((Offset | Length) & (NTFS_CACHE_BLOCK_SIZE - 1)) == 0);
     NtfsCacheInvalidateRange(DeviceObject, Offset, Length);
+}
+
+extern "C"
+VOID
+NtfsDiskDropCleanRangeKm(_In_ PDEVICE_OBJECT DeviceObject,
+                         _In_ ULONGLONG Offset,
+                         _In_ ULONG Length)
+{
+    NT_ASSERT(DeviceObject != NULL);
+    if (!Length || Offset > ~(ULONGLONG)0 - Length)
+        return;
+    NtfsCacheDropCleanRange(DeviceObject, Offset, Length);
 }
 
 extern "C"

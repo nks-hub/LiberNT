@@ -423,6 +423,8 @@ typedef struct _DXGKP_REDIRECTED_BLT_WORK
     HANDLE Context;
     BOOLEAN Complete;
     PDXGKRNL_GDI_BLT_TEXTURE GdiBltTexture;
+    ULONG ProducerNodeOrdinal;
+    ULONG ProducerFenceId;
     UINT DirtyRectCount;
     RECT DirtyRects[DXGK_PRESENT_CORE_MAX_SUBRECTS];
 } DXGKP_REDIRECTED_BLT_WORK, *PDXGKP_REDIRECTED_BLT_WORK;
@@ -434,6 +436,12 @@ DxgkpCompleteRedirectedBltPresentWithHandle(
     _In_ UINT DirtyRectCount,
     _In_opt_ HANDLE ContextHandle);
 
+static NTSTATUS
+DxgkpWaitForRedirectionFence(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ ULONG NodeOrdinal,
+    _In_ ULONG SubmissionFenceId);
+
 static VOID
 NTAPI
 DxgkpRedirectedBltWorker(
@@ -441,20 +449,33 @@ DxgkpRedirectedBltWorker(
 {
     PDXGKP_REDIRECTED_BLT_WORK Work = Parameter;
     NTSTATUS Status = Work->Complete ? STATUS_SUCCESS : STATUS_CANCELLED;
+    KAPC_STATE ApcState;
+    PEPROCESS SessionProcess;
 
-    if (NT_SUCCESS(Status) && Work->GdiBltTexture != NULL)
+    PAGED_CODE();
+
+    /* The win32k callouts below are session-space code; a system worker runs outside every session */
+    if (DxgkDisplayAttachWin32kSession(&ApcState, &SessionProcess))
     {
-        Status = Work->DirtyRectCount != 0 ?
-            DxgkExecuteCddGdiBitBlt(Work->GdiBltTexture, Work->DirtyRects, Work->DirtyRectCount) :
-            DxgkExecuteCddGdiBitBlt(Work->GdiBltTexture, &Work->Present.DestinationRect, 1);
+        /* The CDD copy reads the GDI blt texture on its own context: the producer's present must retire first */
+        if (NT_SUCCESS(Status) && Work->GdiBltTexture != NULL)
+            Status = DxgkpWaitForRedirectionFence(Work->GdiBltTexture->Adapter, Work->ProducerNodeOrdinal,
+                                                  Work->ProducerFenceId);
+        if (NT_SUCCESS(Status) && Work->GdiBltTexture != NULL)
+        {
+            Status = Work->DirtyRectCount != 0 ?
+                DxgkExecuteCddGdiBitBlt(Work->GdiBltTexture, Work->DirtyRects, Work->DirtyRectCount) :
+                DxgkExecuteCddGdiBitBlt(Work->GdiBltTexture, &Work->Present.DestinationRect, 1);
+        }
+        if (NT_SUCCESS(Status))
+            Status = DxgkpCompleteRedirectedBltPresentWithHandle(&Work->Present,
+                                                                 Work->DirtyRects,
+                                                                 Work->DirtyRectCount,
+                                                                 Work->Context);
+        if (!NT_SUCCESS(Status))
+            DxgkCancelRedirectedBltPresent(&Work->Present);
+        DxgkDisplayDetachWin32kSession(&ApcState, SessionProcess);
     }
-    if (NT_SUCCESS(Status))
-        Status = DxgkpCompleteRedirectedBltPresentWithHandle(&Work->Present,
-                                                             Work->DirtyRects,
-                                                             Work->DirtyRectCount,
-                                                             Work->Context);
-    if (!NT_SUCCESS(Status))
-        DxgkCancelRedirectedBltPresent(&Work->Present);
     KeSetEvent(&DxgkpWindowBltRetiredEvent, IO_NO_INCREMENT, FALSE);
     if (Work->GdiBltTexture != NULL)
         DxgkDereferenceGdiBltTexture(Work->GdiBltTexture);
@@ -483,7 +504,9 @@ DxgkQueueRedirectedBltPresent(
     _In_reads_opt_(DirtyRectCount) const RECT *DirtyRects,
     _In_ UINT DirtyRectCount,
     _In_opt_ struct _DXGKRNL_CONTEXT *Context,
-    _In_opt_ PDXGKRNL_GDI_BLT_TEXTURE GdiBltTexture)
+    _In_opt_ PDXGKRNL_GDI_BLT_TEXTURE GdiBltTexture,
+    _In_ ULONG ProducerNodeOrdinal,
+    _In_ ULONG ProducerFenceId)
 {
     PDXGKP_REDIRECTED_BLT_WORK Item = Work;
 
@@ -494,6 +517,8 @@ DxgkQueueRedirectedBltPresent(
     Item->Context = Context != NULL ? (HANDLE)(ULONG_PTR)Context->Handle : NULL;
     Item->Complete = Complete;
     Item->GdiBltTexture = GdiBltTexture;
+    Item->ProducerNodeOrdinal = ProducerNodeOrdinal;
+    Item->ProducerFenceId = ProducerFenceId;
     Item->DirtyRectCount = DirtyRectCount;
     if (DirtyRectCount != 0)
         RtlCopyMemory(Item->DirtyRects, DirtyRects, DirtyRectCount * sizeof(RECT));

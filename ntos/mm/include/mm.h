@@ -20,6 +20,11 @@ struct _MI_SECTION_VIEW;
 #define MI_TLB_BATCH_SIZE 32
 #define MI_EMPTY_TABLE_CACHE_SIZE 8
 #define MI_VAD_CACHE_SIZE 16
+#define MI_STALE_VIEW_LIMIT 32
+
+#define MI_TLB_INVALIDATE_RANGES 0
+#define MI_TLB_INVALIDATE_NONE   1
+#define MI_TLB_INVALIDATE_ALL    2
 
 typedef struct _MI_EMPTY_TABLE
 {
@@ -42,6 +47,7 @@ typedef struct _MI_TLB_BATCH
 {
     ULONG Count;
     BOOLEAN DeferTables;
+    UCHAR Invalidate;
     MI_TLB_BATCH_ENTRY Entry[MI_TLB_BATCH_SIZE];
 } MI_TLB_BATCH, *PMI_TLB_BATCH;
 
@@ -129,6 +135,9 @@ typedef struct _MI_SYSTEM
     ULONG64 (*OwnerProcessors)(_In_ PVOID Owner);
     PMI_EXPAND_COMMIT ExpandCommit;
     VOID (*UnusedSegmentsExceeded)(_Inout_ struct _MI_SYSTEM *System);
+    struct _MI_VAD *StaleViews[MI_STALE_VIEW_LIMIT];
+    ULONG StaleViewCount;
+    struct _MI_VAD *StaleVadSpares;
 } MI_SYSTEM, *PMI_SYSTEM;
 
 FORCEINLINE
@@ -212,6 +221,7 @@ VOID MiPtUnpinRange(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 VirtualAddress
 #define MI_MEM_RESERVE_PLACEHOLDER  0x00080000
 #define MI_MEM_REPLACE_PLACEHOLDER  0x02000000
 #define MI_MEM_WRITE_WATCH          0x04000000
+#define MI_MEM_NO_EXECUTE_IMAGE     0x08000000
 #define MI_MEM_COALESCE_PLACEHOLDERS 0x00000001
 #define MI_MEM_PRESERVE_PLACEHOLDER 0x00000002
 
@@ -244,6 +254,8 @@ typedef struct _MI_VAD
     BOOLEAN EcCode;
     BOOLEAN Placeholder;
     BOOLEAN FromPlaceholder;
+    BOOLEAN StaleView;
+    BOOLEAN NoExecuteImage;
     volatile LONG PteTouched;
     struct _MI_SEGMENT *Segment;
     ULONG64 SegmentPageOffset;
@@ -311,6 +323,7 @@ typedef struct _MI_MEMORY_INFORMATION
     ULONG State;
     ULONG Protect;
     ULONG Type;
+    BOOLEAN NoExecuteImage;
 } MI_MEMORY_INFORMATION, *PMI_MEMORY_INFORMATION;
 
 typedef struct _MI_WORKING_SET_EX_INFORMATION
@@ -500,9 +513,9 @@ typedef struct _MI_FILE_OPS
                           _In_ PVOID Buffer, _In_ MI_READ_COMPLETION Completion,
                           _In_opt_ PVOID CompletionContext);
     BOOLEAN WholePageReads;
-    /* Optional synchronous clustered read. Success requires every frame to be filled. */
+    /* Optional synchronous clustered read. Bytes past Transferred lie beyond the end of the file. */
     NTSTATUS (*ReadPages)(_In_opt_ PVOID Context, _In_ ULONG64 Offset,
-                          _In_ const ULONG *Frames, _In_ ULONG PageCount);
+                          _In_ const ULONG *Frames, _In_ ULONG PageCount, _Out_ PULONG Transferred);
     /* Optional. Writers that do not come from the file system claim the file
      * before taking segment locks: file system locks order before them, and a
      * truncating writer can hold those while it waits on a segment. The
@@ -673,6 +686,8 @@ NTSTATUS MiMapViewEx(_Inout_ PMI_ADDRESS_SPACE Space, _Inout_ PMI_SEGMENT Segmen
                      _In_ ULONG AllocationType, _In_ ULONG64 HighestAddress, _In_ ULONG MaximumProtection,
                      _In_ BOOLEAN Inherit);
 NTSTATUS MiUnmapView(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 BaseAddress);
+VOID MiFlushStaleViewsLocked(_Inout_ PMI_ADDRESS_SPACE Space);
+VOID MiFlushStaleViews(_Inout_ PMI_ADDRESS_SPACE Space);
 NTSTATUS MiUnmapViewEx(_Inout_ PMI_ADDRESS_SPACE Space, _In_ ULONG64 BaseAddress, _In_ BOOLEAN PreservePlaceholder);
 NTSTATUS MiMapCacheView(_Inout_ PMI_SEGMENT Segment, _Inout_ PULONG64 BaseAddress,
                         _In_ ULONG64 SectionOffset, _Inout_ PULONG64 ViewSize);

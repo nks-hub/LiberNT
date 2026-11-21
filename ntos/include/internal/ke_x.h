@@ -27,7 +27,7 @@ FORCEINLINE
 VOID
 KiSetTargetProcessorDpc(
     _Inout_ PKDPC Dpc,
-    _In_ CCHAR Number)
+    _In_ ULONG Number)
 {
     Dpc->Number = (USHORT)(KI_DPC_TARGET_PROCESSOR_OFFSET + Number);
 }
@@ -43,6 +43,54 @@ KiRequestDispatchInterrupt(
     HalRequestSoftwareInterrupt(DISPATCH_LEVEL);
 }
 
+#define KI_SET_WORD_BITS ((ULONG)(sizeof(KAFFINITY) * 8))
+#define KI_SET_WORD(Number) ((Number) / KI_SET_WORD_BITS)
+#define KI_SET_BIT(Number) AFFINITY_MASK((Number) % KI_SET_WORD_BITS)
+
+typedef KAFFINITY KI_PROCESSOR_SET[KE_MAXIMUM_GROUPS];
+
+typedef struct _KI_THREAD_AFFINITY
+{
+    KAFFINITY_EX Affinity;
+    KAFFINITY_EX UserAffinity;
+} KI_THREAD_AFFINITY, *PKI_THREAD_AFFINITY;
+
+typedef struct _KI_PROCESS_AFFINITY
+{
+    KAFFINITY_EX Affinity;
+    KAFFINITY_EX ActiveProcessors;
+} KI_PROCESS_AFFINITY, *PKI_PROCESS_AFFINITY;
+
+FORCEINLINE
+VOID
+KiInitializeAffinityStorage(
+    _Out_ PKAFFINITY_EX Affinity)
+{
+    RtlZeroMemory(Affinity, sizeof(*Affinity));
+    Affinity->Count = KAFFINITY_EX_STATIC_GROUPS;
+    Affinity->Size = KAFFINITY_EX_STATIC_GROUPS;
+}
+
+#ifdef KTHREAD_AFFINITY_EX
+#define KI_THREAD_AFFINITY_EXTENSION sizeof(KI_THREAD_AFFINITY)
+#define KiThreadAffinity(Thread) ((Thread)->Affinity->Bitmap)
+#define KiThreadUserAffinity(Thread) ((Thread)->UserAffinity->Bitmap)
+#define KiThreadPrimaryGroup(Thread) ((Thread)->UserAffinityPrimaryGroup)
+#define KiSetThreadPrimaryGroup(Thread, Group) \
+    ((Thread)->UserAffinityPrimaryGroup = (Thread)->AffinityPrimaryGroup = (Group))
+
+FORCEINLINE
+VOID
+KiAttachThreadAffinity(
+    _Inout_ PKTHREAD Thread,
+    _Out_ PKI_THREAD_AFFINITY Storage)
+{
+    KiInitializeAffinityStorage(&Storage->Affinity);
+    KiInitializeAffinityStorage(&Storage->UserAffinity);
+    Thread->Affinity = &Storage->Affinity;
+    Thread->UserAffinity = &Storage->UserAffinity;
+}
+#else
 #ifdef KTHREAD_GROUP_AFFINITY
 #define KiThreadAffinityMask(Thread) ((Thread)->Affinity.Mask)
 #define KiThreadUserAffinityMask(Thread) ((Thread)->UserAffinity.Mask)
@@ -50,6 +98,283 @@ KiRequestDispatchInterrupt(
 #define KiThreadAffinityMask(Thread) ((Thread)->Affinity)
 #define KiThreadUserAffinityMask(Thread) ((Thread)->UserAffinity)
 #endif
+#define KI_THREAD_AFFINITY_EXTENSION 0
+#define KiThreadAffinity(Thread) (&KiThreadAffinityMask(Thread))
+#define KiThreadUserAffinity(Thread) (&KiThreadUserAffinityMask(Thread))
+#define KiThreadPrimaryGroup(Thread) ((VOID)(Thread), (USHORT)0)
+#define KiSetThreadPrimaryGroup(Thread, Group) ((VOID)(Thread), (VOID)(Group))
+#define KiAttachThreadAffinity(Thread, Storage) ((VOID)(Thread), (VOID)(Storage))
+#endif
+
+#ifdef KPROCESS_AFFINITY_EX
+#define KI_PROCESS_AFFINITY_EXTENSION sizeof(KI_PROCESS_AFFINITY)
+#define KiProcessAffinity(Process) ((Process)->Affinity->Bitmap)
+#define KiProcessActiveProcessors(Process) ((volatile KAFFINITY *)(Process)->ActiveProcessors->Bitmap)
+#define KiProcessPrimaryGroup(Process) ((Process)->PrimaryGroup)
+#define KiSetProcessPrimaryGroup(Process, Group) ((Process)->PrimaryGroup = (Group))
+
+FORCEINLINE
+VOID
+KiAttachProcessAffinity(
+    _Inout_ PKPROCESS Process,
+    _Out_ PKI_PROCESS_AFFINITY Storage)
+{
+    KiInitializeAffinityStorage(&Storage->Affinity);
+    KiInitializeAffinityStorage(&Storage->ActiveProcessors);
+    Process->Affinity = &Storage->Affinity;
+    Process->ActiveProcessors = &Storage->ActiveProcessors;
+}
+#else
+#define KI_PROCESS_AFFINITY_EXTENSION 0
+#define KiProcessAffinity(Process) (&(Process)->Affinity)
+#define KiProcessActiveProcessors(Process) ((volatile KAFFINITY *)&(Process)->ActiveProcessors)
+#define KiProcessPrimaryGroup(Process) ((VOID)(Process), (USHORT)0)
+#define KiSetProcessPrimaryGroup(Process, Group) ((VOID)(Process), (VOID)(Group))
+#define KiAttachProcessAffinity(Process, Storage) ((VOID)(Process), (VOID)(Storage))
+#endif
+
+FORCEINLINE
+VOID
+KiClearProcessorSet(
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *Set)
+{
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+        Set[Word] = 0;
+}
+
+FORCEINLINE
+VOID
+KiCopyProcessorSet(
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *Target,
+    _In_ const volatile KAFFINITY *Source)
+{
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+        Target[Word] = Source[Word];
+}
+
+FORCEINLINE
+BOOLEAN
+KiIsProcessorSetEmpty(
+    _In_ const volatile KAFFINITY *Set)
+{
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        if (Set[Word] != 0)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+FORCEINLINE
+BOOLEAN
+KiDoProcessorSetsIntersect(
+    _In_ const volatile KAFFINITY *First,
+    _In_ const volatile KAFFINITY *Second)
+{
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        if ((First[Word] & Second[Word]) != 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+FORCEINLINE
+BOOLEAN
+KiAreProcessorSetsEqual(
+    _In_ const volatile KAFFINITY *First,
+    _In_ const volatile KAFFINITY *Second)
+{
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        if (First[Word] != Second[Word])
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+FORCEINLINE
+BOOLEAN
+KiIsProcessorSubset(
+    _In_ const volatile KAFFINITY *Subset,
+    _In_ const volatile KAFFINITY *Set)
+{
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        if ((Subset[Word] & ~Set[Word]) != 0)
+            return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* The three below return whether the result has a processor in it, and the target may be one of the sources */
+FORCEINLINE
+BOOLEAN
+KiAndProcessorSets(
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *Target,
+    _In_ const volatile KAFFINITY *First,
+    _In_ const volatile KAFFINITY *Second)
+{
+    KAFFINITY Any = 0;
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        Target[Word] = First[Word] & Second[Word];
+        Any |= Target[Word];
+    }
+
+    return Any != 0;
+}
+
+FORCEINLINE
+BOOLEAN
+KiSubtractProcessorSets(
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *Target,
+    _In_ const volatile KAFFINITY *First,
+    _In_ const volatile KAFFINITY *Second)
+{
+    KAFFINITY Any = 0;
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        Target[Word] = First[Word] & ~Second[Word];
+        Any |= Target[Word];
+    }
+
+    return Any != 0;
+}
+
+FORCEINLINE
+BOOLEAN
+KiOrProcessorSets(
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *Target,
+    _In_ const volatile KAFFINITY *First,
+    _In_ const volatile KAFFINITY *Second)
+{
+    KAFFINITY Any = 0;
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+    {
+        Target[Word] = First[Word] | Second[Word];
+        Any |= Target[Word];
+    }
+
+    return Any != 0;
+}
+
+FORCEINLINE
+BOOLEAN
+KiIsProcessorInSet(
+    _In_ const volatile KAFFINITY *Set,
+    _In_ ULONG Number)
+{
+    ASSERT(Number < KE_MAXIMUM_PROCESSORS);
+    return (Set[KI_SET_WORD(Number)] & KI_SET_BIT(Number)) != 0;
+}
+
+FORCEINLINE
+VOID
+KiAddProcessorToSet(
+    _Inout_ KAFFINITY *Set,
+    _In_ ULONG Number)
+{
+    ASSERT(Number < KE_MAXIMUM_PROCESSORS);
+    Set[KI_SET_WORD(Number)] |= KI_SET_BIT(Number);
+}
+
+FORCEINLINE
+VOID
+KiRemoveProcessorFromSet(
+    _Inout_ KAFFINITY *Set,
+    _In_ ULONG Number)
+{
+    ASSERT(Number < KE_MAXIMUM_PROCESSORS);
+    Set[KI_SET_WORD(Number)] &= ~KI_SET_BIT(Number);
+}
+
+FORCEINLINE
+BOOLEAN
+KiInterlockedAddProcessorToSet(
+    _Inout_ volatile KAFFINITY *Set,
+    _In_ ULONG Number)
+{
+    ASSERT(Number < KE_MAXIMUM_PROCESSORS);
+    return InterlockedBitTestAndSetAffinity(&Set[KI_SET_WORD(Number)], Number % KI_SET_WORD_BITS) != 0;
+}
+
+FORCEINLINE
+BOOLEAN
+KiInterlockedRemoveProcessorFromSet(
+    _Inout_ volatile KAFFINITY *Set,
+    _In_ ULONG Number)
+{
+    ASSERT(Number < KE_MAXIMUM_PROCESSORS);
+    return InterlockedBitTestAndResetAffinity(&Set[KI_SET_WORD(Number)], Number % KI_SET_WORD_BITS) != 0;
+}
+
+/* Finds the lowest processor of a set that is numbered First or above */
+FORCEINLINE
+BOOLEAN
+KiFindProcessorInSet(
+    _In_ const volatile KAFFINITY *Set,
+    _In_ ULONG First,
+    _Out_ PULONG Number)
+{
+    ULONG Word = KI_SET_WORD(First);
+    KAFFINITY Bits;
+    ULONG Bit;
+
+    if (Word >= KiProcessorSetWords)
+        return FALSE;
+
+    Bits = Set[Word] & ~(KI_SET_BIT(First) - 1);
+    for (;;)
+    {
+        if (BitScanForwardAffinity(&Bit, Bits))
+        {
+            *Number = Word * KI_SET_WORD_BITS + Bit;
+            return TRUE;
+        }
+
+        if (++Word >= KiProcessorSetWords)
+            return FALSE;
+
+        Bits = Set[Word];
+    }
+}
+
+FORCEINLINE
+ULONG
+KiCountProcessorSet(
+    _In_ const volatile KAFFINITY *Set)
+{
+    ULONG Count = 0;
+    ULONG Word;
+
+    for (Word = 0; Word < KiProcessorSetWords; Word++)
+        Count += RtlNumberOfSetBitsUlongPtr(Set[Word]);
+
+    return Count;
+}
 
 #ifdef KI_CYCLE_QUANTUM
 extern ULONG KiCyclesPerClockQuantum;
@@ -294,41 +619,27 @@ KiReleaseWaitLock(IN PKPRCB Prcb)
 }
 
 FORCEINLINE
+BOOLEAN
+KiTryAcquireDispatcherObject(IN DISPATCHER_HEADER* Object)
+{
+    ASSERT(KeGetCurrentIrql() >= DISPATCH_LEVEL);
+
+    return (BOOLEAN)((InterlockedOr(&Object->Lock, KOBJECT_LOCK_BIT) & KOBJECT_LOCK_BIT) == 0);
+}
+
+FORCEINLINE
+BOOLEAN
+KiIsDispatcherObjectLocked(IN DISPATCHER_HEADER* Object)
+{
+    return (BOOLEAN)((Object->Lock & KOBJECT_LOCK_BIT) != 0);
+}
+
+/* Nothing is taken on the way in: each object, thread, processor and timer bucket has its own lock, and SYNCH_LEVEL keeps the caller on its processor */
+FORCEINLINE
 KIRQL
-KiAcquireDispatcherLock(VOID)
+KiEnterDispatcher(VOID)
 {
-
-    return KeAcquireQueuedSpinLockRaiseToSynch(LockQueueDispatcherLock);
-}
-
-FORCEINLINE
-VOID
-KiReleaseDispatcherLock(IN KIRQL OldIrql)
-{
-
-    KeReleaseQueuedSpinLockFromDpcLevel(&KeGetCurrentPrcb()->
-                                        LockQueue[LockQueueDispatcherLock]);
-
-    KiExitDispatcher(OldIrql);
-}
-
-FORCEINLINE
-VOID
-KiAcquireDispatcherLockAtSynchLevel(VOID)
-{
-
-    ASSERT(KeGetCurrentIrql() >= SYNCH_LEVEL);
-    KeAcquireQueuedSpinLockAtDpcLevel(&KeGetCurrentPrcb()->
-                                      LockQueue[LockQueueDispatcherLock]);
-}
-
-FORCEINLINE
-VOID
-KiReleaseDispatcherLockFromSynchLevel(VOID)
-{
-
-    KeReleaseQueuedSpinLockFromDpcLevel(&KeGetCurrentPrcb()->
-                                        LockQueue[LockQueueDispatcherLock]);
+    return KeRaiseIrqlToSynchLevel();
 }
 
 FORCEINLINE
@@ -351,7 +662,7 @@ KiRescheduleThread(IN BOOLEAN NewThread,
     if ((NewThread) && !(KeGetCurrentPrcb()->Number == Cpu))
     {
 
-        KiIpiSend(AFFINITY_MASK(Cpu), IPI_DPC);
+        KiIpiSendProcessor(Cpu, IPI_DPC);
     }
 }
 
@@ -440,7 +751,7 @@ KiRequestApcInterrupt(IN BOOLEAN NeedApc,
         if (KeGetCurrentPrcb()->Number != Processor)
         {
 
-            KiIpiSend(AFFINITY_MASK(Processor), IPI_APC);
+            KiIpiSendProcessor(Processor, IPI_APC);
         }
         else
         {
@@ -752,6 +1063,7 @@ KxInsertTimer(
     PKSPIN_LOCK_QUEUE LockQueue;
 
     ASSERT(KeGetCurrentIrql() >= SYNCH_LEVEL);
+    ASSERT(KiIsDispatcherObjectLocked(&Timer->Header));
 
     LockQueue = KiAcquireTimerLock(Hand);
     if (Timer->Header.Inserted && KiInsertTimerTable(Timer, Hand))
@@ -774,6 +1086,7 @@ KxInsertThreadWaitTimer(IN PKTIMER Timer,
 
     ASSERT(KeGetCurrentIrql() >= SYNCH_LEVEL);
     ASSERT(Timer->Header.Inserted);
+    ASSERT(KiIsDispatcherObjectLocked(&Timer->Header));
 
     LockQueue = KiAcquireTimerLock(Hand);
 
@@ -847,9 +1160,15 @@ BOOLEAN
 KxRemoveTreeTimer(
     _Inout_ PKTIMER Timer)
 {
-    ULONG Hand = KiComputeTimerTableIndex(Timer->DueTime.QuadPart);
-    PKSPIN_LOCK_QUEUE LockQueue = KiAcquireTimerLock(Hand);
-    BOOLEAN Removed = Timer->Header.Inserted;
+    ULONG Hand;
+    PKSPIN_LOCK_QUEUE LockQueue;
+    BOOLEAN Removed;
+
+    ASSERT(KiIsDispatcherObjectLocked(&Timer->Header));
+
+    Hand = KiComputeTimerTableIndex(Timer->DueTime.QuadPart);
+    LockQueue = KiAcquireTimerLock(Hand);
+    Removed = Timer->Header.Inserted;
 
     if (Removed)
     {
@@ -933,15 +1252,41 @@ KiDecrementQueueCurrentCount(IN PKQUEUE Queue)
     return InterlockedDecrement((volatile LONG *)&Queue->CurrentCount);
 }
 
+/*
+ * A thread's queue is written under both the queue's lock and the thread's, so
+ * either one holds it still. The thread lock comes second everywhere else, so
+ * from under it the queue is only tried: a rundown that has the queue is
+ * waiting for this very thread lock to take the thread off it.
+ */
+FORCEINLINE
+PKQUEUE
+KiLockThreadQueue(IN PKTHREAD Thread)
+{
+    PKQUEUE Queue;
+
+    for (;;)
+    {
+        KiAcquireThreadLock(Thread);
+        Queue = Thread->Queue;
+        if ((Queue == NULL) || KiTryAcquireDispatcherObject(&Queue->Header))
+        {
+            KiReleaseThreadLock(Thread);
+            return Queue;
+        }
+
+        KiReleaseThreadLock(Thread);
+        YieldProcessor();
+    }
+}
+
 FORCEINLINE
 VOID
 KxActivateWaiterQueue(IN PKTHREAD Thread)
 {
-    PKQUEUE Queue = Thread->Queue;
+    PKQUEUE Queue = KiLockThreadQueue(Thread);
 
     if (Queue)
     {
-        KiAcquireDispatcherObject(&Queue->Header);
         KiActivateWaiterQueue(Queue);
         KiReleaseDispatcherObject(&Queue->Header);
     }
@@ -962,14 +1307,32 @@ KxIsThreadWaitInterrupted(IN PKTHREAD Thread)
     return (Thread->WaitMode != KernelMode) && Thread->ApcState.UserApcPending;
 }
 
+#define KI_WAIT_IN_PROGRESS 0
+#define KI_WAIT_COMMITTED   1
+#define KI_WAIT_ABORTED     2
+
+/* No block of an earlier wait is still on an object here, so nothing can reach the register until the first block of this wait is published */
+FORCEINLINE
+VOID
+KiBeginThreadWait(
+    _Inout_ PKTHREAD Thread)
+{
+    ASSERT(Thread == KeGetCurrentThread());
+    ASSERT(Thread->WaitRegister.State != KI_WAIT_COMMITTED);
+
+    Thread->WaitRegister.State = KI_WAIT_IN_PROGRESS;
+}
+
 FORCEINLINE
 BOOLEAN
 KxTryBeginThreadWait(IN PKTHREAD Thread)
 {
     KiAcquireThreadLock(Thread);
-    if (KiIsKernelApcDeliverable(Thread, Thread->WaitIrql) ||
+    if ((Thread->WaitRegister.State != KI_WAIT_IN_PROGRESS) ||
+        KiIsKernelApcDeliverable(Thread, Thread->WaitIrql) ||
         KxIsThreadWaitInterrupted(Thread))
     {
+        Thread->WaitRegister.State = KI_WAIT_ABORTED;
         KiReleaseThreadLock(Thread);
         return FALSE;
     }
@@ -983,7 +1346,7 @@ KxExitDispatcherForRetry(IN PKTHREAD Thread)
 {
     KIRQL WaitIrql = Thread->WaitIrql;
 
-    KiReleaseDispatcherLock(WaitIrql);
+    KiExitDispatcher(WaitIrql);
     if (KiIsKernelApcDeliverable(Thread, WaitIrql))
         HalRequestSoftwareInterrupt(APC_LEVEL);
 }
@@ -993,6 +1356,9 @@ VOID
 KxCommitThreadWait(IN PKTHREAD Thread,
                    IN BOOLEAN Swappable)
 {
+    ASSERT(Thread->WaitRegister.State == KI_WAIT_IN_PROGRESS);
+
+    Thread->WaitRegister.State = KI_WAIT_COMMITTED;
     Thread->State = Waiting;
     KiAddThreadToWaitList(Thread, Swappable);
     ASSERT(Thread->WaitIrql <= DISPATCH_LEVEL);
@@ -1032,21 +1398,9 @@ KxUnwaitThread(
     _Inout_ DISPATCHER_HEADER *Object,
     _In_ KPRIORITY Increment)
 {
-    PLIST_ENTRY WaitList = &Object->WaitListHead;
-    PKWAIT_BLOCK WaitBlock;
+    ASSERT(Object->SignalState > 0);
 
-    ASSERT(!IsListEmpty(WaitList));
-
-    do
-    {
-        WaitBlock = CONTAINING_RECORD(WaitList->Flink, KWAIT_BLOCK, WaitListEntry);
-        if (WaitBlock->WaitType == WaitDpc)
-            IopSignalWaitCompletionPacket(WaitBlock);
-        else
-            KiUnwaitThread(WaitBlock->Thread,
-                           (WaitBlock->WaitType == WaitAny) ? WaitBlock->WaitKey : STATUS_KERNEL_APC,
-                           Increment);
-    } while (!IsListEmpty(WaitList));
+    KiWaitTest(Object, Increment);
 }
 
 FORCEINLINE
@@ -1144,7 +1498,7 @@ KiDeferReadyWhileLeavingProcessor(
         return FALSE;
     }
 
-    ASSERT(Thread->NextProcessor < (ULONG)KeNumberProcessors);
+    ASSERT(Thread->NextProcessor < KeProcessorCount);
     Prcb = KiProcessorBlock[Thread->NextProcessor];
     KiAcquirePrcbLock(Prcb);
     Leaving = Thread->Running;
@@ -1235,7 +1589,7 @@ KxQueueReadyThread(
     ASSERT(Thread->State == Running);
     ASSERT(Thread->NextProcessor == Prcb->Number);
 
-    if (!(KiThreadAffinityMask(Thread) & Prcb->SetMember) || KiShouldVacateProcessor(Thread, Prcb))
+    if (!KiIsProcessorInSet(KiThreadAffinity(Thread), Prcb->Number) || KiShouldVacateProcessor(Thread, Prcb))
     {
         Thread->State = DeferredReady;
         KiReleasePrcbLock(Prcb);
@@ -1284,7 +1638,7 @@ KiSelectReadyThread(
 
         KiReadyQueueRemove(Prcb, Thread, (KPRIORITY)Highest);
 
-        if (KiThreadAffinityMask(Thread) & AFFINITY_MASK(Prcb->Number))
+        if (KiIsProcessorInSet(KiThreadAffinity(Thread), Prcb->Number))
         {
             ASSERT(Thread->BasePriority == 0 || Thread->Priority != 0);
             return Thread;

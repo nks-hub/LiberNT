@@ -37,7 +37,7 @@ Lancez LiberNT dans une machine virtuelle ou sur du vrai matériel et signalez c
 
 ### Implémenter des nouveautés
 
-Windows 11 est la référence de compatibilité. Avant de commencer un travail important, demandez dans les [Issues](https://github.com/LiberNT/LiberNT/issues) ou sur [Discord](https://discord.gg/BpcKg7FZ2) si quelqu'un s'en occupe déjà.
+Windows 11 est la référence de compatibilité. Avant de commencer un travail important, demandez dans les [Issues](https://github.com/LiberNT/LiberNT/issues) ou sur [Discord](https://discord.gg/ETvp4kxHDZ) si quelqu'un s'en occupe déjà.
 
 ### Écrire de la documentation
 
@@ -53,7 +53,7 @@ Nous vous recommandons d'utiliser l'anglais dans les rapports de bogues et les d
 
 ### Pull requests
 
-Envoyez votre travail sous forme de [pull request] vers la branche `main-nt10`. Les pull requests vous permettent d'informer les autres des modifications que vous avez poussées vers un dépôt sur GitHub. Une fois la pull request ouverte, vous pouvez discuter et relire les modifications avec l'équipe et ajouter des commits de suivi avant leur fusion.
+Envoyez votre travail sous forme de [pull request] vers la branche `master`. Les pull requests vous permettent d'informer les autres des modifications que vous avez poussées vers un dépôt sur GitHub. Une fois la pull request ouverte, vous pouvez discuter et relire les modifications avec l'équipe et ajouter des commits de suivi avant leur fusion.
 
 Avant de l'ouvrir :
 
@@ -83,7 +83,7 @@ Vous pouvez utiliser des outils d'IA. Indiquez dans la pull request les parties 
 - *Cherchez des pull requests similaires avant d'envoyer la vôtre.* Une pull request ou une issue semblable a peut-être déjà été ouverte. Commentez et relisez plutôt celle-là.
 - *Gardez votre contribution petite et centrée sur son sujet.* Résistez à la tentation de corriger des problèmes sans rapport que vous croisez ; ouvrez plutôt une issue pour eux.
 - *Respectez notre __[style de code]__.*
-- *N'ayez pas peur de poser des questions.* Interrogez l'équipe sur [Discord](https://discord.gg/BpcKg7FZ2) ou sur [Matrix](https://matrix.to/#/#libernt:matrix.org).
+- *N'ayez pas peur de poser des questions.* Interrogez l'équipe sur [Discord](https://discord.gg/ETvp4kxHDZ) ou sur [Matrix](https://matrix.to/#/#libernt:matrix.org).
 
 ## Droits d'auteur et licences
 
@@ -102,7 +102,7 @@ Consultez [CREDITS.md](../../CREDITS.md) pour connaître les personnes derrière
 - Parcourez les [Issues](https://github.com/LiberNT/LiberNT/issues) ouvertes.
 - Trouvez un test qui échoue, comparez-le avec Windows 11 et faites-le passer.
 - Lisez le [Wiki](https://github.com/LiberNT/LiberNT/wiki) pour les guides et les notes de conception.
-- Demandez de l'aide sur [Discord](https://discord.gg/BpcKg7FZ2) ou sur [Matrix](https://matrix.to/#/#libernt:matrix.org).
+- Demandez de l'aide sur [Discord](https://discord.gg/ETvp4kxHDZ) ou sur [Matrix](https://matrix.to/#/#libernt:matrix.org).
 
   [rétro-ingénierie en salle blanche]:                           https://en.wikipedia.org/wiki/Clean_room_design
   [pull request]:                                                https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests

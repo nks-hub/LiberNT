@@ -18,6 +18,7 @@ extern void func_CheckEscapes(void);
 extern void func_CIDLData(void);
 extern void func_CMyComputer(void);
 extern void func_CommandLineToArgvW(void);
+extern void func_ControlPanelItem(void);
 extern void func_CShellDesktop(void);
 extern void func_CShellDispatch(void);
 extern void func_CShellLink(void);
@@ -38,6 +39,7 @@ extern void func_menu(void);
 extern void func_OpenAs_RunDLL(void);
 extern void func_PathIsEqualOrSubFolder(void);
 extern void func_PathIsSlow(void);
+extern void func_RecycleBin(void);
 extern void func_PathIsTemporary(void);
 extern void func_PathMakeUniqueName(void);
 extern void func_PathProcessCommand(void);
@@ -80,6 +82,7 @@ extern void func_SHSimpleIDListFromPath(void);
 extern void func_SHRestricted(void);
 extern void func_SHSetUnreadMailCountW(void);
 extern void func_StrRStr(void);
+extern void func_UsersFilesFolder(void);
 extern void func_StartMenuPin(void);
 
 extern void func_Win81Ordinals(void);
@@ -118,6 +121,7 @@ const struct test winetest_testlist[] =
     { "CIDLData", func_CIDLData },
     { "CMyComputer", func_CMyComputer },
     { "CommandLineToArgvW", func_CommandLineToArgvW },
+    { "ControlPanelItem", func_ControlPanelItem },
     { "CShellDesktop", func_CShellDesktop },
     { "CShellDispatch", func_CShellDispatch },
     { "CShellLink", func_CShellLink },
@@ -138,6 +142,7 @@ const struct test winetest_testlist[] =
     //{ "OpenAs_RunDLL", func_OpenAs_RunDLL }, // Test hangs on Win 2003
     { "PathIsEqualOrSubFolder", func_PathIsEqualOrSubFolder },
     { "PathIsSlow", func_PathIsSlow },
+    { "RecycleBin", func_RecycleBin },
     { "PathIsTemporary", func_PathIsTemporary },
     { "PathMakeUniqueName", func_PathMakeUniqueName },
     { "PathProcessCommand", func_PathProcessCommand },
@@ -180,6 +185,7 @@ const struct test winetest_testlist[] =
     { "SHRestricted", func_SHRestricted },
     { "SHSetUnreadMailCountW", func_SHSetUnreadMailCountW },
     { "StrRStr", func_StrRStr },
+    { "UsersFilesFolder", func_UsersFilesFolder },
 
     { "Win81Ordinals", func_Win81Ordinals },
     { 0, 0 }

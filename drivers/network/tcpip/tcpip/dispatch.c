@@ -432,6 +432,12 @@ NTSTATUS DispTdiAssociateAddress(
       if (AddrFile->PendingKeepAliveSet)
           TCPSetKeepAlive(Connection, AddrFile->PendingKeepAlive);
 
+      if (AddrFile->PendingKeepAliveValuesSet)
+          TCPSetKeepAliveValues(Connection, AddrFile->PendingKeepAliveTime, AddrFile->PendingKeepAliveInterval);
+
+      if (AddrFile->PendingKeepAliveCountSet)
+          TCPSetKeepAliveCount(Connection, AddrFile->PendingKeepAliveCount);
+
       if (AddrFile->PendingNoDelaySet)
           TCPSetNoDelay(Connection, AddrFile->PendingNoDelay);
   }
@@ -1779,6 +1785,13 @@ NTSTATUS DispTdiSetInformationEx(
 
         if (Info->ID.toi_type == INFO_TYPE_CONNECTION)
             return SetConnectionInfo(&Info->ID, Request.Handle.AddressHandle, &Info->Buffer, Info->BufferSize);
+    }
+
+    if ((ULONG_PTR)IrpSp->FileObject->FsContext2 == TDI_CONNECTION_FILE &&
+        Info->ID.toi_class == INFO_CLASS_PROTOCOL &&
+        Info->ID.toi_type == INFO_TYPE_CONNECTION)
+    {
+        return SetConnectionEndpointInfo(&Info->ID, Request.Handle.ConnectionContext, &Info->Buffer, Info->BufferSize);
     }
 
     if (Irp->RequestorMode == UserMode &&

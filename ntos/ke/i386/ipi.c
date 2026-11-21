@@ -45,7 +45,7 @@ KiIpiSend(
     _In_ KAFFINITY TargetSet,
     _In_ ULONG IpiRequest)
 {
-    KAFFINITY Remaining = TargetSet & KeActiveProcessors;
+    KAFFINITY Remaining = TargetSet & KeActiveProcessors.Bitmap[0];
     ULONG Number;
 
     TargetSet = Remaining;
@@ -208,16 +208,15 @@ KeIpiGenericCall(
 
     OldIrql = KiX86AcquireIpiCall();
 
-    Targets = KeActiveProcessors & ~KeGetCurrentPrcb()->SetMember;
+    Targets = KeActiveProcessors.Bitmap[0] & ~KeGetCurrentPrcb()->SetMember;
     Count = KiX86CountTargets(Targets);
     ASSERT((KiX86IpiCall.Arriving == 0) && (KiX86IpiCall.Remaining == 0));
 
     KiX86IpiCall.Function = Function;
     KiX86IpiCall.Argument = Argument;
-    KiX86IpiCall.Arriving = Count;
-    KiX86IpiCall.Remaining = Count;
-    KiX86IpiCall.Release = 0;
-    KeMemoryBarrier();
+    InterlockedExchange(&KiX86IpiCall.Arriving, Count);
+    InterlockedExchange(&KiX86IpiCall.Remaining, Count);
+    InterlockedExchange(&KiX86IpiCall.Release, 0);
     if (Targets != 0)
         KiIpiSend(Targets, IPI_SYNCH_REQUEST);
 
@@ -256,15 +255,14 @@ KiIpiSendPacket(
 
     OldIrql = KiX86AcquireIpiCall();
 
-    Targets = TargetProcessors & KeActiveProcessors & ~KeGetCurrentPrcb()->SetMember;
+    Targets = TargetProcessors & KeActiveProcessors.Bitmap[0] & ~KeGetCurrentPrcb()->SetMember;
     ASSERT(KiX86IpiCall.Remaining == 0);
 
     KiX86IpiCall.Worker = WorkerFunction;
     KiX86IpiCall.BroadcastFunction = BroadcastFunction;
     KiX86IpiCall.Context = Context;
     KiX86IpiCall.Count = Count;
-    KiX86IpiCall.Remaining = KiX86CountTargets(Targets);
-    KeMemoryBarrier();
+    InterlockedExchange(&KiX86IpiCall.Remaining, KiX86CountTargets(Targets));
     if (Targets != 0)
         KiIpiSend(Targets, IPI_PACKET_READY);
 

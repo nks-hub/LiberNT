@@ -499,13 +499,18 @@ NtfsMountVolume(IN PDEVICE_OBJECT TargetDeviceObject,
         IoDeleteDevice(FSDeviceObject);
         goto Cleanup;
     }
+    ExInitializeRundownProtection(&VolCB->FileWrites);
+    ExInitializeRundownProtection(&VolCB->PagingWrites);
     ExInitializeFastMutex(&VolCB->VolumeStateMutex);
     ExInitializeFastMutex(&VolCB->StreamListMutex);
     ExInitializeFastMutex(&VolCB->MissingNameMutex);
     ExInitializeFastMutex(&VolCB->OpenLinkMutex);
     InitializeListHead(&VolCB->MissingNameList);
     for (Index = 0; Index < NTFS_MISSING_NAME_BUCKETS; Index++)
+    {
         InitializeListHead(&VolCB->MissingNameHash[Index]);
+        InitializeListHead(&VolCB->MissingNameLeafHash[Index]);
+    }
     VolCB->MissingNameCount = 0;
     ExInitializeFastMutex(&VolCB->RecordCacheMutex);
     InitializeListHead(&VolCB->RecordCacheList);
@@ -711,6 +716,10 @@ NtfsRecordNameMissing(_In_ PVolumeContextBlock VolCB,
         &VolCB->MissingNameHash[
             Hash & (NTFS_MISSING_NAME_BUCKETS - 1)],
         &Missing->HashLink);
+    InsertHeadList(
+        &VolCB->MissingNameLeafHash[
+            Missing->LeafHash & (NTFS_MISSING_NAME_BUCKETS - 1)],
+        &Missing->LeafLink);
     VolCB->MissingNameCount++;
     while (VolCB->MissingNameCount > NTFS_MAX_MISSING_NAMES)
     {
@@ -718,7 +727,9 @@ NtfsRecordNameMissing(_In_ PVolumeContextBlock VolCB,
         PNtfsMissingName Evicted =
             CONTAINING_RECORD(Oldest, NtfsMissingName, Link);
 
+        ASSERT(Oldest != &VolCB->MissingNameList);
         RemoveEntryList(&Evicted->HashLink);
+        RemoveEntryList(&Evicted->LeafLink);
         VolCB->MissingNameCount--;
         ExFreePoolWithTag(Evicted, TAG_NTFS);
     }
@@ -768,21 +779,24 @@ NtfsForgetMissingName(_In_ PVolumeContextBlock VolCB,
     LeafHash = NtfsHashName(Name + LeafStart, Length - LeafStart);
     InitializeListHead(&Stale);
     ExAcquireFastMutex(&VolCB->MissingNameMutex);
-    for (Entry = VolCB->MissingNameList.Flink;
-         Entry != &VolCB->MissingNameList;
+    for (Entry = VolCB->MissingNameLeafHash[LeafHash & (NTFS_MISSING_NAME_BUCKETS - 1)].Flink;
+         Entry != &VolCB->MissingNameLeafHash[LeafHash & (NTFS_MISSING_NAME_BUCKETS - 1)];
          Entry = Next)
     {
         PNtfsMissingName Missing =
-            CONTAINING_RECORD(Entry, NtfsMissingName, Link);
+            CONTAINING_RECORD(Entry, NtfsMissingName, LeafLink);
 
         Next = Entry->Flink;
+        ASSERT((Missing->LeafHash & (NTFS_MISSING_NAME_BUCKETS - 1)) == (LeafHash & (NTFS_MISSING_NAME_BUCKETS - 1)));
         if (NtfsMissingNameLeafMatches(Missing,
                                        LeafHash,
                                        Name + LeafStart,
                                        Length - LeafStart))
         {
+            ASSERT(VolCB->MissingNameCount != 0);
             RemoveEntryList(&Missing->Link);
             RemoveEntryList(&Missing->HashLink);
+            RemoveEntryList(&Missing->LeafLink);
             VolCB->MissingNameCount--;
             InsertTailList(&Stale, &Missing->Link);
         }
@@ -817,7 +831,10 @@ NtfsForgetAllMissingNames(_In_ PVolumeContextBlock VolCB)
         InitializeListHead(&VolCB->MissingNameList);
     }
     for (Index = 0; Index < NTFS_MISSING_NAME_BUCKETS; Index++)
+    {
         InitializeListHead(&VolCB->MissingNameHash[Index]);
+        InitializeListHead(&VolCB->MissingNameLeafHash[Index]);
+    }
     VolCB->MissingNameCount = 0;
     ExReleaseFastMutex(&VolCB->MissingNameMutex);
 

@@ -173,7 +173,7 @@ ExpCurrentFreeList(VOID)
         return 0;
     }
 
-    return KeGetCurrentProcessorNumber() % ExpFreeListCount;
+    return KeGetCurrentPrcb()->Number % ExpFreeListCount;
 }
 
 static
@@ -952,7 +952,7 @@ ExpInitializeHandleTables(VOID)
 {
     ULONG Index;
 
-    ExpFreeListCount = KeNumberProcessors;
+    ExpFreeListCount = KeProcessorCount;
     if (ExpFreeListCount > EXP_HANDLE_MAX_FREE_LISTS)
     {
         ExpFreeListCount = EXP_HANDLE_MAX_FREE_LISTS;
@@ -1188,15 +1188,18 @@ ExUnlockHandleTableEntry(
         (PVOID)(Value | EXHANDLE_TABLE_ENTRY_LOCK_BIT));
 }
 
+static
 HANDLE
-NTAPI
-ExCreateHandle(
+ExpCreateHandle(
     _In_ PHANDLE_TABLE HandleTable,
-    _In_ PHANDLE_TABLE_ENTRY HandleTableEntry)
+    _In_ PHANDLE_TABLE_ENTRY HandleTableEntry,
+    _Outptr_opt_ PHANDLE_TABLE_ENTRY *LockedEntry)
 {
     PHANDLE_TABLE_ENTRY Entry;
     PULONG Cached;
     EXHANDLE Handle;
+
+    ASSERT(LockedEntry == NULL || KeAreApcsDisabled());
 
     Entry = ExpAllocateHandleTableEntry(HandleTable, &Handle);
     if (Entry == NULL)
@@ -1214,10 +1217,34 @@ ExCreateHandle(
 
     InterlockedExchangePointer(
         &Entry->Object,
-        (PVOID)((ULONG_PTR)HandleTableEntry->Object |
-                EXHANDLE_TABLE_ENTRY_LOCK_BIT));
+        (PVOID)(((ULONG_PTR)HandleTableEntry->Object & ~(ULONG_PTR)EXHANDLE_TABLE_ENTRY_LOCK_BIT) |
+                ((LockedEntry == NULL) ? EXHANDLE_TABLE_ENTRY_LOCK_BIT : 0)));
+
+    if (LockedEntry != NULL)
+    {
+        *LockedEntry = Entry;
+    }
 
     return Handle.GenericHandleOverlay;
+}
+
+HANDLE
+NTAPI
+ExCreateHandle(
+    _In_ PHANDLE_TABLE HandleTable,
+    _In_ PHANDLE_TABLE_ENTRY HandleTableEntry)
+{
+    return ExpCreateHandle(HandleTable, HandleTableEntry, NULL);
+}
+
+HANDLE
+NTAPI
+ExCreateLockedHandle(
+    _In_ PHANDLE_TABLE HandleTable,
+    _In_ PHANDLE_TABLE_ENTRY HandleTableEntry,
+    _Outptr_ PHANDLE_TABLE_ENTRY *LockedEntry)
+{
+    return ExpCreateHandle(HandleTable, HandleTableEntry, LockedEntry);
 }
 
 BOOLEAN

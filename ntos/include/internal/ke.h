@@ -37,6 +37,11 @@
 #define KiArchPublishSystemCallStubs(DllBase) ((VOID)(DllBase), STATUS_SUCCESS)
 #endif
 
+#ifndef KiArchSystemDllSListMarkersPresent
+#define KiArchSystemDllSListMarkersPresent(End, Fault, Resume) \
+    ((End) != NULL && (Fault) != NULL && (Resume) != NULL)
+#endif
+
 #ifndef KiArchExceptionContextFlags
 #define KiArchExceptionContextFlags(PreviousMode) ((VOID)(PreviousMode), CONTEXT_ALL)
 #endif
@@ -229,7 +234,15 @@ typedef enum _KI_BOOT_READOUT
 #endif
 
 #ifndef KiPrcbGroup
-#define KiPrcbGroup(Prcb) ((Prcb)->Group)
+#define KiPrcbGroup(Prcb) ((USHORT)((Prcb)->Number / KiMaximumGroupSize))
+#endif
+
+#ifndef KiArchMaximumProcessors
+#define KiArchMaximumProcessors() MAXIMUM_PROC_PER_GROUP
+#endif
+
+#ifndef KiIpiSendProcessor
+#define KiIpiSendProcessor(Number, IpiRequest) KiIpiSend(AFFINITY_MASK(Number), IpiRequest)
 #endif
 
 #ifndef KiPrcbPoolLookaside
@@ -302,7 +315,13 @@ extern USHORT KeProcessorRevision;
 
 extern ULONG64 KeFeatureBits;
 
-extern KAFFINITY KeActiveProcessors;
+extern KAFFINITY_EX KeActiveProcessors;
+
+extern ULONG KeProcessorCount;
+
+extern ULONG KiProcessorSetWords;
+
+extern ULONG KiMaximumGroupSize;
 
 extern ULONG KeBugCheckActive;
 
@@ -312,9 +331,9 @@ extern PKPRCB KiProcessorBlock[];
 extern KSCHEDULER_SUBNODE KiNode0SubNode;
 #endif
 
-extern KAFFINITY KiHeteroEfficientSet;
+extern KAFFINITY KiHeteroEfficientSet[KE_MAXIMUM_GROUPS];
 
-extern KAFFINITY KiHeteroPerformanceSet;
+extern KAFFINITY KiHeteroPerformanceSet[KE_MAXIMUM_GROUPS];
 
 #ifndef KI_MAX_NUMA_NODES
 #define KI_MAX_NUMA_NODES 1
@@ -413,7 +432,7 @@ extern LIST_ENTRY KiStackInSwapListHead;
 
 extern KEVENT KiSwapEvent;
 
-extern KAFFINITY KiIdleSummary;
+extern KAFFINITY KiIdleSummary[KE_MAXIMUM_GROUPS];
 
 extern PVOID KeUserApcDispatcher;
 
@@ -518,6 +537,9 @@ KiDisplayBugCheckRegisterState(
     _In_ PCONTEXT Context);
 #endif
 
+ULONG64
+KiReadCycleCounter(VOID);
+
 #if (NTDDI_VERSION >= NTDDI_LONGHORN)
 VOID
 NTAPI
@@ -568,8 +590,8 @@ KeReleaseQueuedSpinLockFromDpcLevel(
 ULONG
 NTAPI
 KiFindIdealProcessor(
-    _In_ KAFFINITY ProcessorSet,
-    _In_ UCHAR OriginalIdealProcessor);
+    _In_ const KAFFINITY *ProcessorSet,
+    _In_ ULONG OriginalIdealProcessor);
 #endif
 
 VOID
@@ -967,19 +989,57 @@ FASTCALL
 KiCheckProcessorUnpark(
     _In_ PKTHREAD Thread);
 
-KAFFINITY
+VOID
 FASTCALL
-KiGetNonParkedProcessorSet(VOID);
+KiGetNonParkedProcessorSet(
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *NonParkedSet);
 
-KAFFINITY
+VOID
 FASTCALL
 KiHeteroPreferredProcessorSet(
     _In_ PKTHREAD Thread,
-    _In_ KAFFINITY ProcessorSet);
+    _Inout_ KAFFINITY *ProcessorSet);
 
 VOID
 NTAPI
 KiInitializeProcessorEfficiency(VOID);
+
+VOID
+NTAPI
+KiSetProcessorCount(
+    _In_ ULONG Count);
+
+VOID
+NTAPI
+KiActivateProcessor(
+    _In_ PKPRCB Prcb);
+
+VOID
+NTAPI
+KiCompleteProcessorNumbering(VOID);
+
+VOID
+NTAPI
+KeSetMaximumGroupSize(
+    _In_ ULONG GroupSize);
+
+KAFFINITY
+NTAPI
+KiQueryGroupOfProcessorSet(
+    _In_ const volatile KAFFINITY *Set,
+    _In_ USHORT Group);
+
+VOID
+NTAPI
+KiAssignGroupOfProcessorSet(
+    _Inout_ KAFFINITY *Set,
+    _In_ USHORT Group,
+    _In_ KAFFINITY Mask);
+
+ULONG
+NTAPI
+KiLegacyProcessorNumber(
+    _In_ ULONG Number);
 
 BOOLEAN
 FASTCALL
@@ -1069,9 +1129,8 @@ KiExitDispatcher(
 
 VOID
 FASTCALL
-KiUnlinkThread(
-    _In_ PKTHREAD Thread,
-    _In_ LONG_PTR WaitStatus);
+KiEndThreadWait(
+    _Inout_ PKTHREAD Thread);
 
 VOID
 FASTCALL
@@ -1090,6 +1149,16 @@ FASTCALL
 KiWaitTest(
     PVOID Object,
     KPRIORITY Increment);
+
+PKTHREAD
+FASTCALL
+KiLockCommittedWaiter(
+    _Inout_ PKWAIT_BLOCK WaitBlock);
+
+VOID
+FASTCALL
+KiUnlinkWaitBlock(
+    _Inout_ PKWAIT_BLOCK WaitBlock);
 
 BOOLEAN
 FASTCALL
@@ -1238,12 +1307,6 @@ KiInsertTimerTable(
     _In_ PKTIMER Timer,
     _In_ ULONG Hand);
 
-BOOLEAN
-FASTCALL
-KiInsertTreeTimer(
-    _In_ PKTIMER Timer,
-    _In_ LARGE_INTEGER Interval);
-
 VOID
 NTAPI
 KiTimerExpiration(
@@ -1251,12 +1314,6 @@ KiTimerExpiration(
     _In_ PVOID DeferredContext,
     _In_ PVOID SystemArgument1,
     _In_ PVOID SystemArgument2);
-
-VOID
-FASTCALL
-KiTimerListExpire(
-    _In_ PLIST_ENTRY ExpiredListHead,
-    _In_ KIRQL OldIrql);
 
 VOID
 FASTCALL
@@ -1292,7 +1349,7 @@ NTAPI
 KeInitializeProcess(
     struct _KPROCESS *Process,
     KPRIORITY Priority,
-    KAFFINITY Affinity,
+    _In_opt_ const KAFFINITY *Affinity,
     PULONG_PTR DirectoryTableBase,
     _In_ BOOLEAN Enable);
 
@@ -1460,10 +1517,89 @@ FASTCALL
 KiSelectNextThread(
     _In_ PKPRCB Prcb);
 
-KAFFINITY
+VOID
 FASTCALL
 KiSetAffinityThread(
+    _Inout_ PKTHREAD Thread,
+    _In_ const KAFFINITY *Affinity);
+
+VOID
+FASTCALL
+KiSetUserAffinityThread(
+    _Inout_ PKTHREAD Thread,
+    _In_ const KAFFINITY *Affinity);
+
+USHORT
+NTAPI
+KeQueryPrimaryGroupThread(
+    _In_ PKTHREAD Thread);
+
+KAFFINITY
+NTAPI
+KeQueryGroupAffinityThread(
     _In_ PKTHREAD Thread,
+    _In_ USHORT Group);
+
+VOID
+NTAPI
+KeQueryActualGroupAffinityThread(
+    _In_ PKTHREAD Thread,
+    _Out_ PGROUP_AFFINITY Affinity);
+
+VOID
+NTAPI
+KeSetGroupAffinityThread(
+    _Inout_ PKTHREAD Thread,
+    _In_ USHORT Group,
+    _In_ KAFFINITY Affinity);
+
+NTSTATUS
+NTAPI
+KeSetIdealProcessorThreadEx(
+    _Inout_ PKTHREAD Thread,
+    _In_ PPROCESSOR_NUMBER Processor,
+    _Out_ PPROCESSOR_NUMBER Previous);
+
+USHORT
+NTAPI
+KeQueryPrimaryGroupProcess(
+    _In_ PKPROCESS Process);
+
+KAFFINITY
+NTAPI
+KeQueryGroupAffinityProcess(
+    _In_ PKPROCESS Process,
+    _In_ USHORT Group);
+
+VOID
+NTAPI
+KiSetProcessorAffinityThread(
+    _Inout_ PKTHREAD Thread,
+    _In_ ULONG Number);
+
+VOID
+NTAPI
+KiSetSystemAffinityThread(
+    _In_ const KAFFINITY *NewAffinity,
+    _Out_ PGROUP_AFFINITY Previous);
+
+VOID
+NTAPI
+KiSetSystemProcessorAffinityThread(
+    _In_ ULONG Number,
+    _Out_ PGROUP_AFFINITY Previous);
+
+VOID
+NTAPI
+KiSetSystemGroupAffinityThread(
+    _In_ USHORT Group,
+    _In_ KAFFINITY Affinity,
+    _Out_ PGROUP_AFFINITY Previous);
+
+VOID
+NTAPI
+KiRevertToUserGroupAffinityThread(
+    _In_ USHORT Group,
     _In_ KAFFINITY Affinity);
 
 VOID
@@ -1658,11 +1794,12 @@ BOOLEAN
 NTAPI
 KiTestAlert(VOID);
 
-KAFFINITY
+VOID
 FASTCALL
 KiThreadCpuSetAffinity(
     _In_ PKTHREAD Thread,
-    _In_ KAFFINITY Affinity);
+    _In_ const KAFFINITY *Affinity,
+    _Out_writes_(KE_MAXIMUM_GROUPS) KAFFINITY *Effective);
 
 NTSTATUS
 NTAPI

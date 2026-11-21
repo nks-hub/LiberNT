@@ -171,10 +171,12 @@ VOID
 NTAPI
 KdSystemRootAvailable(VOID);
 
+#ifdef REMOTE_ASSISTANCE
 BOOLEAN
 NTAPI
 KdDisplayTransportKey(
     _In_ BOOLEAN DarkPalette);
+#endif
 
 BOOLEAN
 NTAPI

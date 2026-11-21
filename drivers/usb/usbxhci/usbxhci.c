@@ -268,6 +268,7 @@ static MPSTATUS XHCI_ResetController(PXHCI_EXTENSION Extension);
 static BOOLEAN XHCI_WaitForRegisterBits(volatile ULONG *Reg, ULONG Mask, BOOLEAN WaitSet, ULONG TimeoutUs);
 static VOID XHCI_HandleControllerError(PXHCI_EXTENSION Extension, ULONG PendingStatus);
 static VOID XHCI_HandleCommandTimeout(PXHCI_EXTENSION Extension, PXHCI_COMMAND_CONTEXT CommandContext);
+static BOOLEAN XHCI_AbortCommand(PXHCI_EXTENSION Extension);
 static VOID XHCI_GetRegistryParameters(PXHCI_EXTENSION Extension);
 static BOOLEAN XHCI_ValidateContextLayout(PXHCI_EXTENSION Extension);
 static VOID NTAPI XHCI_RH_GetRootHubData(PVOID MiniPortExtension, PVOID RootHubData);
@@ -6327,14 +6328,14 @@ XHCI_ServiceEventRing(
 
     if (!Extension || !Extension->RuntimeRegisters ||
         !Extension->EventRing || Extension->EventRingTrbCount == 0 ||
-        Extension->FatalError)
+        !Extension->EventTicketOnCpu || Extension->FatalError)
         return;
 
     PassiveResets.Count = 0;
     KeAcquireSpinLock(&Extension->EventRingLock, &OldIrql);
     Frozen = (OldIrql == HIGH_LEVEL);
     Cpu = KeGetCurrentProcessorNumberEx(NULL);
-    ASSERT(Cpu < MAXIMUM_PROCESSORS);
+    ASSERT(Cpu < Extension->EventTicketCpuCount);
 
     /*
      * Clear IMAN.IP before consuming events. If it is cleared after ERDP.EHB,
@@ -6577,19 +6578,19 @@ XHCI_WaitForClaimedEvents(
     ULONG Self;
     ULONG Count;
 
-    if (KeGetCurrentIrql() == HIGH_LEVEL)
+    if (KeGetCurrentIrql() == HIGH_LEVEL || !Extension->EventTicketOnCpu)
         return;
 
     KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
     Self = KeGetCurrentProcessorNumberEx(NULL);
-    ASSERT(Self < MAXIMUM_PROCESSORS);
+    ASSERT(Self < Extension->EventTicketCpuCount);
     ASSERT(Extension->EventTicketOnCpu[Self] == 0);
 
     KeAcquireSpinLockAtDpcLevel(&Extension->EventRingLock);
     Snapshot = (ULONG)Extension->EventClaimTicket;
     KeReleaseSpinLockFromDpcLevel(&Extension->EventRingLock);
 
-    Count = min((ULONG)KeNumberProcessors, (ULONG)MAXIMUM_PROCESSORS);
+    Count = Extension->EventTicketCpuCount;
     for (Cpu = 0; Cpu < Count; Cpu++)
     {
         if (Cpu == Self)
@@ -7354,6 +7355,9 @@ XHCI_HandleCommandCompletion(
              CompletionCode,
              SlotId,
              CommandPointer);
+
+    if (!CommandContext && CompletionCode == XHCI_COMPLETION_COMMAND_RING_STOPPED)
+        return;
 
     /* Log ALL command completions, especially errors */
     if (CommandContext)
@@ -11343,19 +11347,21 @@ XHCI_WaitForCommandCompletion(
             XHCI_ServiceEventRing(Extension, TRUE, FALSE);
             XHCI_DrainDeferredTransferCompletions(Extension);
             if (CommandContext->Completed)
-            {
                 DPRINT1("usbxhci: command completed after manual event ring drain\n");
-                goto CheckCompletion;
-            }
         }
 
-        if (Irql <= PASSIVE_LEVEL)
-            XHCI_HandleCommandTimeout(Extension, CommandContext);
-        Result = MP_STATUS_HW_ERROR;
-        goto Exit;
+        if (!CommandContext->Completed && Irql <= PASSIVE_LEVEL)
+            (VOID)XHCI_AbortCommand(Extension);
+
+        if (!CommandContext->Completed)
+        {
+            if (Irql <= PASSIVE_LEVEL)
+                XHCI_HandleCommandTimeout(Extension, CommandContext);
+            Result = MP_STATUS_HW_ERROR;
+            goto Exit;
+        }
     }
 
-CheckCompletion:
     KeMemoryBarrier();
     if (SlotIdOut)
         *SlotIdOut = CommandContext->SlotId;
@@ -11434,6 +11440,39 @@ XHCI_DebugEndpointsRunning(
     }
 
     return FALSE;
+}
+
+/* xHCI 4.6.1.2: abort the executing command and stop the ring; only CRCR's low dword is written, the pointer stays untouched */
+static
+BOOLEAN
+XHCI_AbortCommand(
+    _Inout_ PXHCI_EXTENSION Extension)
+{
+    volatile ULONG *CrcrLow = &Extension->OperationalRegisters->CrCrLow;
+    BOOLEAN Pending;
+    KIRQL OldIrql;
+
+    ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    if (!(XHCI_READ_REGISTER_ULONG(CrcrLow) & XHCI_CRCR_CRR))
+        return FALSE;
+
+    KeAcquireSpinLock(&Extension->CommandLock, &OldIrql);
+    XHCI_WRITE_REGISTER_ULONG(CrcrLow, (ULONG)(XHCI_GetCommandRingPointer(Extension) & ~0x3FULL) | XHCI_CRCR_CA);
+    KeReleaseSpinLock(&Extension->CommandLock, OldIrql);
+
+    if (!XHCI_WaitForRegisterBits(CrcrLow, XHCI_CRCR_CRR, FALSE, XHCI_WAIT_HALT_US))
+        return FALSE;
+
+    XHCI_ServiceEventRing(Extension, TRUE, FALSE);
+    XHCI_DrainDeferredTransferCompletions(Extension);
+
+    KeAcquireSpinLock(&Extension->CommandLock, &OldIrql);
+    Pending = !IsListEmpty(&Extension->CommandContextList);
+    KeReleaseSpinLock(&Extension->CommandLock, OldIrql);
+    if (Pending)
+        XHCI_RingCommandDoorbell(Extension);
+    return TRUE;
 }
 
 static
@@ -14421,6 +14460,16 @@ XHCI_StartController(PVOID MiniPortExtension,
         return MP_STATUS_NO_RESOURCES;
     }
 
+    if (!Extension->EventTicketOnCpu)
+    {
+        Extension->EventTicketCpuCount = KeQueryMaximumProcessorCountEx(ALL_PROCESSOR_GROUPS);
+        Extension->EventTicketOnCpu = ExAllocatePoolZero(NonPagedPool,
+                                                         Extension->EventTicketCpuCount * sizeof(LONG),
+                                                         XHCI_TAG);
+        if (!Extension->EventTicketOnCpu)
+            return MP_STATUS_NO_RESOURCES;
+    }
+
     KeInitializeSpinLock(&Extension->CommandLock);
     KeInitializeSpinLock(&Extension->EventRingLock);
     InitializeListHead(&Extension->CommandContextList);
@@ -14958,6 +15007,14 @@ XHCI_StopController(PVOID MiniPortExtension,
     Extension->EventRingDequeueIndex = 0;
     Extension->EventRingCycleState = 0;
     Extension->EventRingDequeuePointer = 0;
+    if (Extension->EventTicketOnCpu)
+    {
+        volatile LONG *Tickets = Extension->EventTicketOnCpu;
+
+        XHCI_WaitForClaimedEvents(Extension);
+        Extension->EventTicketOnCpu = NULL;
+        ExFreePoolWithTag((PVOID)Tickets, XHCI_TAG);
+    }
     Extension->ErstTable = NULL;
     Extension->ErstTablePhysical.QuadPart = 0;
     Extension->ErstEntryCount = 0;

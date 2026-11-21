@@ -7,8 +7,11 @@ list(APPEND SOURCE
     DeviceDescription.c
     DeviceExtension.c
     DriverFeatureScore.c
+    DriverFilesNeedReboot.c
     DriverPackageSignerScore.c
+    HalDeviceIds.c
     DevicePdoName.c
+    DisableableParents.c
     DevicePowerOnDisable.c
     DeviceRemoveVeto.c
     HostBridgeStart.c

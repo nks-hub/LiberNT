@@ -350,6 +350,27 @@ PiTakeInstanceName(
     KeLeaveCriticalRegion();
 }
 
+/* Every new child's firmware setting is held before any of its siblings is given resources */
+static
+VOID
+PiReserveBootConfiguration(
+    _In_ PDEVICE_NODE DeviceNode)
+{
+    PCM_RESOURCE_LIST BootResources;
+
+    PAGED_CODE();
+
+    if (DeviceNode->BootResources != NULL)
+        return;
+
+    if (NT_SUCCESS(PiIrpQueryResources(DeviceNode, &BootResources)) && BootResources != NULL)
+    {
+        DeviceNode->BootResources = BootResources;
+        PiSetDevNodeFlag(DeviceNode, DNF_HAS_BOOT_CONFIG);
+        IopResDbReserveBoot(DeviceNode, BootResources);
+    }
+}
+
 static
 NTSTATUS
 PiQueryAndSaveIds(
@@ -452,17 +473,8 @@ PiQueryAndSaveIds(
 
     PiQueryBusInformation(DeviceNode);
 
-    if (DeviceNode->BootResources == NULL)
-    {
-        PCM_RESOURCE_LIST BootResources;
-
-        /* TODO: publish the boot configuration as LogConf\BootConfig under the instance key */
-        if (NT_SUCCESS(PiIrpQueryResources(DeviceNode, &BootResources)) && BootResources != NULL)
-        {
-            DeviceNode->BootResources = BootResources;
-            PiSetDevNodeFlag(DeviceNode, DNF_HAS_BOOT_CONFIG);
-        }
-    }
+    /* TODO: publish the boot configuration as LogConf\BootConfig under the instance key */
+    PiReserveBootConfiguration(DeviceNode);
 
     /* The capability query came before the bus was known */
     if (HaveCapabilities) PiUpdateRemovalPolicy(DeviceNode, (BOOLEAN)Capabilities.Removable);
@@ -1232,6 +1244,67 @@ PiReleaseDeviceResources(
     IopUpdateResourceMapForPnPDevice(DeviceNode);
 }
 
+/* The drivers attached above a PDO, held across the remove request that may leave them without a device */
+static
+PDRIVER_OBJECT *
+PiReferenceStackDrivers(
+    _In_ PDEVICE_OBJECT PhysicalDeviceObject,
+    _Out_ PULONG Count)
+{
+    PDRIVER_OBJECT *Drivers;
+    PDEVICE_OBJECT Device;
+    ULONG Size = 0;
+    ULONG Index = 0;
+    KIRQL OldIrql;
+
+    PAGED_CODE();
+
+    *Count = 0;
+
+    KeAcquireSpinLock(&IopDeviceTreeLock, &OldIrql);
+    for (Device = PhysicalDeviceObject->AttachedDevice; Device != NULL; Device = Device->AttachedDevice) Size++;
+    KeReleaseSpinLock(&IopDeviceTreeLock, OldIrql);
+
+    if (Size == 0) return NULL;
+
+    Drivers = ExAllocatePoolWithTag(PagedPool, Size * sizeof(*Drivers), TAG_IO);
+    if (Drivers == NULL) return NULL;
+
+    KeAcquireSpinLock(&IopDeviceTreeLock, &OldIrql);
+    for (Device = PhysicalDeviceObject->AttachedDevice;
+         Device != NULL && Index < Size;
+         Device = Device->AttachedDevice)
+    {
+        ASSERT(Device->DriverObject != NULL);
+        ObReferenceObject(Device->DriverObject);
+        Drivers[Index++] = Device->DriverObject;
+    }
+    KeReleaseSpinLock(&IopDeviceTreeLock, OldIrql);
+
+    *Count = Index;
+    return Drivers;
+}
+
+static
+VOID
+PiUnloadRemovedStackDrivers(
+    _In_reads_opt_(Count) PDRIVER_OBJECT *Drivers,
+    _In_ ULONG Count)
+{
+    ULONG Index;
+
+    PAGED_CODE();
+    ASSERT(Drivers != NULL || Count == 0);
+
+    for (Index = 0; Index < Count; Index++)
+    {
+        IopUnloadUnusedPnpDriver(Drivers[Index]);
+        ObDereferenceObject(Drivers[Index]);
+    }
+
+    if (Drivers != NULL) ExFreePoolWithTag(Drivers, TAG_IO);
+}
+
 /* A device that fails once its drivers are added has its stack removed, as a failed start has (IRP_MN_REMOVE_DEVICE) */
 static
 VOID
@@ -1239,9 +1312,13 @@ PiRemoveFailedStack(
     _In_ PDEVICE_NODE DeviceNode)
 {
     IO_STACK_LOCATION StackLocation;
+    PDRIVER_OBJECT *Drivers;
+    ULONG DriverCount;
 
     PAGED_CODE();
     ASSERT(DeviceNode->Flags & DNF_HAS_PROBLEM);
+
+    Drivers = PiReferenceStackDrivers(DeviceNode->PhysicalDeviceObject, &DriverCount);
 
     RtlZeroMemory(&StackLocation, sizeof(StackLocation));
     StackLocation.MajorFunction = IRP_MJ_PNP;
@@ -1259,6 +1336,8 @@ PiRemoveFailedStack(
     if (!(DeviceNode->Flags & DNF_MADEUP)) PiClearDevNodeFlag(DeviceNode, DNF_NO_RESOURCE_REQUIRED);
 
     PiSetDevNodeState(DeviceNode, DeviceNodeRemoved);
+
+    PiUnloadRemovedStackDrivers(Drivers, DriverCount);
 }
 
 static
@@ -1466,8 +1545,14 @@ PiProcessNewChildren(
         if (ChildNode != NULL)
         {
             /* A removed device its bus still reports is set up again, its instance key and IDs included */
-            if (ChildNode->State == DeviceNodeRemoved && !(ChildNode->Flags & (DNF_HAS_PROBLEM | DNF_DEVICE_GONE)))
+            if (ChildNode->State == DeviceNodeRemoved &&
+                !(ChildNode->Flags & DNF_DEVICE_GONE) &&
+                (!(ChildNode->Flags & DNF_HAS_PROBLEM) ||
+                 (ChildNode->Flags & DNF_UNINSTALLED)))
             {
+                if (ChildNode->Flags & DNF_UNINSTALLED)
+                    PiClearDevNodeProblem(ChildNode);
+
                 PiClearDevNodeFlag(ChildNode, DNF_IDS_QUERIED | DNF_UNINSTALLED);
                 PiSetDevNodeState(ChildNode, DeviceNodeUninitialized);
             }
@@ -1488,10 +1573,44 @@ PiProcessNewChildren(
 
         Child->Flags |= DO_BUS_ENUMERATED_DEVICE;
 
+        PiReserveBootConfiguration(ChildNode);
+
         ObDereferenceObject(Child);
     }
 
     ExFreePool(Relations);
+}
+
+/* A reported device is asked for its hardware IDs once its driver has put a function device on the reported PDO */
+static
+VOID
+PiSaveReportedHardwareIds(
+    _In_ PDEVICE_NODE DeviceNode)
+{
+    PDEVICE_OBJECT TopDevice;
+    PWSTR HardwareIds;
+    HANDLE InstanceKey;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(DeviceNode->Flags & DNF_MADEUP);
+    ASSERT(DeviceNode->PhysicalDeviceObject != NULL);
+
+    TopDevice = IoGetAttachedDeviceReference(DeviceNode->PhysicalDeviceObject);
+    ObDereferenceObject(TopDevice);
+    if (TopDevice == DeviceNode->PhysicalDeviceObject) return;
+
+    Status = PiIrpQueryId(DeviceNode, BusQueryHardwareIDs, &HardwareIds);
+    if (!NT_SUCCESS(Status) || HardwareIds == NULL) return;
+
+    Status = PnpDeviceObjectToDeviceInstance(DeviceNode->PhysicalDeviceObject, &InstanceKey, KEY_SET_VALUE);
+    if (NT_SUCCESS(Status))
+    {
+        PiSetMultiSzValue(InstanceKey, L"HardwareID", HardwareIds);
+        ZwClose(InstanceKey);
+    }
+
+    ExFreePool(HardwareIds);
 }
 
 static
@@ -1504,6 +1623,8 @@ PiProcessEnumeration(
     PAGED_CODE();
 
     PiSetDevNodeState(DeviceNode, DeviceNodeEnumeratePending);
+
+    if (DeviceNode->Flags & DNF_MADEUP) PiSaveReportedHardwareIds(DeviceNode);
 
     /* A bus invalidating its relations while they are being processed is asked again */
     PiClearDevNodeFlag(DeviceNode, DNF_REENUMERATE);
@@ -1567,6 +1688,8 @@ PiSendRemoval(
     _In_ BOOLEAN Surprise)
 {
     IO_STACK_LOCATION StackLocation;
+    PDRIVER_OBJECT *Drivers = NULL;
+    ULONG DriverCount = 0;
 
     PAGED_CODE();
 
@@ -1581,6 +1704,8 @@ PiSendRemoval(
     StackLocation.MajorFunction = IRP_MJ_PNP;
     StackLocation.MinorFunction = Surprise ? IRP_MN_SURPRISE_REMOVAL
                                            : IRP_MN_REMOVE_DEVICE;
+
+    if (!Surprise) Drivers = PiReferenceStackDrivers(DeviceNode->PhysicalDeviceObject, &DriverCount);
 
     IopSynchronousCall(DeviceNode->PhysicalDeviceObject,
                        &StackLocation,
@@ -1621,6 +1746,8 @@ PiSendRemoval(
                                            : &GUID_DEVICE_SAFE_REMOVAL,
                                   &DeviceNode->InstancePath);
     }
+
+    PiUnloadRemovedStackDrivers(Drivers, DriverCount);
 }
 
 /* A device whose stack was removed while it was present keeps its PDO; once its bus stops reporting it, the PDO gets

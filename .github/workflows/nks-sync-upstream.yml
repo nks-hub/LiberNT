@@ -1,4 +1,4 @@
-# Keeps main-nt10 equal to LiberNT/LiberNT and merges it into the nks branch, which carries our patches.
+# Keeps the fork's main-nt10 equal to LiberNT/LiberNT master and merges it into nks.
 name: Sync upstream
 
 on:
@@ -27,8 +27,22 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
     steps:
-      - name: Fast-forward main-nt10 from upstream
-        run: gh api -X POST "repos/$REPO/merge-upstream" -f branch=main-nt10
+      - name: Fast-forward main-nt10 from LiberNT master
+        run: |
+          upstream=https://github.com/LiberNT/LiberNT.git
+          fork="${{ github.server_url }}/$REPO.git"
+          upstream_tip=$(git ls-remote --exit-code "$upstream" refs/heads/master | cut -f1)
+          fork_tip=$(git ls-remote --exit-code "$fork" refs/heads/main-nt10 | cut -f1)
+          if [ "$upstream_tip" = "$fork_tip" ]; then
+            echo "main-nt10 is up to date"
+            exit 0
+          fi
+
+          gh auth setup-git --hostname github.com
+          git init --bare "$RUNNER_TEMP/libernt-sync.git"
+          cd "$RUNNER_TEMP/libernt-sync.git"
+          git fetch --no-tags "$upstream" refs/heads/master
+          git push "$fork" FETCH_HEAD:refs/heads/main-nt10
 
       - name: Merge main-nt10 into nks
         run: |
@@ -45,7 +59,7 @@ jobs:
               title="Upstream merge conflict"
               if [ -z "$(gh issue list -R "$REPO" --state open --search "$title in:title" --json number --jq '.[].number')" ]; then
                 gh issue create -R "$REPO" --title "$title" \
-                  --body "Merging main-nt10 into nks conflicts. Merge it by hand: git fetch upstream && git checkout nks && git merge upstream/main-nt10. Run: ${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}"
+                  --body "Merging main-nt10 into nks conflicts. To merge by hand, run \`git fetch upstream master\`, then \`git checkout nks\` and \`git merge upstream/master\`. See ${{ github.server_url }}/$REPO/actions/runs/${{ github.run_id }}."
               fi
               exit 1 ;;
             *) printf '%s\n' "$out"; exit 1 ;;

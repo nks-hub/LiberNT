@@ -55,6 +55,7 @@
 #include "residency_core.h"
 #include "vidmm.h"
 #include "vidmm_worker_drain_core.h"
+#include "vidmm_destroy_core.h"
 #include "vidsch.h"
 #include "present.h"
 #include "presenttrace.h"
@@ -7614,6 +7615,36 @@ DxgkpVidMmWaitForAllocationReferences(
 }
 
 #if defined(REACTOS_WDDM_TARGET_LEVEL) && (REACTOS_WDDM_TARGET_LEVEL >= 2000)
+/* A reset drains the counted retirements before it resets, so a retirement
+ * never waits for that reset while it is counted. */
+static NTSTATUS
+DxgkpVidMmFlushRetiredDevice(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_ PDXGKRNL_DEVICE Device,
+    _Inout_ PBOOLEAN WorkerCounted)
+{
+    DXGK_VIDMM_WORKER_DRAIN_GATE Gate;
+    NTSTATUS Status;
+
+    PAGED_CODE();
+    ASSERT(*WorkerCounted);
+    Gate.Lock = &DxgkVidMmDestroyBatchListLock;
+    Gate.ActiveWorkers = &Adapter->VidMmDestroyWorkerCount;
+    Gate.AdmissionBlocked = &Adapter->VidMmDestroyQueuesBlocked;
+    Gate.DrainedEvent = &Adapter->VidMmDestroyWorkersDrainedEvent;
+    for (;;)
+    {
+        Status = DxgkGpuVaFlushPageTableUpdatesForDeviceNoResetWait(Device->ProcessRecord, Device);
+        if (Status != STATUS_DELETE_PENDING)
+            return Status;
+        DxgkVidMmWorkerDrainCoreYield(&Gate);
+        *WorkerCounted = FALSE;
+        if (!DxgkGpuVaWaitForKmdResetBoundary(Adapter, Device) || !DxgkVidMmWorkerDrainCoreReenter(&Gate))
+            return Status;
+        *WorkerCounted = TRUE;
+    }
+}
+
 static VOID
 DxgkpVidMmRetireBatch(
     _In_ PDXGKVMM_DESTROY_BATCH Batch)
@@ -7622,6 +7653,7 @@ DxgkpVidMmRetireBatch(
     NTSTATUS Status = STATUS_SUCCESS;
     UINT Index;
     UINT OtherIndex;
+    BOOLEAN WorkerCounted = TRUE;
 
     PAGED_CODE();
     ASSERT(Batch->AllocationCount != 0);
@@ -7669,7 +7701,7 @@ DxgkpVidMmRetireBatch(
                 continue;
             /* Device cleanup waits for this counted worker before releasing
              * the device/process, including an already unlinked device. */
-            Status = DxgkGpuVaFlushPageTableUpdatesForDevice(Device->ProcessRecord, Device);
+            Status = DxgkpVidMmFlushRetiredDevice(Adapter, Device, &WorkerCounted);
             if (!NT_SUCCESS(Status))
                 break;
         }
@@ -7693,7 +7725,8 @@ DxgkpVidMmRetireBatch(
     KeSetEvent(&Batch->RetirementCompletionEvent, IO_NO_INCREMENT, FALSE);
     ExReleaseFastMutex(&DxgkVidMmDestroyBatchListLock);
     DxgkpVidMmFreeDestroyBatch(Batch);
-    DxgkpVidMmRetireDestroyWorkerCount(Adapter);
+    if (WorkerCounted)
+        DxgkpVidMmRetireDestroyWorkerCount(Adapter);
     DxgkDereferenceAdapter(Adapter);
 }
 
@@ -10189,6 +10222,17 @@ NTSTATUS
 DxgkDestroyAllocation(
     _In_ CONST D3DKMT_DESTROYALLOCATION *pDestroyAllocation)
 {
+    D3DDDICB_DESTROYALLOCATION2FLAGS Flags;
+
+    Flags.Value = 0;
+    return DxgkDestroyAllocationWithFlags(pDestroyAllocation, Flags);
+}
+
+NTSTATUS
+DxgkDestroyAllocationWithFlags(
+    _In_ CONST D3DKMT_DESTROYALLOCATION *pDestroyAllocation,
+    _In_ D3DDDICB_DESTROYALLOCATION2FLAGS Flags)
+{
     PDXGKRNL_ADAPTER Adapter = NULL;
     PDXGKRNL_DEVICE Device = NULL;
     PDXGKVMM_RESOURCE Resource = NULL;
@@ -10234,7 +10278,7 @@ DxgkDestroyAllocation(
 
     /*
      * D3DKMTDestroyAllocation is the AssumeNotInUse == FALSE form of the
-     * D3DDDICB_DESTROYALLOCATION2FLAGS contract: the video memory manager
+     * D3DDDICB_DESTROYALLOCATION2FLAGS contract, where the video memory manager
      * must assume that commands queued before this request may still access
      * the allocations and defer the destruction until that work finishes.
      * The GPU page-table entries and the backing are released after this
@@ -10245,9 +10289,12 @@ DxgkDestroyAllocation(
      * wait, and a device whose work never completes is torn down by TDR,
      * which terminates its ledger and ends the wait.
      */
-    Status = DxgkpVidMmWaitForQueuedWorkBeforeDestroy(Device, "DxgkDestroyAllocation");
-    if (!NT_SUCCESS(Status) && Status != STATUS_DEVICE_REMOVED)
-        goto Cleanup;
+    if (DxgkVidMmCoreDestroyWaitsForQueuedWork(Flags))
+    {
+        Status = DxgkpVidMmWaitForQueuedWorkBeforeDestroy(Device, "DxgkDestroyAllocation");
+        if (!NT_SUCCESS(Status) && Status != STATUS_DEVICE_REMOVED)
+            goto Cleanup;
+    }
     if (AllocationHandles != NULL)
     {
         UINT Index;

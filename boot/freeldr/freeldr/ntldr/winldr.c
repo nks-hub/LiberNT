@@ -751,6 +751,7 @@ static const PCSTR WinLdrNetworkDebugExtensions[] =
     "kd_02_8086.dll",
     "kd_8003_1055.dll",
     "kd_8003_1de4.dll",
+    "kd_fdt_apple_t8103-dwc3.dll",
     "kd_fdt_spacemit_k1x-emac.dll",
     "kd_usbnet.dll"
 };
@@ -1541,7 +1542,7 @@ LoadAndBootWindows(
 
     TRACE("BootPath: '%s'\n", BootPath);
 
-#if !defined(UEFIBOOT) && !defined(OFWBOOT)
+#ifndef UEFIBOOT
     WinLdrResumeFromHibernation(BootPath);
 #endif
 
@@ -1835,19 +1836,6 @@ LoadAndBootWindowsCommon(
     }
 
     MachPrepareForReactOS();
-#elif defined(_M_PPC)
-    /* Open Firmware keeps the MMU until PpcJumpToKernel; build the kernel
-     * tables, HTAB and BAT values while firmware services still work. */
-    WinLdrSetupMachineDependent(LoaderBlock);
-    if (!PpcLoaderSetupSucceeded() ||
-        !WinLdrSetupMemoryLayout(LoaderBlock) ||
-        !PpcFinalizePageTables(LoaderBlock))
-    {
-        UiMessageBox("PowerPC kernel address-space preparation failed.");
-        return ENOEXEC;
-    }
-
-    MachPrepareForReactOS();
 #else
     /* "Stop all motors", change videomode */
     MachPrepareForReactOS();
@@ -1874,13 +1862,11 @@ LoadAndBootWindowsCommon(
     TRACE("Hello from paged mode, KiSystemStartup %p, LoaderBlockVA %p!\n",
           KiSystemStartup, LoaderBlockVA);
 
-#if !defined(_M_PPC)
-    /* Zero KI_USER_SHARED_DATA page (PowerPC: PpcFinalizePageTables) */
+    /* Zero KI_USER_SHARED_DATA page */
     {
         PVOID UserSharedData = (PVOID)KI_USER_SHARED_DATA;
         RtlZeroMemory(UserSharedData, MM_PAGE_SIZE);
     }
-#endif
 
 #if defined(_M_IX86) || defined(_M_AMD64) || defined(_M_ARM)
     WinLdrpDumpMemoryDescriptors(LoaderBlockVA);
@@ -1898,10 +1884,6 @@ LoadAndBootWindowsCommon(
     RiscvJumpToKernel((ULONG_PTR)KiSystemStartup,
                       (ULONG_PTR)LoaderBlockVA,
                       LoaderBlock->KernelStack);
-#elif defined(_M_PPC)
-    PpcJumpToKernel((ULONG_PTR)KiSystemStartup,
-                    (ULONG_PTR)LoaderBlockVA,
-                    LoaderBlock->KernelStack);
 #else
     /* Pass control */
     (*KiSystemStartup)(LoaderBlockVA);

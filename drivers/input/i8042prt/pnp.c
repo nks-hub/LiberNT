@@ -206,19 +206,7 @@ i8042DetectMouse(
          ReplyByte < sizeof(ExpectedReply) / sizeof(ExpectedReply[0]);
          ReplyByte++)
     {
-        ULONG Counter = 500;
-
-        do
-        {
-            Status = i8042ReadDataWait(DeviceExtension, &Value);
-
-            if(!NT_SUCCESS(Status))
-            {
-                /* Wait some time before trying again */
-                KeStallExecutionProcessor(50);
-            }
-        } while (Status == STATUS_IO_TIMEOUT && Counter--);
-
+        Status = i8042ReadResetReply(DeviceExtension, ReplyByte, &Value);
         if (!NT_SUCCESS(Status))
         {
             WARN_(I8042PRT, "No ACK after mouse reset, status 0x%08lx\n", Status);

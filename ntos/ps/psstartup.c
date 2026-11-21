@@ -241,6 +241,7 @@ PspAdoptIdleProcess(VOID)
 {
     PETHREAD Thread = PsGetCurrentThread();
 
+    ASSERT(Thread->Tcb.ApcState.Process == &KiInitialProcess.Pcb);
     PsIdleProcess = &KiInitialProcess;
 
     InitializeListHead(&PsIdleProcess->ThreadListHead);
@@ -282,13 +283,14 @@ PspBuildSystemProcess(VOID)
                             NULL,
                             KernelMode,
                             NULL,
-                            sizeof(EPROCESS),
+                            sizeof(EPROCESS) + KI_PROCESS_AFFINITY_EXTENSION,
                             0,
                             0,
                             (PVOID*)&Process);
     if (!NT_SUCCESS(Status)) return FALSE;
 
-    RtlZeroMemory(Process, sizeof(EPROCESS));
+    RtlZeroMemory(Process, sizeof(EPROCESS) + KI_PROCESS_AFFINITY_EXTENSION);
+    KiAttachProcessAffinity(&Process->Pcb, (PKI_PROCESS_AFFINITY)(Process + 1));
 
     InitializeListHead(&Process->ThreadListHead);
     InitializeListHead(&Process->JobLinks);
@@ -309,7 +311,7 @@ PspBuildSystemProcess(VOID)
 
     KeInitializeProcess(&Process->Pcb,
                         PROCESS_PRIORITY_NORMAL,
-                        (KAFFINITY)-1,
+                        NULL,
                         DirectoryTableBase,
                         FALSE);
     Process->Pcb.QuantumReset = 6;
@@ -777,9 +779,9 @@ PspInitializeSystemDll(VOID)
         KeUserCallbackDispatcher == NULL ||
         KeRaiseUserExceptionDispatcher == NULL ||
         PspRtlUserThreadStart == NULL ||
-        KeUserPopEntrySListEnd == NULL ||
-        KeUserPopEntrySListFault == NULL ||
-        KeUserPopEntrySListResume == NULL)
+        !KiArchSystemDllSListMarkersPresent(KeUserPopEntrySListEnd,
+                                            KeUserPopEntrySListFault,
+                                            KeUserPopEntrySListResume))
     {
         return STATUS_PROCEDURE_NOT_FOUND;
     }

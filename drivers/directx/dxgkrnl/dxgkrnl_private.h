@@ -878,6 +878,8 @@ struct _DXGKRNL_ADAPTER
      * Count matches NumberOfChildren.
      */
     PDXGK_CHILD_DESCRIPTOR      ChildDescriptors;
+    struct _DXGK_CHILD_CONNECTION_RECORD *ChildConnectionRecords;
+    ULONG                       ChildConnectionRecordCount;
     DECLSPEC_ALIGN(8) volatile LONG64 ChildEnumerationEpoch;
     volatile LONG               ChildRelationsEnumerated;
 
@@ -1270,6 +1272,7 @@ struct _DXGKRNL_ADAPTER
     BOOLEAN                     FirmwareTimingValid;
     D3DDDI_VIDEO_PRESENT_TARGET_ID FirmwareTargetId;
     D3DKMDT_VIDEO_SIGNAL_INFO   FirmwareTargetTiming;
+    D3DKMDT_WIRE_FORMAT_AND_PREFERENCE FirmwareWireFormat;
     BOOLEAN                     SystemDisplayEnabled;
     D3DDDIFORMAT                SystemDisplayColorFormat;
 
@@ -2268,6 +2271,9 @@ typedef struct _DXGKRNL_SYNC_OBJECT
     ULONG                       SemaphoreLimit;
     PVOID volatile              MutexQueuedOwner;
     volatile LONG64             SemaphoreQueuedCount;
+    /* Admitted semaphore waits in admission order; only the oldest may take the count. */
+    KSPIN_LOCK                  SemaphoreWaitLock;
+    LIST_ENTRY                  SemaphoreWaitQueue;
     PKEVENT                     CpuNotificationEvent;
     BOOLEAN                     CpuNotificationEventReferenced;
 #if (REACTOS_WDDM_TARGET_LEVEL >= 3000)
@@ -2978,6 +2984,11 @@ DxgkCreateAllocation2(
 NTSTATUS
 DxgkDestroyAllocation(
     _In_ CONST D3DKMT_DESTROYALLOCATION *pDestroyAllocation);
+
+NTSTATUS
+DxgkDestroyAllocationWithFlags(
+    _In_ CONST D3DKMT_DESTROYALLOCATION *pDestroyAllocation,
+    _In_ D3DDDICB_DESTROYALLOCATION2FLAGS Flags);
 
 #if (DXGKDDI_INTERFACE_VERSION >= DXGKDDI_INTERFACE_VERSION_WDDM2_0)
 /* ========================================================================
@@ -4127,6 +4138,16 @@ VOID
 DxgkDisplayNotifyMonitorEvent(
     _In_ PDXGKRNL_ADAPTER Adapter);
 
+BOOLEAN
+DxgkDisplayAttachWin32kSession(
+    _Out_ PRKAPC_STATE ApcState,
+    _Out_ PEPROCESS *AttachedProcess);
+
+VOID
+DxgkDisplayDetachWin32kSession(
+    _In_ PRKAPC_STATE ApcState,
+    _In_opt_ PEPROCESS AttachedProcess);
+
 VOID
 DxgkDisplayPresentBootScreen(
     _In_ PDXGKRNL_ADAPTER Adapter);
@@ -4576,6 +4597,17 @@ NTSTATUS
 DxgkGpuVaFlushPageTableUpdatesForDevice(
     _In_ PDXGKRNL_PROCESS Process,
     _In_ PDXGKRNL_DEVICE Device);
+
+/* For a worker a reset drains: STATUS_DELETE_PENDING while the reset owns KMD admission. */
+NTSTATUS
+DxgkGpuVaFlushPageTableUpdatesForDeviceNoResetWait(
+    _In_ PDXGKRNL_PROCESS Process,
+    _In_ PDXGKRNL_DEVICE Device);
+
+BOOLEAN
+DxgkGpuVaWaitForKmdResetBoundary(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _In_opt_ PDXGKRNL_DEVICE SubmissionDevice);
 
 /* Scratch mappings in the paging process for virtual paging operations. */
 BOOLEAN

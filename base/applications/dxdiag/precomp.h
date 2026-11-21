@@ -25,21 +25,52 @@
 #include <udmihelp.h>
 
 #include "resource.h"
+#include "d3dmark.h"
 
-#define D3DTEST_VERTEX_COUNT 36
 #define D3DTEST_DURATION_MS 4000
-#define D3DTEST_TEXTURE_SIZE 512
+
+typedef enum
+{
+    D3DTEST_API_D3D7,
+    D3DTEST_API_D3D8,
+    D3DTEST_API_D3D9,
+    D3DTEST_API_D3D10,
+    D3DTEST_API_D3D11,
+    D3DTEST_API_D3D12,
+    D3DTEST_API_GL1,
+    D3DTEST_API_GL3,
+    D3DTEST_API_DDRAW,
+    D3DTEST_API_DDRAW_FULLSCREEN,
+    D3DTEST_API_COUNT
+} D3DTEST_API;
+
+#define D3DTEST_STATS_MAX_NODES 16
+#define D3DTEST_STATS_LINES 4
+#define D3DTEST_STATS_LINE_LENGTH 24
 
 typedef struct
 {
-    FLOAT x;
-    FLOAT y;
-    FLOAT z;
-    FLOAT rhw;
-    DWORD color;
-    FLOAT u;
-    FLOAT v;
-} D3DTEST_VERTEX, *PD3DTEST_VERTEX;
+    DWORD SampleTime;
+    UINT SampleFrames;
+    BOOL HaveFps;
+    ULONG FpsTenths;
+    LONG CpuLoad;
+    LONG GpuLoad;
+    ULONGLONG CpuIdle;
+    ULONGLONG CpuTotal;
+    LUID AdapterLuid;
+    UINT NodeCount;
+    ULONGLONG NodeRunning[D3DTEST_STATS_MAX_NODES];
+} D3DTEST_STATS;
+
+typedef struct
+{
+    UINT Frames;
+    DWORD Elapsed;
+    PCSTR Stage;
+    HRESULT Status;
+    D3DTEST_STATS Stats;
+} D3DTEST_RESULT, *PD3DTEST_RESULT;
 
 typedef struct
 {
@@ -74,15 +105,28 @@ INT_PTR CALLBACK NetworkPageWndProc(HWND hDlg, UINT message, WPARAM wParam, LPAR
 INT_PTR CALLBACK HelpPageWndProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam);
 
 /* DirectDraw tests */
-VOID DDTests(GUID *lpDevice);
+BOOL DDWindowedTest(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL DDFullscreenTest(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
 
-/* Direct3D tests */
-VOID D3DTests(GUID *lpDevice);
+/* Direct3D and OpenGL tests */
+extern const CHAR D3DTestShaderSource[];
+VOID D3DTestButton(HWND hPage, GUID *lpDevice, D3DTEST_API Api, UINT ButtonId);
 BOOL D3D78BootTests(VOID);
-VOID D3DTestBuildCube(PD3DTEST_VERTEX Vertices, DWORD Elapsed, UINT Width, UINT Height);
-BOOL D3DTestLoadTexture(PVOID Bits, LONG Pitch);
-BOOL D3DTestPumpMessages(VOID);
-VOID D3DTestTraceFailure(INT TestNr, PCSTR Stage, HRESULT Result);
+BOOL D3DTestContinue(PD3DTEST_RESULT Result, DWORD Start, DWORD *Elapsed);
+BOOL D3DTestFail(PD3DTEST_RESULT Result, PCSTR Api, PCSTR Stage, HRESULT Status);
+VOID D3DTestStatsBegin(D3DTEST_STATS *Stats, HWND hWnd);
+VOID D3DTestStatsSample(D3DTEST_STATS *Stats, DWORD Elapsed, UINT Frames);
+UINT D3DTestStatsText(const D3DTEST_RESULT *Result, CHAR Text[D3DTEST_STATS_LINES][D3DTEST_STATS_LINE_LENGTH]);
+UINT D3DTestBuildScene(PD3DTEST_VERTEX Vertices, DWORD Elapsed, UINT Width, UINT Height, PD3DTEST_RESULT Result);
+VOID D3DTestDrawStats(HDC hdc, const D3DTEST_RESULT *Result, UINT Height);
+BOOL D3D7Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL D3D8Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL D3D9Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL D3D10Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL D3D11Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL D3D12Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL GL1Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
+BOOL GL3Test(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
 
 /* DirectSound initialization */
 void InitializeDirectSoundPage(PDXDIAG_CONTEXT pContext);

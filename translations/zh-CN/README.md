@@ -16,15 +16,15 @@
 
 **源于对 NT 架构的热爱，兼容 Windows® 11，支持 amd64、arm64 与 riscv64。**
 
-[![Build](https://img.shields.io/github/actions/workflow/status/LiberNT/LiberNT/build.yml?branch=main-nt10&label=Build&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/LiberNT/LiberNT/actions/workflows/build.yml)
+[![Build](https://img.shields.io/github/actions/workflow/status/LiberNT/LiberNT/build.yml?branch=master&label=Build&style=for-the-badge&logo=githubactions&logoColor=white)](https://github.com/LiberNT/LiberNT/actions/workflows/build.yml)
 [![License: GPL 3.0](https://img.shields.io/badge/License-GPL_3.0-0161B6?style=for-the-badge&logo=gnu&logoColor=white)](#许可证)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/BpcKg7FZ2)
+[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/ETvp4kxHDZ)
 [![Matrix](https://img.shields.io/badge/Matrix-%23libernt-000000?style=for-the-badge&logo=matrix&logoColor=white)](https://matrix.to/#/#libernt:matrix.org)
 
 <img src="https://img.shields.io/github/repo-size/LiberNT/LiberNT?style=flat-square&color=blue" alt="Repo Size">
 <img src="https://img.shields.io/github/stars/LiberNT/LiberNT?style=flat-square&color=yellow" alt="Stars">
 <img src="https://img.shields.io/github/forks/LiberNT/LiberNT?style=flat-square&color=lightgrey" alt="Forks">
-<img src="https://img.shields.io/github/last-commit/LiberNT/LiberNT/main-nt10?style=flat-square&color=green" alt="Last Commit">
+<img src="https://img.shields.io/github/last-commit/LiberNT/LiberNT/master?style=flat-square&color=green" alt="Last Commit">
 <img src="https://img.shields.io/github/issues/LiberNT/LiberNT?style=flat-square&color=orange" alt="Issues">
 
 <br>
@@ -127,7 +127,7 @@ LiberNT 将现代硬件与平台引入 NT 架构。
 | `LiberNT-vhdx-…-<arch>-…zip` | `LiberNT.vhdx`，同一份预装盘，供 Hyper-V 第二代使用 |
 
 > [!NOTE]
-> 这些构建由 GitHub Actions 从 `main-nt10` 分支生成，均为 Clang Debug 版本。
+> 这些构建由 GitHub Actions 从 `master` 分支生成，均为 Clang Debug 版本。
 
 ### 第 2 步：启动
 
@@ -271,7 +271,7 @@ LiberNT/
 
 问题反馈和功能建议请提交到 [Issues](https://github.com/LiberNT/LiberNT/issues)，指南与笔记见 [Wiki](https://github.com/LiberNT/LiberNT/wiki)。
 
-动手前请阅读 [CONTRIBUTING.md](../../CONTRIBUTING.md) 和 [PULL_REQUEST_MANAGEMENT.md](../../PULL_REQUEST_MANAGEMENT.md)。如果打算做较大的改动，建议先在 [Issues](https://github.com/LiberNT/LiberNT/issues) 或 [Discord](https://discord.gg/BpcKg7FZ2) 上讨论。
+动手前请阅读 [CONTRIBUTING.md](../../CONTRIBUTING.md) 和 [PULL_REQUEST_MANAGEMENT.md](../../PULL_REQUEST_MANAGEMENT.md)。如果打算做较大的改动，建议先在 [Issues](https://github.com/LiberNT/LiberNT/issues) 或 [Discord](https://discord.gg/ETvp4kxHDZ) 上讨论。
 
 > [!WARNING]
 > **法律声明：** 如果你接触过微软 Windows 的专有源码(包括但不限于泄露的 Windows NT 3.5、NT 4、2000 源码以及 Windows Research Kernel)，由于存在版权风险，你的贡献将无法被接受。
@@ -314,4 +314,4 @@ LiberNT 由 **LiberNT 贡献者**共同构建，由 [Ahmed Arif](https://github.
 - [官网](https://libernt.com)
 - [下载最新构建](https://github.com/LiberNT/LiberNT/releases)
 - [Wiki](https://github.com/LiberNT/LiberNT/wiki)
-- 在 [Discord](https://discord.gg/BpcKg7FZ2) 或 [Matrix](https://matrix.to/#/#libernt:matrix.org) 上交流
+- 在 [Discord](https://discord.gg/ETvp4kxHDZ) 或 [Matrix](https://matrix.to/#/#libernt:matrix.org) 上交流

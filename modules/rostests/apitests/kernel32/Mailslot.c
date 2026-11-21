@@ -1,95 +1,105 @@
 /*
- * PROJECT:         ReactOS api tests
- * LICENSE:         GNU GPLv2 only as published by the Free Software Foundation
- * PURPOSE:         Test for mailslot (CORE-10188)
- * PROGRAMMER:      Nikita Pechenkin (n.pechenkin@mail.ru)
+ * PROJECT:     LiberNT API tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Tests for mailslot creation, information and message reads
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #include "precomp.h"
+#include <ndk/obfuncs.h>
 
-#define LMS TEXT("\\\\.\\mailslot\\rostest_slot")
-#define MSG (0x50DA)
-
-static DWORD dInMsg  = MSG;
-static DWORD dOutMsg = 0x0;
-
-static
-VOID
-WaitIoPending(
-        HANDLE hThread)
+START_TEST(Mailslot)
 {
-    BOOL Pending = FALSE;
-    ULONG i;
+    WCHAR Name[64];
+    HANDLE Server, Duplicate, Client;
+    DWORD MaxSize, NextSize, Count, Timeout, Read, Written, Start;
+    CHAR Buffer[128], Big[65];
 
-    for (i = 0; i < 100000 && GetThreadIOPendingFlag(hThread, &Pending) && !Pending; i++)
-        SwitchToThread();
-}
+    StringCchPrintfW(Name, _countof(Name), L"\\\\.\\mailslot\\lnt_apitest_%lu", GetCurrentProcessId());
 
-DWORD
-WINAPI
-MailSlotWriter(
-        LPVOID lpParam)
-{
-    DWORD cbWritten;
-    HANDLE hMailslot;
+    Server = CreateMailslotW(Name, 64, 0, NULL);
+    ok(Server != INVALID_HANDLE_VALUE, "CreateMailslotW failed (%lu)\n", GetLastError());
+    if (Server == INVALID_HANDLE_VALUE)
+        return;
 
-    hMailslot = CreateFile(LMS, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    ok(hMailslot != INVALID_HANDLE_VALUE, "CreateFile failed, results might not be accurate\n");
-    if (hMailslot != INVALID_HANDLE_VALUE)
+    SetLastError(0xdeadbeef);
+    Duplicate = CreateMailslotW(Name, 0, 0, NULL);
+    ok(Duplicate == INVALID_HANDLE_VALUE, "A second mailslot with the same name was created\n");
+    ok(GetLastError() == ERROR_ALREADY_EXISTS, "Duplicate name error %lu\n", GetLastError());
+    if (Duplicate != INVALID_HANDLE_VALUE)
+        CloseHandle(Duplicate);
+
+    ok(GetMailslotInfo(Server, &MaxSize, &NextSize, &Count, &Timeout), "GetMailslotInfo failed (%lu)\n", GetLastError());
+    ok(MaxSize == 64, "MaxMessageSize %lu\n", MaxSize);
+    ok(NextSize == MAILSLOT_NO_MESSAGE, "NextSize %lu\n", NextSize);
+    ok(Count == 0, "MessageCount %lu\n", Count);
+    ok(Timeout == 0, "ReadTimeout %lu\n", Timeout);
+
+    SetLastError(0xdeadbeef);
+    ok(!ReadFile(Server, Buffer, sizeof(Buffer), &Read, NULL), "Reading an empty mailslot succeeded\n");
+    ok(GetLastError() == ERROR_SEM_TIMEOUT, "Empty read error %lu\n", GetLastError());
+
+    Client = CreateFileW(Name, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(Client != INVALID_HANDLE_VALUE, "Opening the client failed (%lu)\n", GetLastError());
+    if (Client == INVALID_HANDLE_VALUE)
     {
-        WaitIoPending((HANDLE)lpParam);
-        ok(WriteFile(hMailslot, &dInMsg, sizeof(dInMsg), &cbWritten, (LPOVERLAPPED) NULL), "Slot write failed\n");
-        CloseHandle(hMailslot);
+        CloseHandle(Server);
+        return;
     }
-    return 0;
-}
 
-DWORD
-WINAPI
-MailSlotReader(
-        LPVOID lpParam)
-{
-    HANDLE hMailslotClient;
-    DWORD cbRead;
-    HANDLE hThread;
-    HANDLE hReader;
+    ok(WriteFile(Client, "hello", 5, &Written, NULL) && Written == 5, "First write failed (%lu)\n", GetLastError());
+    ok(WriteFile(Client, "world!", 6, &Written, NULL) && Written == 6, "Second write failed (%lu)\n", GetLastError());
 
-    hMailslotClient = CreateMailslot(LMS, 0L, MAILSLOT_WAIT_FOREVER, (LPSECURITY_ATTRIBUTES) NULL);
-    ok(hMailslotClient != INVALID_HANDLE_VALUE, "CreateMailslot failed\n");
-    if (hMailslotClient != INVALID_HANDLE_VALUE)
+    ok(GetMailslotInfo(Server, NULL, &NextSize, &Count, NULL), "GetMailslotInfo failed (%lu)\n", GetLastError());
+    ok(NextSize == 5, "NextSize %lu\n", NextSize);
+    ok(Count == 2, "MessageCount %lu\n", Count);
+
+    SetLastError(0xdeadbeef);
+    ok(!ReadFile(Server, Buffer, 3, &Read, NULL), "A read into a short buffer succeeded\n");
+    ok(GetLastError() == ERROR_INSUFFICIENT_BUFFER, "Short read error %lu\n", GetLastError());
+
+    Read = 0;
+    ok(ReadFile(Server, Buffer, sizeof(Buffer), &Read, NULL), "First read failed (%lu)\n", GetLastError());
+    ok(Read == 5 && memcmp(Buffer, "hello", 5) == 0, "First read returned %lu bytes\n", Read);
+    Read = 0;
+    ok(ReadFile(Server, Buffer, sizeof(Buffer), &Read, NULL), "Second read failed (%lu)\n", GetLastError());
+    ok(Read == 6 && memcmp(Buffer, "world!", 6) == 0, "Second read returned %lu bytes\n", Read);
+
+    memset(Big, 'x', sizeof(Big));
+    SetLastError(0xdeadbeef);
+    ok(!WriteFile(Client, Big, sizeof(Big), &Written, NULL), "A message above the maximum size was written\n");
+    ok(GetLastError() == ERROR_INVALID_PARAMETER, "Oversize write error %lu\n", GetLastError());
+
+    ok(SetMailslotInfo(Server, 20), "SetMailslotInfo failed (%lu)\n", GetLastError());
+    ok(GetMailslotInfo(Server, NULL, NULL, NULL, &Timeout), "GetMailslotInfo failed (%lu)\n", GetLastError());
+    ok(Timeout == 20, "ReadTimeout %lu\n", Timeout);
+    Start = GetTickCount();
+    SetLastError(0xdeadbeef);
+    ok(!ReadFile(Server, Buffer, sizeof(Buffer), &Read, NULL), "Reading an empty mailslot succeeded\n");
+    ok(GetLastError() == ERROR_SEM_TIMEOUT, "Timed read error %lu\n", GetLastError());
+    ok(GetTickCount() - Start < 2000, "The timed read took %lu ms\n", GetTickCount() - Start);
+
     {
-        hReader = OpenThread(THREAD_QUERY_INFORMATION, FALSE, GetCurrentThreadId());
-        hThread = CreateThread(NULL,0, MailSlotWriter, hReader, 0, NULL);
-        ok(hThread != INVALID_HANDLE_VALUE, "CreateThread failed\n");
-        if (hThread != INVALID_HANDLE_VALUE)
-        {
-            ok(ReadFile(hMailslotClient, &dOutMsg, sizeof(dOutMsg), &cbRead, NULL), "Slot read failed\n");
-            WaitForSingleObject(hThread, INFINITE);
-            CloseHandle(hThread);
-        }
-        CloseHandle(hReader);
-        CloseHandle(hMailslotClient);
+        OBJECT_BASIC_INFORMATION Basic;
+        HANDLE Reduced;
+
+        ok(NT_SUCCESS(NtQueryObject(Server, ObjectBasicInformation, &Basic, sizeof(Basic), NULL)), "NtQueryObject failed\n");
+        ok(Basic.GrantedAccess == (FILE_GENERIC_READ | WRITE_DAC), "Server handle access 0x%lx\n", Basic.GrantedAccess);
+        ok(DuplicateHandle(GetCurrentProcess(), Server, GetCurrentProcess(), &Reduced, 0, FALSE, 0),
+           "DuplicateHandle failed (%lu)\n", GetLastError());
+        ok(SetMailslotInfo(Reduced, 30), "SetMailslotInfo without access failed (%lu)\n", GetLastError());
+        CloseHandle(Reduced);
+        ok(GetMailslotInfo(Server, NULL, NULL, NULL, &Timeout), "GetMailslotInfo failed (%lu)\n", GetLastError());
+        ok(Timeout == 30, "ReadTimeout %lu\n", Timeout);
     }
-    return 0;
-}
 
-VOID
-StartTestCORE10188(VOID)
-{
-    HANDLE  hThread;
+    CloseHandle(Client);
+    CloseHandle(Server);
 
-    hThread = CreateThread(NULL,0, MailSlotReader, NULL, 0, NULL);
-    ok(hThread != INVALID_HANDLE_VALUE, "CreateThread failed\n");
-    if (hThread != INVALID_HANDLE_VALUE)
-    {
-        WaitForSingleObject(hThread, INFINITE);
-        CloseHandle(hThread);
-    }
-    ok(dInMsg == dOutMsg, "Transfer data failed\n");
-}
-
-START_TEST(MailslotRead)
-{
-    StartTestCORE10188();
+    SetLastError(0xdeadbeef);
+    Client = CreateFileW(Name, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    ok(Client == INVALID_HANDLE_VALUE, "A client opened a closed mailslot\n");
+    ok(GetLastError() == ERROR_FILE_NOT_FOUND, "Closed mailslot error %lu\n", GetLastError());
+    if (Client != INVALID_HANDLE_VALUE)
+        CloseHandle(Client);
 }

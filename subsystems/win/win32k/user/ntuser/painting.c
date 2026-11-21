@@ -1267,13 +1267,21 @@ IntGetPaintMessage(
 
 BOOL
 FASTCALL
-IntPrintWindow(
+co_IntPrintWindow(
     PWND pwnd,
     HDC hdcBlt,
     UINT nFlags)
 {
     HDC hdcSrc;
+    PWND pwndRoot;
     INT cx, cy, xSrc, ySrc;
+    BOOL Ret = FALSE;
+    BOOL Redirected = FALSE;
+    USER_REFERENCE_ENTRY RootRef;
+
+    ASSERT(UserIsEnteredExclusive());
+    ASSERT_REFS_CO(pwnd);
+    ASSERT((nFlags & ~(PW_CLIENTONLY | PW_RENDERFULLCONTENT)) == 0);
 
     if ( nFlags & PW_CLIENTONLY)
     {
@@ -1290,31 +1298,49 @@ IntPrintWindow(
        ySrc = 0;
     }
 
-    // TODO: Setup Redirection for Print.
-    return FALSE;
+    /* TODO: PW_RENDERFULLCONTENT does not capture DirectComposition or flip-model swap chain content */
+    pwndRoot = UserGetAncestor(pwnd, GA_ROOT);
 
-    /* Update the window just incase. */
-    co_IntUpdateWindows( pwnd, RDW_ALLCHILDREN, FALSE);
+    /* Without composition the window paints into a backing of its own, so windows above it do not show through */
+    if (pwndRoot != NULL && !IntCompositionIsEnabled() && IntIsWindowVisible(pwnd))
+    {
+        UserRefObjectCo(pwndRoot, &RootRef);
+        Redirected = IntCompositionBeginPrintRedirect(pwndRoot);
+        if (!Redirected)
+            UserDerefObjectCo(pwndRoot);
+    }
 
-    hdcSrc = UserGetDCEx( pwnd, NULL, DCX_CACHE|DCX_WINDOW);
-    /* Print window to printer context. */
-    NtGdiBitBlt( hdcBlt,
-                 0,
-                 0,
-                 cx,
-                 cy,
-                 hdcSrc,
-                 xSrc,
-                 ySrc,
-                 SRCCOPY,
-                 CLR_INVALID,
-                 0);
+    co_UserRedrawWindow(pwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
 
-    UserReleaseDC( pwnd, hdcSrc, FALSE);
+    if (!NtGdiPatBlt(hdcBlt, 0, 0, cx, cy, BLACKNESS))
+    {
+        Ret = FALSE;
+    }
+    /* FIXME: Windows 11 still sends WM_NCPAINT and WM_PAINT to a hidden window before leaving its area black */
+    else if (!IntIsWindowVisible(pwnd) ||
+             (pwndRoot != NULL && IntGetWindowDisplayAffinity(pwndRoot) != WDA_NONE))
+    {
+        Ret = TRUE;
+    }
+    else
+    {
+        hdcSrc = UserGetDCEx(pwnd, NULL, DCX_CACHE | DCX_WINDOW);
+        if (hdcSrc != NULL)
+        {
+            Ret = NtGdiBitBlt(hdcBlt, 0, 0, cx, cy, hdcSrc, xSrc, ySrc, SRCCOPY, CLR_INVALID, 0);
+            UserReleaseDC(pwnd, hdcSrc, FALSE);
+        }
+    }
 
-    // TODO: Release Redirection from Print.
+    if (Redirected)
+    {
+        IntCompositionEndPrintRedirect(pwndRoot);
+        /* The redirected paint used up the window's update region; the screen still needs its own */
+        co_UserRedrawWindow(pwndRoot, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+        UserDerefObjectCo(pwndRoot);
+    }
 
-    return TRUE;
+    return Ret;
 }
 
 BOOL
@@ -2660,29 +2686,27 @@ NtUserPrintWindow(
     HDC  hdcBlt,
     UINT nFlags)
 {
+    USER_REFERENCE_ENTRY Ref;
     PWND Window;
     BOOL Ret = FALSE;
 
     UserEnterExclusive();
 
-    if (hwnd)
+    Window = UserGetWindowObject(hwnd);
+    if (Window && !UserIsDesktopWindow(Window) && !UserIsMessageWindow(Window))
     {
-       if (!(Window = UserGetWindowObject(hwnd)) ||
-            UserIsDesktopWindow(Window) || UserIsMessageWindow(Window))
-       {
-          goto Exit;
-       }
-
-       if ( Window )
-       {
-          /* Validate flags and check it as a mask for 0 or 1. */
-          if ( (nFlags & PW_CLIENTONLY) == nFlags)
-             Ret = IntPrintWindow( Window, hdcBlt, nFlags);
-          else
-             EngSetLastError(ERROR_INVALID_PARAMETER);
-       }
+        if (nFlags & ~(PW_CLIENTONLY | PW_RENDERFULLCONTENT))
+        {
+            EngSetLastError(ERROR_INVALID_PARAMETER);
+        }
+        else
+        {
+            UserRefObjectCo(Window, &Ref);
+            Ret = co_IntPrintWindow(Window, hdcBlt, nFlags);
+            UserDerefObjectCo(Window);
+        }
     }
-Exit:
+
     UserLeave();
     return Ret;
 }

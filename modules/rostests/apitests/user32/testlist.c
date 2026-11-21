@@ -94,6 +94,8 @@ extern void func_ModernUser32(void);
 extern void func_NestedActivation(void);
 extern void func_NestedWindowPos(void);
 extern void func_NcPaintRgn(void);
+extern void func_PrintWindowContent(void);
+extern void func_NestedDialogKeys(void);
 extern void func_NextDlgItem(void);
 extern void func_NonClientPaint(void);
 extern void func_NonClientUpdate(void);
@@ -121,6 +123,7 @@ extern void func_SetCursorPos(void);
 extern void func_SetFocus(void);
 extern void func_SetParent(void);
 extern void func_SetProp(void);
+extern void func_StructPadding(void);
 extern void func_SetScrollInfo(void);
 extern void func_SetScrollRange(void);
 extern void func_SetWindowPlacement(void);
@@ -146,6 +149,7 @@ extern void func_VirtualKey(void);
 extern void func_WaitForInputIdle(void);
 extern void func_WindowBand(void);
 extern void func_WindowStationErrors(void);
+extern void func_WindowStationAttributes(void);
 extern void func_WindowStationSecurity(void);
 extern void func_WindowPosInsertAfter(void);
 extern void func_CallWindowProc(void);
@@ -246,6 +250,8 @@ const struct test winetest_testlist[] =
     { "NestedActivation", func_NestedActivation },
     { "NestedWindowPos", func_NestedWindowPos },
     { "NcPaintRgn", func_NcPaintRgn },
+    { "PrintWindowContent", func_PrintWindowContent },
+    { "NestedDialogKeys", func_NestedDialogKeys },
     { "NextDlgItem", func_NextDlgItem },
     { "NonClientPaint", func_NonClientPaint },
     { "NonClientUpdate", func_NonClientUpdate },
@@ -273,6 +279,7 @@ const struct test winetest_testlist[] =
     { "SetFocus", func_SetFocus },
     { "SetParent", func_SetParent },
     { "SetProp", func_SetProp },
+    { "StructPadding", func_StructPadding },
     { "SetScrollInfo", func_SetScrollInfo },
     { "SetScrollRange", func_SetScrollRange },
     { "SetWindowPlacement", func_SetWindowPlacement },
@@ -298,6 +305,7 @@ const struct test winetest_testlist[] =
     { "WaitForInputIdle", func_WaitForInputIdle },
     { "WindowBand", func_WindowBand },
     { "WindowStationErrors", func_WindowStationErrors },
+    { "WindowStationAttributes", func_WindowStationAttributes },
     { "WindowStationSecurity", func_WindowStationSecurity },
     { "WindowPosInsertAfter", func_WindowPosInsertAfter },
     { "CallWindowProc", func_CallWindowProc },

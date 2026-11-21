@@ -118,6 +118,7 @@ list(APPEND KMTEST_DRV_SOURCE
     directx/Rpi5Vc4Pointer.c
     directx/DxgkSyncWait.c
     directx/DxgkTrackedWork.c
+    directx/DxgkVidMmDestroy.c
     directx/DxgkVidMmWorkerDrain.c
     directx/DxgkrnlPublicExports.c
     directx/Dxgmms2ContextStream.c
@@ -240,6 +241,7 @@ list(APPEND KMTEST_DRV_SOURCE
     ntos_io/IoPciPdoPnp.c
     ntos_io/IoRamdiskPnp.c
     ntos_io/IoAcpiCmosRegion.c
+    ntos_io/IoI8042Hook.c
     ntos_io/IoI8042Sync.c
     ntos_io/IoErrorLogEntry.c
     ntos_io/IoPciBusFdo.c
@@ -300,6 +302,7 @@ list(APPEND KMTEST_DRV_SOURCE
     ntos_ke/KeCriticalRegionKM.c
     ntos_ke/KeDpc.c
     ntos_ke/KeDpcFlush.c
+    ntos_ke/KeDpcInsertRace.c
     ntos_ke/KeDpcReadyThread.c
     ntos_ke/KeDpcRemove.c
     ntos_ke/KeEvent.c
@@ -309,8 +312,10 @@ list(APPEND KMTEST_DRV_SOURCE
     ntos_ke/KeIpiKM.c
     ntos_ke/KeIrql.c
     ntos_ke/KeCacheInvalidation.c
+    ntos_ke/KeClockHeldOff.c
     ntos_ke/KeClockKeepAlive.c
     ntos_ke/KeClockWatchdog.c
+    ntos_ke/KeCycleTime.c
     ntos_ke/KeModern.c
     ntos_ke/KeMutex.c
     ntos_ke/KePcr.c
@@ -427,6 +432,7 @@ list(APPEND KMTEST_DRV_SOURCE
     ${COMMON_SOURCE}
 
     ${REACTOS_SOURCE_DIR}/drivers/bus/acpi/cmos_core.c
+    ${REACTOS_SOURCE_DIR}/drivers/input/i8042prt/hook_core.c
     ${REACTOS_SOURCE_DIR}/drivers/input/i8042prt/sync_core.c
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgkrnl/gpuva_core.c
     ${REACTOS_SOURCE_DIR}/drivers/directx/dxgkrnl/adapter_map_core.c
@@ -673,6 +679,7 @@ list(APPEND KMTEST_SOURCE
     ntos_io/IoCancelSync_user.c
     ntos_io/IoFilterRequirements_user.c
     ntos_io/IoRemoveChild_user.c
+    ntos_io/IoRemoveUnload_user.c
     ntos_io/IoCreateFile_user.c
     ntos_io/IoDeviceObject_user.c
     ntos_io/IoHandleAccess_user.c
@@ -747,6 +754,8 @@ configure_file(ntos_io/kmtest_filterreq.inf kmtest_filterreq.inf COPYONLY)
 add_rostests_file(FILE "${CMAKE_CURRENT_BINARY_DIR}/kmtest_filterreq.inf")
 configure_file(ntos_io/kmtest_remchild.inf kmtest_remchild.inf COPYONLY)
 add_rostests_file(FILE "${CMAKE_CURRENT_BINARY_DIR}/kmtest_remchild.inf")
+configure_file(ntos_io/kmtest_rmunload.inf kmtest_rmunload.inf COPYONLY)
+add_rostests_file(FILE "${CMAKE_CURRENT_BINARY_DIR}/kmtest_rmunload.inf")
 
 #
 # Group targets
@@ -770,6 +779,7 @@ add_dependencies(kmtest_drivers
     iohelper_drv
     ioreadwrite_drv
     ioremovechild_drv
+    ioremoveunload_drv
     kernel32_drv
     mmmaplockedpagesspecifycache_drv
     ntcreatesection_drv

@@ -51,11 +51,13 @@ extern void func_RegOpenKeyExW(void);
 extern void func_RegOpenKeyTransacted(void);
 extern void func_RegQueryInfoKey(void);
 extern void func_RegQueryValueExW(void);
+extern void func_RestrictedTokenUser(void);
 extern void func_RtlEncryptMemory(void);
 extern void func_SaferIdentifyLevel(void);
 extern void func_SaferLevels(void);
 extern void func_SaferRules(void);
 extern void func_SeclogonCaller(void);
+extern void func_SetSecurityInfoAcl(void);
 extern void func_ServiceArgs(void);
 extern void func_ServiceChangeNotify(void);
 extern void func_ServiceCrash(void);
@@ -123,11 +125,13 @@ const struct test winetest_testlist[] =
     { "RegOpenKeyExW", func_RegOpenKeyExW },
     { "RegOpenKeyTransacted", func_RegOpenKeyTransacted },
     { "RegQueryValueExW", func_RegQueryValueExW },
+    { "RestrictedTokenUser", func_RestrictedTokenUser },
     { "RtlEncryptMemory", func_RtlEncryptMemory },
     { "SaferIdentifyLevel", func_SaferIdentifyLevel },
     { "SaferLevels", func_SaferLevels },
     { "SaferRules", func_SaferRules },
     { "SeclogonCaller", func_SeclogonCaller },
+    { "SetSecurityInfoAcl", func_SetSecurityInfoAcl },
     { "ServiceArgs", func_ServiceArgs },
     { "ServiceChangeNotify", func_ServiceChangeNotify },
     { "ServiceCrash", func_ServiceCrash },

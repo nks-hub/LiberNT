@@ -531,6 +531,29 @@ WSHGetSocketInformation(
                 return WSAENOPROTOOPT;
         }
     }
+    if (Level == IPPROTO_TCP && OptionName == TCP_NODELAY)
+    {
+        if (Context->SocketType != SOCK_STREAM)
+            return WSAEINVAL;
+        if (!OptionLength || !OptionValue || *OptionLength < sizeof(BOOLEAN))
+            return WSAEFAULT;
+        *(BOOLEAN *)OptionValue = Context->NoDelay;
+        *OptionLength = sizeof(BOOLEAN);
+        return NO_ERROR;
+    }
+    if (Level == IPPROTO_TCP && (OptionName == TCP_KEEPALIVE || OptionName == TCP_KEEPINTVL || OptionName == TCP_KEEPCNT))
+    {
+        if (Context->SocketType != SOCK_STREAM)
+            return WSAEINVAL;
+        if (!OptionLength || !OptionValue || *OptionLength < sizeof(DWORD))
+            return WSAEFAULT;
+        if (OptionName == TCP_KEEPCNT)
+            *(DWORD *)OptionValue = Context->KeepAliveCount;
+        else
+            *(DWORD *)OptionValue = (OptionName == TCP_KEEPALIVE ? Context->KeepAliveTime : Context->KeepAliveInterval) / 1000;
+        *OptionLength = sizeof(DWORD);
+        return NO_ERROR;
+    }
     if (Level == IPPROTO_IP || Level == IPPROTO_TCP || Level == IPPROTO_IPV6)
         return WSAENOPROTOOPT;
 
@@ -998,6 +1021,14 @@ WSHIoctl_AddressListSort(
     return NO_ERROR;
 }
 
+/* A connection option goes to the socket's own connection when it has one; the address file only knows its first */
+static HANDLE ConnectionRequestHandle(PTCP_REQUEST_SET_INFORMATION_EX Info, HANDLE TdiAddressObjectHandle, HANDLE TdiConnectionObjectHandle)
+{
+    if (Info->ID.toi_type == INFO_TYPE_CONNECTION && TdiConnectionObjectHandle != NULL)
+        return TdiConnectionObjectHandle;
+    return TdiAddressObjectHandle;
+}
+
 INT
 EXPORT
 WSHIoctl(
@@ -1096,7 +1127,8 @@ WSHIoctl(
         Info->BufferSize = InputBufferLength;
         memcpy(Info->Buffer, InputBuffer, InputBufferLength);
 
-        if (Context->SocketState == SocketStateCreated)
+        if (Context->SocketState == SocketStateCreated &&
+            !(Info->ID.toi_type == INFO_TYPE_CONNECTION && TdiConnectionObjectHandle != NULL))
         {
             if (Context->RequestQueue)
             {
@@ -1133,7 +1165,8 @@ WSHIoctl(
             return 0;
         }
 
-        res = SendRequest(Info, sizeof(*Info) + Info->BufferSize, IOCTL_TCP_SET_INFORMATION_EX, TdiAddressObjectHandle);
+        res = SendRequest(Info, sizeof(*Info) + Info->BufferSize, IOCTL_TCP_SET_INFORMATION_EX,
+                          ConnectionRequestHandle(Info, TdiAddressObjectHandle, TdiConnectionObjectHandle));
 
         HeapFree(GetProcessHeap(), 0, Info);
         return res;
@@ -1543,6 +1576,9 @@ WSHOpenSocket2(
     Context->MulticastTTL  = 1;
     Context->Ttl           = 128;
     Context->V6Only        = TRUE;
+    Context->KeepAliveTime     = 7200 * 1000;
+    Context->KeepAliveInterval = 1000;
+    Context->KeepAliveCount    = 10;
 
     *HelperDllSocketContext = Context;
     *NotificationEvents = WSH_NOTIFY_CLOSE | WSH_NOTIFY_BIND;
@@ -1589,6 +1625,101 @@ static INT ValidateMulticastInterface(ULONG Selector)
     tdiFreeThingSet(Entities);
     closeTcpFile(TcpFile);
     return Result;
+}
+
+static INT SubmitConnectionRequest(PSOCKET_CONTEXT Context, HANDLE TdiAddressObjectHandle, HANDLE TdiConnectionObjectHandle, ULONG TdiId, PVOID Buffer, ULONG BufferSize)
+{
+    PTCP_REQUEST_SET_INFORMATION_EX Info;
+    PQUEUED_REQUEST Request, Last;
+    INT Status;
+
+    Info = HeapAlloc(GetProcessHeap(), 0, sizeof(*Info) + BufferSize);
+    if (!Info)
+        return WSAENOBUFS;
+
+    Info->ID.toi_entity.tei_entity = Context->AddrFileEntityType;
+    Info->ID.toi_entity.tei_instance = Context->AddrFileInstance;
+    Info->ID.toi_class = INFO_CLASS_PROTOCOL;
+    Info->ID.toi_type = INFO_TYPE_CONNECTION;
+    Info->ID.toi_id = TdiId;
+    Info->BufferSize = BufferSize;
+    memcpy(Info->Buffer, Buffer, BufferSize);
+
+    if (Context->SocketState != SocketStateCreated || TdiConnectionObjectHandle != NULL)
+    {
+        Status = SendRequest(Info, sizeof(*Info) + Info->BufferSize, IOCTL_TCP_SET_INFORMATION_EX,
+                             ConnectionRequestHandle(Info, TdiAddressObjectHandle, TdiConnectionObjectHandle));
+        HeapFree(GetProcessHeap(), 0, Info);
+        return Status;
+    }
+
+    Request = HeapAlloc(GetProcessHeap(), 0, sizeof(*Request));
+    if (!Request)
+    {
+        HeapFree(GetProcessHeap(), 0, Info);
+        return WSAENOBUFS;
+    }
+    Request->Info = Info;
+    Request->Next = NULL;
+
+    if (!Context->RequestQueue)
+    {
+        Context->RequestQueue = Request;
+        return NO_ERROR;
+    }
+    Last = Context->RequestQueue;
+    while (Last->Next)
+        Last = Last->Next;
+    Last->Next = Request;
+    return NO_ERROR;
+}
+
+static INT SetKeepAliveValue(PSOCKET_CONTEXT Context, HANDLE TdiAddressObjectHandle, HANDLE TdiConnectionObjectHandle, INT OptionName, PCHAR OptionValue, INT OptionLength)
+{
+    struct tcp_keepalive Values;
+    DWORD Value;
+    INT Status;
+
+    ASSERT(OptionName == TCP_KEEPALIVE || OptionName == TCP_KEEPINTVL || OptionName == TCP_KEEPCNT);
+
+    if (Context->SocketType != SOCK_STREAM)
+        return WSAEINVAL;
+    if (!OptionValue || OptionLength < (INT)sizeof(DWORD))
+        return WSAEFAULT;
+    memcpy(&Value, OptionValue, sizeof(Value));
+
+    if (OptionName == TCP_KEEPCNT)
+    {
+        if (Value > 255)
+            return WSAEINVAL;
+        Status = SubmitConnectionRequest(Context, TdiAddressObjectHandle, TdiConnectionObjectHandle,
+                                         TCP_SOCKET_KEEPALIVECOUNT, &Value, sizeof(Value));
+        if (Status != NO_ERROR)
+            return Status;
+        Context->KeepAliveCount = Value;
+        return NO_ERROR;
+    }
+
+    if (Value == 0)
+        return WSAEINVAL;
+
+    Values.onoff = Context->KeepAlive ? 1 : 0;
+    Values.keepalivetime = Context->KeepAliveTime;
+    Values.keepaliveinterval = Context->KeepAliveInterval;
+    if (OptionName == TCP_KEEPALIVE)
+        Values.keepalivetime = (ULONG)min((ULONGLONG)Value * 1000, MAXULONG);
+    else
+        Values.keepaliveinterval = (ULONG)min((ULONGLONG)Value * 1000, MAXULONG);
+    ASSERT(Values.keepalivetime != 0);
+    ASSERT(Values.keepaliveinterval != 0);
+
+    Status = SubmitConnectionRequest(Context, TdiAddressObjectHandle, TdiConnectionObjectHandle, TCP_SOCKET_KEEPALIVEVALS, &Values, sizeof(Values));
+    if (Status != NO_ERROR)
+        return Status;
+
+    Context->KeepAliveTime = Values.keepalivetime;
+    Context->KeepAliveInterval = Values.keepaliveinterval;
+    return NO_ERROR;
 }
 
 INT
@@ -1737,11 +1868,18 @@ WSHSetSocketInformation(
             switch (OptionName)
             {
                 case TCP_NODELAY:
+                    if (Context->SocketType != SOCK_STREAM)
+                        return WSAEINVAL;
                     if (OptionLength < sizeof(CHAR))
                     {
                         return WSAEFAULT;
                     }
                     break;
+
+                case TCP_KEEPALIVE:
+                case TCP_KEEPINTVL:
+                case TCP_KEEPCNT:
+                    return SetKeepAliveValue(Context, TdiAddressObjectHandle, TdiConnectionObjectHandle, OptionName, OptionValue, OptionLength);
 
                 default:
                     /* Invalid option */
@@ -1836,7 +1974,7 @@ WSHSetSocketInformation(
     Info->BufferSize = OptionLength;
     memcpy(Info->Buffer, OptionValue, OptionLength);
 
-    if (Context->SocketState == SocketStateCreated)
+    if (Context->SocketState == SocketStateCreated && !(TdiType == INFO_TYPE_CONNECTION && TdiConnectionObjectHandle != NULL))
     {
         if (Context->SocketType != SOCK_STREAM && IsMembershipOption(Level, OptionName, &Join))
         {
@@ -1906,10 +2044,13 @@ WSHSetSocketInformation(
             Context->HeaderIncl = (RecvValue != 0);
         if (Level == SOL_SOCKET && OptionName == SO_KEEPALIVE)
             Context->KeepAlive = (*(DWORD *)OptionValue != 0);
+        if (Level == IPPROTO_TCP && OptionName == TCP_NODELAY)
+            Context->NoDelay = (*(PUCHAR)OptionValue != 0);
         return 0;
     }
 
-    Status = SendRequest(Info, sizeof(*Info) + Info->BufferSize, IOCTL_TCP_SET_INFORMATION_EX, TdiAddressObjectHandle);
+    Status = SendRequest(Info, sizeof(*Info) + Info->BufferSize, IOCTL_TCP_SET_INFORMATION_EX,
+                         ConnectionRequestHandle(Info, TdiAddressObjectHandle, TdiConnectionObjectHandle));
     if (!Status && Level == IPPROTO_IP && OptionName == IP_MULTICAST_IF)
         memcpy(&Context->MulticastInterface, OptionValue, sizeof(ULONG));
     if (!Status && Level == IPPROTO_IP && OptionName == IP_MULTICAST_TTL)
@@ -1935,6 +2076,8 @@ WSHSetSocketInformation(
         Context->HeaderIncl = (RecvValue != 0);
     if (!Status && Level == SOL_SOCKET && OptionName == SO_KEEPALIVE)
         Context->KeepAlive = (*(DWORD *)OptionValue != 0);
+    if (!Status && Level == IPPROTO_TCP && OptionName == TCP_NODELAY)
+        Context->NoDelay = (*(PUCHAR)OptionValue != 0);
 
     HeapFree(GetProcessHeap(), 0, Info);
 

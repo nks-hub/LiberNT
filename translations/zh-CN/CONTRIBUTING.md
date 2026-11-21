@@ -41,7 +41,7 @@ LiberNT 以净室方式开发：依据 Windows SDK 和 WDK 头文件、Windows 1
 
 ### 实现新功能
 
-Windows 11 是兼容性参照。动手做较大的功能之前，先在 [Issues](https://github.com/LiberNT/LiberNT/issues) 或 [Discord](https://discord.gg/BpcKg7FZ2) 问一声，看有没有人在做。
+Windows 11 是兼容性参照。动手做较大的功能之前，先在 [Issues](https://github.com/LiberNT/LiberNT/issues) 或 [Discord](https://discord.gg/ETvp4kxHDZ) 问一声，看有没有人在做。
 
 ### 编写文档
 
@@ -57,7 +57,7 @@ Windows 11 是兼容性参照。动手做较大的功能之前，先在 [Issues]
 
 ### Pull Request
 
-把工作以 [PR] 的形式提交到 `main-nt10` 分支。PR 让其他人看到你推到 GitHub 仓库的改动；打开之后，可以和团队讨论、审查，并在合并前继续追加提交。
+把工作以 [PR] 的形式提交到 `master` 分支。PR 让其他人看到你推到 GitHub 仓库的改动；打开之后，可以和团队讨论、审查，并在合并前继续追加提交。
 
 打开之前：
 
@@ -87,7 +87,7 @@ Windows 11 是兼容性参照。动手做较大的功能之前，先在 [Issues]
 - *提交前先搜索相似的 PR。* 可能已经有人开过类似的 PR 或 issue，那就直接在那边评论和审查。
 - *改动尽量小，集中在主题上。* 遇到无关问题，别顺手修；另开 issue。
 - *遵守我们的[代码风格]。*
-- *有问题尽管问。* 到 [Discord](https://discord.gg/BpcKg7FZ2) 或 [Matrix](https://matrix.to/#/#libernt:matrix.org) 找团队。
+- *有问题尽管问。* 到 [Discord](https://discord.gg/ETvp4kxHDZ) 或 [Matrix](https://matrix.to/#/#libernt:matrix.org) 找团队。
 
 ## 版权与许可
 
@@ -106,7 +106,7 @@ LiberNT 和 ReactOS 背后的人，见 [CREDITS.md](../../CREDITS.md)。
 - 看看开放的 [Issues](https://github.com/LiberNT/LiberNT/issues)。
 - 找一个失败的测试，与 Windows 11 对照，把它修到通过。
 - 读 [Wiki](https://github.com/LiberNT/LiberNT/wiki) 里的指南和设计笔记。
-- 到 [Discord](https://discord.gg/BpcKg7FZ2) 或 [Matrix](https://matrix.to/#/#libernt:matrix.org) 求助。
+- 到 [Discord](https://discord.gg/ETvp4kxHDZ) 或 [Matrix](https://matrix.to/#/#libernt:matrix.org) 求助。
 
   [净室逆向工程]:                                            https://en.wikipedia.org/wiki/Clean_room_design
   [PR]:                                                      https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-pull-requests

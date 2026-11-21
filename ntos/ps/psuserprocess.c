@@ -481,28 +481,25 @@ PspApplyThreadAttributes(
 
     if (Attributes->HasGroupAffinity)
     {
-        if (Attributes->GroupAffinity.Group != 0) return STATUS_INVALID_PARAMETER;
+        if (Attributes->GroupAffinity.Group >= KeQueryActiveGroupCount()) return STATUS_INVALID_PARAMETER;
 
-        if (Attributes->GroupAffinity.Mask == 0 ||
+        if ((Attributes->GroupAffinity.Mask & KeQueryGroupAffinity(Attributes->GroupAffinity.Group)) == 0 ||
             (Attributes->GroupAffinity.Mask &
-             ~THREAD_TO_PROCESS(Thread)->Pcb.Affinity) != 0)
+             ~KeQueryGroupAffinityProcess(&THREAD_TO_PROCESS(Thread)->Pcb, Attributes->GroupAffinity.Group)) != 0)
         {
             return STATUS_INVALID_PARAMETER;
         }
 
-        KeSetAffinityThread(&Thread->Tcb, Attributes->GroupAffinity.Mask);
+        KeSetGroupAffinityThread(&Thread->Tcb, Attributes->GroupAffinity.Group, Attributes->GroupAffinity.Mask);
     }
 
     if (Attributes->HasIdealProcessor)
     {
-        if (Attributes->IdealProcessor.Group != 0 ||
-            Attributes->IdealProcessor.Number >= (UCHAR)KeNumberProcessors)
-        {
-            return STATUS_INVALID_PARAMETER;
-        }
+        PROCESSOR_NUMBER Previous;
+        NTSTATUS Status;
 
-        KeSetIdealProcessorThread((PKTHREAD)&Thread->Tcb,
-                                  Attributes->IdealProcessor.Number);
+        Status = KeSetIdealProcessorThreadEx(&Thread->Tcb, &Attributes->IdealProcessor, &Previous);
+        if (!NT_SUCCESS(Status)) return Status;
     }
 
     if (Attributes->HasPreferredNode)
@@ -541,8 +538,9 @@ PspMoveToTokenSession(
     ObDereferenceObject(Token);
     if (!NT_SUCCESS(Status) || SessionId == MmGetSessionId(Process)) return Status;
 
-    Status = MmSetProcessSession(Process, SessionId);
+    Status = MmMoveProcessToSession(Process, SessionId);
     if (!NT_SUCCESS(Status)) return Status;
+    ASSERT(MmGetSessionId(Process) == SessionId);
 
     KeStackAttachProcess(&Process->Pcb, &ApcState);
     _SEH2_TRY
@@ -745,6 +743,7 @@ PspApplyCreateAttributes(
     }
 
     if (Attributes->JobCount == 0) return STATUS_SUCCESS;
+    ASSERT(Attributes->JobCount <= RTL_NUMBER_OF(Jobs));
 
     /*
      * The jobs are read out of the caller's memory once, because a caller

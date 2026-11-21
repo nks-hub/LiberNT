@@ -247,14 +247,16 @@ NTAPI
 NtfsFsdShutdown (_In_ PDEVICE_OBJECT VolumeDeviceObject,
                  _Inout_ PIRP Irp)
 {
-    NTSTATUS Status = NtfsDiskFlushKm();
+    /* Files still open keep their size in memory until cleanup; shutdown is the last chance to record it */
+    NTSTATUS Status = (VolumeDeviceObject != NtfsDiskFileSystemDeviceObject)
+        ? NtfsFlushVolume((PVolumeContextBlock)VolumeDeviceObject->DeviceExtension, FALSE)
+        : NtfsDiskFlushKm();
 
     /* Overview:
      * Occurs when the system is being shutdown.
      * Do any cleanup needed and return STATUS_SUCCESS.
      * See: https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/irp-mj-shutdown
      */
-    UNREFERENCED_PARAMETER(VolumeDeviceObject);
     Irp->IoStatus.Status = Status;
     Irp->IoStatus.Information = 0;
     IoCompleteRequest(Irp, IO_NO_INCREMENT);
@@ -432,6 +434,8 @@ NtfsFinalizePendingDelete(_In_ PVolumeContextBlock VolCB,
     BOOLEAN FileDeletion;
     BOOLEAN StreamOnly;
     BOOLEAN Unlinked;
+    BOOLEAN PathVerified = FALSE;
+    LONG VerifiedGeneration = 0;
 
     KeEnterCriticalRegion();
     NtfsAcquireMetadata(VolCB);
@@ -460,7 +464,7 @@ NtfsFinalizePendingDelete(_In_ PVolumeContextBlock VolCB,
                  FileCB->RequestedStream && FileCB->RequestedStream[0];
     if (FileCB->StreamCB != BaseStream)
         ExAcquireResourceExclusiveLite(NtfsGetMainResource(FileCB), TRUE);
-    DeleteStatus = DeleteLink ? NtfsPersistPendingSize(VolCB, FileCB) : STATUS_SUCCESS;
+    DeleteStatus = DeleteLink ? NtfsPersistPendingSize(VolCB, FileCB, FALSE) : STATUS_SUCCESS;
     if (FileCB->StreamCB != BaseStream)
         ExReleaseResourceLite(NtfsGetMainResource(FileCB));
     if (!NT_SUCCESS(DeleteStatus))
@@ -483,7 +487,16 @@ NtfsFinalizePendingDelete(_In_ PVolumeContextBlock VolCB,
         }
     }
 
-    if (FileCB->StreamCB && DeleteLink)
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    if (FileCB->StreamCB && DeleteLink && FileCB->FileRec &&
+        VolCB->DirGeneration == FileCB->OpenGeneration)
+    {
+        ASSERT(NtfsFileRecordGetReference(FileCB->FileRec) == FileCB->StreamCB->FileReference);
+        LastLink = NtfsFileRecordGetLinkCount(FileCB->FileRec) <= 1;
+        VerifiedGeneration = FileCB->OpenGeneration;
+        PathVerified = TRUE;
+    }
+    else if (FileCB->StreamCB && DeleteLink)
     {
         PNtfsFileRecord NamedRecord = NULL;
         ULONG RemainingNameLength = 0;
@@ -498,7 +511,11 @@ NtfsFinalizePendingDelete(_In_ PVolumeContextBlock VolCB,
                    NtfsFileRecordGetReference(NamedRecord) ==
                        FileCB->StreamCB->FileReference;
         if (SameFile)
+        {
             LastLink = NtfsFileRecordGetLinkCount(NamedRecord) <= 1;
+            VerifiedGeneration = VolCB->DirGeneration;
+            PathVerified = TRUE;
+        }
         if (NamedRecord)
             NtfsFileRecordDestroy(NamedRecord);
         if (!SameFile)
@@ -566,7 +583,9 @@ NtfsFinalizePendingDelete(_In_ PVolumeContextBlock VolCB,
         MetadataAcquired = TRUE;
     }
     DeleteStatus = STATUS_SUCCESS;
-    if (FileCB->StreamCB && LastLink && !Unlinked)
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    if (FileCB->StreamCB && LastLink && !Unlinked &&
+        !(PathVerified && VolCB->DirGeneration == VerifiedGeneration))
     {
         PNtfsFileRecord NamedRecord = NULL;
         ULONG RemainingNameLength = 0;
@@ -985,12 +1004,12 @@ NtfsFsdCleanup(_In_ PDEVICE_OBJECT VolumeDeviceObject,
             KeLeaveCriticalRegion();
         }
 
-        if (FileCB->StreamCB && FileCB->StreamCB->SizePending &&
+        if (FileCB->StreamCB && (FileCB->StreamCB->SizePending || (LastHandle && ReadAcquire(&FileCB->StreamCB->TrimOnClose))) &&
             !FileCB->DeletePending && !(FileCB->CreateOptions & FILE_DELETE_ON_CLOSE))
         {
             KeEnterCriticalRegion();
             ExAcquireResourceExclusiveLite(NtfsGetMainResource(FileCB), TRUE);
-            NtfsPersistPendingSize(VolCB, FileCB);
+            NtfsPersistPendingSize(VolCB, FileCB, LastHandle);
             ExReleaseResourceLite(NtfsGetMainResource(FileCB));
             KeLeaveCriticalRegion();
         }

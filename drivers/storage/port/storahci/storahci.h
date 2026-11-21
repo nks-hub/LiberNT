@@ -1,756 +1,333 @@
 /*
- * PROJECT:        ReactOS Kernel
- * LICENSE:        GNU GPLv2 only as published by the Free Software Foundation
- * PURPOSE:        To Implement AHCI Miniport driver targeting storport NT 5.2
- * PROGRAMMERS:    Aman Priyadarshi (aman.eureka@gmail.com)
+ * PROJECT:     LiberNT Storport AHCI miniport
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     AHCI 1.3.1 register, FIS and command structures
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
+#pragma once
+
 #include <ntddk.h>
-#include <ata.h>
-#include <drivers/ata/identify_funcs.h>
 #include <storport.h>
 
-#define NDEBUG
-#include <debug.h>
+#define AHCI_TAG 'icha'
 
-#define DEBUG 1
-#if defined(_MSC_VER)
-#pragma warning(disable:4214) // bit field types other than int
-#pragma warning(disable:4201) // nameless struct/union
-#endif
+#define AHCI_MAX_PORTS 32
+#define AHCI_PORT_REGISTERS_OFFSET 0x100
+#define AHCI_PORT_REGISTERS_SIZE 0x80
+#define AHCI_ABAR_MIN_LENGTH (AHCI_PORT_REGISTERS_OFFSET + AHCI_PORT_REGISTERS_SIZE)
+#define AHCI_PCI_ABAR_OFFSET 0x24
+#define AHCI_ASC_SAVING_NOT_SUPPORTED 0x39
 
-#define MAXIMUM_AHCI_PORT_COUNT             32
-/* Storport hands out page-granular SG elements, so a 128 KB transfer needs
- * 32 entries when perfectly aligned and 33 when it is not. Give the table
- * headroom and keep AHCI_COMMAND_TABLE a multiple of 128 bytes. */
-#define MAXIMUM_AHCI_PRDT_ENTRIES           64
-/* A real HBA implements up to 32 command slots (CAP.NCS is a 0-based 5-bit
- * field), so the slot array must be able to hold all of them. */
-#define MAXIMUM_AHCI_PORT_NCS               32
-#define MAXIMUM_QUEUE_BUFFER_SIZE           255
-#define MAXIMUM_COMPLETION_QUEUE_SIZE       (2 * MAXIMUM_QUEUE_BUFFER_SIZE)
-#define MAXIMUM_TRANSFER_LENGTH             (128*1024) // 128 KB
-#define AHCI_LINK_ERROR_HISTORY             4
-#define AHCI_PORT_PRESENCE_DETECT_MS        30
+#define AHCI_MAX_TRANSFER_LENGTH (1024 * 1024)
+#define AHCI_MAX_PRDT_ENTRIES ((AHCI_MAX_TRANSFER_LENGTH / PAGE_SIZE) + 1)
+#define AHCI_PRD_MAX_BYTES (4 * 1024 * 1024)
 
-#define DEVICE_ATA_BLOCK_SIZE               512
+/* Generic host control */
+#define AHCI_HBA_CAP 0x00
+#define AHCI_HBA_GHC 0x04
+#define AHCI_HBA_IS 0x08
+#define AHCI_HBA_PI 0x0C
+#define AHCI_HBA_VS 0x10
+#define AHCI_HBA_CAP2 0x24
+#define AHCI_HBA_BOHC 0x28
 
-#define AHCI_SENSE_ERRORCODE_FIXED_CURRENT  0x70
-#define AHCI_ADSENSE_NO_SENSE               0x00
-#define AHCI_ADSENSE_LUN_COMMUNICATION      0x08
-#define AHCI_ADSENSE_UNRECOVERED_ERROR      0x11
-#define AHCI_ADSENSE_ILLEGAL_BLOCK          0x21
-#define AHCI_ADSENSE_WRITE_PROTECT          0x27
-#define AHCI_ADSENSE_INTERNAL_TARGET_FAILURE 0x44
-#define AHCI_SENSEQ_COMM_CRC_ERROR          0x03
+#define AHCI_CAP_NP_MASK 0x1F
+#define AHCI_CAP_SSS (1u << 27)
+#define AHCI_CAP_SCLO (1u << 24)
+#define AHCI_CAP_SAM (1u << 18)
+#define AHCI_CAP_S64A (1u << 31)
 
-/* Largest sector count expressible in a 48-bit command (16-bit count field);
- * a 28-bit command uses an 8-bit count where 0 means 256. */
-#define MAXIMUM_LBA28_SECTORS               256
-#define MAXIMUM_LBA48_SECTORS               65536
+#define AHCI_GHC_HR (1u << 0)
+#define AHCI_GHC_IE (1u << 1)
+#define AHCI_GHC_AE (1u << 31)
 
-/* A 28-bit command can address LBA 0 .. 0x0FFFFFFF (128 GiB at 512 bytes). */
-#define MAXIMUM_LBA28_ADDRESS               0x0FFFFFFFULL
+#define AHCI_CAP2_BOH (1u << 0)
+#define AHCI_BOHC_BOS (1u << 0)
+#define AHCI_BOHC_OOS (1u << 1)
+#define AHCI_BOHC_BB (1u << 4)
 
-// device type (DeviceParams)
-#define AHCI_DEVICE_TYPE_ATA                1
-#define AHCI_DEVICE_TYPE_ATAPI              2
-#define AHCI_DEVICE_TYPE_NODEVICE           3
+/* Port registers */
+#define AHCI_PX_CLB 0x00
+#define AHCI_PX_CLBU 0x04
+#define AHCI_PX_FB 0x08
+#define AHCI_PX_FBU 0x0C
+#define AHCI_PX_IS 0x10
+#define AHCI_PX_IE 0x14
+#define AHCI_PX_CMD 0x18
+#define AHCI_PX_TFD 0x20
+#define AHCI_PX_SIG 0x24
+#define AHCI_PX_SSTS 0x28
+#define AHCI_PX_SCTL 0x2C
+#define AHCI_PX_SERR 0x30
+#define AHCI_PX_SACT 0x34
+#define AHCI_PX_CI 0x38
 
-typedef enum _AHCI_PORT_RECOVERY_STATE
-{
-    AhciRecoveryIdle = 0,
-    AhciRecoveryWaitCommandEngine,
-    AhciRecoveryWaitNcqLog,
-    AhciRecoveryComresetAsserted,
-    AhciRecoveryWaitLink,
-    AhciRecoveryWaitReady,
-    AhciRecoveryWaitFisEngine
-} AHCI_PORT_RECOVERY_STATE;
+#define AHCI_PX_IS_DHRS (1u << 0)
+#define AHCI_PX_IS_PSS (1u << 1)
+#define AHCI_PX_IS_DSS (1u << 2)
+#define AHCI_PX_IS_SDBS (1u << 3)
+#define AHCI_PX_IS_UFS (1u << 4)
+#define AHCI_PX_IS_DPS (1u << 5)
+#define AHCI_PX_IS_PCS (1u << 6)
+#define AHCI_PX_IS_PRCS (1u << 22)
+#define AHCI_PX_IS_OFS (1u << 24)
+#define AHCI_PX_IS_INFS (1u << 26)
+#define AHCI_PX_IS_IFS (1u << 27)
+#define AHCI_PX_IS_HBDS (1u << 28)
+#define AHCI_PX_IS_HBFS (1u << 29)
+#define AHCI_PX_IS_TFES (1u << 30)
 
-// section 3.1.2
-#define AHCI_Global_HBA_CAP_S64A            (1U << 31)
-#define AHCI_Global_HBA_CAP_SNCQ            (1UL << 30)
+#define AHCI_PX_IS_ERROR (AHCI_PX_IS_UFS | AHCI_PX_IS_OFS | AHCI_PX_IS_INFS | AHCI_PX_IS_IFS | \
+                          AHCI_PX_IS_HBDS | AHCI_PX_IS_HBFS | AHCI_PX_IS_TFES)
+#define AHCI_PX_IS_PRESENCE (AHCI_PX_IS_PCS | AHCI_PX_IS_PRCS)
+#define AHCI_PX_IE_DEFAULT (AHCI_PX_IS_DHRS | AHCI_PX_IS_PSS | AHCI_PX_IS_DSS | AHCI_PX_IS_SDBS | \
+                            AHCI_PX_IS_DPS | AHCI_PX_IS_ERROR | AHCI_PX_IS_PRESENCE)
 
-// FIS Types : https://wiki.osdev.org/AHCI
-#define FIS_TYPE_REG_H2D        0x27 // Register FIS - host to device
-#define FIS_TYPE_REG_D2H        0x34 // Register FIS - device to host
-#define FIS_TYPE_DMA_ACT        0x39 // DMA activate FIS - device to host
-#define FIS_TYPE_DMA_SETUP      0x41 // DMA setup FIS - bidirectional
-#define FIS_TYPE_BIST           0x58 // BIST activate FIS - bidirectional
-#define FIS_TYPE_PIO_SETUP      0x5F // PIO setup FIS - device to host
-#define FIS_TYPE_DEV_BITS       0xA1 // Set device bits FIS - device to host
+#define AHCI_PX_CMD_ST (1u << 0)
+#define AHCI_PX_CMD_SUD (1u << 1)
+#define AHCI_PX_CMD_POD (1u << 2)
+#define AHCI_PX_CMD_CLO (1u << 3)
+#define AHCI_PX_CMD_FRE (1u << 4)
+#define AHCI_PX_CMD_FR (1u << 14)
+#define AHCI_PX_CMD_CR (1u << 15)
+#define AHCI_PX_CMD_ATAPI (1u << 24)
+#define AHCI_PX_CMD_ICC_MASK (0xFu << 28)
+#define AHCI_PX_CMD_ICC_ACTIVE (1u << 28)
 
-#define AHCI_ATA_CFIS_FisType               0
-#define AHCI_ATA_CFIS_PMPort_C              1
-#define AHCI_ATA_CFIS_CommandReg            2
-#define AHCI_ATA_CFIS_FeaturesLow           3
-#define AHCI_ATA_CFIS_LBA0                  4
-#define AHCI_ATA_CFIS_LBA1                  5
-#define AHCI_ATA_CFIS_LBA2                  6
-#define AHCI_ATA_CFIS_Device                7
-#define AHCI_ATA_CFIS_LBA3                  8
-#define AHCI_ATA_CFIS_LBA4                  9
-#define AHCI_ATA_CFIS_LBA5                  10
-#define AHCI_ATA_CFIS_FeaturesHigh          11
-#define AHCI_ATA_CFIS_SectorCountLow        12
-#define AHCI_ATA_CFIS_SectorCountHigh       13
+#define AHCI_PX_TFD_ERR (1u << 0)
+#define AHCI_PX_TFD_DRQ (1u << 3)
+#define AHCI_PX_TFD_BSY (1u << 7)
+#define AHCI_PX_TFD_ERROR_SHIFT 8
 
-// ATA Functions
-#define ATA_FUNCTION_ATA_COMMAND            0x100
-#define ATA_FUNCTION_ATA_IDENTIFY           0x101
-#define ATA_FUNCTION_ATA_READ               0x102
+#define AHCI_PX_SSTS_DET_MASK 0xF
+#define AHCI_PX_SSTS_DET_PRESENT 0x3
+#define AHCI_PX_SCTL_DET_MASK 0xF
+#define AHCI_PX_SCTL_DET_COMRESET 0x1
+#define AHCI_PX_SCTL_IPM_DISABLED (0x3u << 8)
 
-// ATAPI Functions
-#define ATA_FUNCTION_ATAPI_COMMAND          0x200
+#define AHCI_SIG_ATA 0x00000101
+#define AHCI_SIG_ATAPI 0xEB140101
 
-// ATA Flags
-#define ATA_FLAGS_DATA_IN                   (1 << 1)
-#define ATA_FLAGS_DATA_OUT                  (1 << 2)
-#define ATA_FLAGS_48BIT_COMMAND             (1 << 3)
-#define ATA_FLAGS_USE_DMA                   (1 << 4)
-#define ATA_FLAGS_NCQ                       (1 << 5)
+/* FIS types */
+#define AHCI_FIS_REGISTER_H2D 0x27
+#define AHCI_FIS_H2D_COMMAND 0x80
+#define AHCI_RFIS_D2H_OFFSET 0x40
+#define AHCI_RFIS_PIO_SETUP_OFFSET 0x20
+#define AHCI_RECEIVED_FIS_SIZE 256
+#define AHCI_COMMAND_LIST_SIZE 1024
 
-#define AHCI_TRIM_PAYLOAD_SIZE              512
-#define AHCI_TRIM_MAX_RANGES                (AHCI_TRIM_PAYLOAD_SIZE / sizeof(ULONG64))
-#define AHCI_TRIM_RANGE_MAX_SECTORS         0xFFFF
-#define AHCI_TRIM_MAX_DESCRIPTORS           (AHCI_TRIM_MAX_RANGES / 2)
+/* ATA commands */
+#define ATA_CMD_READ_DMA 0xC8
+#define ATA_CMD_WRITE_DMA 0xCA
+#define ATA_CMD_READ_DMA_EXT 0x25
+#define ATA_CMD_WRITE_DMA_EXT 0x35
+#define ATA_CMD_FLUSH_CACHE 0xE7
+#define ATA_CMD_FLUSH_CACHE_EXT 0xEA
+#define ATA_CMD_IDENTIFY_DEVICE 0xEC
+#define ATA_CMD_IDENTIFY_PACKET_DEVICE 0xA1
+#define ATA_CMD_PACKET 0xA0
+#define ATA_DEVICE_LBA 0x40
 
-#define IsAtaCommand(AtaFunction)           (AtaFunction & ATA_FUNCTION_ATA_COMMAND)
-#define IsAtapiCommand(AtaFunction)         (AtaFunction & ATA_FUNCTION_ATAPI_COMMAND)
-#define IsDataTransferNeeded(SrbExtension)  (SrbExtension->Flags & (ATA_FLAGS_DATA_IN | ATA_FLAGS_DATA_OUT))
-#define IsAdapterCAPS64(CAP)                (CAP & AHCI_Global_HBA_CAP_S64A)
+#define ATA_ERROR_ICRC 0x80
+#define ATA_ERROR_UNC 0x40
+#define ATA_ERROR_IDNF 0x10
+#define ATA_ERROR_ABRT 0x04
 
-// 3.1.1 CAP.NCS is a 0-based 5-bit field [12:08], so the number of usable
-// command slots is NCS + 1. The old mask (0xF00) dropped bit 12 and omitted
-// the +1, which under-reported a 32-slot controller as 15 slots.
-// Every caller wants the count, so the macro yields the clamped count.
-#define AHCI_Global_Port_CAP_NCS_RAW(x)     (((x) >> 8) & 0x1F)
-#define AHCI_Global_Port_CAP_NCS(x)         (((AHCI_Global_Port_CAP_NCS_RAW(x) + 1) > MAXIMUM_AHCI_PORT_NCS) ? MAXIMUM_AHCI_PORT_NCS : (AHCI_Global_Port_CAP_NCS_RAW(x) + 1))
+/* IDENTIFY (PACKET) DEVICE word indices */
+#define ATA_ID_CONFIG 0
+#define ATA_ID_SERIAL 10
+#define ATA_ID_SERIAL_WORDS 10
+#define ATA_ID_FIRMWARE 23
+#define ATA_ID_FIRMWARE_WORDS 4
+#define ATA_ID_MODEL 27
+#define ATA_ID_MODEL_WORDS 20
+#define ATA_ID_CAPABILITIES 49
+#define ATA_ID_LBA28_SECTORS 60
+#define ATA_ID_COMMAND_SET_2 83
+#define ATA_ID_COMMAND_SET_ENABLED_1 85
+#define ATA_ID_COMMAND_SET_ENABLED_2 86
+#define ATA_ID_LBA48_SECTORS 100
+#define ATA_ID_SECTOR_SIZE 106
+#define ATA_ID_LOGICAL_SECTOR_WORDS 117
+#define ATA_ID_ROTATION_RATE 217
 
-#define ROUND_UP(N, S) ((((N) + (S) - 1) / (S)) * (S))
-//#define AhciDebugPrint(format, ...) StorPortDebugPrint(0, format, __VA_ARGS__)
-#define AhciDebugPrint(format, ...) DbgPrint("(%s:%d) " format, __RELFILE__, __LINE__, ##__VA_ARGS__)
+#define ATA_ID_CONFIG_ATAPI_MASK 0xC000
+#define ATA_ID_CONFIG_ATAPI 0x8000
+#define ATA_ID_CONFIG_REMOVABLE 0x0080
+#define ATA_ID_CONFIG_ATAPI_TYPE_SHIFT 8
+#define ATA_ID_CONFIG_ATAPI_TYPE_MASK 0x1F
+#define ATA_ID_CAPABILITIES_DMA 0x0100
+#define ATA_ID_COMMAND_SET_2_LBA48 0x0400
+#define ATA_ID_COMMAND_SET_2_FLUSH_EXT 0x2000
+#define ATA_ID_COMMAND_SET_ENABLED_1_WCE 0x0020
+#define ATA_ID_SECTOR_SIZE_VALID_MASK 0xC000
+#define ATA_ID_SECTOR_SIZE_VALID 0x4000
+#define ATA_ID_SECTOR_SIZE_LARGE_LOGICAL 0x1000
+#define ATA_ID_SECTOR_SIZE_MULTIPLE_PHYSICAL 0x2000
+#define ATA_ID_SECTOR_SIZE_EXPONENT_MASK 0x000F
 
-typedef VOID (*PAHCI_COMPLETION_ROUTINE)(__in PVOID PortExtension, __in PVOID Srb);
+#pragma pack(push, 1)
 
-//////////////////////////////////////////////////////////////
-//              ---- Support Structures ---                 //
-//////////////////////////////////////////////////////////////
-
-// section 3.3.5
-typedef union _AHCI_INTERRUPT_STATUS
-{
-    struct
-    {
-        ULONG DHRS:1;       //Device to Host Register FIS Interrupt
-        ULONG PSS :1;       //PIO Setup FIS Interrupt
-        ULONG DSS :1;       //DMA Setup FIS Interrupt
-        ULONG SDBS :1;      //Set Device Bits Interrupt
-        ULONG UFS :1;       //Unknown FIS Interrupt
-        ULONG DPS :1;       //Descriptor Processed
-        ULONG PCS :1;       //Port Connect Change Status
-        ULONG DMPS :1;      //Device Mechanical Presence Status (DMPS)
-        ULONG Reserved :14;
-        ULONG PRCS :1;      //PhyRdy Change Status
-        ULONG IPMS :1;      //Incorrect Port Multiplier Status
-        ULONG OFS :1;       //Overflow Status
-        ULONG Reserved2 :1;
-        ULONG INFS :1;      //Interface Non-fatal Error Status
-        ULONG IFS :1;       //Interface Fatal Error Status
-        ULONG HBDS :1;      //Host Bus Data Error Status
-        ULONG HBFS :1;      //Host Bus Fatal Error Status
-        ULONG TFES :1;      //Task File Error Status
-        ULONG CPDS :1;      //Cold Port Detect Status
-    };
-
-    ULONG Status;
-} AHCI_INTERRUPT_STATUS;
-
-typedef struct _AHCI_FIS_DMA_SETUP
-{
-    ULONG ULONG0_1;         // FIS_TYPE_DMA_SETUP
-                            // Port multiplier
-                            // Reserved
-                            // Data transfer direction, 1 - device to host
-                            // Interrupt bit
-                            // Auto-activate. Specifies if DMA Activate FIS is needed
-    UCHAR Reserved[2];      // Reserved
-    ULONG DmaBufferLow;     // DMA Buffer Identifier. Used to Identify DMA buffer in host memory. SATA Spec says host specific and not in Spec. Trying AHCI spec might work.
-    ULONG DmaBufferHigh;
-    ULONG Reserved2;        // More reserved
-    ULONG DmaBufferOffset;  // Byte offset into buffer. First 2 bits must be 0
-    ULONG TranferCount;     // Number of bytes to transfer. Bit 0 must be 0
-    ULONG Reserved3;        // Reserved
-} AHCI_FIS_DMA_SETUP;
-
-typedef struct _AHCI_PIO_SETUP_FIS
-{
-    UCHAR FisType;
-    UCHAR Reserved1 :5;
-    UCHAR D :1;
-    UCHAR I :1;
-    UCHAR Reserved2 :1;
-    UCHAR Status;
-    UCHAR Error;
-
-    UCHAR SectorNumber;
-    UCHAR CylLow;
-    UCHAR CylHigh;
-    UCHAR Dev_Head;
-
-    UCHAR SectorNumb_Exp;
-    UCHAR CylLow_Exp;
-    UCHAR CylHigh_Exp;
-    UCHAR Reserved3;
-
-    UCHAR SectorCount;
-    UCHAR SectorCount_Exp;
-    UCHAR Reserved4;
-    UCHAR E_Status;
-
-    USHORT TransferCount;
-    UCHAR Reserved5[2];
-} AHCI_PIO_SETUP_FIS;
-
-typedef struct _AHCI_D2H_REGISTER_FIS
-{
-    UCHAR FisType;
-    UCHAR Reserved1 :6;
-    UCHAR I:1;
-    UCHAR Reserved2 :1;
-    UCHAR Status;
-    UCHAR Error;
-
-    UCHAR SectorNumber;
-    UCHAR CylLow;
-    UCHAR CylHigh;
-    UCHAR Dev_Head;
-
-    UCHAR SectorNum_Exp;
-    UCHAR CylLow_Exp;
-    UCHAR CylHigh_Exp;
-    UCHAR Reserved;
-
-    UCHAR SectorCount;
-    UCHAR SectorCount_Exp;
-    UCHAR Reserved3[2];
-
-    UCHAR Reserved4[4];
-} AHCI_D2H_REGISTER_FIS;
-
-typedef struct _AHCI_SET_DEVICE_BITS_FIS
-{
-    UCHAR FisType;
-
-    UCHAR PMPort: 4;
-    UCHAR Reserved1 :2;
-    UCHAR I :1;
-    UCHAR N :1;
-
-    UCHAR Status_Lo :3;
-    UCHAR Reserved2 :1;
-    UCHAR Status_Hi :3;
-    UCHAR Reserved3 :1;
-
-    UCHAR Error;
-
-    UCHAR Reserved5[4];
-} AHCI_SET_DEVICE_BITS_FIS;
-
-typedef struct _AHCI_QUEUE
-{
-    PVOID Buffer[MAXIMUM_COMPLETION_QUEUE_SIZE];
-    ULONG Head;
-    ULONG Tail;
-    ULONG Capacity;
-} AHCI_QUEUE, *PAHCI_QUEUE;
-
-//////////////////////////////////////////////////////////////
-//              ---------------------------                 //
-//////////////////////////////////////////////////////////////
-
-typedef union _AHCI_COMMAND_HEADER_DESCRIPTION
-{
-    struct
-    {
-        ULONG CFL : 5;       // Command FIS Length
-        ULONG A : 1;         // IsATAPI
-        ULONG W : 1;         // Write
-        ULONG P : 1;         // Prefetchable
-
-        ULONG R : 1;         // Reset
-        ULONG B : 1;         // BIST
-        ULONG C : 1;         //Clear Busy upon R_OK
-        ULONG RSV : 1;
-        ULONG PMP : 4;       //Port Multiplier Port
-
-        ULONG PRDTL : 16;    //Physical Region Descriptor Table Length
-    };
-
-    ULONG Status;
-} AHCI_COMMAND_HEADER_DESCRIPTION;
-
-typedef union _AHCI_GHC
-{
-    struct
-    {
-        ULONG HR : 1;
-        ULONG IE : 1;
-        ULONG MRSM : 1;
-        ULONG RSV0 : 28;
-        ULONG AE : 1;
-    };
-
-    ULONG Status;
-} AHCI_GHC;
-
-// section 3.3.7
-typedef union _AHCI_PORT_CMD
-{
-    struct
-    {
-        ULONG ST : 1;
-        ULONG SUD : 1;
-        ULONG POD : 1;
-        ULONG CLO : 1;
-        ULONG FRE : 1;
-        ULONG RSV0 : 3;
-        ULONG CCS : 5;
-        ULONG MPSS : 1;
-        ULONG FR : 1;
-        ULONG CR : 1;
-        ULONG CPS : 1;
-        ULONG PMA : 1;
-        ULONG HPCP : 1;
-        ULONG MPSP : 1;
-        ULONG CPD : 1;
-        ULONG ESP : 1;
-        ULONG FBSCP : 1;
-        ULONG APSTE : 1;
-        ULONG ATAPI : 1;
-        ULONG DLAE : 1;
-        ULONG ALPE : 1;
-        ULONG ASP : 1;
-        ULONG ICC : 4;
-    };
-
-    ULONG Status;
-} AHCI_PORT_CMD;
-
-typedef union _AHCI_SERIAL_ATA_CONTROL
-{
-    struct
-    {
-        ULONG DET :4;
-        ULONG SPD :4;
-        ULONG IPM :4;
-        ULONG SPM :4;
-        ULONG PMP :4;
-        ULONG DW11_Reserved :12;
-    };
-
-    ULONG Status;
-}  AHCI_SERIAL_ATA_CONTROL;
-
-typedef union _AHCI_SERIAL_ATA_STATUS
-{
-    struct
-    {
-        ULONG DET :4;
-        ULONG SPD :4;
-        ULONG IPM :4;
-        ULONG RSV0 :20;
-    };
-
-    ULONG Status;
-}  AHCI_SERIAL_ATA_STATUS;
-
-typedef union _AHCI_TASK_FILE_DATA
-{
-    struct
-    {
-        struct _STS
-        {
-            UCHAR ERR : 1;
-            UCHAR CS1 : 2;
-            UCHAR DRQ : 1;
-            UCHAR CS2 : 3;
-            UCHAR BSY : 1;
-        } STS;
-        UCHAR ERR;
-        USHORT RSV;
-    };
-
-    ULONG Status;
-} AHCI_TASK_FILE_DATA;
-
-typedef struct _AHCI_PRDT
-{
-    ULONG DBA;
-    ULONG DBAU;
-    ULONG RSV0;
-
-    ULONG DBC : 22;
-    ULONG RSV1 : 9;
-    ULONG I : 1;
-} AHCI_PRDT, *PAHCI_PRDT;
-
-// 4.2.3 Command Table
-typedef struct _AHCI_COMMAND_TABLE
-{
-    // (16 * 32) + 64 + 16 + 48 = 648
-    // 128 byte aligned :D
-    UCHAR CFIS[64];
-    UCHAR ACMD[16];
-    UCHAR RSV0[48];
-    AHCI_PRDT PRDT[MAXIMUM_AHCI_PRDT_ENTRIES];
-} AHCI_COMMAND_TABLE, *PAHCI_COMMAND_TABLE;
-
-// 4.2.2 Command Header
 typedef struct _AHCI_COMMAND_HEADER
 {
-    AHCI_COMMAND_HEADER_DESCRIPTION DI;   // DW 0
-    ULONG PRDBC;                          // DW 1
-    ULONG CTBA;                           // DW 2
-    ULONG CTBA_U;                         // DW 3
-    ULONG Reserved[4];                    // DW 4-7
+    ULONG Flags;
+    ULONG TransferredBytes;
+    ULONG TableAddress;
+    ULONG TableAddressUpper;
+    ULONG Reserved[4];
 } AHCI_COMMAND_HEADER, *PAHCI_COMMAND_HEADER;
 
-// Received FIS
-typedef struct _AHCI_RECEIVED_FIS
-{
-    struct _AHCI_FIS_DMA_SETUP          DmaSetupFIS;      // 0x00 -- DMA Setup FIS
-    ULONG                               pad0;             // 4 BYTE padding
-    struct _AHCI_PIO_SETUP_FIS          PioSetupFIS;      // 0x20 -- PIO Setup FIS
-    ULONG                               pad1[3];          // 12 BYTE padding
-    struct _AHCI_D2H_REGISTER_FIS       RegisterFIS;      // 0x40 -- Register – Device to Host FIS
-    ULONG                               pad2;             // 4 BYTE padding
-    struct _AHCI_SET_DEVICE_BITS_FIS    SetDeviceFIS;     // 0x58 -- Set Device Bit FIS
-    ULONG                               UnknowFIS[16];    // 0x60 -- Unknown FIS
-    ULONG                               Reserved[24];     // 0xA0 -- Reserved
-} AHCI_RECEIVED_FIS, *PAHCI_RECEIVED_FIS;
+#define AHCI_HEADER_CFL_MASK 0x1F
+#define AHCI_HEADER_ATAPI (1u << 5)
+#define AHCI_HEADER_WRITE (1u << 6)
+#define AHCI_HEADER_PRDTL_SHIFT 16
 
-// Holds Port Information
+typedef struct _AHCI_PRD
+{
+    ULONG DataAddress;
+    ULONG DataAddressUpper;
+    ULONG Reserved;
+    ULONG ByteCount;
+} AHCI_PRD, *PAHCI_PRD;
+
+#define AHCI_PRD_INTERRUPT (1u << 31)
+
+typedef struct _AHCI_FIS_H2D
+{
+    UCHAR Type;
+    UCHAR Flags;
+    UCHAR Command;
+    UCHAR Features;
+    UCHAR Lba0;
+    UCHAR Lba1;
+    UCHAR Lba2;
+    UCHAR Device;
+    UCHAR Lba3;
+    UCHAR Lba4;
+    UCHAR Lba5;
+    UCHAR FeaturesExp;
+    UCHAR Count;
+    UCHAR CountExp;
+    UCHAR Icc;
+    UCHAR Control;
+    ULONG Reserved;
+} AHCI_FIS_H2D, *PAHCI_FIS_H2D;
+
+typedef struct _AHCI_FIS_D2H
+{
+    UCHAR Type;
+    UCHAR Flags;
+    UCHAR Status;
+    UCHAR Error;
+    UCHAR Lba0;
+    UCHAR Lba1;
+    UCHAR Lba2;
+    UCHAR Device;
+    UCHAR Lba3;
+    UCHAR Lba4;
+    UCHAR Lba5;
+    UCHAR Reserved0;
+    UCHAR Count;
+    UCHAR CountExp;
+    UCHAR Reserved1[6];
+} AHCI_FIS_D2H, *PAHCI_FIS_D2H;
+
+typedef struct _AHCI_COMMAND_TABLE
+{
+    UCHAR CommandFis[64];
+    UCHAR AtapiCommand[16];
+    UCHAR Reserved[48];
+    AHCI_PRD Prdt[AHCI_MAX_PRDT_ENTRIES];
+} AHCI_COMMAND_TABLE, *PAHCI_COMMAND_TABLE;
+
+#pragma pack(pop)
+
+C_ASSERT(sizeof(AHCI_COMMAND_HEADER) == 32);
+C_ASSERT(sizeof(AHCI_PRD) == 16);
+C_ASSERT(sizeof(AHCI_FIS_H2D) == 20);
+C_ASSERT(sizeof(AHCI_FIS_D2H) == 20);
+C_ASSERT(FIELD_OFFSET(AHCI_COMMAND_TABLE, AtapiCommand) == 0x40);
+C_ASSERT(FIELD_OFFSET(AHCI_COMMAND_TABLE, Prdt) == 0x80);
+
+#ifndef ROUND_UP
+#define ROUND_UP(n, align) ((((n) + (align) - 1) / (align)) * (align))
+#endif
+
+#define AHCI_SENSE_BUFFER_SIZE 64
+#define AHCI_IDENTIFY_SIZE 512
+
+#define AHCI_PORT_DMA_SIZE ROUND_UP(AHCI_COMMAND_LIST_SIZE + AHCI_RECEIVED_FIS_SIZE + \
+                                    sizeof(AHCI_COMMAND_TABLE) + AHCI_SENSE_BUFFER_SIZE + \
+                                    AHCI_IDENTIFY_SIZE, AHCI_COMMAND_LIST_SIZE)
+
+typedef enum _AHCI_DEVICE_TYPE
+{
+    AhciDeviceNone,
+    AhciDeviceAta,
+    AhciDeviceAtapi
+} AHCI_DEVICE_TYPE;
+
+typedef enum _AHCI_OPERATION
+{
+    AhciOperationData,
+    AhciOperationWriteThenFlush,
+    AhciOperationPassThrough,
+    AhciOperationAtapi,
+    AhciOperationSense
+} AHCI_OPERATION;
+
+typedef enum _AHCI_COMMAND_KIND
+{
+    AhciCommandIdle,
+    AhciCommandSrb,
+    AhciCommandSense
+} AHCI_COMMAND_KIND;
+
 typedef struct _AHCI_PORT
 {
-    ULONG   CLB;                                // 0x00, command list base address, 1K-byte aligned
-    ULONG   CLBU;                               // 0x04, command list base address upper 32 bits
-    ULONG   FB;                                 // 0x08, FIS base address, 256-byte aligned
-    ULONG   FBU;                                // 0x0C, FIS base address upper 32 bits
-    ULONG   IS;                                 // 0x10, interrupt status
-    ULONG   IE;                                 // 0x14, interrupt enable
-    ULONG   CMD;                                // 0x18, command and status
-    ULONG   RSV0;                               // 0x1C, Reserved
-    ULONG   TFD;                                // 0x20, task file data
-    ULONG   SIG;                                // 0x24, signature
-    ULONG   SSTS;                               // 0x28, SATA status (SCR0:SStatus)
-    ULONG   SCTL;                               // 0x2C, SATA control (SCR2:SControl)
-    ULONG   SERR;                               // 0x30, SATA error (SCR1:SError)
-    ULONG   SACT;                               // 0x34, SATA active (SCR3:SActive)
-    ULONG   CI;                                 // 0x38, command issue
-    ULONG   SNTF;                               // 0x3C, SATA notification (SCR4:SNotification)
-    ULONG   FBS;                                // 0x40, FIS-based switch control
-    ULONG   RSV1[11];                           // 0x44 ~ 0x6F, Reserved
-    ULONG   Vendor[4];                          // 0x70 ~ 0x7F, vendor specific
+    ULONG Index;
+    PUCHAR Registers;
+    PAHCI_COMMAND_HEADER CommandList;
+    PHYSICAL_ADDRESS CommandListAddress;
+    PUCHAR ReceivedFis;
+    PHYSICAL_ADDRESS ReceivedFisAddress;
+    PAHCI_COMMAND_TABLE CommandTable;
+    PHYSICAL_ADDRESS CommandTableAddress;
+    PUCHAR SenseBuffer;
+    PHYSICAL_ADDRESS SenseBufferAddress;
+    PUSHORT Identify;
+    PHYSICAL_ADDRESS IdentifyAddress;
+
+    AHCI_DEVICE_TYPE DeviceType;
+    BOOLEAN Lba48;
+    BOOLEAN FlushExt;
+    BOOLEAN WriteCacheEnabled;
+    BOOLEAN AtapiDma;
+    BOOLEAN Removable;
+    UCHAR AtapiDeviceType;
+    ULONG SectorSize;
+    ULONG PhysicalSectorExponent;
+    ULONGLONG SectorCount;
+    USHORT RotationRate;
+    CHAR Model[ATA_ID_MODEL_WORDS * 2 + 1];
+    CHAR Serial[ATA_ID_SERIAL_WORDS * 2 + 1];
+    CHAR Firmware[ATA_ID_FIRMWARE_WORDS * 2 + 1];
+
+    AHCI_COMMAND_KIND ActiveKind;
+    AHCI_OPERATION ActiveOperation;
+    PSCSI_REQUEST_BLOCK ActiveSrb;
+    UCHAR FailedError;
+    BOOLEAN PassThroughCheckCondition;
 } AHCI_PORT, *PAHCI_PORT;
 
-typedef union _AHCI_INTERRUPT_ENABLE
+typedef struct _AHCI_ADAPTER
 {
-    struct
-    {
-        ULONG DHRE :1;
-        ULONG PSE :1;
-        ULONG DSE :1;
-        ULONG SDBE :1;
-        ULONG UFE :1;
-        ULONG DPE :1;
-        ULONG PCE :1;
-        ULONG DMPE :1;
-        ULONG DW5_Reserved :14;
-        ULONG PRCE :1;
-        ULONG IPME :1;
-        ULONG OFE :1;
-        ULONG DW5_Reserved2 :1;
-        ULONG INFE :1;
-        ULONG IFE :1;
-        ULONG HBDE :1;
-        ULONG HBFE :1;
-        ULONG TFEE :1;
-        ULONG CPDE :1;
-    };
-
-    ULONG Status;
-} AHCI_INTERRUPT_ENABLE;
-
-typedef struct _AHCI_MEMORY_REGISTERS
-{
-    // 0x00 - 0x2B, Generic Host Control
-    ULONG CAP;                                  // 0x00, Host capability
-    ULONG GHC;                                  // 0x04, Global host control
-    ULONG IS;                                   // 0x08, Interrupt status
-    ULONG PI;                                   // 0x0C, Port implemented
-    ULONG VS;                                   // 0x10, Version
-    ULONG CCC_CTL;                              // 0x14, Command completion coalescing control
-    ULONG CCC_PTS;                              // 0x18, Command completion coalescing ports
-    ULONG EM_LOC;                               // 0x1C, Enclosure management location
-    ULONG EM_CTL;                               // 0x20, Enclosure management control
-    ULONG CAP2;                                 // 0x24, Host capabilities extended
-    ULONG BOHC;                                 // 0x28, BIOS/OS handoff control and status
-    ULONG Reserved[0x1d];                       // 0x2C - 0x9F, Reserved
-    ULONG VendorSpecific[0x18];                 // 0xA0 - 0xFF, Vendor specific registers
-    AHCI_PORT PortList[MAXIMUM_AHCI_PORT_COUNT];
-} AHCI_MEMORY_REGISTERS, *PAHCI_MEMORY_REGISTERS;
-
-// Holds information for each attached attached port to a given adapter.
-typedef struct _AHCI_PORT_EXTENSION
-{
-    ULONG PortNumber;
-    ULONG QueueSlots;                                   // slots which we have already assigned task (Slot)
-    ULONG CommandIssuedSlots;                           // slots which has been programmed
-    ULONG NcqQueueSlots;                                // prepared NCQ slots not yet issued
-    ULONG NcqIssuedSlots;                               // NCQ slots tracked through PxSACT
-    ULONG MaxPortQueueDepth;
-    ULONG ErrorLogCount;
-    ULONG RecoveryState;
-    ULONG RecoveryTicks;
-    ULONG RecoveryResetAttempt;
-    BOOLEAN HotPlugPending;
-    ULONG RecoveryNcqActiveSlots;
-    ULONG RecoveryInternalSlot;
-    BOOLEAN RecoveryIsCommandError;
-    BOOLEAN RecoveryIsNcqError;
-    BOOLEAN RecoveryNcqLogError;
-    UCHAR RecoveryLinkSpeed;
-    BOOLEAN LinkTransferVerified;
-    BOOLEAN LinkErrorDubious[AHCI_LINK_ERROR_HISTORY];
-    ULONG LinkErrorNext;
-    ULONG LinkErrorCount;
-    LONGLONG LinkErrorTime[AHCI_LINK_ERROR_HISTORY];
-
-    struct
-    {
-        UCHAR RemovableDevice;
-        UCHAR Lba48BitMode;
-        UCHAR AccessType;
-        UCHAR DeviceType;
-        UCHAR IsActive;
-        UCHAR NcqSupported;
-        UCHAR NcqReadLogged;
-        UCHAR NcqWriteLogged;
-        ULONG NcqQueueDepth;
-        LARGE_INTEGER MaxLba;
-        ULONG BytesPerLogicalSector;
-        ULONG BytesPerPhysicalSector;
-        UCHAR VendorId[41];
-        UCHAR RevisionID[9];
-        UCHAR SerialNumber[21];
-    } DeviceParams;
-
-    STOR_DPC CommandCompletion;
-    STOR_DPC ErrorRecovery;
-
-    PAHCI_PORT Port;                                    // AHCI Port Infomation
-    AHCI_QUEUE SrbQueue;                                // pending Srbs
-    AHCI_QUEUE CompletionQueue;
-    PSCSI_REQUEST_BLOCK Slot[MAXIMUM_AHCI_PORT_NCS];    // Srbs which has been alloted a port
-    PAHCI_RECEIVED_FIS ReceivedFIS;
-    PAHCI_COMMAND_HEADER CommandList;
-    STOR_DEVICE_POWER_STATE DevicePowerState;           // Device Power State
-    PIDENTIFY_DEVICE_DATA IdentifyDeviceData;
-    STOR_PHYSICAL_ADDRESS IdentifyDeviceDataPhysicalAddress;
-    PGP_LOG_NCQ_COMMAND_ERROR NcqErrorLog;
-    STOR_PHYSICAL_ADDRESS NcqErrorLogPhysicalAddress;
-    PAHCI_COMMAND_TABLE NcqErrorCommandTable;
-    STOR_PHYSICAL_ADDRESS NcqErrorCommandTablePhysicalAddress;
-    struct _AHCI_ADAPTER_EXTENSION* AdapterExtension;   // Port's Adapter Information
-} AHCI_PORT_EXTENSION, *PAHCI_PORT_EXTENSION;
-
-// Holds Adapter Information
-typedef struct _AHCI_ADAPTER_EXTENSION
-{
-    ULONG   SystemIoBusNumber;
-    ULONG   SlotNumber;
-    ULONG   AhciBaseAddress;
-    PULONG  IS;// Interrupt Status, In case of MSIM == `1`
-    ULONG   PortImplemented;// bit-mapping of ports which are implemented
-    ULONG   PortCount;
-
-    USHORT  VendorID;
-    USHORT  DeviceID;
-    USHORT  RevisionID;
-
-    ULONG   Version;
-    ULONG   CAP;
-    ULONG   CAP2;
-    ULONG   LastInterruptPort;
-    ULONG   CurrentCommandSlot;
-
-    PVOID NonCachedExtension; // holds virtual address to noncached buffer allocated for Port Extension
-
-    struct
-    {
-        // Message per port or shared port?
-        ULONG MessagePerPort : 1;
-        ULONG Removed : 1;
-        ULONG Reserved : 30; // not in use -- maintain 4 byte alignment
-    } StateFlags;
-
-    PAHCI_MEMORY_REGISTERS ABAR_Address;
-    AHCI_PORT_EXTENSION PortExtension[MAXIMUM_AHCI_PORT_COUNT];
-} AHCI_ADAPTER_EXTENSION, *PAHCI_ADAPTER_EXTENSION;
-
-typedef struct _LOCAL_SCATTER_GATHER_LIST
-{
-    ULONG                       NumberOfElements;
-    ULONG_PTR                   Reserved;
-    STOR_SCATTER_GATHER_ELEMENT List[MAXIMUM_AHCI_PRDT_ENTRIES];
-} LOCAL_SCATTER_GATHER_LIST, *PLOCAL_SCATTER_GATHER_LIST;
-
-typedef struct _AHCI_SRB_EXTENSION
-{
-    AHCI_COMMAND_TABLE CommandTable;
-    UCHAR TrimPayload[AHCI_TRIM_PAYLOAD_SIZE];
-    ULONG AtaFunction;
-    ULONG Flags;
-
-    UCHAR CommandReg;
-    UCHAR FeaturesLow;
-    UCHAR LBA0;
-    UCHAR LBA1;
-    UCHAR LBA2;
-    UCHAR Device;
-    UCHAR LBA3;
-    UCHAR LBA4;
-    UCHAR LBA5;
-    UCHAR FeaturesHigh;
-
-    UCHAR SectorCountLow;
-    UCHAR SectorCountHigh;
-
-    ULONG SlotIndex;
-    LOCAL_SCATTER_GATHER_LIST Sgl;
-    PLOCAL_SCATTER_GATHER_LIST pSgl;
-    PAHCI_COMPLETION_ROUTINE CompletionRoutine;
-    BOOLEAN AutosenseActive;
-
-    // for alignment purpose -- 128 byte alignment
-    // do not try to access (R/W) this field
-    UCHAR Reserved[128];
-} AHCI_SRB_EXTENSION, *PAHCI_SRB_EXTENSION;
-
-//////////////////////////////////////////////////////////////
-//                       Declarations                       //
-//////////////////////////////////////////////////////////////
-
-VOID AhciProcessIO(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in UCHAR PathId, __in PSCSI_REQUEST_BLOCK Srb);
-
-VOID AhciProcessSrb(__in PAHCI_PORT_EXTENSION PortExtension, __in PSCSI_REQUEST_BLOCK Srb, __in ULONG SlotIndex);
-
-VOID AhciInterruptHandler(__in PAHCI_PORT_EXTENSION PortExtension);
-
-VOID NTAPI AhciErrorRecoveryDpcRoutine(__in PSTOR_DPC Dpc, __in PVOID HwDeviceExtension, __in PVOID SystemArgument1, __in PVOID SystemArgument2);
-
-VOID NTAPI AhciRecoveryTimer(__in PVOID DeviceExtension);
-
-VOID AhciSchedulePort(__in PAHCI_PORT_EXTENSION PortExtension);
-
-VOID AhciActivatePort(__in PAHCI_PORT_EXTENSION PortExtension);
-
-BOOLEAN AhciAdapterReset(__in PAHCI_ADAPTER_EXTENSION AdapterExtension);
-
-FORCEINLINE VOID AhciZeroMemory(__out PCHAR Buffer, __in ULONG BufferSize);
-
-VOID AhciCopyAtaString(__out PUCHAR Destination, __in PUCHAR Source, __in ULONG Length);
-
-VOID AhciFillScsiString(__out PUCHAR Destination, __in ULONG DestinationLength, __in PUCHAR Source);
-
-FORCEINLINE BOOLEAN IsPortValid(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in ULONG pathId);
-
-UCHAR DeviceRequestSense(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR AhciATAPICommand(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceRequestReadWrite(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceRequestCapacity(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceInquiryRequest(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceRequestComplete(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceRequestFlush(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceRequestUnmap(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-UCHAR DeviceReportLuns(__in PAHCI_ADAPTER_EXTENSION AdapterExtension, __in PSCSI_REQUEST_BLOCK Srb, __in PCDB Cdb);
-
-FORCEINLINE BOOLEAN AddQueue(__inout PAHCI_QUEUE Queue, __in PVOID Srb);
-
-FORCEINLINE PVOID RemoveQueue(__inout PAHCI_QUEUE Queue);
-
-FORCEINLINE PVOID PeekQueue(__in PAHCI_QUEUE Queue);
-
-FORCEINLINE
-PAHCI_SRB_EXTENSION
-GetSrbExtension(__in PSCSI_REQUEST_BLOCK Srb);
-
-FORCEINLINE ULONG64 AhciGetLba(__in PCDB Cdb, __in ULONG CdbLength);
-
-//////////////////////////////////////////////////////////////
-//                       Assertions                         //
-//////////////////////////////////////////////////////////////
-
-// I assert every silly mistake I can do while coding
-// because god never help me debugging the code
-// but these asserts do :')
-
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, CAP)            == 0x00);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, GHC)            == 0x04);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, IS)             == 0x08);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, PI)             == 0x0C);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, VS)             == 0x10);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, CCC_CTL)        == 0x14);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, CCC_PTS)        == 0x18);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, EM_LOC)         == 0x1C);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, EM_CTL)         == 0x20);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, CAP2)           == 0x24);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, BOHC)           == 0x28);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, Reserved)       == 0x2C);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, VendorSpecific) == 0xA0);
-C_ASSERT(FIELD_OFFSET(AHCI_MEMORY_REGISTERS, PortList)       == 0x100);
-
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, CLB)    == 0x00);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, CLBU)   == 0x04);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, FB)     == 0x08);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, FBU)    == 0x0C);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, IS)     == 0x10);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, IE)     == 0x14);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, CMD)    == 0x18);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, RSV0)   == 0x1C);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, TFD)    == 0x20);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, SIG)    == 0x24);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, SSTS)   == 0x28);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, SCTL)   == 0x2C);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, SERR)   == 0x30);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, SACT)   == 0x34);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, CI)     == 0x38);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, SNTF)   == 0x3C);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, FBS)    == 0x40);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, RSV1)   == 0x44);
-C_ASSERT(FIELD_OFFSET(AHCI_PORT, Vendor) == 0x70);
-
-C_ASSERT((sizeof(AHCI_COMMAND_TABLE) % 128) == 0);
-
-C_ASSERT(sizeof(AHCI_GHC)                        == sizeof(ULONG));
-C_ASSERT(sizeof(AHCI_PORT_CMD)                   == sizeof(ULONG));
-C_ASSERT(sizeof(AHCI_TASK_FILE_DATA)             == sizeof(ULONG));
-C_ASSERT(sizeof(AHCI_INTERRUPT_ENABLE)           == sizeof(ULONG));
-C_ASSERT(sizeof(AHCI_SERIAL_ATA_STATUS)          == sizeof(ULONG));
-C_ASSERT(sizeof(AHCI_SERIAL_ATA_CONTROL)         == sizeof(ULONG));
-C_ASSERT(sizeof(AHCI_COMMAND_HEADER_DESCRIPTION) == sizeof(ULONG));
-
-C_ASSERT(FIELD_OFFSET(AHCI_COMMAND_TABLE, CFIS) == 0x00);
-C_ASSERT(FIELD_OFFSET(AHCI_COMMAND_TABLE, ACMD) == 0x40);
-C_ASSERT(FIELD_OFFSET(AHCI_COMMAND_TABLE, RSV0) == 0x50);
-C_ASSERT(FIELD_OFFSET(AHCI_COMMAND_TABLE, PRDT) == 0x80);
+    PUCHAR Abar;
+    ULONG Capabilities;
+    ULONG Capabilities2;
+    ULONG PortsImplemented;
+    ULONG BusCount;
+    BOOLEAN Dma64;
+    AHCI_PORT Ports[AHCI_MAX_PORTS];
+} AHCI_ADAPTER, *PAHCI_ADAPTER;

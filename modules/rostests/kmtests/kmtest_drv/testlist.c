@@ -10,6 +10,7 @@ KMT_TESTFUNC Test_CddDisplay;
 KMT_TESTFUNC Test_CmSecurity;
 KMT_TESTFUNC Test_DxgkDeviceWork;
 KMT_TESTFUNC Test_DxgkHotPlugWork;
+KMT_TESTFUNC Test_DxgkChildConnectionRecord;
 KMT_TESTFUNC Test_DxgkChildDescriptor;
 KMT_TESTFUNC Test_DxgkDisplayDetectControl;
 KMT_TESTFUNC Test_DxgkPostDisplayHandoff;
@@ -48,6 +49,7 @@ KMT_TESTFUNC Test_DxgkVsyncPower;
 KMT_TESTFUNC Test_Rpi5Vc4Pointer;
 KMT_TESTFUNC Test_DxgkSyncWait;
 KMT_TESTFUNC Test_DxgkTrackedWork;
+KMT_TESTFUNC Test_DxgkVidMmDestroy;
 KMT_TESTFUNC Test_DxgkVidMmWorkerDrain;
 KMT_TESTFUNC Test_DxgkrnlPublicExports;
 KMT_TESTFUNC Test_Dxgmms2ContextStream;
@@ -279,6 +281,7 @@ KMT_TESTFUNC Test_KeStandbySteal;
 KMT_TESTFUNC Test_KeDeferredReady;
 KMT_TESTFUNC Test_KeIdleSteal;
 KMT_TESTFUNC Test_KeCacheInvalidation;
+KMT_TESTFUNC Test_KeClockHeldOff;
 KMT_TESTFUNC Test_KeClockKeepAlive;
 KMT_TESTFUNC Test_KeClockWatchdog;
 KMT_TESTFUNC Test_KeModern;
@@ -307,6 +310,7 @@ KMT_TESTFUNC Test_KeArm64DpcIpi;
 KMT_TESTFUNC Test_KeDeviceQueue;
 KMT_TESTFUNC Test_KeDpc;
 KMT_TESTFUNC Test_KeDpcFlush;
+KMT_TESTFUNC Test_KeDpcInsertRace;
 KMT_TESTFUNC Test_KeDpcReadyThread;
 KMT_TESTFUNC Test_KeDpcRemove;
 KMT_TESTFUNC Test_KeEvent;
@@ -346,6 +350,7 @@ KMT_TESTFUNC Test_ZwSystemInfoKM;
 KMT_TESTFUNC Test_KeQueue;
 KMT_TESTFUNC Test_KeSemaphore;
 KMT_TESTFUNC Test_KeProcessStackCount;
+KMT_TESTFUNC Test_KeCycleTime;
 KMT_TESTFUNC Test_KeQueryBasePriority;
 KMT_TESTFUNC Test_KeProcessor;
 KMT_TESTFUNC Test_KePriorityRaise;
@@ -442,6 +447,7 @@ KMT_TESTFUNC Test_IoSafeBootPolicy;
 KMT_TESTFUNC Test_IoStackKM;
 KMT_TESTFUNC Test_IoActivityId;
 KMT_TESTFUNC Test_IoAcpiCmosRegion;
+KMT_TESTFUNC Test_IoI8042Hook;
 KMT_TESTFUNC Test_IoI8042Sync;
 KMT_TESTFUNC Test_IoAcpiIoctl;
 KMT_TESTFUNC Test_IoErrorLogEntry;
@@ -495,6 +501,7 @@ const KMT_TEST TestList[] =
     { "CmSecurity",                         Test_CmSecurity },
     { "DxgkDeviceWork",                    Test_DxgkDeviceWork },
     { "DxgkHotPlugWork",                   Test_DxgkHotPlugWork },
+    { "DxgkChildConnectionRecord",         Test_DxgkChildConnectionRecord },
     { "DxgkChildDescriptor",               Test_DxgkChildDescriptor },
     { "DxgkDisplayDetectControl",          Test_DxgkDisplayDetectControl },
     { "DxgkPostDisplayHandoff",            Test_DxgkPostDisplayHandoff },
@@ -532,6 +539,7 @@ const KMT_TEST TestList[] =
     { "Rpi5Vc4Pointer",                    Test_Rpi5Vc4Pointer },
     { "DxgkSyncWait",                      Test_DxgkSyncWait },
     { "DxgkTrackedWork",                   Test_DxgkTrackedWork },
+    { "DxgkVidMmDestroy",                  Test_DxgkVidMmDestroy },
     { "DxgkVidMmWorkerDrain",              Test_DxgkVidMmWorkerDrain },
     { "DxgkrnlPublicExports",              Test_DxgkrnlPublicExports },
     { "Dxgmms2ContextStream",              Test_Dxgmms2ContextStream },
@@ -684,6 +692,7 @@ const KMT_TEST TestList[] =
     { "IoModern",                           Test_IoModern },
     { "IoActivityId",                       Test_IoActivityId },
     { "IoAcpiCmosRegion",                   Test_IoAcpiCmosRegion },
+    { "IoI8042Hook",                        Test_IoI8042Hook },
     { "IoI8042Sync",                        Test_IoI8042Sync },
     { "IoAcpiIoctl",                        Test_IoAcpiIoctl },
     { "IoErrorLogEntry",                    Test_IoErrorLogEntry },
@@ -746,7 +755,9 @@ const KMT_TEST TestList[] =
     { "KeDeferredReady",                    Test_KeDeferredReady },
     { "KeIdleSteal",                        Test_KeIdleSteal },
     { "KeCacheInvalidation",                Test_KeCacheInvalidation },
+    { "KeClockHeldOff",                     Test_KeClockHeldOff },
     { "KeClockKeepAlive",                   Test_KeClockKeepAlive },
+    { "KeCycleTime",                        Test_KeCycleTime },
     { "-KeClockWatchdog",                   Test_KeClockWatchdog },
     { "KeModern",                           Test_KeModern },
 #ifdef _M_ARM64
@@ -787,6 +798,7 @@ const KMT_TEST TestList[] =
     { "KeDeviceQueue",                      Test_KeDeviceQueue },
     { "KeDpc",                              Test_KeDpc },
     { "KeDpcFlush",                         Test_KeDpcFlush },
+    { "KeDpcInsertRace",                    Test_KeDpcInsertRace },
     { "KeDpcReadyThread",                   Test_KeDpcReadyThread },
     { "KeDpcRemove",                        Test_KeDpcRemove },
     { "KeEvent",                            Test_KeEvent },

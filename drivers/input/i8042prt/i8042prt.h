@@ -6,6 +6,7 @@
 #include <ntdd8042.h>
 
 #include "sync_core.h"
+#include "hook_core.h"
 
 /*-----------------------------------------------------
  * Structures
@@ -437,6 +438,12 @@ i8042ReadData(
 NTSTATUS
 i8042ReadDataWait(
 	IN PPORT_DEVICE_EXTENSION DeviceExtension,
+	OUT PUCHAR Data);
+
+NTSTATUS
+i8042ReadResetReply(
+	IN PPORT_DEVICE_EXTENSION DeviceExtension,
+	IN ULONG ReplyByte,
 	OUT PUCHAR Data);
 
 NTSTATUS

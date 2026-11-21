@@ -746,6 +746,8 @@ NtUserGetIconInfo(
 
     TRACE("Enter NtUserGetIconInfo\n");
 
+    RtlZeroMemory(&ii, sizeof(ii));
+
     /* Check if something was actually asked */
     if (!IconInfo && !lpModule && !lpResName)
     {
@@ -1032,6 +1034,12 @@ NtUserGetCursorInfo(
     TRACE("Enter NtUserGetCursorInfo\n");
     UserEnterShared();
 
+    if (!CheckWinstaAttributeAccess(WINSTA_READATTRIBUTES, ERROR_ACCESS_DENIED))
+    {
+        UserLeave();
+        return FALSE;
+    }
+
     CurInfo = IntGetSysCursorInfo();
     CurIcon = (PCURICON_OBJECT)CurInfo->CurrentCursorObject;
 
@@ -1080,11 +1088,6 @@ UserClipCursor(
 {
     PSYSTEM_CURSORINFO CurInfo;
     PWND DesktopWindow = NULL;
-
-    if (!CheckWinstaAttributeAccess(WINSTA_WRITEATTRIBUTES))
-    {
-        return FALSE;
-    }
 
     CurInfo = IntGetSysCursorInfo();
 
@@ -1153,6 +1156,12 @@ NtUserClipCursor(
     }
 
     UserEnterExclusive();
+
+    if (!CheckWinstaAttributeAccess(WINSTA_WRITEATTRIBUTES, ERROR_ACCESS_DENIED))
+    {
+        UserLeave();
+        return FALSE;
+    }
 
     if (prcl && UserDpiIsVirtualCaller())
         UserDpiRectToPhysical((PRECT)prcl);
@@ -1386,7 +1395,7 @@ NtUserGetClipCursor(
     TRACE("Enter NtUserGetClipCursor\n");
     UserEnterShared();
 
-    if (!CheckWinstaAttributeAccess(WINSTA_READATTRIBUTES))
+    if (!CheckWinstaAttributeAccess(WINSTA_READATTRIBUTES, ERROR_SUCCESS))
     {
         goto Exit; // Return FALSE
     }
@@ -2721,7 +2730,7 @@ NtUserSetSystemCursor(
     BOOL Ret = FALSE;
     UserEnterExclusive();
 
-    if (!CheckWinstaAttributeAccess(WINSTA_WRITEATTRIBUTES))
+    if (!CheckWinstaAttributeAccess(WINSTA_WRITEATTRIBUTES, ERROR_REQUIRES_INTERACTIVE_WINDOWSTATION))
     {
         goto Exit;
     }

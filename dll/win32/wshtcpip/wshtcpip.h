@@ -54,6 +54,10 @@ typedef struct _SOCKET_CONTEXT {
     PQUEUED_REQUEST RequestQueue;
     BOOL DontRoute;
     BOOL KeepAlive;
+    ULONG KeepAliveTime;
+    ULONG KeepAliveInterval;
+    ULONG KeepAliveCount;
+    BOOLEAN NoDelay;
     ULONG MulticastInterface;
     ULONG MulticastTTL;
     ULONG UnicastInterface;

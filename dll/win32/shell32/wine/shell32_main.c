@@ -2313,6 +2313,34 @@ INT_PTR CALLBACK AboutAuthorsDlgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 
     return FALSE;
 }
+
+#ifdef __REACTOS__
+#define ABOUT_BAND_EDGE  RGB(198, 212, 223)
+#define ABOUT_BAND_NOTE  RGB(58, 64, 66)
+
+static HFONT AboutCreateBandFont(HDC hdc, INT CapHeight, INT Weight)
+{
+    OUTLINETEXTMETRICW otm;
+    HGDIOBJ hOldFont;
+    HFONT hFont;
+    INT EmHeight = CapHeight * 10 / 7;
+
+    hFont = CreateFontW(-100, 0, 0, 0, Weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+    if (hFont)
+    {
+        hOldFont = SelectObject(hdc, hFont);
+        otm.otmSize = sizeof(otm);
+        if (GetOutlineTextMetricsW(hdc, sizeof(otm), &otm) && otm.otmsCapEmHeight > 0)
+            EmHeight = MulDiv(CapHeight, 100, otm.otmsCapEmHeight);
+        SelectObject(hdc, hOldFont);
+        DeleteObject(hFont);
+    }
+    return CreateFontW(-EmHeight, 0, 0, 0, Weight, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Segoe UI");
+}
+#endif
+
 /*************************************************************************
  * AboutDlgProc            (internal)
  */
@@ -2320,9 +2348,7 @@ static INT_PTR CALLBACK AboutDlgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 {
 #ifdef __REACTOS__
 
-    static DWORD   cxLogoBmp;
-    static DWORD   cyLogoBmp, cyLineBmp;
-    static HBITMAP hLogoBmp, hLineBmp;
+    static const WCHAR szLogoCopyright[] = L"\u00A9 2026 LiberNT Team & Contributors";
     static HWND    hWndAuthors;
 
     switch (msg)
@@ -2338,23 +2364,6 @@ static INT_PTR CALLBACK AboutDlgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM
                 WCHAR szAppTitle[512];
                 WCHAR szAppTitleTemplate[512];
                 WCHAR szAuthorsText[20];
-
-                // Preload the ROS bitmap
-                hLogoBmp = (HBITMAP)LoadImage(shell32_hInstance, MAKEINTRESOURCE(IDB_REACTOS), IMAGE_BITMAP, 0, 0, LR_DEFAULTCOLOR);
-                hLineBmp = (HBITMAP)LoadImage(shell32_hInstance, MAKEINTRESOURCE(IDB_LINEBAR), IMAGE_BITMAP, 0, 0, LR_DEFAULTCOLOR);
-
-                if (hLogoBmp && hLineBmp)
-                {
-                    BITMAP bmpLogo;
-
-                    GetObject(hLogoBmp, sizeof(BITMAP), &bmpLogo);
-
-                    cxLogoBmp = bmpLogo.bmWidth;
-                    cyLogoBmp = bmpLogo.bmHeight;
-
-                    GetObject(hLineBmp, sizeof(BITMAP), &bmpLogo);
-                    cyLineBmp = bmpLogo.bmHeight;
-                }
 
                 // Set App-specific stuff (icon, app name, szOtherStuff string)
                 SendDlgItemMessageW(hWnd, IDC_ABOUT_ICON, STM_SETICON, (WPARAM)info->hIcon, 0);
@@ -2458,31 +2467,63 @@ static INT_PTR CALLBACK AboutDlgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 
         case WM_PAINT:
         {
-            if (hLogoBmp && hLineBmp)
+            PAINTSTRUCT ps;
+            RECT rcClient, rcBand;
+            HGDIOBJ hOldFont, hOldBmp;
+            UINT OldAlign;
+            HDC hdc, hdcMem;
+            HFONT hNoteFont;
+            HBRUSH hbrBand;
+            HBITMAP hBannerBmp, hLineBmp;
+            BITMAP bmpBanner, bmpLine;
+
+            hdc = BeginPaint(hWnd, &ps);
+            GetClientRect(hWnd, &rcClient);
+            hBannerBmp = (HBITMAP)LoadImageW(shell32_hInstance, MAKEINTRESOURCEW(IDB_ABOUT_BANNER), IMAGE_BITMAP, 0, 0,
+                                             LR_DEFAULTCOLOR);
+            hLineBmp = (HBITMAP)LoadImageW(shell32_hInstance, MAKEINTRESOURCEW(IDB_LINEBAR), IMAGE_BITMAP, 0, 0,
+                                           LR_DEFAULTCOLOR);
+            if (hBannerBmp && GetObjectW(hBannerBmp, sizeof(bmpBanner), &bmpBanner) &&
+                (hdcMem = CreateCompatibleDC(hdc)) != NULL)
             {
-                PAINTSTRUCT ps;
-                HDC hdc;
-                HDC hdcMem;
-                HGDIOBJ hOldObj;
-
-                hdc = BeginPaint(hWnd, &ps);
-                hdcMem = CreateCompatibleDC(hdc);
-
-                if (hdcMem)
+                SetRect(&rcBand, 0, 0, rcClient.right, bmpBanner.bmHeight);
+                hbrBand = CreateSolidBrush(ABOUT_BAND_EDGE);
+                if (hbrBand)
                 {
-                    hOldObj = SelectObject(hdcMem, hLogoBmp);
-                    BitBlt(hdc, 0, 0, cxLogoBmp, cyLogoBmp, hdcMem, 0, 0, SRCCOPY);
-
-                    SelectObject(hdcMem, hLineBmp);
-                    BitBlt(hdc, 0, cyLogoBmp, cxLogoBmp, cyLineBmp, hdcMem, 0, 0, SRCCOPY);
-
-                    SelectObject(hdcMem, hOldObj);
-                    DeleteDC(hdcMem);
+                    FillRect(hdc, &rcBand, hbrBand);
+                    DeleteObject(hbrBand);
                 }
+                hOldBmp = SelectObject(hdcMem, hBannerBmp);
+                BitBlt(hdc, (rcClient.right - bmpBanner.bmWidth) / 2, 0, bmpBanner.bmWidth, bmpBanner.bmHeight,
+                       hdcMem, 0, 0, SRCCOPY);
+                if (hLineBmp && GetObjectW(hLineBmp, sizeof(bmpLine), &bmpLine))
+                {
+                    SelectObject(hdcMem, hLineBmp);
+                    StretchBlt(hdc, 0, bmpBanner.bmHeight, rcClient.right, bmpLine.bmHeight, hdcMem, 0, 0,
+                               bmpLine.bmWidth, bmpLine.bmHeight, SRCCOPY);
+                }
+                SelectObject(hdcMem, hOldBmp);
+                DeleteDC(hdcMem);
 
-                EndPaint(hWnd, &ps);
+                hNoteFont = AboutCreateBandFont(hdc, bmpBanner.bmHeight * 6 / 72, FW_NORMAL);
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, ABOUT_BAND_NOTE);
+                OldAlign = SetTextAlign(hdc, TA_BASELINE | TA_CENTER);
+                hOldFont = SelectObject(hdc, hNoteFont ? hNoteFont : (HFONT)SendMessageW(hWnd, WM_GETFONT, 0, 0));
+                TextOutW(hdc, rcClient.right / 2, bmpBanner.bmHeight * 68 / 72, szLogoCopyright,
+                         ARRAY_SIZE(szLogoCopyright) - 1);
+                SelectObject(hdc, hOldFont);
+                SetTextAlign(hdc, OldAlign);
+                if (hNoteFont)
+                    DeleteObject(hNoteFont);
             }
-            break;
+            if (hLineBmp)
+                DeleteObject(hLineBmp);
+            if (hBannerBmp)
+                DeleteObject(hBannerBmp);
+
+            EndPaint(hWnd, &ps);
+            return TRUE;
         }
 
         case WM_COMMAND:

@@ -28,6 +28,7 @@ USBNET_PROTOCOL
 UsbClassify(
     _In_ PUSB_SCAN Scan)
 {
+#if DBG
     if ((Scan->Class == USB_CLASS_CDC && Scan->SubClass == CDC_SUBCLASS_ACM && Scan->Protocol == CDC_PROTOCOL_VENDOR) ||
         (Scan->Class == USB_CLASS_WIRELESS && Scan->SubClass == 0x01 && Scan->Protocol == 0x03) ||
         (Scan->Class == USB_CLASS_MISC && Scan->SubClass == 0x04 && Scan->Protocol == 0x01) ||
@@ -35,6 +36,7 @@ UsbClassify(
     {
         return UsbNetRndis;
     }
+#endif
 
     if (Scan->Class != USB_CLASS_CDC)
         return UsbNetNone;
@@ -51,6 +53,7 @@ UsbClassify(
     return UsbNetNone;
 }
 
+#if DBG
 static
 BOOLEAN
 UsbHasPhoneInterface(
@@ -74,6 +77,28 @@ UsbHasPhoneInterface(
 
     return FALSE;
 }
+
+static
+BOOLEAN
+UsbMayCarryMtp(
+    _In_reads_bytes_(Length) const UCHAR *Data,
+    _In_ ULONG Length)
+{
+    ULONG Offset;
+
+    for (Offset = 0; Offset + 2 <= Length && Data[Offset] >= 2 && Offset + Data[Offset] <= Length;
+         Offset += Data[Offset])
+    {
+        if (Data[Offset + 1] == USB_INTERFACE_DESCRIPTOR_TYPE && Data[Offset] >= sizeof(USB_INTERFACE_DESCRIPTOR) &&
+            (Data[Offset + 5] == USB_DEVICE_CLASS_IMAGE || Data[Offset + 5] == USB_DEVICE_CLASS_VENDOR_SPECIFIC))
+        {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+#endif
 
 static
 BOOLEAN
@@ -260,6 +285,64 @@ UsbReadDescriptor(
     return XhciControl(Adapter, USB_ENDPOINT_DIRECTION_MASK, USB_REQUEST_GET_DESCRIPTOR,
                        (USHORT)((Type << 8) | Index), Language, Length, Transferred);
 }
+
+#if DBG
+static
+BOOLEAN
+UsbHasMtpFunction(
+    _In_ PUSBNET_ADAPTER Adapter)
+{
+    static const UCHAR Signature[] = { 'M', 0, 'S', 0, 'F', 0, 'T', 0, '1', 0, '0', 0, '0', 0 };
+    static const UCHAR Mtp[] = { 'M', 'T', 'P', 0, 0, 0, 0, 0 };
+    PUCHAR Data = Adapter->Control;
+    ULONG Got, Count, Offset, Length, i;
+    UCHAR VendorCode;
+
+    /* TODO: Microsoft OS 2.0 descriptors (BOS platform capability) are not read */
+    if (!NT_SUCCESS(UsbReadDescriptor(Adapter, USB_STRING_DESCRIPTOR_TYPE, USB_MS_OS_STRING_INDEX, 0,
+                                      USB_MS_OS_STRING_LENGTH, &Got)) ||
+        Got < USB_MS_OS_STRING_LENGTH || Data[0] < USB_MS_OS_STRING_LENGTH || Data[1] != USB_STRING_DESCRIPTOR_TYPE)
+    {
+        return FALSE;
+    }
+
+    for (i = 0; i < sizeof(Signature); i++)
+    {
+        if (Data[2 + i] != Signature[i])
+            return FALSE;
+    }
+
+    VendorCode = Data[2 + sizeof(Signature)];
+    if (!NT_SUCCESS(XhciControl(Adapter, USB_MS_OS_VENDOR_IN, VendorCode, 0, USB_MS_OS_COMPAT_ID,
+                                USB_MS_OS_COMPAT_HEADER, &Got)) ||
+        Got < USB_MS_OS_COMPAT_HEADER)
+    {
+        return FALSE;
+    }
+
+    Length = min(UsbNetGet32(Data), USBNET_CONTROL_SIZE);
+    if (Length < USB_MS_OS_COMPAT_HEADER + USB_MS_OS_COMPAT_FUNCTION ||
+        !NT_SUCCESS(XhciControl(Adapter, USB_MS_OS_VENDOR_IN, VendorCode, 0, USB_MS_OS_COMPAT_ID, (USHORT)Length,
+                                &Got)) ||
+        Got < USB_MS_OS_COMPAT_HEADER)
+    {
+        return FALSE;
+    }
+
+    Count = Data[8];
+    for (Offset = USB_MS_OS_COMPAT_HEADER; Count && Offset + USB_MS_OS_COMPAT_FUNCTION <= Got;
+         Offset += USB_MS_OS_COMPAT_FUNCTION, Count--)
+    {
+        for (i = 0; i < sizeof(Mtp) && Data[Offset + 2 + i] == Mtp[i]; i++)
+            NOTHING;
+
+        if (i == sizeof(Mtp))
+            return TRUE;
+    }
+
+    return FALSE;
+}
+#endif
 
 static
 NTSTATUS
@@ -486,6 +569,9 @@ UsbProbeDevice(
     ULONG Got, Total, Configurations, i;
     USHORT MaxPacket, VendorId, ProductId;
     BOOLEAN Phone;
+#if DBG
+    BOOLEAN MayCarryMtp = FALSE;
+#endif
 
     Status = XhciAddressDevice(Adapter, Device);
     if (!NT_SUCCESS(Status))
@@ -541,17 +627,21 @@ UsbProbeDevice(
         if (!NT_SUCCESS(Status) || Got < sizeof(USB_CONFIGURATION_DESCRIPTOR))
             continue;
 
+#if DBG
         if (UsbHasPhoneInterface(Data, Got))
         {
             Adapter->PhonePort = Device->Port;
             Adapter->PhoneRoute = Device->Route;
         }
 
+        MayCarryMtp = MayCarryMtp || UsbMayCarryMtp(Data, Got);
+#endif
         if (!UsbFindControl(Data, Got, &Function) || !UsbFindEndpoints(Data, Got, &Function))
             continue;
 
         Phone = Function.Protocol == UsbNetRndis ||
-                (Adapter->PhonePort == Device->Port && Adapter->PhoneRoute == Device->Route);
+                (Adapter->PhonePort == Device->Port && Adapter->PhoneRoute == Device->Route) ||
+                (Adapter->HoldPhone && Adapter->TetherPort == Device->Port && Adapter->TetherRoute == Device->Route);
         if (!Phone && !Adapter->AcceptEthernet)
         {
             if (!Adapter->EthernetPort)
@@ -567,6 +657,16 @@ UsbProbeDevice(
         Adapter->ProductId = ProductId;
         return UsbNetStartFunction(Adapter);
     }
+
+#if DBG
+    /* TODO: an iPhone (Apple's own tethering protocol) is not recognized as a phone */
+    if (MayCarryMtp && !(Adapter->PhonePort == Device->Port && Adapter->PhoneRoute == Device->Route) &&
+        UsbHasMtpFunction(Adapter))
+    {
+        Adapter->PhonePort = Device->Port;
+        Adapter->PhoneRoute = Device->Route;
+    }
+#endif
 
     return STATUS_NOT_SUPPORTED;
 }
@@ -751,6 +851,7 @@ UsbStartEthernet(
     return Status;
 }
 
+#if DBG
 static
 BOOLEAN
 UsbWaitPortConnected(
@@ -809,7 +910,7 @@ NTSTATUS
 UsbWaitForTethering(
     _In_ PUSBNET_ADAPTER Adapter)
 {
-    ULONG Port = Adapter->PhonePort ? Adapter->PhonePort : Adapter->WaitPort, Waited = 0, Gone = 0;
+    ULONG Port = Adapter->PhonePort ? Adapter->PhonePort : Adapter->WaitPort, Waited = 0, Gone = 0, Lost = 0;
     BOOLEAN Phone = FALSE, Probe = Adapter->PhoneRoute != 0, Changed;
 
     if (!Port)
@@ -818,6 +919,8 @@ UsbWaitForTethering(
     if (Adapter->PhonePort != Port)
         UsbNetTrace("USB debugger: the device on root port %lu left during its reset, waiting for it\n", Port);
 
+    Adapter->TetherPort = Port;
+    Adapter->TetherRoute = Adapter->PhoneRoute;
     Adapter->PhoneRoute = 0;
     Adapter->HoldPhone = TRUE;
     for (;;)
@@ -831,8 +934,27 @@ UsbWaitForTethering(
                 return STATUS_SUCCESS;
             }
 
-            if (Adapter->PhonePort != Port)
+            if (Adapter->PhonePort == Port)
+            {
+                Lost = 0;
+                Adapter->TetherRoute = Adapter->PhoneRoute;
+            }
+            else if (!Phone)
+            {
                 break;
+            }
+            else
+            {
+                /* A phone switching to tethering re-enumerates more than once; an in-between state does not end the wait */
+                if (!Lost)
+                {
+                    Lost = Waited + 1;
+                    UsbNetTrace("USB debugger: the phone on root port %lu is switching, still waiting for it\n", Port);
+                }
+
+                Adapter->PhonePort = Port;
+                Adapter->PhoneRoute = Adapter->TetherRoute;
+            }
         }
 
         if (!Phone && Adapter->PhonePort == Port)
@@ -862,6 +984,9 @@ UsbWaitForTethering(
             if (!Phone && Waited >= USBNET_PHONE_GONE)
                 break;
 
+            if (Lost && Waited + 1 - Lost >= USBNET_PHONE_GONE)
+                break;
+
             if (Phone && !(Waited % USBNET_PHONE_REMIND))
                 UsbNetTrace("USB debugger: still waiting for USB tethering on the phone on root port %lu\n", Port);
 
@@ -881,3 +1006,4 @@ UsbWaitForTethering(
     Adapter->PhoneRoute = 0;
     return STATUS_NO_SUCH_DEVICE;
 }
+#endif

@@ -41,6 +41,7 @@
 #define XHCI_USBCMD_RESET           0x00000002
 #define XHCI_USBSTS_HALTED          0x00000001
 #define XHCI_USBSTS_NOT_READY       0x00000800
+#define XHCI_HCC_AC64               0x00000001
 #define XHCI_HCC_CONTEXT_64         0x00000004
 #define XHCI_HCC_PORT_POWER         0x00000008
 #define XHCI_HCC_XECP_SHIFT         16
@@ -58,6 +59,7 @@
 #define XHCI_PORT_ENABLED           0x00000002
 #define XHCI_PORT_RESET             0x00000010
 #define XHCI_PORT_LINK_STATE_MASK   0x000001E0
+#define XHCI_PORT_LINK_POLLING      0x000000E0
 #define XHCI_PORT_POWER             0x00000200
 #define XHCI_PORT_SPEED_SHIFT       10
 #define XHCI_PORT_SPEED_MASK        0x0000000F
@@ -156,6 +158,13 @@
 #define USBNET_PHONE_REMIND         10000
 #define USBNET_PHONE_STEP           100
 #define USBNET_PHONE_SETTLE         200
+
+#define USB_MS_OS_STRING_INDEX      0xEE
+#define USB_MS_OS_STRING_LENGTH     18
+#define USB_MS_OS_VENDOR_IN         0xC0
+#define USB_MS_OS_COMPAT_ID         0x0004
+#define USB_MS_OS_COMPAT_HEADER     16
+#define USB_MS_OS_COMPAT_FUNCTION   24
 
 #define USB_HUB_CLASS_IN            0xA0
 #define USB_HUB_CLASS_OUT           0x20
@@ -349,6 +358,8 @@ typedef struct _USBNET_ADAPTER
     ULONG WaitPort;
     ULONG PhonePort;
     ULONG PhoneRoute;
+    ULONG TetherPort;
+    ULONG TetherRoute;
     BOOLEAN HoldPhone;
     ULONG EthernetPort;
     BOOLEAN AcceptEthernet;
@@ -616,9 +627,11 @@ NTSTATUS
 UsbFindFunction(
     _In_ PUSBNET_ADAPTER Adapter);
 
+#if DBG
 NTSTATUS
 UsbWaitForTethering(
     _In_ PUSBNET_ADAPTER Adapter);
+#endif
 
 NTSTATUS
 UsbStartEthernet(
@@ -657,6 +670,25 @@ UsbNetFrameTransmit(
     _In_ PUSBNET_ADAPTER Adapter,
     _Inout_ PUCHAR Buffer,
     _In_ ULONG Length);
+
+NTSTATUS
+UsbNetGlueAttach(
+    _Inout_ PDEBUG_DEVICE_DESCRIPTOR Device);
+
+NTSTATUS
+UsbNetGluePrepare(
+    _In_ PKDNET_SHARED_DATA KdNet);
+
+NTSTATUS
+UsbNetTreeAttach(
+    _Inout_ PDEBUG_DEVICE_DESCRIPTOR Device);
+
+struct _FDT_DRIVER_TREE;
+
+NTSTATUS
+UsbNetTreeOpen(
+    _In_ PDEBUG_DEVICE_DESCRIPTOR Device,
+    _Out_ struct _FDT_DRIVER_TREE *Tree);
 
 ULONG
 NTAPI

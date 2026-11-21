@@ -1,391 +1,325 @@
 /*
- * PROJECT:     NetAPI DLL
- * LICENSE:     GPL-2.0 (https://spdx.org/licenses/GPL-2.0)
- * PURPOSE:     SAM service interface code
- * COPYRIGHT:   Copyright 2017 Eric Kohl (eric.kohl@reactos.org)
+ * PROJECT:     LiberNT Network API
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Sorted display information of the accounts of a SAM account domain
+ * COPYRIGHT:   Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
-
-/* INCLUDES ******************************************************************/
 
 #include "netapi32.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(netapi32);
 
-/* FUNCTIONS *****************************************************************/
-
-static
-DWORD
-DisplayStringSize(
-    _In_ PUNICODE_STRING String)
-{
-    return String->Length + sizeof(WCHAR);
-}
-
-
-static
-LPWSTR
-CopyDisplayString(
-    _In_ PUNICODE_STRING String,
-    _Inout_ LPWSTR *Ptr)
-{
-    LPWSTR Result = *Ptr;
-
-    if (String->Length != 0)
-        memcpy(Result, String->Buffer, String->Length);
-    Result[String->Length / sizeof(WCHAR)] = UNICODE_NULL;
-
-    *Ptr = (LPWSTR)((ULONG_PTR)Result + String->Length + sizeof(WCHAR));
-
-    return Result;
-}
-
-
-static
-VOID
-FreeSamDisplayBuffer(
-    _In_ DOMAIN_DISPLAY_INFORMATION DisplayInformation,
-    _In_ PVOID SamBuffer,
-    _In_ ULONG EntryCount)
-{
-    PDOMAIN_DISPLAY_USER Users = SamBuffer;
-    PDOMAIN_DISPLAY_MACHINE Machines = SamBuffer;
-    PDOMAIN_DISPLAY_GROUP Groups = SamBuffer;
-    ULONG i;
-
-    if (SamBuffer == NULL)
-        return;
-
-    for (i = 0; i < EntryCount; i++)
-    {
-        switch (DisplayInformation)
-        {
-            case DomainDisplayUser:
-                SamFreeMemory(Users[i].LogonName.Buffer);
-                SamFreeMemory(Users[i].AdminComment.Buffer);
-                SamFreeMemory(Users[i].FullName.Buffer);
-                break;
-
-            case DomainDisplayMachine:
-                SamFreeMemory(Machines[i].Machine.Buffer);
-                SamFreeMemory(Machines[i].Comment.Buffer);
-                break;
-
-            default:
-                SamFreeMemory(Groups[i].Group.Buffer);
-                SamFreeMemory(Groups[i].Comment.Buffer);
-                break;
-        }
-    }
-
-    SamFreeMemory(SamBuffer);
-}
-
+#define NETP_DISPLAY_MAX_ENTRIES 100
 
 static
 NET_API_STATUS
-BuildDisplayBuffer(
-    _In_ DOMAIN_DISPLAY_INFORMATION DisplayInformation,
+NetpDisplayClassFromLevel(
+    _In_ DWORD Level,
+    _Out_ DOMAIN_DISPLAY_INFORMATION *DisplayClass)
+{
+    switch (Level)
+    {
+        case 1:
+            *DisplayClass = DomainDisplayUser;
+            return NERR_Success;
+
+        case 2:
+            *DisplayClass = DomainDisplayMachine;
+            return NERR_Success;
+
+        case 3:
+            *DisplayClass = DomainDisplayGroup;
+            return NERR_Success;
+    }
+
+    return ERROR_INVALID_LEVEL;
+}
+
+static
+NTSTATUS
+NetpOpenDisplayDomain(
+    _In_opt_ LPCWSTR ServerName,
+    _Out_ SAM_HANDLE *ServerHandle,
+    _Out_ SAM_HANDLE *DomainHandle)
+{
+    UNICODE_STRING Server;
+    PUNICODE_STRING ServerString = NULL;
+    NTSTATUS Status;
+
+    *ServerHandle = NULL;
+    *DomainHandle = NULL;
+
+    if (ServerName != NULL)
+    {
+        RtlInitUnicodeString(&Server, ServerName);
+        ServerString = &Server;
+    }
+
+    Status = SamConnect(ServerString,
+                        ServerHandle,
+                        SAM_SERVER_CONNECT | SAM_SERVER_LOOKUP_DOMAIN,
+                        NULL);
+    if (!NT_SUCCESS(Status))
+        return Status;
+
+    Status = OpenAccountDomain(*ServerHandle,
+                               ServerString,
+                               DOMAIN_LIST_ACCOUNTS,
+                               DomainHandle);
+    if (!NT_SUCCESS(Status))
+    {
+        SamCloseHandle(*ServerHandle);
+        *ServerHandle = NULL;
+    }
+
+    return Status;
+}
+
+static
+VOID
+NetpCloseDisplayDomain(
+    _In_ SAM_HANDLE ServerHandle,
+    _In_ SAM_HANDLE DomainHandle)
+{
+    SamCloseHandle(DomainHandle);
+    SamCloseHandle(ServerHandle);
+}
+
+static
+SIZE_T
+NetpDisplayStringSize(
+    _In_ PCUNICODE_STRING String)
+{
+    ASSERT((String->Length & 1) == 0);
+    return (SIZE_T)String->Length + sizeof(WCHAR);
+}
+
+static
+LPWSTR
+NetpPackDisplayString(
+    _In_ PCUNICODE_STRING String,
+    _Inout_ PBYTE *Cursor)
+{
+    LPWSTR Destination = (LPWSTR)*Cursor;
+
+    if (String->Length != 0)
+        RtlCopyMemory(Destination, String->Buffer, String->Length);
+    Destination[String->Length / sizeof(WCHAR)] = UNICODE_NULL;
+    *Cursor += NetpDisplayStringSize(String);
+    return Destination;
+}
+
+static
+NET_API_STATUS
+NetpBuildDisplayBuffer(
+    _In_ DOMAIN_DISPLAY_INFORMATION DisplayClass,
+    _In_ ULONG Count,
     _In_ PVOID SamBuffer,
-    _In_ ULONG EntryCount,
     _Out_ PVOID *Buffer)
 {
-    PDOMAIN_DISPLAY_USER Users = SamBuffer;
-    PDOMAIN_DISPLAY_MACHINE Machines = SamBuffer;
-    PDOMAIN_DISPLAY_GROUP Groups = SamBuffer;
-    PNET_DISPLAY_USER NetUsers;
-    PNET_DISPLAY_MACHINE NetMachines;
-    PNET_DISPLAY_GROUP NetGroups;
-    PVOID LocalBuffer = NULL;
-    LPWSTR Ptr;
-    DWORD Size = 0;
+    SIZE_T Size = 0;
+    PBYTE Cursor;
+    PVOID Output;
     ULONG i;
-    NET_API_STATUS ApiStatus;
 
     *Buffer = NULL;
+    if (Count == 0)
+        return NERR_Success;
 
-    for (i = 0; i < EntryCount; i++)
+    for (i = 0; i < Count; i++)
     {
-        switch (DisplayInformation)
+        switch (DisplayClass)
         {
             case DomainDisplayUser:
+            {
+                PDOMAIN_DISPLAY_USER User = &((PDOMAIN_DISPLAY_USER)SamBuffer)[i];
                 Size += sizeof(NET_DISPLAY_USER) +
-                        DisplayStringSize(&Users[i].LogonName) +
-                        DisplayStringSize(&Users[i].AdminComment) +
-                        DisplayStringSize(&Users[i].FullName);
+                        NetpDisplayStringSize(&User->LogonName) +
+                        NetpDisplayStringSize(&User->AdminComment) +
+                        NetpDisplayStringSize(&User->FullName);
                 break;
+            }
 
             case DomainDisplayMachine:
+            {
+                PDOMAIN_DISPLAY_MACHINE Machine = &((PDOMAIN_DISPLAY_MACHINE)SamBuffer)[i];
                 Size += sizeof(NET_DISPLAY_MACHINE) +
-                        DisplayStringSize(&Machines[i].Machine) +
-                        DisplayStringSize(&Machines[i].Comment);
+                        NetpDisplayStringSize(&Machine->Machine) +
+                        NetpDisplayStringSize(&Machine->Comment);
                 break;
+            }
 
             default:
+            {
+                PDOMAIN_DISPLAY_GROUP Group = &((PDOMAIN_DISPLAY_GROUP)SamBuffer)[i];
                 Size += sizeof(NET_DISPLAY_GROUP) +
-                        DisplayStringSize(&Groups[i].Group) +
-                        DisplayStringSize(&Groups[i].Comment);
+                        NetpDisplayStringSize(&Group->Group) +
+                        NetpDisplayStringSize(&Group->Comment);
                 break;
+            }
         }
     }
 
-    ApiStatus = NetApiBufferAllocate(Size, &LocalBuffer);
-    if (ApiStatus != NERR_Success)
-        return ApiStatus;
+    if (Size > MAXDWORD)
+        return ERROR_NOT_ENOUGH_MEMORY;
 
-    NetUsers = LocalBuffer;
-    NetMachines = LocalBuffer;
-    NetGroups = LocalBuffer;
+    if (NetApiBufferAllocate((DWORD)Size, &Output) != NERR_Success)
+        return ERROR_NOT_ENOUGH_MEMORY;
 
-    switch (DisplayInformation)
+    switch (DisplayClass)
     {
         case DomainDisplayUser:
-            Ptr = (LPWSTR)&NetUsers[EntryCount];
-            for (i = 0; i < EntryCount; i++)
+        {
+            PNET_DISPLAY_USER Entries = Output;
+            Cursor = (PBYTE)&Entries[Count];
+            for (i = 0; i < Count; i++)
             {
-                NetUsers[i].usri1_name = CopyDisplayString(&Users[i].LogonName, &Ptr);
-                NetUsers[i].usri1_comment = CopyDisplayString(&Users[i].AdminComment, &Ptr);
-                NetUsers[i].usri1_flags = GetAccountFlags(Users[i].AccountControl, NULL);
-                NetUsers[i].usri1_full_name = CopyDisplayString(&Users[i].FullName, &Ptr);
-                NetUsers[i].usri1_user_id = Users[i].Rid;
-                NetUsers[i].usri1_next_index = Users[i].Index;
+                PDOMAIN_DISPLAY_USER User = &((PDOMAIN_DISPLAY_USER)SamBuffer)[i];
+                Entries[i].usri1_name = NetpPackDisplayString(&User->LogonName, &Cursor);
+                Entries[i].usri1_comment = NetpPackDisplayString(&User->AdminComment, &Cursor);
+                Entries[i].usri1_flags = GetAccountFlags(User->AccountControl, NULL);
+                Entries[i].usri1_full_name = NetpPackDisplayString(&User->FullName, &Cursor);
+                Entries[i].usri1_user_id = User->Rid;
+                Entries[i].usri1_next_index = User->Index;
             }
             break;
+        }
 
         case DomainDisplayMachine:
-            Ptr = (LPWSTR)&NetMachines[EntryCount];
-            for (i = 0; i < EntryCount; i++)
+        {
+            PNET_DISPLAY_MACHINE Entries = Output;
+            Cursor = (PBYTE)&Entries[Count];
+            for (i = 0; i < Count; i++)
             {
-                NetMachines[i].usri2_name = CopyDisplayString(&Machines[i].Machine, &Ptr);
-                NetMachines[i].usri2_comment = CopyDisplayString(&Machines[i].Comment, &Ptr);
-                NetMachines[i].usri2_flags = GetAccountFlags(Machines[i].AccountControl, NULL);
-                NetMachines[i].usri2_user_id = Machines[i].Rid;
-                NetMachines[i].usri2_next_index = Machines[i].Index;
+                PDOMAIN_DISPLAY_MACHINE Machine = &((PDOMAIN_DISPLAY_MACHINE)SamBuffer)[i];
+                Entries[i].usri2_name = NetpPackDisplayString(&Machine->Machine, &Cursor);
+                Entries[i].usri2_comment = NetpPackDisplayString(&Machine->Comment, &Cursor);
+                Entries[i].usri2_flags = GetAccountFlags(Machine->AccountControl, NULL);
+                Entries[i].usri2_user_id = Machine->Rid;
+                Entries[i].usri2_next_index = Machine->Index;
             }
             break;
+        }
 
         default:
-            Ptr = (LPWSTR)&NetGroups[EntryCount];
-            for (i = 0; i < EntryCount; i++)
+        {
+            PNET_DISPLAY_GROUP Entries = Output;
+            Cursor = (PBYTE)&Entries[Count];
+            for (i = 0; i < Count; i++)
             {
-                NetGroups[i].grpi3_name = CopyDisplayString(&Groups[i].Group, &Ptr);
-                NetGroups[i].grpi3_comment = CopyDisplayString(&Groups[i].Comment, &Ptr);
-                NetGroups[i].grpi3_group_id = Groups[i].Rid;
-                NetGroups[i].grpi3_attributes = Groups[i].Attributes;
-                NetGroups[i].grpi3_next_index = Groups[i].Index;
+                PDOMAIN_DISPLAY_GROUP Group = &((PDOMAIN_DISPLAY_GROUP)SamBuffer)[i];
+                Entries[i].grpi3_name = NetpPackDisplayString(&Group->Group, &Cursor);
+                Entries[i].grpi3_comment = NetpPackDisplayString(&Group->Comment, &Cursor);
+                Entries[i].grpi3_group_id = Group->Rid;
+                Entries[i].grpi3_attributes = Group->Attributes;
+                Entries[i].grpi3_next_index = Group->Index;
             }
             break;
+        }
     }
 
-    *Buffer = LocalBuffer;
-
+    ASSERT(Cursor == (PBYTE)Output + Size);
+    *Buffer = Output;
     return NERR_Success;
 }
-
-/* PUBLIC FUNCTIONS **********************************************************/
 
 NET_API_STATUS
 WINAPI
 NetQueryDisplayInformation(
-    _In_ LPCWSTR ServerName,
+    _In_opt_ LPCWSTR ServerName,
     _In_ DWORD Level,
     _In_ DWORD Index,
     _In_ DWORD EntriesRequested,
     _In_ DWORD PreferredMaximumLength,
     _Out_ LPDWORD ReturnedEntryCount,
-    _Out_ PVOID *SortedBuffer)
+    _Outptr_result_maybenull_ PVOID *SortedBuffer)
 {
-    UNICODE_STRING ServerNameString;
-    SAM_HANDLE ServerHandle = NULL;
-    SAM_HANDLE DomainHandle = NULL;
-    DOMAIN_DISPLAY_INFORMATION DisplayInformation;
-    DWORD LocalTotalBytesAvailable;
-    DWORD LocalTotalBytesReturned;
-    DWORD LocalReturnedEntryCount;
-    PVOID LocalSortedBuffer;
-    NET_API_STATUS ApiStatus = NERR_Success;
+    DOMAIN_DISPLAY_INFORMATION DisplayClass;
+    SAM_HANDLE ServerHandle, DomainHandle;
+    ULONG TotalAvailable, TotalReturned, Returned = 0;
+    PVOID SamBuffer = NULL;
+    NET_API_STATUS ApiStatus;
     NTSTATUS Status;
+    BOOL MoreEntries;
 
-    TRACE("NetQueryDisplayInformation(%s, %ld, %ld, %ld, %ld, %p, %p)\n",
-          debugstr_w(ServerName), Level, Index, EntriesRequested,
-          PreferredMaximumLength, ReturnedEntryCount, SortedBuffer);
+    TRACE("NetQueryDisplayInformation(%s %lu %lu %lu %lu %p %p)\n", debugstr_w(ServerName),
+          Level, Index, EntriesRequested, PreferredMaximumLength, ReturnedEntryCount, SortedBuffer);
+
+    if (ReturnedEntryCount == NULL || SortedBuffer == NULL)
+        return ERROR_INVALID_PARAMETER;
 
     *ReturnedEntryCount = 0;
     *SortedBuffer = NULL;
 
-    switch (Level)
-    {
-        case 1:
-            DisplayInformation = DomainDisplayUser;
-            break;
+    ApiStatus = NetpDisplayClassFromLevel(Level, &DisplayClass);
+    if (ApiStatus != NERR_Success)
+        return ApiStatus;
 
-        case 2:
-            DisplayInformation = DomainDisplayMachine;
-            break;
-
-        case 3:
-            DisplayInformation = DomainDisplayGroup;
-            break;
-
-        default:
-            return ERROR_INVALID_LEVEL;
-    }
-
-    if (ServerName != NULL)
-        RtlInitUnicodeString(&ServerNameString, ServerName);
-
-    /* Connect to the SAM Server */
-    Status = SamConnect((ServerName != NULL) ? &ServerNameString : NULL,
-                        &ServerHandle,
-                        SAM_SERVER_CONNECT | SAM_SERVER_LOOKUP_DOMAIN,
-                        NULL);
+    Status = NetpOpenDisplayDomain(ServerName, &ServerHandle, &DomainHandle);
     if (!NT_SUCCESS(Status))
-    {
-        ERR("SamConnect failed (Status %08lx)\n", Status);
-        ApiStatus = NetpNtStatusToApiStatus(Status);
-        goto done;
-    }
+        return NetpNtStatusToApiStatus(Status);
 
-    /* Open the Account Domain */
-    Status = OpenAccountDomain(ServerHandle,
-                               (ServerName != NULL) ? &ServerNameString : NULL,
-                               DOMAIN_LIST_ACCOUNTS,
-                               &DomainHandle);
-    if (!NT_SUCCESS(Status))
-    {
-        ERR("OpenAccountDomain failed (Status %08lx)\n", Status);
-        ApiStatus = NetpNtStatusToApiStatus(Status);
-        goto done;
-    }
-
-    /* Query the information */
     Status = SamQueryDisplayInformation(DomainHandle,
-                                        DisplayInformation,
+                                        DisplayClass,
                                         Index,
-                                        EntriesRequested,
+                                        min(EntriesRequested, NETP_DISPLAY_MAX_ENTRIES),
                                         PreferredMaximumLength,
-                                        &LocalTotalBytesAvailable,
-                                        &LocalTotalBytesReturned,
-                                        &LocalReturnedEntryCount,
-                                        &LocalSortedBuffer);
+                                        &TotalAvailable,
+                                        &TotalReturned,
+                                        &Returned,
+                                        &SamBuffer);
     if (!NT_SUCCESS(Status))
     {
-        ERR("SamQueryDisplayInformation failed (Status %08lx)\n", Status);
-        ApiStatus = NetpNtStatusToApiStatus(Status);
-        goto done;
+        NetpCloseDisplayDomain(ServerHandle, DomainHandle);
+        return NetpNtStatusToApiStatus(Status);
     }
 
-    if (LocalReturnedEntryCount != 0)
-    {
-        ApiStatus = BuildDisplayBuffer(DisplayInformation,
-                                       LocalSortedBuffer,
-                                       LocalReturnedEntryCount,
-                                       SortedBuffer);
-        if (ApiStatus == NERR_Success)
-            *ReturnedEntryCount = LocalReturnedEntryCount;
-    }
+    MoreEntries = (Status == STATUS_MORE_ENTRIES);
+    ApiStatus = NetpBuildDisplayBuffer(DisplayClass, Returned, SamBuffer, SortedBuffer);
+    if (SamBuffer != NULL)
+        SamFreeMemory(SamBuffer);
+    NetpCloseDisplayDomain(ServerHandle, DomainHandle);
 
-    FreeSamDisplayBuffer(DisplayInformation,
-                         LocalSortedBuffer,
-                         LocalReturnedEntryCount);
+    if (ApiStatus != NERR_Success)
+        return ApiStatus;
 
-    if (ApiStatus == NERR_Success && Status == STATUS_MORE_ENTRIES)
-        ApiStatus = ERROR_MORE_DATA;
-
-done:
-    if (DomainHandle != NULL)
-        SamCloseHandle(DomainHandle);
-
-    if (ServerHandle != NULL)
-        SamCloseHandle(ServerHandle);
-
-    return ApiStatus;
+    *ReturnedEntryCount = Returned;
+    return MoreEntries ? ERROR_MORE_DATA : NERR_Success;
 }
-
 
 NET_API_STATUS
 WINAPI
 NetGetDisplayInformationIndex(
-    _In_ LPCWSTR ServerName,
+    _In_opt_ LPCWSTR ServerName,
     _In_ DWORD Level,
     _In_ LPCWSTR Prefix,
     _Out_ LPDWORD Index)
 {
-    UNICODE_STRING ServerNameString, PrefixString;
-    SAM_HANDLE ServerHandle = NULL;
-    SAM_HANDLE DomainHandle = NULL;
-    DOMAIN_DISPLAY_INFORMATION DisplayInformation;
-    NET_API_STATUS ApiStatus = NERR_Success;
+    DOMAIN_DISPLAY_INFORMATION DisplayClass;
+    SAM_HANDLE ServerHandle, DomainHandle;
+    UNICODE_STRING PrefixString;
+    NET_API_STATUS ApiStatus;
     NTSTATUS Status;
 
-    TRACE("NetGetDisplayInformationIndex(%s %ld %s %p)\n",
+    TRACE("NetGetDisplayInformationIndex(%s %lu %s %p)\n",
           debugstr_w(ServerName), Level, debugstr_w(Prefix), Index);
 
-    switch (Level)
-    {
-        case 1:
-            DisplayInformation = DomainDisplayUser;
-            break;
+    if (Prefix == NULL || Index == NULL)
+        return ERROR_INVALID_PARAMETER;
 
-        case 2:
-            DisplayInformation = DomainDisplayMachine;
-            break;
+    ApiStatus = NetpDisplayClassFromLevel(Level, &DisplayClass);
+    if (ApiStatus != NERR_Success)
+        return ApiStatus;
 
-        case 3:
-            DisplayInformation = DomainDisplayGroup;
-            break;
-
-        default:
-            return ERROR_INVALID_LEVEL;
-    }
-
-    if (ServerName != NULL)
-        RtlInitUnicodeString(&ServerNameString, ServerName);
-
-    /* Connect to the SAM Server */
-    Status = SamConnect((ServerName != NULL) ? &ServerNameString : NULL,
-                        &ServerHandle,
-                        SAM_SERVER_CONNECT | SAM_SERVER_LOOKUP_DOMAIN,
-                        NULL);
+    Status = NetpOpenDisplayDomain(ServerName, &ServerHandle, &DomainHandle);
     if (!NT_SUCCESS(Status))
-    {
-        ERR("SamConnect failed (Status %08lx)\n", Status);
-        ApiStatus = NetpNtStatusToApiStatus(Status);
-        goto done;
-    }
-
-    /* Open the Account Domain */
-    Status = OpenAccountDomain(ServerHandle,
-                               (ServerName != NULL) ? &ServerNameString : NULL,
-                               DOMAIN_LIST_ACCOUNTS,
-                               &DomainHandle);
-    if (!NT_SUCCESS(Status))
-    {
-        ERR("OpenAccountDomain failed (Status %08lx)\n", Status);
-        ApiStatus = NetpNtStatusToApiStatus(Status);
-        goto done;
-    }
+        return NetpNtStatusToApiStatus(Status);
 
     RtlInitUnicodeString(&PrefixString, Prefix);
+    Status = SamGetDisplayEnumerationIndex(DomainHandle, DisplayClass, &PrefixString, Index);
+    NetpCloseDisplayDomain(ServerHandle, DomainHandle);
 
-    /* Get the index */
-    Status = SamGetDisplayEnumerationIndex(DomainHandle,
-                                           DisplayInformation,
-                                           &PrefixString,
-                                           Index);
-    if (!NT_SUCCESS(Status))
-    {
-        ERR("SamGetDisplayEnumerationIndex failed (Status %08lx)\n", Status);
-        ApiStatus = NetpNtStatusToApiStatus(Status);
-    }
-
-done:
-    if (DomainHandle != NULL)
-        SamCloseHandle(DomainHandle);
-
-    if (ServerHandle != NULL)
-        SamCloseHandle(ServerHandle);
-
-    return ApiStatus;
+    if (Status == STATUS_NO_MORE_ENTRIES)
+        return ERROR_NO_MORE_ITEMS;
+    return NetpNtStatusToApiStatus(Status);
 }
-
-/* EOF */

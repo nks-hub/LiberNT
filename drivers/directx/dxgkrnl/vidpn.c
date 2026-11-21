@@ -40,6 +40,7 @@
 #include "present.h"
 #include "pnp.h"
 #include "hotplug_work_core.h"
+#include "child_core.h"
 #include <ntddvdeo.h>
 #include <reactos/dwmframe.h>
 #include <reactos/rddm/rxgkioctl.h>
@@ -1785,6 +1786,50 @@ DxgkpAllocateVidPn(
     return VidPn;
 }
 
+/* Start creates the VidPN after DxgkDdiQueryChildRelations, before BusRelations creates the child objects */
+static VOID
+DxgkpBindVidPnTargetsToCachedChildren(
+    _In_ PDXGKRNL_ADAPTER Adapter,
+    _Inout_ PDXGKP_VIDPN VidPn,
+    _In_ ULONG BoundTargets)
+{
+    PULONG Uids;
+    ULONG UidCount = 0;
+    ULONG Index;
+    KIRQL OldIrql;
+
+    PAGED_CODE();
+    ASSERT(VidPn->NumTargets != 0);
+    ASSERT(VidPn->NumTargets <= VidPn->TargetCapacity);
+    ASSERT(BoundTargets <= VidPn->NumTargets);
+    if (BoundTargets >= VidPn->NumTargets)
+        return;
+    Uids = ExAllocatePoolWithTag(NonPagedPool, VidPn->NumTargets * sizeof(*Uids), TAG_DXGK_VIDPN);
+    if (Uids == NULL)
+        return;
+    KeAcquireSpinLock(&Adapter->ChildListLock, &OldIrql);
+    if (Adapter->ChildDescriptors != NULL)
+    {
+        UidCount = DxgkChildCollectVideoOutputUids(Adapter->ChildDescriptors, Adapter->NumberOfChildren,
+                                                   Uids, VidPn->NumTargets);
+    }
+    KeReleaseSpinLock(&Adapter->ChildListLock, OldIrql);
+    for (Index = 0; Index < UidCount && BoundTargets < VidPn->NumTargets; Index++)
+    {
+        ULONG Bound;
+
+        for (Bound = 0; Bound < BoundTargets && VidPn->TargetModeSets[Bound]->TargetId != Uids[Index]; Bound++)
+            ;
+        if (Bound < BoundTargets)
+            continue;
+        VidPn->TargetModeSets[BoundTargets]->TargetId = Uids[Index];
+        VidPn->MonitorModeSets[BoundTargets]->TargetId = Uids[Index];
+        BoundTargets++;
+    }
+    ASSERT(BoundTargets <= VidPn->NumTargets);
+    ExFreePoolWithTag(Uids, TAG_DXGK_VIDPN);
+}
+
 NTSTATUS
 DxgkVidPnCreateForAdapter(
     _In_  PDXGKRNL_ADAPTER  Adapter,
@@ -1793,6 +1838,7 @@ DxgkVidPnCreateForAdapter(
     PDXGKP_VIDPN VidPn = NULL;
     ULONG NumSources, NumTargets, TargetCapacity;
     ULONG i, ModePairCount, PathCount;
+    ULONG BoundTargets;
     BOOLEAN SeedDefaultTopology;
     NTSTATUS Status;
 
@@ -1870,6 +1916,7 @@ DxgkVidPnCreateForAdapter(
             Slot++;
         }
         KeReleaseSpinLock(&Adapter->ChildListLock, ChildIrql);
+        BoundTargets = Slot;
     }
 
     /*
@@ -1884,6 +1931,9 @@ DxgkVidPnCreateForAdapter(
         Adapter->MiniportContext != NULL &&
         (Adapter->MiniportContext->IsDisplayOnlyDriver ||
          Adapter->MiniportContext->IsBasicDisplayFallback);
+    /* A seeded default path names its target by position, so only an unseeded topology takes the cached uids */
+    if (!SeedDefaultTopology)
+        DxgkpBindVidPnTargetsToCachedChildren(Adapter, VidPn, BoundTargets);
     ModePairCount = (NumSources < NumTargets) ? NumSources : NumTargets;
     if (ModePairCount > DXGKP_MAX_PATHS)
         ModePairCount = DXGKP_MAX_PATHS;
@@ -3546,6 +3596,7 @@ DxgkVidPnQueryFirmwareTiming(
 {
     PDXGKDDI_RECOMMEND_FUNCTIONAL_VIDPN RecommendFunctionalVidPn;
     DXGKARG_RECOMMENDFUNCTIONALVIDPN RecommendArgs;
+    DXGK_POST_DISPLAY_FIRMWARE_DATA FirmwareData;
     D3DKMDT_HVIDPN Scratch = NULL;
     PDXGKP_VIDPN ScratchObject;
     PDXGKP_VIDPN_TARGET_MODESET TargetSet;
@@ -3557,6 +3608,7 @@ DxgkVidPnQueryFirmwareTiming(
     PAGED_CODE();
 
     Adapter->FirmwareTimingValid = FALSE;
+    Adapter->FirmwareWireFormat.Value = 0;
 
     if (Adapter->MiniportContext == NULL ||
         Adapter->PostDisplayWidth == 0 || Adapter->PostDisplayHeight == 0)
@@ -3573,9 +3625,7 @@ DxgkVidPnQueryFirmwareTiming(
     ScratchObject = (PDXGKP_VIDPN)Scratch;
     DxgkpPrepareVidPnForRecommendation(ScratchObject);
 
-    RtlZeroMemory(&RecommendArgs, sizeof(RecommendArgs));
-    RecommendArgs.hRecommendedFunctionalVidPn = Scratch;
-    RecommendArgs.RequestReason = DXGK_RFVR_FIRMWARE;
+    DxgkPostDisplayCoreFirmwareRequest(&RecommendArgs, &FirmwareData, Scratch);
 
     Status = STATUS_DELETE_PENDING;
     if (DxgkAcquireKmdCall(Adapter))
@@ -3595,11 +3645,12 @@ DxgkVidPnQueryFirmwareTiming(
 
     if (NT_SUCCESS(Status))
         Status = DxgkpValidateRecommendedTopology(ScratchObject);
-    if (!NT_SUCCESS(Status) || ScratchObject->NumPaths == 0)
+    if (!NT_SUCCESS(Status) || !DxgkPostDisplayCoreFirmwareTopologyUsable(ScratchObject->NumPaths))
     {
-        DXGKRNL_TRACE("DxgkVidPnQueryFirmwareTiming: driver did not describe the "
-                      "firmware configuration (0x%08lX); nothing to preserve\n",
-                      Status);
+        DXGKRNL_TRACE("DxgkVidPnQueryFirmwareTiming: driver did not describe a "
+                      "single-path firmware configuration (0x%08lX, %Iu paths); "
+                      "nothing to preserve\n",
+                      Status, ScratchObject->NumPaths);
         goto Done;
     }
 
@@ -3619,6 +3670,7 @@ DxgkVidPnQueryFirmwareTiming(
         {
             Adapter->FirmwareTargetId = TargetId;
             Adapter->FirmwareTargetTiming = TargetSet->Modes[i].VideoSignalInfo;
+            Adapter->FirmwareWireFormat = DxgkPostDisplayCoreFirmwareWireFormat(&FirmwareData);
             Adapter->FirmwareTimingValid = TRUE;
             DXGKRNL_TRACE("DxgkVidPnQueryFirmwareTiming: firmware drives target "
                           "%u at %ux%u\n", TargetId,

@@ -51,7 +51,7 @@ BOOLEAN KiRelaxedTiming;
 LONG KiTickOffset;
 
 /* What is left of the default period on each processor before its run time is charged again */
-static LONG KiRunTimeOffset[MAXIMUM_PROCESSORS];
+static LONG KiRunTimeOffset[KE_MAXIMUM_PROCESSORS];
 
 /* Where in a default-length tick the clock currently stands, so that a timer
    rounded to the default resolution lands on the same boundary as the tick. */
@@ -102,7 +102,7 @@ static volatile ULONG KiTickSnapshotIncrement;
 static BOOLEAN KiInterruptTimeFrozen;
 
 static volatile LONG KiClockStopCount;
-static LONG KiClockStopSeen[MAXIMUM_PROCESSORS];
+static LONG KiClockStopSeen[KE_MAXIMUM_PROCESSORS];
 
 /* The bucket of the timer table the clock has checked up to. */
 static ULONG KiTimerScanHand;
@@ -311,7 +311,6 @@ KiCheckClockWatchdog(
     _In_ ULONG Ticks)
 {
     PKPRCB OwnerPrcb = KiClockOwnerPrcb;
-    KAFFINITY Watchers;
     ULONG Number;
     LONG Stops;
 
@@ -325,7 +324,7 @@ KiCheckClockWatchdog(
 
     /* The first tick after the machine was stopped measures the stop, not a silent processor */
     Stops = ReadAcquire(&KiClockStopCount);
-    ASSERT(Prcb->Number < MAXIMUM_PROCESSORS);
+    ASSERT(Prcb->Number < KE_MAXIMUM_PROCESSORS);
     if (KiClockStopSeen[Prcb->Number] != Stops)
     {
         KiClockStopSeen[Prcb->Number] = Stops;
@@ -334,12 +333,12 @@ KiCheckClockWatchdog(
 
     if (Prcb == OwnerPrcb)
     {
-        for (Number = 0; Number < (ULONG)(UCHAR)KeNumberProcessors; Number++)
+        for (Number = 0; Number < KeProcessorCount; Number++)
         {
             PKPRCB TargetPrcb = KiProcessorBlock[Number];
 
             if ((TargetPrcb != NULL) && (TargetPrcb != Prcb) &&
-                (KeActiveProcessors & TargetPrcb->SetMember) &&
+                KiIsProcessorInSet(KeActiveProcessors.Bitmap, Number) &&
                 !KiClockTickSuspended(TargetPrcb))
             {
                 KiCountClockKeepAlive(TargetPrcb, Ticks);
@@ -350,8 +349,16 @@ KiCheckClockWatchdog(
     }
 
     /* The lowest of the other active processors watches the one that owns the clock */
-    Watchers = KeActiveProcessors & ~OwnerPrcb->SetMember;
-    if ((Watchers & (~Watchers + 1)) == Prcb->SetMember)
+    if (!KiFindProcessorInSet(KeActiveProcessors.Bitmap, 0, &Number))
+        return;
+
+    if ((Number == OwnerPrcb->Number) &&
+        !KiFindProcessorInSet(KeActiveProcessors.Bitmap, Number + 1, &Number))
+    {
+        return;
+    }
+
+    if (Number == Prcb->Number)
         KiCountClockKeepAlive(OwnerPrcb, Ticks);
 }
 
@@ -399,7 +406,7 @@ KeSetTimeIncrement(
     KeTimeIncrement = MaxIncrement;
     KeTimeAdjustment = MaxIncrement;
     KiTickOffset = (LONG)MaxIncrement;
-    for (Index = 0; Index < MAXIMUM_PROCESSORS; Index++)
+    for (Index = 0; Index < KE_MAXIMUM_PROCESSORS; Index++)
         KiRunTimeOffset[Index] = (LONG)MaxIncrement;
 }
 
@@ -685,7 +692,6 @@ KiUpdateSharedTime(
  * platform's performance counter, which is slower but is the only monotonic
  * reading available. It is the counter a thread's turn is charged in.
  */
-static
 ULONG64
 KiReadCycleCounter(VOID)
 {
@@ -747,6 +753,65 @@ KiTickClockOwner(
  * it is how the period is charged to the right account. The caller keeps the
  * IRQL it raised.
  */
+static ULONGLONG KiClockCatchUpCounter;
+static LONGLONG KiClockCatchUpStopped;
+static LONGLONG KiClockCatchUpOwed;
+
+/*
+ * A clock interrupt that came due while the previous one was still pending
+ * was merged into it. The clock owner measures the time since its last update
+ * on the performance counter, leaves out what the debugger held the machine
+ * for, and adds the whole periods that were missed.
+ */
+static
+ULONG
+KiClockCatchUp(
+    _In_ ULONG Increment)
+{
+    LARGE_INTEGER Frequency;
+    ULONGLONG Now, Ticks, Elapsed, Periods;
+    LONGLONG Stopped, Debugger;
+
+    ASSERT(KeGetCurrentIrql() >= CLOCK_LEVEL);
+    ASSERT(KeGetCurrentPrcb() == KiClockOwnerPrcb);
+    ASSERT(Increment != 0);
+
+    Now = (ULONGLONG)KeQueryPerformanceCounter(&Frequency).QuadPart;
+    Debugger = KdTimerDifference.QuadPart;
+    Stopped = Debugger - KiClockCatchUpStopped;
+    KiClockCatchUpStopped = Debugger;
+
+    if ((KiClockCatchUpCounter == 0) || (Now < KiClockCatchUpCounter) || (Frequency.QuadPart <= 0))
+    {
+        KiClockCatchUpCounter = Now;
+        KiClockCatchUpOwed = 0;
+        return 0;
+    }
+
+    Ticks = Now - KiClockCatchUpCounter;
+    KiClockCatchUpCounter = Now;
+    if (Stopped > 0)
+        Ticks = ((ULONGLONG)Stopped < Ticks) ? (Ticks - (ULONGLONG)Stopped) : 0;
+
+    Elapsed = (Ticks / (ULONGLONG)Frequency.QuadPart) * 10000000ULL +
+              (Ticks % (ULONGLONG)Frequency.QuadPart) * 10000000ULL / (ULONGLONG)Frequency.QuadPart;
+    KiClockCatchUpOwed += (LONGLONG)Elapsed - (LONGLONG)Increment;
+    if (KiClockCatchUpOwed < (LONGLONG)Increment)
+    {
+        if (KiClockCatchUpOwed < -(LONGLONG)Increment)
+            KiClockCatchUpOwed = -(LONGLONG)Increment;
+        return 0;
+    }
+
+    Periods = (ULONGLONG)KiClockCatchUpOwed / Increment;
+    Periods = min(Periods, (ULONGLONG)((MAXULONG - Increment) / Increment));
+    KiClockCatchUpOwed -= (LONGLONG)(Periods * Increment);
+
+    ASSERT(KiClockCatchUpOwed >= 0);
+    ASSERT(Periods * Increment <= MAXULONG - Increment);
+    return (ULONG)(Periods * Increment);
+}
+
 VOID
 FASTCALL
 KeUpdateSystemTime(
@@ -771,6 +836,8 @@ KeUpdateSystemTime(
     }
 
     ClockOwner = (Prcb == KiClockOwnerPrcb);
+    if (ClockOwner)
+        Increment += KiClockCatchUp(Increment);
 
     InterruptTime = KiUpdateSharedTime(Increment, ClockOwner);
 
@@ -1007,29 +1074,40 @@ KiChargeThreadCycleTime(
 {
     ULONG64 Cycles;
     ULONG64 Charge;
+    BOOLEAN Enabled;
+
+    /* A clock tick in between would charge the same span again and move StartCycles back */
+    Enabled = KeDisableInterrupts();
 
     Cycles = KiReadCycleCounter();
 
     if (Cycles <= Prcb->StartCycles)
     {
         Prcb->StartCycles = Cycles;
+        KeRestoreInterrupts(Enabled);
         return;
     }
 
     Charge = Cycles - Prcb->StartCycles;
     Prcb->StartCycles = Cycles;
 
-    Thread->CycleTime += Charge;
+    InterlockedExchangeAdd64((PLONG64)&Thread->CycleTime, (LONG64)Charge);
     Prcb->CycleTime += Charge;
 
     if (Thread->ApcState.Process != NULL)
         InterlockedExchangeAdd64((PLONG64)&Thread->ApcState.Process->CycleTime, (LONG64)Charge);
 
+    KeRestoreInterrupts(Enabled);
+
     if (SmpDbgEnabled)
         SmpDbgCycleCharge(Prcb->Number, Charge, FALSE);
 }
 
-/* PUBLIC FUNCTIONS: SETTING THE CLOCK ****************************************/
+typedef struct _KI_SYSTEM_TIME_CHANGE
+{
+    LARGE_INTEGER NewTime;
+    LARGE_INTEGER OldTime;
+} KI_SYSTEM_TIME_CHANGE, *PKI_SYSTEM_TIME_CHANGE;
 
 /*
  * Moves the system time to a new value and carries every armed timer with it.
@@ -1037,15 +1115,12 @@ KiChargeThreadCycleTime(
  * moment on the new one is a different interrupt time; a relative timer is
  * unaffected and must not be moved.
  */
+static
 VOID
-NTAPI
-KeSetSystemTime(
-    _In_ PLARGE_INTEGER NewSystemTime,
-    _Out_ PLARGE_INTEGER OldSystemTime,
-    _In_ BOOLEAN FixInterruptTime,
-    _In_opt_ PLARGE_INTEGER HalTime)
+KiChangeSystemTime(
+    _Inout_ PKI_SYSTEM_TIME_CHANGE Change)
 {
-    KIRQL OldIrql, ClockIrql;
+    KIRQL ClockIrql;
     PKSPIN_LOCK_QUEUE LockQueue;
     LIST_ENTRY AbsoluteList;
     LARGE_INTEGER Difference, Previous, NewTime;
@@ -1054,18 +1129,16 @@ KeSetSystemTime(
     ULONG Bucket;
     ULONG Hand;
 
-    ASSERT_IRQL_LESS_OR_EQUAL(APC_LEVEL);
+    ASSERT(KeGetCurrentIrql() >= SYNCH_LEVEL);
 
     InitializeListHead(&AbsoluteList);
-
-    OldIrql = KiAcquireDispatcherLock();
 
     /* Above the clock and the sleep IPI, so neither can wait on this processor for the lock it holds */
     ClockIrql = KfRaiseIrql(IPI_LEVEL);
     KxAcquireSpinLock(&KiSystemTimeLock);
 
     Previous.QuadPart = (LONGLONG)KiGetSystemTime();
-    NewTime = *NewSystemTime;
+    NewTime = Change->NewTime;
     Difference.QuadPart = NewTime.QuadPart - Previous.QuadPart;
 
     KiWriteSystemTime(&KiSystemTimeValue, NewTime);
@@ -1104,12 +1177,6 @@ KeSetSystemTime(
         KiReleaseTimerLock(LockQueue);
     }
 
-    if (FixInterruptTime)
-    {
-        /* TODO: no platform here reports the interrupt time the firmware kept */
-        UNREFERENCED_PARAMETER(HalTime);
-    }
-
     /* Put the absolute timers back where the new clock says they belong */
     while (!IsListEmpty(&AbsoluteList))
     {
@@ -1138,9 +1205,60 @@ KeSetSystemTime(
         KxInsertTimer(Timer, Hand);
     }
 
-    KiReleaseDispatcherLock(OldIrql);
+    Change->OldTime = Previous;
+}
 
-    *OldSystemTime = Previous;
+/* Every processor is held here while the timers move: none of them can be inside a timer, or working out an absolute due time against the old clock */
+static
+VOID
+NTAPI
+KiSystemTimeChangeDpc(
+    _In_ PKDPC Dpc,
+    _In_opt_ PVOID DeferredContext,
+    _In_opt_ PVOID SystemArgument1,
+    _In_opt_ PVOID SystemArgument2)
+{
+    KIRQL OldIrql;
+
+    UNREFERENCED_PARAMETER(Dpc);
+    ASSERT(KeGetCurrentIrql() == DISPATCH_LEVEL);
+
+    if (KeSignalCallDpcSynchronize(SystemArgument2))
+    {
+        OldIrql = KiEnterDispatcher();
+        KiChangeSystemTime((PKI_SYSTEM_TIME_CHANGE)DeferredContext);
+        KiExitDispatcher(OldIrql);
+    }
+
+    KeSignalCallDpcSynchronize(SystemArgument2);
+    KeSignalCallDpcDone(SystemArgument1);
+}
+
+/* PUBLIC FUNCTIONS: SETTING THE CLOCK ****************************************/
+
+VOID
+NTAPI
+KeSetSystemTime(
+    _In_ PLARGE_INTEGER NewSystemTime,
+    _Out_ PLARGE_INTEGER OldSystemTime,
+    _In_ BOOLEAN FixInterruptTime,
+    _In_opt_ PLARGE_INTEGER HalTime)
+{
+    KI_SYSTEM_TIME_CHANGE Change;
+
+    ASSERT_IRQL_LESS_OR_EQUAL(APC_LEVEL);
+
+    if (FixInterruptTime)
+    {
+        /* TODO: no platform here reports the interrupt time the firmware kept */
+        UNREFERENCED_PARAMETER(HalTime);
+    }
+
+    Change.NewTime = *NewSystemTime;
+    Change.OldTime.QuadPart = 0;
+    KeGenericCallDpc(KiSystemTimeChangeDpc, &Change);
+
+    *OldSystemTime = Change.OldTime;
 }
 
 /*

@@ -22,6 +22,156 @@ typedef struct _NTFS_CACHED_GROWTH
 
 /* FUNCTIONS ****************************************************************/
 
+/* A non-cached write that extends the stream, or a paging write past a size still pending on disk, records its size first so the transfer can run outside the volume lock */
+static
+NTSTATUS
+NtfsGrowForDirectWrite(_In_ PVolumeContextBlock VolCB,
+                       _In_ PFileContextBlock FileCB,
+                       _In_ BOOLEAN PagingIo,
+                       _In_ ULONGLONG FileOffset,
+                       _In_ ULONGLONG EndOffset,
+                       _Out_ PULONGLONG OldDataSize,
+                       _Out_ PULONGLONG OldAllocation,
+                       _Out_ PBOOLEAN Grown)
+{
+    PAttribute Attribute;
+    NTSTATUS Status;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ASSERT(PagingIo || ExIsResourceAcquiredExclusiveLite(NtfsGetMainResource(FileCB)));
+    ASSERT(FileCB->StreamCB != NULL);
+    ASSERT(ExIsResourceAcquiredSharedLite(&FileCB->StreamCB->PagingIoResource));
+    ASSERT(FileOffset < EndOffset);
+
+    *OldDataSize = 0;
+    *OldAllocation = 0;
+    *Grown = FALSE;
+    if (FileCB->StreamCB->DirectExtending || FileCB->StreamCB->Deleted)
+        return STATUS_SUCCESS;
+    if (PagingIo && EndOffset > (ULONGLONG)NtfsGetCommonFcbHeader(FileCB)->FileSize.QuadPart)
+        return STATUS_SUCCESS;
+    Attribute = NtfsFileRecordGetAttribute(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream);
+    if (!Attribute ||
+        !Attribute->IsNonResident ||
+        Attribute->Flags != 0 ||
+        EndOffset <= Attribute->NonResident.DataSize ||
+        (FileOffset > Attribute->NonResident.InitalizedDataSize &&
+         (!PagingIo || EndOffset > Attribute->NonResident.AllocatedSize)))
+    {
+        return STATUS_SUCCESS;
+    }
+
+    *OldDataSize = Attribute->NonResident.DataSize;
+    *OldAllocation = Attribute->NonResident.AllocatedSize;
+    Status = NtfsFileRecordSetWriteSize(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream, EndOffset, *OldAllocation);
+    if (!NT_SUCCESS(Status))
+        return Status;
+    InterlockedIncrement(&VolCB->DirGeneration);
+    *Grown = TRUE;
+    return STATUS_SUCCESS;
+}
+
+static
+VOID
+NtfsUndoDirectGrowthLocked(_In_ PVolumeContextBlock VolCB,
+                           _In_ PFileContextBlock FileCB,
+                           _In_ ULONGLONG OldDataSize,
+                           _In_ ULONGLONG OldAllocation)
+{
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ASSERT(ExIsResourceAcquiredExclusiveLite(NtfsGetMainResource(FileCB)));
+
+    if (FileCB->StreamCB->Deleted || !NT_SUCCESS(NtfsRefreshDirectoryRecord(VolCB, FileCB)))
+        return;
+    if (NT_SUCCESS(NtfsFileRecordSetWriteSize(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream, OldDataSize, OldAllocation)))
+        InterlockedIncrement(&VolCB->DirGeneration);
+}
+
+static
+NTSTATUS
+NtfsEndDirectExtendLocked(_In_ PVolumeContextBlock VolCB,
+                          _In_ PFileContextBlock FileCB,
+                          _In_ PStreamContextBlock StreamCB,
+                          _In_ ULONGLONG EndOffset,
+                          _In_ NTSTATUS WriteStatus)
+{
+    PAttribute Attribute;
+    ULONGLONG ValidEnd;
+    NTSTATUS Status = WriteStatus;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ASSERT(StreamCB->DirectExtending);
+    ASSERT(ExIsResourceAcquiredSharedLite(&StreamCB->PagingIoResource));
+    if (NT_SUCCESS(Status) && EndOffset && !StreamCB->Deleted)
+    {
+        ULONGLONG Offset;
+        ULONG Size;
+        Attribute = NtfsFileRecordGetAttribute(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream);
+        if (Attribute && NT_SUCCESS(NtfsGetAttributeRecordRange(FileCB->FileRec, Attribute, &Offset, &Size)))
+            NtfsReadAheadMetadata(VolCB, Offset, Size);
+        Status = StreamCB->Deleted ? STATUS_SUCCESS : NtfsRefreshDirectoryRecord(VolCB, FileCB);
+        if (NT_SUCCESS(Status) && !StreamCB->Deleted)
+        {
+            Attribute = NtfsFileRecordGetAttribute(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream);
+            if (!Attribute || !Attribute->IsNonResident)
+            {
+                Status = STATUS_FILE_CORRUPT_ERROR;
+            }
+            else
+            {
+                ValidEnd = min(EndOffset, Attribute->NonResident.DataSize);
+                if (ValidEnd > Attribute->NonResident.InitalizedDataSize)
+                {
+                    Status = NtfsFileRecordSetFileValidDataLength(FileCB->FileRec, FileCB->RequestedType,
+                                                                  FileCB->RequestedStream, ValidEnd);
+                }
+            }
+        }
+    }
+    StreamCB->DirectExtending = FALSE;
+    KeSetEvent(&StreamCB->DirectExtendDone, IO_NO_INCREMENT, FALSE);
+    return Status;
+}
+
+static
+NTSTATUS
+NtfsWritePagingRuns(_In_ PVolumeContextBlock VolCB, _In_ PFileContextBlock FileCB, _In_ ULONGLONG Offset,
+                    _In_reads_bytes_(Length) PUCHAR Buffer, _In_ ULONG Length, _Out_ PBOOLEAN Handled)
+{
+    PStreamContextBlock Stream = FileCB->StreamCB;
+    PAttribute Attribute;
+    struct DataRun *Runs;
+    ULONGLONG Valid;
+    NTSTATUS Status;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ASSERT(ExIsResourceAcquiredSharedLite(&Stream->PagingIoResource));
+    ASSERT(!Stream->DirectExtending);
+    ASSERT(!Stream->Deleted);
+
+    *Handled = FALSE;
+    Attribute = NtfsFileRecordGetAttribute(FileCB->FileRec, TypeData, FileCB->RequestedStream);
+    if (!Attribute || !Attribute->IsNonResident || Attribute->Flags || Offset > Attribute->NonResident.DataSize ||
+        Length > Attribute->NonResident.DataSize - Offset)
+        return STATUS_SUCCESS;
+    Valid = Attribute->NonResident.InitalizedDataSize;
+
+    if (FileCB->RequestedStream || NtfsFileRecordGetAttribute(FileCB->FileRec, TypeReparsePoint, NULL))
+        return STATUS_SUCCESS;
+
+    Runs = NtfsFileRecordSnapshotRuns(FileCB->FileRec, Attribute);
+    if (!Runs)
+        return STATUS_SUCCESS;
+    *Handled = TRUE;
+    Stream->DirectExtending = TRUE;
+    KeClearEvent(&Stream->DirectExtendDone);
+    NtfsReleaseMetadata(VolCB);
+    ASSERT(!ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource));
+    Status = NtfsWriteAndFreeRunSnapshot(VolCB->DiskVolume, Runs, min(Valid, Offset), Offset, Buffer, Length, NULL);
+    NtfsAcquireMetadata(VolCB);
+    return NtfsEndDirectExtendLocked(VolCB, FileCB, Stream, Offset + Length > Valid ? Offset + Length : 0, Status);
+}
+
 static
 BOOLEAN
 NtfsGrowForCachedWrite(_In_ PVolumeContextBlock VolCB,
@@ -80,6 +230,8 @@ NtfsGrowForCachedWrite(_In_ PVolumeContextBlock VolCB,
                     ? (LONGLONG)NtfsAttributeGetPhysicalAllocationSize(DataAttribute)
                     : DataAttribute->Resident.DataLength;
             }
+            if (!SizePersisted && Allocation > EndOffset)
+                InterlockedExchange(&FileCB->StreamCB->TrimOnClose, TRUE);
             InterlockedIncrement(&VolCB->DirGeneration);
         }
         NtfsReleaseMetadata(VolCB);
@@ -140,7 +292,7 @@ NtfsUndoCachedGrowth(_In_ PVolumeContextBlock VolCB,
 
 NTSTATUS
 NtfsPersistPendingSize(_In_ PVolumeContextBlock VolCB,
-                       _In_ PFileContextBlock FileCB)
+                       _In_ PFileContextBlock FileCB, _In_ BOOLEAN LastHandle)
 {
     PFSRTL_ADVANCED_FCB_HEADER Header;
     PAttribute DataAttribute;
@@ -148,7 +300,10 @@ NtfsPersistPendingSize(_In_ PVolumeContextBlock VolCB,
     LONGLONG Allocation = -1;
     LONGLONG FileSize;
 
-    if (!FileCB->StreamCB || !FileCB->StreamCB->SizePending || !FileCB->FileRec)
+    BOOLEAN Trim;
+
+    if (!FileCB->StreamCB || !FileCB->FileRec ||
+        (!FileCB->StreamCB->SizePending && !(LastHandle && ReadAcquire(&FileCB->StreamCB->TrimOnClose))))
         return STATUS_SUCCESS;
 
     Header = NtfsGetCommonFcbHeader(FileCB);
@@ -163,29 +318,35 @@ NtfsPersistPendingSize(_In_ PVolumeContextBlock VolCB,
         ExReleaseResourceLite(NtfsGetPagingIoResource(FileCB));
         return Status;
     }
+    Trim = LastHandle && !ReadAcquire(&FileCB->StreamCB->UncleanCount) && ReadAcquire(&FileCB->StreamCB->TrimOnClose);
     DataAttribute = NtfsFileRecordGetAttribute(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream);
     if (DataAttribute && DataAttribute->IsNonResident)
     {
         if (DataAttribute->NonResident.DataSize != (ULONGLONG)FileSize)
         {
-            Status = NtfsFileRecordSetFileDataSize(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream,
-                                                   (ULONGLONG)FileSize);
+            Status = NtfsFileRecordSetWriteSize(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream,
+                                                (ULONGLONG)FileSize, Trim ? 0 : DataAttribute->NonResident.AllocatedSize);
         }
-        else if (NtfsAttributeGetPhysicalAllocationSize(DataAttribute) > (ULONGLONG)FileSize)
+        else if (Trim && !DataAttribute->Flags && DataAttribute->NonResident.AllocatedSize > (ULONGLONG)FileSize &&
+                 DataAttribute->NonResident.AllocatedSize - FileSize >=
+                     (ULONGLONG)VolCB->BytesPerSector * NtfsVolumeGetSectorsPerCluster(VolCB->DiskVolume))
         {
             Status = NtfsFileRecordSetFileAllocationSize(FileCB->FileRec, FileCB->RequestedType,
                                                          FileCB->RequestedStream, (ULONGLONG)FileSize);
         }
         DataAttribute = NtfsFileRecordGetAttribute(FileCB->FileRec, FileCB->RequestedType, FileCB->RequestedStream);
-        if (NT_SUCCESS(Status) && DataAttribute && DataAttribute->IsNonResident)
-            Allocation = (LONGLONG)NtfsAttributeGetPhysicalAllocationSize(DataAttribute);
+        if (NT_SUCCESS(Status) && DataAttribute)
+            Allocation = DataAttribute->IsNonResident ? (LONGLONG)NtfsAttributeGetPhysicalAllocationSize(DataAttribute)
+                                                      : DataAttribute->Resident.DataLength;
         if (NT_SUCCESS(Status))
             InterlockedIncrement(&VolCB->DirGeneration);
     }
-    else
+    else if (FileCB->StreamCB->SizePending)
     {
         Status = STATUS_FILE_CORRUPT_ERROR;
     }
+    if (NT_SUCCESS(Status) && Trim)
+        InterlockedExchange(&FileCB->StreamCB->TrimOnClose, FALSE);
     NtfsReleaseMetadata(VolCB);
 
     if (NT_SUCCESS(Status))
@@ -279,28 +440,38 @@ NtfsCachedWrite(_In_ PVolumeContextBlock VolCB,
                 _Out_ PNTSTATUS Status)
 {
     PFSRTL_ADVANCED_FCB_HEADER Header = NtfsGetCommonFcbHeader(FileCB);
-    LONGLONG EndOffset = ByteOffset->QuadPart + Length;
+    BOOLEAN WriteToEof = (BOOLEAN)(ByteOffset->HighPart == -1 && ByteOffset->LowPart == FILE_WRITE_TO_END_OF_FILE);
+    LARGE_INTEGER Offset = *ByteOffset;
+    LONGLONG EndOffset;
     NTFS_CACHED_GROWTH Growth;
     BOOLEAN Handled = FALSE;
     BOOLEAN Extending;
     NTSTATUS TimestampStatus;
 
-    if (ByteOffset->QuadPart < 0 || !CcCanIWrite(FileObj, Length, TRUE, FALSE))
+    if ((!WriteToEof && ByteOffset->QuadPart < 0) || !CcCanIWrite(FileObj, Length, TRUE, FALSE))
         return FALSE;
-
-    if (Length >= 1024 * 1024 && EndOffset > Header->ValidDataLength.QuadPart &&
-        FileObj->SectionObjectPointer->SharedCacheMap == NULL)
-    {
-        return FALSE;
-    }
 
     KeEnterCriticalRegion();
-    ExAcquireResourceSharedLite(NtfsGetMainResource(FileCB), TRUE);
+    if (WriteToEof)
+    {
+        ExAcquireResourceExclusiveLite(NtfsGetMainResource(FileCB), TRUE);
+        Offset.QuadPart = Header->FileSize.QuadPart;
+        ASSERT(Offset.QuadPart >= 0);
+    }
+    else
+    {
+        ExAcquireResourceSharedLite(NtfsGetMainResource(FileCB), TRUE);
+    }
+    EndOffset = Offset.QuadPart + Length;
     Extending = EndOffset > Header->ValidDataLength.QuadPart;
     if (Extending)
     {
-        ExReleaseResourceLite(NtfsGetMainResource(FileCB));
-        ExAcquireResourceExclusiveLite(NtfsGetMainResource(FileCB), TRUE);
+        if (!WriteToEof)
+        {
+            ExReleaseResourceLite(NtfsGetMainResource(FileCB));
+            ExAcquireResourceExclusiveLite(NtfsGetMainResource(FileCB), TRUE);
+        }
+        ASSERT(ExIsResourceAcquiredExclusiveLite(NtfsGetMainResource(FileCB)));
         if (!FileCB->StreamCB ||
             FileCB->StreamCB->Deleted ||
             !NtfsGrowForCachedWrite(VolCB, FileCB, FileObj, EndOffset, &Growth))
@@ -318,8 +489,8 @@ NtfsCachedWrite(_In_ PVolumeContextBlock VolCB,
         {
             if (FileObj->PrivateCacheMap == NULL)
                 NtfsInitializeStreamCache(FileCB, FileObj);
-            *Status = CcCopyWrite(FileObj, ByteOffset, Length, TRUE, Buffer) ? STATUS_SUCCESS
-                                                                              : STATUS_CANT_WAIT;
+            *Status = CcCopyWrite(FileObj, &Offset, Length, TRUE, Buffer) ? STATUS_SUCCESS
+                                                                           : STATUS_CANT_WAIT;
         }
         _SEH2_EXCEPT(FsRtlIsNtstatusExpected(_SEH2_GetExceptionCode()) ?
                      EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
@@ -337,7 +508,7 @@ NtfsCachedWrite(_In_ PVolumeContextBlock VolCB,
             FileObj->Flags |= FO_FILE_MODIFIED;
             FileCB->NotifyFilter |= FILE_NOTIFY_CHANGE_LAST_WRITE;
             if (FileObj->Flags & FO_SYNCHRONOUS_IO)
-                FileObj->CurrentByteOffset.QuadPart = ByteOffset->QuadPart + Length;
+                FileObj->CurrentByteOffset.QuadPart = Offset.QuadPart + Length;
             Irp->IoStatus.Information = Length;
         }
     }
@@ -361,6 +532,118 @@ NtfsCachedWrite(_In_ PVolumeContextBlock VolCB,
     }
 
     KeLeaveCriticalRegion();
+    return Handled;
+}
+
+static
+NTSTATUS
+NtfsFlushWriteThroughRecord(_In_ PVolumeContextBlock VolCB, _In_ PFileContextBlock FileCB, _In_ BOOLEAN VolumeMetadata)
+{
+    ULONGLONG Generation, Offset = 0;
+    ULONG Size = 0;
+    ULONGLONG ClusterBytes = (ULONGLONG)VolCB->BytesPerSector * NtfsVolumeGetSectorsPerCluster(VolCB->DiskVolume);
+    NTSTATUS Status;
+    BOOLEAN WholeVolume;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ASSERT(ExIsResourceAcquiredExclusiveLite(NtfsGetPagingIoResource(FileCB)));
+    do
+    {
+        Generation = VolCB->MetadataMoveGeneration;
+        WholeVolume = VolumeMetadata;
+        if (!WholeVolume)
+        {
+            Status = NtfsFileRecordGetDiskRange(FileCB->FileRec, &Offset, &Size);
+            if (!NT_SUCCESS(Status) && Status != STATUS_NOT_IMPLEMENTED)
+                return Status;
+            ASSERT(!NT_SUCCESS(Status) || Size != 0);
+            WholeVolume = Status == STATUS_NOT_IMPLEMENTED ||
+                          NtfsFileRecordGetNumber(FileCB->FileRec) < max((ULONGLONG)4, ClusterBytes / Size);
+        }
+        NtfsReleaseMetadata(VolCB);
+        ASSERT(!ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource));
+        Status = WholeVolume ? NtfsDiskFlushVolumeKm(VolCB->StorageDevice)
+                             : NtfsDiskFlushRangeKm(VolCB->StorageDevice, Offset, Size);
+        if (NT_SUCCESS(Status))
+            Status = NtfsDiskFlushMediaKm(VolCB->StorageDevice);
+        NtfsAcquireMetadata(VolCB);
+    } while (NT_SUCCESS(Status) && Generation != VolCB->MetadataMoveGeneration);
+    return Status;
+}
+
+static
+BOOLEAN
+NtfsWriteUnalignedThroughLocked(_In_ PVolumeContextBlock VolCB, _In_ PFileContextBlock FileCB,
+                                _In_ ULONGLONG Offset, _In_ ULONG Length, _In_reads_bytes_(Length) PUCHAR Buffer,
+                                _Out_ PNTSTATUS Status)
+{
+    PStreamContextBlock Stream = FileCB->StreamCB;
+    PAttribute Attribute;
+    struct DataRun *Runs;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&Stream->PagingIoResource));
+    *Status = NtfsRefreshDirectoryRecord(VolCB, FileCB);
+    if (Stream->Deleted)
+        *Status = STATUS_FILE_DELETED;
+    if (!NT_SUCCESS(*Status))
+        return TRUE;
+
+    Attribute = NtfsFileRecordGetAttribute(FileCB->FileRec, TypeData, FileCB->RequestedStream);
+    if (!Attribute || !Attribute->IsNonResident || Attribute->Flags ||
+        Offset > Attribute->NonResident.InitalizedDataSize || Length > Attribute->NonResident.InitalizedDataSize - Offset ||
+        NtfsFileRecordGetAttribute(FileCB->FileRec, TypeReparsePoint, NULL))
+    {
+        return FALSE;
+    }
+
+    Runs = NtfsFileRecordSnapshotRuns(FileCB->FileRec, Attribute);
+    if (!Runs)
+    {
+        *Status = STATUS_FILE_CORRUPT_ERROR;
+        return TRUE;
+    }
+
+    ASSERT(!Stream->DirectExtending);
+    NtfsReleaseMetadata(VolCB);
+    ASSERT(!ExIsResourceAcquiredSharedLite(&VolCB->MetadataResource));
+    *Status = NtfsWriteAndFreeRunSnapshot(VolCB->DiskVolume, Runs, Offset, Offset, Buffer, Length, NtfsWriteDiskRangeKm);
+    NtfsAcquireMetadata(VolCB);
+    if (NT_SUCCESS(*Status))
+    {
+        *Status = NtfsRefreshDirectoryRecord(VolCB, FileCB);
+        if (NT_SUCCESS(*Status))
+            *Status = NtfsFileRecordUpdateAutomaticTimestamps(FileCB->FileRec, NTFS_BASIC_INFO_LAST_WRITE_TIME | NTFS_BASIC_INFO_CHANGE_TIME);
+        if (NT_SUCCESS(*Status) && !FileCB->RequestedStream)
+            InterlockedIncrement(&VolCB->DirGeneration);
+    }
+    if (NT_SUCCESS(*Status))
+        *Status = NtfsFlushWriteThroughRecord(VolCB, FileCB, FALSE);
+    return TRUE;
+}
+
+static
+BOOLEAN
+NtfsWriteUnalignedThrough(_In_ PVolumeContextBlock VolCB, _In_ PFileContextBlock FileCB,
+                          _In_ ULONGLONG Offset, _In_ ULONG Length, _In_reads_bytes_(Length) PUCHAR Buffer,
+                          _Out_ PNTSTATUS Status)
+{
+    PStreamContextBlock Stream = FileCB->StreamCB;
+    BOOLEAN Handled;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(NtfsGetMainResource(FileCB)));
+    ASSERT(Length && VolCB->BytesPerSector);
+    ASSERT(Offset % VolCB->BytesPerSector || Length % VolCB->BytesPerSector);
+    if (!Stream || FileCB->RequestedType != TypeData ||
+        Offset > (ULONGLONG)NtfsGetCommonFcbHeader(FileCB)->ValidDataLength.QuadPart ||
+        Length > (ULONGLONG)NtfsGetCommonFcbHeader(FileCB)->ValidDataLength.QuadPart - Offset)
+        return FALSE;
+
+    ExAcquireResourceExclusiveLite(&Stream->PagingIoResource, TRUE);
+    NtfsAcquireMetadata(VolCB);
+    Handled = NtfsWriteUnalignedThroughLocked(VolCB, FileCB, Offset, Length, Buffer, Status);
+    NtfsReleaseMetadata(VolCB);
+    ExReleaseResourceLite(&Stream->PagingIoResource);
     return Handled;
 }
 
@@ -515,6 +798,39 @@ Fallback:
     return FALSE;
 }
 
+typedef struct _NTFS_RESIDENT_WRITE
+{
+    PVolumeContextBlock Volume;
+    PFileContextBlock File;
+    ULONGLONG Offset;
+    PUCHAR Buffer;
+    ULONG Length;
+    BOOLEAN WriteThrough;
+} NTFS_RESIDENT_WRITE;
+
+static NTSTATUS
+NtfsTransferResidentWrite(_In_ void *Context, _In_ struct DataRun *Runs,
+                          _In_opt_ PUCHAR Prefix, _In_ ULONG PrefixLength)
+{
+    NTFS_RESIDENT_WRITE *Write = Context;
+    PVolumeContextBlock Volume = Write->Volume;
+    NTSTATUS Status;
+
+    ASSERT(ExIsResourceAcquiredExclusiveLite(NtfsGetMainResource(Write->File)));
+    ASSERT(ExIsResourceAcquiredExclusiveLite(NtfsGetPagingIoResource(Write->File)));
+    ASSERT(ExIsResourceAcquiredExclusiveLite(&Volume->MetadataResource));
+    NtfsReleaseMetadata(Volume);
+    ASSERT(!ExIsResourceAcquiredSharedLite(&Volume->MetadataResource));
+    Status = NtfsWriteReservedRuns(Volume->DiskVolume, Runs, Prefix, PrefixLength, Write->Offset,
+                                   Write->Buffer, Write->Length, NtfsWriteDiskRangeKm);
+    NtfsAcquireMetadata(Volume);
+    if (NT_SUCCESS(Status) && Write->WriteThrough)
+        Status = NtfsFlushWriteThroughRecord(Volume, Write->File, TRUE);
+    if (NT_SUCCESS(Status))
+        Status = Write->File->StreamCB->Deleted ? STATUS_FILE_DELETED : NtfsRefreshDirectoryRecord(Volume, Write->File);
+    return Status;
+}
+
 _Function_class_(IRP_MJ_WRITE)
 _Function_class_(DRIVER_DISPATCH)
 NTSTATUS
@@ -543,8 +859,12 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     BOOLEAN ResourceAcquired = FALSE;
     BOOLEAN PagingIo = FALSE;
     PVOID BounceBuffer = NULL;
-    PMDL LockMdl = NULL;
-    BOOLEAN LockFailed = FALSE;
+    BOOLEAN PagingRuns = FALSE;
+    BOOLEAN ThroughRuns = FALSE;
+    BOOLEAN PromotionLocked = FALSE, Promoted = FALSE;
+    NTSTATUS PromotionFlushStatus = STATUS_SUCCESS;
+    BOOLEAN WriteThrough;
+    PEX_RUNDOWN_REF WriteRef = NULL;
 
     IrpSp = IoGetCurrentIrpStackLocation(Irp);
 
@@ -564,6 +884,14 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
 
     if (BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) && NtfsPagingFileIo(VolCB, FileCB, Irp, TRUE, &Status))
         return Status;
+
+    WriteRef = BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) ? &VolCB->PagingWrites : &VolCB->FileWrites;
+    if (!ExAcquireRundownProtection(WriteRef))
+    {
+        WriteRef = NULL;
+        Status = STATUS_VOLUME_DISMOUNTED;
+        goto Complete;
+    }
 
     FileRec = FileCB->FileRec;
     if (!FileRec)
@@ -615,7 +943,8 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     /* Only a handle granted append access *without* plain write access is
      * append-only; FILE_GENERIC_WRITE includes FILE_APPEND_DATA, so testing
      * that bit alone would redirect every ordinary write to end of file. */
-    if ((FileCB->DesiredAccess & FILE_APPEND_DATA) &&
+    if (!BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) &&
+        (FileCB->DesiredAccess & FILE_APPEND_DATA) &&
         !(FileCB->DesiredAccess & FILE_WRITE_DATA))
     {
         ByteOffset.HighPart = -1;
@@ -629,14 +958,35 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
         goto Complete;
     }
 
+    WriteThrough = !BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) &&
+                   (BooleanFlagOn(FileObj->Flags, FO_WRITE_THROUGH) || BooleanFlagOn(IrpSp->Flags, SL_WRITE_THROUGH));
     if (!BooleanFlagOn(Irp->Flags, IRP_PAGING_IO | IRP_NOCACHE) &&
-        !BooleanFlagOn(FileObj->Flags, FO_NO_INTERMEDIATE_BUFFERING | FO_WRITE_THROUGH) &&
+        !WriteThrough && !BooleanFlagOn(FileObj->Flags, FO_NO_INTERMEDIATE_BUFFERING) &&
         Length != 0 &&
         RequestedType == TypeData &&
         FileObj->SectionObjectPointer != NULL &&
         NtfsCachedWrite(VolCB, FileCB, FileObj, Irp, Buffer, Length, &ByteOffset, &Status))
     {
         goto Complete;
+    }
+
+    if (!BooleanFlagOn(Irp->Flags, IRP_PAGING_IO) && Length && !Irp->AssociatedIrp.SystemBuffer)
+    {
+        if (!Irp->MdlAddress && Irp->RequestorMode == UserMode)
+        {
+            Status = NtfsLockTransferBuffer(Irp, Length, IoReadAccess);
+            if (!NT_SUCCESS(Status))
+                goto Complete;
+        }
+        if (Irp->MdlAddress)
+        {
+            Buffer = GetBuffer(Irp);
+            if (!Buffer || Irp->MdlAddress->Next || MmGetMdlByteCount(Irp->MdlAddress) < Length)
+            {
+                Status = STATUS_INVALID_USER_BUFFER;
+                goto Complete;
+            }
+        }
     }
 
     /* Paging I/O is serviced while a caller may already hold MainResource,
@@ -648,6 +998,10 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
     else
         ExAcquireResourceExclusiveLite(NtfsGetMainResource(FileCB), TRUE);
     ResourceAcquired = TRUE;
+
+    ASSERT(!PagingIo || ByteOffset.QuadPart >= 0);
+    if (!PagingIo && ByteOffset.HighPart == -1 && ByteOffset.LowPart == FILE_WRITE_TO_END_OF_FILE)
+        ByteOffset.QuadPart = NtfsGetCommonFcbHeader(FileCB)->FileSize.QuadPart;
 
     if (PagingIo)
     {
@@ -679,6 +1033,18 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
         }
     }
 
+    if (WriteThrough && Length && ByteOffset.QuadPart >= 0 && VolCB->BytesPerSector &&
+        ((ULONGLONG)ByteOffset.QuadPart % VolCB->BytesPerSector || Length % VolCB->BytesPerSector) &&
+        NtfsClustersCoverCacheBlocksKm((ULONGLONG)VolCB->BytesPerSector * NtfsVolumeGetSectorsPerCluster(VolCB->DiskVolume)))
+    {
+        ThroughRuns = NtfsWriteUnalignedThrough(VolCB, FileCB, ByteOffset.QuadPart, Length, Buffer, &Status);
+        if (ThroughRuns)
+        {
+            if (!NT_SUCCESS(Status))
+                NtfsPurgeStreamCache(FileCB, FileObj, &ByteOffset, Length);
+            goto WriteDone;
+        }
+    }
     if (!PagingIo &&
         NtfsTryDirectWrite(VolCB, FileCB, Irp, ByteOffset.QuadPart, Length, &Status))
     {
@@ -698,11 +1064,32 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
          BooleanFlagOn(Irp->Flags, IRP_NOCACHE) ||
          BooleanFlagOn(FileObj->Flags, FO_NO_INTERMEDIATE_BUFFERING)))
     {
-        ULONGLONG DirectOffset = 0;
+        NTFS_DIRECT_IO_MAP DirectMap;
+        ULONGLONG OldDataSize = 0, OldAllocation = 0;
         BOOLEAN DirectWrite = FALSE;
+        BOOLEAN Extending = FALSE;
+        BOOLEAN Grown = FALSE;
+        BOOLEAN PagingShared = FALSE;
+        PStreamContextBlock ExtendStream = FileCB->StreamCB;
 
+        if (!PagingIo && ExtendStream != NULL)
+        {
+            ExAcquireResourceSharedLite(&ExtendStream->PagingIoResource, TRUE);
+            PagingShared = TRUE;
+        }
         NtfsAcquireMetadata(VolCB);
         Status = NtfsRefreshDirectoryRecord(VolCB, FileCB);
+        if (NT_SUCCESS(Status) && ExtendStream != NULL)
+        {
+            Status = NtfsGrowForDirectWrite(VolCB,
+                                            FileCB,
+                                            PagingIo,
+                                            (ULONGLONG)ByteOffset.QuadPart,
+                                            (ULONGLONG)ByteOffset.QuadPart + Length,
+                                            &OldDataSize,
+                                            &OldAllocation,
+                                            &Grown);
+        }
         if (NT_SUCCESS(Status))
         {
             Status = NtfsMapDirectIo(VolCB,
@@ -711,10 +1098,39 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
                                      (ULONGLONG)ByteOffset.QuadPart,
                                      Length,
                                      IoReadAccess,
-                                     &DirectOffset,
+                                     ExtendStream != NULL && !ExtendStream->DirectExtending,
+                                     &DirectMap,
                                      &DirectWrite);
         }
+        if (NT_SUCCESS(Status) && DirectWrite && ExtendStream != NULL)
+        {
+            PAttribute Attribute = NtfsFileRecordGetAttribute(FileCB->FileRec,
+                                                              FileCB->RequestedType,
+                                                              FileCB->RequestedStream);
+
+            ASSERT(Attribute != NULL);
+            ASSERT(Attribute->IsNonResident);
+            Extending = (ULONGLONG)ByteOffset.QuadPart + Length > Attribute->NonResident.InitalizedDataSize;
+            if (Extending)
+            {
+                ASSERT(!ExtendStream->DirectExtending);
+                ASSERT((ULONGLONG)ByteOffset.QuadPart <= Attribute->NonResident.InitalizedDataSize);
+                ASSERT((ULONGLONG)ByteOffset.QuadPart + Length <= Attribute->NonResident.DataSize);
+                ExtendStream->DirectExtending = TRUE;
+                KeClearEvent(&ExtendStream->DirectExtendDone);
+            }
+        }
+        if (Grown && !PagingIo && (!NT_SUCCESS(Status) || !DirectWrite))
+        {
+            NtfsUndoDirectGrowthLocked(VolCB, FileCB, OldDataSize, OldAllocation);
+            Grown = FALSE;
+        }
         NtfsReleaseMetadata(VolCB);
+        if (PagingShared && !Extending)
+        {
+            ExReleaseResourceLite(&ExtendStream->PagingIoResource);
+            PagingShared = FALSE;
+        }
 
         if (DirectWrite)
         {
@@ -723,18 +1139,23 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
                 /* A small write to these blocks may still be held in the
                  * library's block cache, where it would later land on top of
                  * this one. Commit the overlapping blocks first. */
-                Status = NtfsDiskFlushRangeKm(VolCB->StorageDevice,
-                                              DirectOffset,
-                                              Length);
+                Status = NtfsFlushDirectIoMap(VolCB, &DirectMap);
                 if (NT_SUCCESS(Status))
-                {
-                    Status = NtfsSubmitDirectIo(VolCB,
-                                                Irp,
-                                                IRP_MJ_WRITE,
-                                                DirectOffset,
-                                                Length);
-                }
+                    Status = NtfsSubmitDirectIoMap(VolCB, Irp, IRP_MJ_WRITE, &DirectMap);
+                NtfsDropDirectIoMap(VolCB, &DirectMap);
             }
+            if (Extending)
+            {
+                NtfsAcquireMetadata(VolCB);
+                Status = NtfsEndDirectExtendLocked(VolCB, FileCB, ExtendStream, (ULONGLONG)ByteOffset.QuadPart + Length, Status);
+                if (Grown && !PagingIo && !NT_SUCCESS(Status))
+                    NtfsUndoDirectGrowthLocked(VolCB, FileCB, OldDataSize, OldAllocation);
+                NtfsReleaseMetadata(VolCB);
+            }
+            if (PagingShared)
+                ExReleaseResourceLite(&ExtendStream->PagingIoResource);
+            if (!PagingIo && NT_SUCCESS(Status))
+                goto WriteDone;
             if (NT_SUCCESS(Status))
             {
                 FileObj->Flags |= FO_FILE_MODIFIED;
@@ -764,7 +1185,22 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
         }
     }
 
+    if (!PagingIo && Length && RequestedType == TypeData && !RequestedStream && FileCB->StreamCB &&
+        ByteOffset.QuadPart >= 0 && (ULONGLONG)ByteOffset.QuadPart + Length > PAGE_SIZE &&
+        NtfsClustersCoverCacheBlocksKm((ULONGLONG)VolCB->BytesPerSector * NtfsVolumeGetSectorsPerCluster(DiskVolume)))
+    {
+        ExAcquireResourceExclusiveLite(NtfsGetPagingIoResource(FileCB), TRUE);
+        PromotionLocked = TRUE;
+    }
+    ASSERT(!ExIsResourceAcquiredExclusiveLite(&VolCB->MetadataResource));
     NtfsAcquireMetadata(VolCB);
+    /* The library zeroes the stream from its valid data length up to the write, over a direct extension still in flight */
+    while (FileCB->StreamCB && FileCB->StreamCB->DirectExtending)
+    {
+        NtfsReleaseMetadata(VolCB);
+        KeWaitForSingleObject(&FileCB->StreamCB->DirectExtendDone, Executive, KernelMode, FALSE, NULL);
+        NtfsAcquireMetadata(VolCB);
+    }
     if (PagingIo && FileCB->StreamCB && FileCB->StreamCB->Deleted)
     {
         NtfsReleaseMetadata(VolCB);
@@ -775,88 +1211,48 @@ NtfsFsdWrite(_In_ PDEVICE_OBJECT VolumeDeviceObject,
         goto Complete;
     }
 
-    if (!PagingIo && Length != 0 && Buffer != NULL &&
-        Irp->RequestorMode == UserMode &&
-        !Irp->MdlAddress && !Irp->AssociatedIrp.SystemBuffer)
+    Status = NtfsRefreshDirectoryRecord(VolCB, FileCB);
+    if (NT_SUCCESS(Status) && PagingIo && Length && RequestedType == TypeData && FileCB->StreamCB)
+        Status = NtfsWritePagingRuns(VolCB, FileCB, ByteOffset.QuadPart, Buffer, Length, &PagingRuns);
+    if (NT_SUCCESS(Status) && PromotionLocked)
     {
-        LockMdl = IoAllocateMdl(Buffer, Length, FALSE, FALSE, NULL);
-        if (LockMdl)
-        {
-            _SEH2_TRY
-            {
-                MmProbeAndLockPages(LockMdl, UserMode, IoReadAccess);
-            }
-            _SEH2_EXCEPT(EXCEPTION_EXECUTE_HANDLER)
-            {
-                IoFreeMdl(LockMdl);
-                LockMdl = NULL;
-                LockFailed = TRUE;
-            }
-            _SEH2_END;
-            if (LockMdl)
-            {
-                PVOID SystemBuffer = MmGetSystemAddressForMdlSafe(LockMdl, NormalPagePriority);
-                if (SystemBuffer)
-                {
-                    Buffer = SystemBuffer;
-                }
-                else
-                {
-                    MmUnlockPages(LockMdl);
-                    IoFreeMdl(LockMdl);
-                    LockMdl = NULL;
-                    LockFailed = TRUE;
-                }
-            }
-        }
-        else
-        {
-            LockFailed = TRUE;
-        }
+        NTFS_RESIDENT_WRITE Write = {VolCB, FileCB, ByteOffset.QuadPart, Buffer, Length, WriteThrough};
+        ASSERT(!FileCB->StreamCB->DirectExtending);
+        Status = FileCB->StreamCB->Deleted ? STATUS_FILE_DELETED :
+                 NtfsFileRecordWriteResident(FileRec, Buffer, Length, Write.Offset, NtfsTransferResidentWrite, &Write, &Promoted);
     }
+    if (NT_SUCCESS(Status) && !PagingRuns && !Promoted)
+        Status = NtfsFileRecordWriteFileData(FileRec,
+                                             RequestedType,
+                                             RequestedStream,
+                                             Buffer,
+                                             &Length,
+                                             &ByteOffset);
 
-    if (LockFailed)
-    {
-        Status = STATUS_INVALID_USER_BUFFER;
-    }
-    else
-    {
-        Status = NtfsRefreshDirectoryRecord(VolCB, FileCB);
-        if (NT_SUCCESS(Status))
-            Status = NtfsFileRecordWriteFileData(FileRec,
-                                                 RequestedType,
-                                                 RequestedStream,
-                                                 Buffer,
-                                                 &Length,
-                                                 &ByteOffset);
+    /* The library updates duplicated $FILE_NAME information through a
+     * separate parent record. Invalidate parsed directory snapshots
+     * before releasing MetadataResource or a later open can reuse the
+     * pre-write sizes from CachedLookupParent. */
+    if (NT_SUCCESS(Status) && !PagingRuns && Length != 0 &&
+        ((RequestedType == TypeData && !RequestedStream) ||
+         (NtfsFileRecordGetHeader(FileRec)->Flags & FR_IS_DIRECTORY)))
+        InterlockedIncrement(&VolCB->DirGeneration);
 
-        /* The library updates duplicated $FILE_NAME information through a
-         * separate parent record. Invalidate parsed directory snapshots
-         * before releasing MetadataResource or a later open can reuse the
-         * pre-write sizes from CachedLookupParent. */
-        if (NT_SUCCESS(Status) && Length != 0 &&
-            ((RequestedType == TypeData && !RequestedStream) ||
-             (NtfsFileRecordGetHeader(FileRec)->Flags & FR_IS_DIRECTORY)))
-            InterlockedIncrement(&VolCB->DirGeneration);
-    }
-
-    if (LockMdl)
-    {
-        MmUnlockPages(LockMdl);
-        IoFreeMdl(LockMdl);
-        LockMdl = NULL;
-    }
     if (BounceBuffer)
     {
         ExFreePoolWithTag(BounceBuffer, TAG_NTFS);
         BounceBuffer = NULL;
     }
+    if (Promoted && NT_SUCCESS(Status) && WriteThrough)
+        PromotionFlushStatus = NtfsFlushWriteThroughRecord(VolCB, FileCB, TRUE);
     NtfsReleaseMetadata(VolCB);
+    if (PromotionLocked)
+        ExReleaseResourceLite(NtfsGetPagingIoResource(FileCB));
 
 WriteDone:
     if (NT_SUCCESS(Status))
     {
-        if (!PagingIo)
+        if (!PagingIo && !ThroughRuns)
             NtfsRefreshFileSizes(VolCB, FileCB, FileObj);
         if (!PagingIo && Length != 0 && RequestedType == TypeData)
             NtfsPurgeStreamCache(FileCB, FileObj, &ByteOffset, Length);
@@ -866,20 +1262,17 @@ WriteDone:
         if (!PagingIo)
             FileCB->NotifyFilter |= FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE;
 
-        /* A cache flush must not change the application's file pointer. */
-        if (!PagingIo && (IrpSp->FileObject->Flags & FO_SYNCHRONOUS_IO))
-        {
-            // Advance file pointer
-            IrpSp->FileObject->CurrentByteOffset.QuadPart = ByteOffset.QuadPart + Length;
-        }
-
-        Irp->IoStatus.Information = Length;
-
         /* FIXME: other uncached writes smaller than a block stay in the library block cache until a flush or its lazy writer */
-        if (!PagingIo && Length != 0 &&
-            (BooleanFlagOn(FileObj->Flags, FO_WRITE_THROUGH) || BooleanFlagOn(IrpSp->Flags, SL_WRITE_THROUGH)))
+        if (WriteThrough && !ThroughRuns && Length != 0)
         {
-            Status = NtfsCommitFileRange(VolCB, FileCB, (ULONGLONG)ByteOffset.QuadPart, Length);
+            Status = Promoted ? PromotionFlushStatus :
+                     NtfsCommitFileRange(VolCB, FileCB, (ULONGLONG)ByteOffset.QuadPart, Length);
+        }
+        if (NT_SUCCESS(Status))
+        {
+            if (!PagingIo && (FileObj->Flags & FO_SYNCHRONOUS_IO))
+                FileObj->CurrentByteOffset.QuadPart = ByteOffset.QuadPart + Length;
+            Irp->IoStatus.Information = Length;
         }
     }
     else
@@ -902,6 +1295,8 @@ Complete:
 
     if (!NT_SUCCESS(Status))
         Irp->IoStatus.Information = 0;
+    if (WriteRef)
+        ExReleaseRundownProtection(WriteRef);
     Irp->IoStatus.Status = Status;
     IoCompleteRequest(Irp, IO_DISK_INCREMENT);
     return Status;

@@ -514,6 +514,7 @@ elseif(ARCH STREQUAL "riscv64")
         ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/pcr.c
         ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/spinlock.c
         ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/stack.c
+        ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/stackwalk.c
         ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/stubs.c
         ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/syscall.c
         ${REACTOS_SOURCE_DIR}/ntos/ke/riscv64/thrdini.c
@@ -568,7 +569,7 @@ if(ARCH STREQUAL "i386" OR ARCH STREQUAL "amd64" OR ARCH STREQUAL "arm64")
         ${REACTOS_SOURCE_DIR}/ntos/ke/intobj.c)
 endif()
 
-if(ARCH STREQUAL "i386" OR ARCH STREQUAL "amd64" OR ARCH STREQUAL "arm64")
+if(ARCH STREQUAL "i386" OR ARCH STREQUAL "amd64" OR ARCH STREQUAL "arm64" OR ARCH STREQUAL "riscv64")
     list(APPEND SOURCE ${REACTOS_SOURCE_DIR}/ntos/kd64/kdbus.c)
 endif()
 
@@ -609,7 +610,7 @@ endif()
         list(APPEND SOURCE ${REACTOS_SOURCE_DIR}/ntos/kd/riscv64/kdserial.c)
         if(KDBG)
             list(APPEND ASM_SOURCE ${REACTOS_SOURCE_DIR}/ntos/kdbg/riscv64/kdb_help.S)
-            list(APPEND SOURCE ${REACTOS_SOURCE_DIR}/ntos/kdbg/riscv64/riscv64-dis.c ${REACTOS_SOURCE_DIR}/ntos/kdbg/riscv64/kdbregs.c)
+            list(APPEND SOURCE ${REACTOS_SOURCE_DIR}/ntos/kdbg/riscv64/riscv64-decode.c ${REACTOS_SOURCE_DIR}/ntos/kdbg/riscv64/riscv64-dis.c ${REACTOS_SOURCE_DIR}/ntos/kdbg/riscv64/kdbregs.c)
         endif()
     endif()
 

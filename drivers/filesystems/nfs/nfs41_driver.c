@@ -2018,6 +2018,8 @@ NTSTATUS SharedMemoryInit(
         &SectionAttrs, &nSectionSize, PAGE_READWRITE, SEC_COMMIT, NULL);
     switch (status) {
     case STATUS_SUCCESS:
+        /* FIXME: the handle is in the table of whichever process started the redirector, not a kernel handle */
+        *phSection = hSection;
         break;
     case STATUS_OBJECT_NAME_COLLISION:
         DbgP("section already created; returning success\n");
@@ -5999,7 +6001,10 @@ void enable_caching(
 #endif
         oentry = RxAllocatePoolWithTag(NonPagedPool,
             sizeof(nfs41_fcb_list_entry), NFS41_MM_POOLTAG_OPEN);
-        if (oentry == NULL) return;
+        if (oentry == NULL) {
+            ExReleaseFastMutex(&fcblistLock);
+            return;
+        }
         oentry->fcb = SrvOpen->pFcb;
         oentry->session = session;
         oentry->nfs41_fobx = nfs41_fobx;

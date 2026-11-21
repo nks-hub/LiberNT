@@ -83,6 +83,13 @@ NdisSendNetBufferLists(
     }
 
     Adapter = Binding->Adapter;
+    if (Binding->IsLegacyMiniport)
+    {
+        Ndis6LegacySendNetBufferLists(Binding, NetBufferList, PortNumber,
+                                      SendFlags, SendCompleteFlags);
+        Ndis6DereferenceProtocolBinding(Binding);
+        return;
+    }
     Ext = (Adapter != NULL && Adapter->IsNdis6) ? NDIS6_EXT(Adapter) : NULL;
     if (Ext == NULL || Ext->DriverBlock == NULL || Ext->DriverBlock->Characteristics.SendNetBufferListsHandler == NULL)
     {
@@ -163,6 +170,67 @@ NdisReturnNetBufferLists(
     }
 }
 
+static NDIS_STATUS
+Ndis6LegacyProtocolOidRequest(
+    _In_ PNDIS6_PROTOCOL_BINDING Binding,
+    _Inout_ PNDIS_OID_REQUEST Request)
+{
+    PLOGICAL_ADAPTER Adapter = Binding->Adapter;
+    NDIS_STATUS Status;
+    ULONG Transferred = 0;
+    PVOID Buffer;
+    ULONG Length;
+    NDIS_OID Oid;
+
+    if (Request->Header.Type != NDIS_OBJECT_TYPE_OID_REQUEST ||
+        Request->Header.Revision < NDIS_OID_REQUEST_REVISION_1 ||
+        Request->Header.Size < NDIS_SIZEOF_OID_REQUEST_REVISION_1 ||
+        Request->PortNumber != NDIS_DEFAULT_PORT_NUMBER)
+        return NDIS_STATUS_INVALID_PARAMETER;
+
+    if (KeGetCurrentIrql() != PASSIVE_LEVEL)
+        return NDIS_STATUS_NOT_SUPPORTED;
+
+    if (Adapter == NULL || Adapter->IsNdis6 ||
+        InterlockedCompareExchange(&Adapter->Ndis6LegacyBindingsClosing, 0, 0) != 0 ||
+        Adapter->NdisMiniportBlock.PnPDeviceState != NdisPnPDeviceStarted)
+        return NDIS_STATUS_CLOSING;
+
+    switch (Request->RequestType)
+    {
+        case NdisRequestQueryInformation:
+            Oid = Request->DATA.QUERY_INFORMATION.Oid;
+            Buffer = Request->DATA.QUERY_INFORMATION.InformationBuffer;
+            Length = Request->DATA.QUERY_INFORMATION.InformationBufferLength;
+            Request->DATA.QUERY_INFORMATION.BytesWritten = 0;
+            Request->DATA.QUERY_INFORMATION.BytesNeeded = 0;
+            if (Length != 0 && Buffer == NULL)
+                return NDIS_STATUS_INVALID_PARAMETER;
+            Status = MiniQueryInformation(Adapter, Oid, Length, Buffer, &Transferred);
+            Request->DATA.QUERY_INFORMATION.BytesWritten = Transferred;
+            return Status;
+
+        case NdisRequestSetInformation:
+            Oid = Request->DATA.SET_INFORMATION.Oid;
+            Buffer = Request->DATA.SET_INFORMATION.InformationBuffer;
+            Length = Request->DATA.SET_INFORMATION.InformationBufferLength;
+            Request->DATA.SET_INFORMATION.BytesRead = 0;
+            Request->DATA.SET_INFORMATION.BytesNeeded = 0;
+            if (Length != 0 && Buffer == NULL)
+                return NDIS_STATUS_INVALID_PARAMETER;
+            Status = MiniSetInformation(Adapter, Oid, Length, Buffer, &Transferred);
+            Request->DATA.SET_INFORMATION.BytesRead = Transferred;
+            if (Status == NDIS_STATUS_SUCCESS &&
+                Oid == OID_GEN_CURRENT_LOOKAHEAD &&
+                Length >= sizeof(ULONG) && Transferred >= sizeof(ULONG))
+                Adapter->NdisMiniportBlock.CurrentLookahead = *(PULONG)Buffer;
+            return Status;
+
+        default:
+            return NDIS_STATUS_NOT_SUPPORTED;
+    }
+}
+
 NDIS_STATUS
 EXPORT
 NdisOidRequest(
@@ -184,6 +252,12 @@ NdisOidRequest(
         return NDIS_STATUS_CLOSING;
 
     Adapter = Binding->Adapter;
+    if (Binding->IsLegacyMiniport)
+    {
+        Status = Ndis6LegacyProtocolOidRequest(Binding, OidRequest);
+        Ndis6DereferenceProtocolBinding(Binding);
+        return Status;
+    }
     if (Adapter == NULL || !Adapter->IsNdis6 || Binding->DriverBlock == NULL)
     {
         Ndis6DereferenceProtocolBinding(Binding);
@@ -274,6 +348,12 @@ NdisSynchronousOidRequest(
         return NDIS_STATUS_CLOSING;
 
     Adapter = Binding->Adapter;
+    if (Binding->IsLegacyMiniport)
+    {
+        Status = Ndis6LegacyProtocolOidRequest(Binding, OidRequest);
+        Ndis6DereferenceProtocolBinding(Binding);
+        return Status;
+    }
     if (Adapter == NULL || !Adapter->IsNdis6 || NDIS6_EXT(Adapter) == NULL)
     {
         Ndis6DereferenceProtocolBinding(Binding);

@@ -101,6 +101,7 @@ list(APPEND SOURCE
     NtCreateThread.c
     NtCreateToken.c
     NtDeleteKey.c
+    NtDeleteFile.c
     NtDuplicateObject.c
     NtDuplicateToken.c
     NtFilterToken.c
@@ -142,6 +143,7 @@ list(APPEND SOURCE
     NtQueryOpenSubKeys.c
     NtQuerySection.c
     NtQuerySecurityObject.c
+    NtSetSecurityObjectStatus.c
     NtQuerySystemEnvironmentValue.c
     NtQuerySystemInformation.c
     NtQuerySystemMemoryInformation.c
@@ -183,7 +185,10 @@ list(APPEND SOURCE
     RtlDetermineDosPathNameType.c
     ProcessPoolQuota.c
     ProcessUserModeIopl.c
+    MemoryImageInformation.c
     ObjectQuotaLimit.c
+    ObjectTypeIndex.c
+    ObHandleRace.c
     LinkReparseLimit.c
     RtlWnfAndSqm.c
     WinSqmSession.c
@@ -250,6 +255,7 @@ list(APPEND SOURCE
     SatisfiedWait.c
     ScanfSecure.c
     SharedUserData.c
+    WorkingSetWatch.c
     StackOverflow.c
     StackProbe.c
     SystemInfo.c

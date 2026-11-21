@@ -47,6 +47,7 @@
 #define DHCP_OPTION_CLIENT_ID   61
 #define DHCP_OPTION_END         255
 
+#ifdef REMOTE_ASSISTANCE
 #define DNS_PORT                53
 #define DNS_HEADER_SIZE         12
 #define DNS_FLAG_RESPONSE       0x8000
@@ -56,7 +57,9 @@
 #define DNS_CLASS_IN            1
 #define DNS_RETRY               (2 * KDNET_SECOND)
 #define DNS_REFRESH             (300 * KDNET_SECOND)
+#endif
 
+#if DBG
 typedef enum _KDNET_DHCP_STATE
 {
     DhcpInit,
@@ -65,6 +68,7 @@ typedef enum _KDNET_DHCP_STATE
     DhcpBound,
     DhcpRenewing
 } KDNET_DHCP_STATE;
+#endif
 
 typedef struct _KDNET_ARP_ENTRY
 {
@@ -83,6 +87,7 @@ static KDNET_ARP_ENTRY KdpArp[ARP_ENTRIES];
 static ULONG KdpArpNext;
 static USHORT KdpIpIdentification;
 
+#if DBG
 static KDNET_DHCP_STATE KdpDhcpState;
 static ULONG KdpDhcpXid;
 static ULONG KdpDhcpServer;
@@ -91,11 +96,14 @@ static ULONG64 KdpDhcpNext;
 static ULONG64 KdpDhcpRenew;
 static ULONG64 KdpDhcpExpire;
 static ULONG KdpDhcpBackoff;
+#endif
 
+#ifdef REMOTE_ASSISTANCE
 static ULONG KdpDnsServer;
 static USHORT KdpDnsIdentifier;
 static USHORT KdpDnsPort;
 static ULONG64 KdpDnsNext;
+#endif
 
 static
 USHORT
@@ -361,6 +369,7 @@ KdUdpEnd(
     return KdNicSend(Handle, KDNET_UDP_HEADERS + Length);
 }
 
+#if DBG
 static
 PUCHAR
 KdpDhcpOption(
@@ -382,8 +391,11 @@ KdpDhcpSend(
 {
     static const UCHAR Parameters[] =
     {
-        DHCP_OPTION_MASK, DHCP_OPTION_ROUTER, DHCP_OPTION_DNS, DHCP_OPTION_LEASE, DHCP_OPTION_SERVER,
-        DHCP_OPTION_RENEWAL
+        DHCP_OPTION_MASK, DHCP_OPTION_ROUTER,
+#ifdef REMOTE_ASSISTANCE
+        DHCP_OPTION_DNS,
+#endif
+        DHCP_OPTION_LEASE, DHCP_OPTION_SERVER, DHCP_OPTION_RENEWAL
     };
     UCHAR Value[1 + MAC_ADDRESS_SIZE];
     PUCHAR Frame, Udp, Dhcp, Cursor;
@@ -444,7 +456,10 @@ KdpDhcpInput(
     _In_reads_bytes_(Length) PUCHAR Dhcp,
     _In_ ULONG Length)
 {
-    ULONG Offered, Server = 0, Mask = 0, Router = 0, Lease = 0, Renewal = 0, Dns = 0, Position;
+    ULONG Offered, Server = 0, Mask = 0, Router = 0, Lease = 0, Renewal = 0, Position;
+#ifdef REMOTE_ASSISTANCE
+    ULONG Dns = 0;
+#endif
     ULONG64 Now = KdNetTime();
     UCHAR Type = 0, Option, Size;
 
@@ -481,8 +496,10 @@ KdpDhcpInput(
             Mask = KdNetGet32(Dhcp + Position);
         else if (Option == DHCP_OPTION_ROUTER && Size >= 4)
             Router = KdNetGet32(Dhcp + Position);
+#ifdef REMOTE_ASSISTANCE
         else if (Option == DHCP_OPTION_DNS && Size >= 4)
             Dns = KdNetGet32(Dhcp + Position);
+#endif
         else if (Option == DHCP_OPTION_LEASE && Size >= 4)
             Lease = KdNetGet32(Dhcp + Position);
         else if (Option == DHCP_OPTION_RENEWAL && Size >= 4)
@@ -510,7 +527,9 @@ KdpDhcpInput(
         KdIpAddress = Offered;
         KdIpMask = Mask ? Mask : KDNET_IP(255, 255, 255, 0);
         KdIpGateway = Router;
+#ifdef REMOTE_ASSISTANCE
         KdpDnsServer = Dns;
+#endif
         KdpDhcpState = DhcpBound;
         KdpDhcpRenew = Now + (ULONG64)Renewal * KDNET_SECOND;
         KdpDhcpExpire = Now + (ULONG64)Lease * KDNET_SECOND;
@@ -522,7 +541,9 @@ KdpDhcpInput(
         KdpDhcpNext = Now + KDNET_SECOND;
     }
 }
+#endif
 
+#ifdef REMOTE_ASSISTANCE
 static
 VOID
 KdpDnsSend(VOID)
@@ -641,6 +662,7 @@ KdpDnsTimer(
     KdpDnsNext = Now + DNS_RETRY;
     KdpDnsSend();
 }
+#endif
 
 static
 VOID
@@ -738,21 +760,25 @@ KdIpInput(
     if (KdNetOptions.Broadcast)
         return;
 
+#if DBG
     if (DestinationPort == DHCP_CLIENT_PORT)
     {
         KdpDhcpInput(Udp + UDP_HEADER_SIZE, UdpLength - UDP_HEADER_SIZE);
         return;
     }
+#endif
 
     if (!KdIpAddress || DestinationIp != KdIpAddress)
         return;
 
+#ifdef REMOTE_ASSISTANCE
     if (KdpDnsPort && DestinationPort == KdpDnsPort && SourceIp == KdpDnsServer &&
         KdNetGet16(Udp) == DNS_PORT)
     {
         KdpDnsInput(Udp + UDP_HEADER_SIZE, UdpLength - UDP_HEADER_SIZE);
         return;
     }
+#endif
 
     if (DestinationPort != KdNetOptions.HostPort)
         return;
@@ -764,10 +790,13 @@ VOID
 KdIpTimer(
     _In_ ULONG64 Now)
 {
+#if DBG
     if (!KdNicLinkState || KdNetOptions.Broadcast)
         return;
 
+#ifdef REMOTE_ASSISTANCE
     KdpDnsTimer(Now);
+#endif
     switch (KdpDhcpState)
     {
         case DhcpInit:
@@ -823,12 +852,17 @@ KdIpTimer(
             KdpDhcpSend(DHCP_REQUEST);
             break;
     }
+#else
+    UNREFERENCED_PARAMETER(Now);
+#endif
 }
 
 VOID
 KdIpInitialize(VOID)
 {
     KdCryptoRandom((PUCHAR)&KdpIpIdentification, sizeof(KdpIpIdentification));
+#if DBG
     KdpDhcpState = DhcpInit;
     KdpDhcpNext = 0;
+#endif
 }

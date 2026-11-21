@@ -93,6 +93,7 @@ list(APPEND SOURCE
     NestedActivation.c
     NestedWindowPos.c
     NcPaintRgn.c
+    NestedDialogKeys.c
     NextDlgItem.c
     NonClientPaint.c
     NonClientUpdate.c
@@ -102,6 +103,7 @@ list(APPEND SOURCE
     PhysicalPoint.c
     PhysicalToLogicalPoint.c
     LogicalToPhysicalPoint.c
+    PrintWindowContent.c
     PrivateExtractIcons.c
     RealGetWindowClass.c
     RedrawWindow.c
@@ -122,6 +124,7 @@ list(APPEND SOURCE
     SetProp.c
     SetScrollInfo.c
     SetScrollRange.c
+    StructPadding.c
     SetWindowPlacement.c
     SharedInputLanguage.c
     ShellHookShowActive.c
@@ -145,6 +148,7 @@ list(APPEND SOURCE
     WaitForInputIdle.c
     WindowBand.c
     WindowStationErrors.c
+    WindowStationAttributes.c
     WindowStationSecurity.c
     WindowPosInsertAfter.c
     WndProc.c

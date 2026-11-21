@@ -65,16 +65,20 @@ typedef struct _KINTERRUPT {
 static struct { unsigned char _Op_push; unsigned char Pad[15]; } KiUnexpectedRange[256];
 #define KiUnexpectedRangeEnd (KiUnexpectedRange + 256)
 static PVOID Handlers[256];
-static int KeNumberProcessors = 4, Enable = 1, DisableCount, Race;
+static int KeProcessorCount = 4, Enable = 1, DisableCount, Race;
 static pthread_mutex_t Dispatcher = PTHREAD_MUTEX_INITIALIZER;
 static pthread_barrier_t RaceBarrier;
 static void KiInterruptDispatch(void) {}
 static BOOLEAN KiConnectPassiveInterrupt(PKINTERRUPT I) { (void)I; abort(); }
 static BOOLEAN KiDisconnectPassiveInterrupt(PKINTERRUPT I) { (void)I; abort(); }
-static void KeSetSystemAffinityThread(uint64_t Affinity) { (void)Affinity; }
+typedef struct { uint64_t Mask; unsigned short Group; } GROUP_AFFINITY;
+static void KiSetSystemProcessorAffinityThread(unsigned Number, GROUP_AFFINITY *Previous) { assert(Number < (unsigned)KeProcessorCount); Previous->Mask = 0; Previous->Group = 0; }
 static void KeRevertToUserAffinityThread(void) {}
-static KIRQL KiAcquireDispatcherLock(void) { if (Race) pthread_barrier_wait(&RaceBarrier); assert(pthread_mutex_lock(&Dispatcher)==0); return 0; }
-static void KiReleaseDispatcherLock(KIRQL Old) { (void)Old; assert(pthread_mutex_unlock(&Dispatcher)==0); }
+static uint64_t KiVectorLock;
+static KIRQL KeRaiseIrqlToSynchLevel(void) { if (Race) pthread_barrier_wait(&RaceBarrier); return 0; }
+static void KeLowerIrql(KIRQL Old) { (void)Old; }
+static void KiAcquireFlagLock(volatile uint64_t *Lock) { assert(Lock == &KiVectorLock); assert(pthread_mutex_lock(&Dispatcher)==0); }
+static void KiReleaseFlagLock(volatile uint64_t *Lock) { assert(Lock == &KiVectorLock); assert(pthread_mutex_unlock(&Dispatcher)==0); }
 static PVOID KeQueryInterruptHandler(ULONG Vector) { return Handlers[Vector]; }
 static void KeRegisterInterruptHandler(ULONG Vector, PVOID Handler) { Handlers[Vector] = Handler; }
 static int HalEnableSystemInterrupt(ULONG Vector, KIRQL Irql, int Mode) { (void)Vector; (void)Irql; (void)Mode; return Enable; }
@@ -89,7 +93,9 @@ static BOOLEAN KeConnectInterrupt(PKINTERRUPT Interrupt) { @CONNECT@ }
 static BOOLEAN KeDisconnectInterrupt(PKINTERRUPT Interrupt) { @DISCONNECT@ }
 static void *RaceConnect(void *Context) { return (void *)(uintptr_t)KeConnectInterrupt(Context); }
 static KINTERRUPT MakeInterrupt(int Share, int Mode) {
-    KINTERRUPT I = {0}; I.Vector=0x51; I.Irql=5; I.SynchronizeIrql=5; I.Number=0; I.ShareVector=Share; I.Mode=Mode; return I;
+    KINTERRUPT I = {0}; I.Vector=0x51; I.Irql=5; I.SynchronizeIrql=5; I.Number=0; I.ShareVector=Share; I.Mode=Mode;
+    I.DispatchAddress = KiInterruptDispatch;
+    return I;
 }
 int main(int argc, char **argv) {
     KINTERRUPT A=MakeInterrupt(1,0), B=MakeInterrupt(1,0), C=MakeInterrupt(1,0), D=MakeInterrupt(0,0), E=MakeInterrupt(1,1);

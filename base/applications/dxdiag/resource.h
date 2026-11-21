@@ -52,7 +52,6 @@
 #define IDC_BUTTON_D3D             3015
 #define IDC_BUTTON_AGP             3016
 #define IDC_BUTTON_TESTDD          3017
-#define IDC_BUTTON_TEST3D          3018
 #define IDC_STATIC_DDSTATE         3019
 #define IDC_STATIC_D3DSTATE        3020
 #define IDC_STATIC_AGPSTATE        3021
@@ -60,6 +59,14 @@
 #define IDC_BUTTON_TESTDMUSIC      3023
 #define IDC_BUTTON_TESTDPLAY       3024
 #define IDC_BUTTON_VOICE_OPTIONS   3025
+#define IDC_BUTTON_TEST_D3D7       3026
+#define IDC_BUTTON_TEST_D3D8       3027
+#define IDC_BUTTON_TEST_D3D9       3028
+#define IDC_BUTTON_TEST_D3D10      3029
+#define IDC_BUTTON_TEST_D3D11      3030
+#define IDC_BUTTON_TEST_D3D12      3031
+#define IDC_BUTTON_TEST_GL1        3032
+#define IDC_BUTTON_TEST_GL3        3033
 
 /* DirectSound dialog constants */
 #define IDC_STATIC_DSOUND_NAME      4000
@@ -139,19 +146,10 @@
 #define IDS_REG_FAIL                 10114
 #define IDS_REG_SUCCESS              10115
 #define IDS_DDTEST_ERROR             10116
-#define IDS_DDTEST_DESCRIPTION       10117
-#define IDS_DDPRIMARY_DESCRIPTION    10118
-#define IDS_DDPRIMARY_RESULT         10119
-#define IDS_DDOFFSCREEN_DESCRIPTION  10120
-#define IDS_DDOFFSCREEN_RESULT       10121
-#define IDS_DDFULLSCREEN_DESCRIPTION 10122
-#define IDS_DDFULLSCREEN_RESULT      10123
 #define IDS_DDTEST_TITLE             10124
 #define IDS_FORMAT_ADAPTER_MEM       10125
 #define IDS_FORMAT_ADAPTER_MODE      10126
 #define IDS_OPTION_NO                10127
-#define IDS_D3DTEST_DESCRIPTION      10128
-#define IDS_D3DTEST_D3Dx             10129
 #define IDS_OS_VERSION               10130
 #define IDS_DMUSIC_DESC              10131
 #define IDS_DMUSIC_TYPE              10132
@@ -161,8 +159,10 @@
 #define IDS_DMUSIC_EXT               10136
 #define IDS_DMUSIC_PORT              10137
 #define IDS_DDDISABLE_MSG            10138
-#define IDS_D3DTEST_RESULT           10139
+#define IDS_D3DTEST_BENCHMARK        10140
+#define IDS_D3DTEST_FAILED           10141
+#define IDS_DDTEST_WINDOWED          10142
+#define IDS_DDTEST_FULLSCREEN        10143
 
 /* icon resource constants */
 #define IDI_APPICON 20000
-#define IDR_D3DTEST_TEXTURE 20001

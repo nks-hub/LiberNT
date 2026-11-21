@@ -31,6 +31,8 @@ static WDMUSB_POWER_STATE USBPORT_MapDevicePowerState(IN DEVICE_POWER_STATE Stat
 #define USBPORT_HID_SET_PROTOCOL 0x0B
 #define USBPORT_HID_BOOT_PROTOCOL 0
 
+static VOID USBPORT_DumpClearHalt(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ PUSBPORT_ENDPOINT Endpoint);
+
 static NTSTATUS USBPORT_DumpStart(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ PUSBPORT_ENDPOINT Endpoint, _In_opt_ PUSB_DEFAULT_PIPE_SETUP_PACKET SetupPacket, _In_ BOOLEAN DirectionIn, _Inout_updates_bytes_opt_(Length) PVOID Buffer, _In_ PHYSICAL_ADDRESS PhysicalAddress, _In_ BOOLEAN UsePhysicalAddress, _In_ ULONG Length)
 {
     PUSBPORT_DEVICE_EXTENSION FdoExtension;
@@ -42,6 +44,14 @@ static NTSTATUS USBPORT_DumpStart(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ P
     if ((Endpoint == NULL) || (Length > PAGE_SIZE) || ((Length != 0) && !UsePhysicalAddress && (Buffer == NULL)) || (UsePhysicalAddress && DirectionIn))
     {
         return STATUS_INVALID_PARAMETER;
+    }
+
+    if (DumpContext->TransferHeld)
+    {
+        if (InterlockedCompareExchange(&DumpContext->Completed, 0, 0) == 0)
+            return STATUS_DEVICE_NOT_READY;
+
+        DumpContext->TransferHeld = FALSE;
     }
 
     FdoExtension = DumpContext->FdoExtension;
@@ -110,6 +120,26 @@ static NTSTATUS USBPORT_DumpStart(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ P
     return STATUS_SUCCESS;
 }
 
+static VOID USBPORT_DumpReportFailure(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_opt_ PUSBPORT_ENDPOINT Endpoint, _In_opt_ PUSB_DEFAULT_PIPE_SETUP_PACKET SetupPacket, _In_ BOOLEAN DirectionIn, _In_ ULONG Length, _In_ NTSTATUS Status)
+{
+    UCHAR Address = 0;
+
+    ASSERT(!NT_SUCCESS(Status));
+
+    if (SetupPacket != NULL)
+    {
+        DPRINT1("USBPORT: dump control request type 0x%02x request 0x%02x value 0x%04x index 0x%04x failed 0x%08lx, USBD status 0x%08lx\n", SetupPacket->bmRequestType.B, SetupPacket->bRequest, SetupPacket->wValue.W, SetupPacket->wIndex.W, Status, (ULONG)DumpContext->TransferStatus);
+        return;
+    }
+
+    if (Endpoint == DumpContext->BulkInEndpoint)
+        Address = DumpContext->BulkInEndpointAddress;
+    else if (Endpoint == DumpContext->BulkOutEndpoint)
+        Address = DumpContext->BulkOutEndpointAddress;
+
+    DPRINT1("USBPORT: dump transfer on endpoint 0x%02x (%s, %lu bytes) failed 0x%08lx, USBD status 0x%08lx, %lu bytes done\n", Address, DirectionIn ? "in" : "out", Length, Status, (ULONG)DumpContext->TransferStatus, DumpContext->CompletedLength);
+}
+
 static NTSTATUS USBPORT_DumpSubmit(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ PUSBPORT_ENDPOINT Endpoint, _In_opt_ PUSB_DEFAULT_PIPE_SETUP_PACKET SetupPacket, _In_ BOOLEAN DirectionIn, _Inout_updates_bytes_opt_(Length) PVOID Buffer, _In_ PHYSICAL_ADDRESS PhysicalAddress, _In_ BOOLEAN UsePhysicalAddress, _In_ ULONG Length)
 {
     PUSBPORT_DEVICE_EXTENSION FdoExtension;
@@ -119,7 +149,10 @@ static NTSTATUS USBPORT_DumpSubmit(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ 
 
     Status = USBPORT_DumpStart(DumpContext, Endpoint, SetupPacket, DirectionIn, Buffer, PhysicalAddress, UsePhysicalAddress, Length);
     if (!NT_SUCCESS(Status))
+    {
+        USBPORT_DumpReportFailure(DumpContext, Endpoint, SetupPacket, DirectionIn, Length, Status);
         return Status;
+    }
 
     FdoExtension = DumpContext->FdoExtension;
     Packet = &FdoExtension->MiniPortInterface->Packet;
@@ -135,13 +168,32 @@ static NTSTATUS USBPORT_DumpSubmit(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ 
     }
 
     if (Timeout == ROS_DUMP_POLL_ITERATIONS)
-        return STATUS_IO_TIMEOUT;
-    if (!USBD_SUCCESS(DumpContext->TransferStatus))
     {
-        return USBPORT_USBDStatusToNtStatus(NULL, DumpContext->TransferStatus);
+        Status = STATUS_IO_TIMEOUT;
+
+        /* The miniport still owns the transfer; restarting the pipe makes it drop and complete it before the memory is used again */
+        if (Packet->SetEndpointStatus != NULL)
+            Packet->SetEndpointStatus(FdoExtension->MiniPortExt, Endpoint + 1, USBPORT_ENDPOINT_RUN);
+        DumpContext->TransferHeld = (InterlockedCompareExchange(&DumpContext->Completed, 0, 0) == 0);
     }
-    if (DumpContext->CompletedLength != Length)
-        return STATUS_DEVICE_DATA_ERROR;
+    else if (!USBD_SUCCESS(DumpContext->TransferStatus))
+    {
+        Status = USBPORT_USBDStatusToNtStatus(NULL, DumpContext->TransferStatus);
+        if (Status == STATUS_UNSUCCESSFUL)
+            Status = STATUS_IO_DEVICE_ERROR;
+    }
+    else if (DumpContext->CompletedLength != Length)
+    {
+        Status = STATUS_DEVICE_DATA_ERROR;
+    }
+
+    if (!NT_SUCCESS(Status))
+    {
+        USBPORT_DumpReportFailure(DumpContext, Endpoint, SetupPacket, DirectionIn, Length, Status);
+        if ((SetupPacket == NULL) && (DumpContext->TransferStatus == USBD_STATUS_STALL_PID))
+            USBPORT_DumpClearHalt(DumpContext, Endpoint);
+        return Status;
+    }
 
     if (DirectionIn && (Length != 0) && !UsePhysicalAddress)
     {
@@ -194,6 +246,17 @@ static VOID USBPORT_DumpResetPipe(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_op
     if ((Endpoint != DumpContext->ControlEndpoint) && (Packet->SetEndpointDataToggle != NULL))
         Packet->SetEndpointDataToggle(FdoExtension->MiniPortExt, Endpoint + 1, 0);
     Packet->SetEndpointStatus(FdoExtension->MiniPortExt, Endpoint + 1, USBPORT_ENDPOINT_RUN);
+}
+
+static VOID USBPORT_DumpClearHalt(_In_ PUSBPORT_DUMP_CONTEXT DumpContext, _In_ PUSBPORT_ENDPOINT Endpoint)
+{
+    UCHAR Address;
+
+    ASSERT((Endpoint == DumpContext->BulkInEndpoint) || (Endpoint == DumpContext->BulkOutEndpoint));
+
+    Address = (Endpoint == DumpContext->BulkInEndpoint) ? DumpContext->BulkInEndpointAddress : DumpContext->BulkOutEndpointAddress;
+    USBPORT_DumpResetPipe(DumpContext, Endpoint);
+    (VOID)USBPORT_DumpControl(DumpContext, USBPORT_DUMP_RT_STANDARD_ENDPOINT_OUT, USB_REQUEST_CLEAR_FEATURE, USB_FEATURE_ENDPOINT_STALL, Address);
 }
 
 static NTSTATUS NTAPI USBPORT_DumpPrepare(_In_ PVOID Context)

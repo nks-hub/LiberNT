@@ -32,7 +32,7 @@ BasepOpenEffectiveToken(
         return TRUE;
 
     if (OpenThreadToken(GetCurrentThread(), Access, TRUE, Token) ||
-        OpenProcessToken(GetCurrentProcess(), Access, Token))
+        (GetLastError() == ERROR_NO_TOKEN && OpenProcessToken(GetCurrentProcess(), Access, Token)))
     {
         *Opened = TRUE;
         return TRUE;
@@ -110,6 +110,16 @@ CheckTokenMembershipEx(
         return FALSE;
     }
     return TRUE;
+}
+
+BOOL
+WINAPI
+CheckTokenMembership(
+    _In_opt_ HANDLE TokenHandle,
+    _In_ PSID SidToCheck,
+    _Out_ PBOOL IsMember)
+{
+    return CheckTokenMembershipEx(TokenHandle, SidToCheck, 0, IsMember);
 }
 
 BOOL

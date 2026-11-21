@@ -76,6 +76,7 @@ extern void func_InstructionCacheMigration(void);
 #endif
 extern void func_NtCreateFile(void);
 extern void func_NtCancelIoFileEx(void);
+extern void func_NtDeleteFile(void);
 extern void func_NtCreateKey(void);
 extern void func_NtCreateKeyCached(void);
 extern void func_NtCreateProfile(void);
@@ -118,11 +119,14 @@ extern void func_NtQueryInformationProcess(void);
 extern void func_NtQueryInformationThread(void);
 extern void func_NtQueryInformationToken(void);
 extern void func_NtQueryKey(void);
+extern void func_ObjectTypeIndex(void);
+extern void func_MemoryImageInformation(void);
 extern void func_NtQueryObject(void);
 extern void func_NtQueryObjectName(void);
 extern void func_NtQueryOpenSubKeys(void);
 extern void func_NtQuerySection(void);
 extern void func_NtQuerySecurityObject(void);
+extern void func_NtSetSecurityObjectStatus(void);
 extern void func_NtQuerySystemEnvironmentValue(void);
 extern void func_NtQuerySystemInformation(void);
 extern void func_NtQuerySystemMemoryInformation(void);
@@ -241,6 +245,7 @@ extern void func_SystemTimeAtBoot(void);
 extern void func_TimerResolution(void);
 extern void func_SehHandlerLocals(void);
 extern void func_UserHiveLinks(void);
+extern void func_WorkingSetWatch(void);
 #if defined(_M_IX86) || defined(_M_AMD64)
 extern void func_UserModeException(void);
 #endif
@@ -249,6 +254,7 @@ extern void func_ProcessPoolQuota(void);
 extern void func_ProcessUserModeIopl(void);
 extern void func_LinkReparseLimit(void);
 extern void func_ObjectQuotaLimit(void);
+extern void func_ObHandleRace(void);
 extern void func_RtlWnfAndSqm(void);
 extern void func_WinSqmSession(void);
 extern void func_RtlCheckPortableOperatingSystem(void);
@@ -328,6 +334,7 @@ const struct test winetest_testlist[] =
 #endif
     { "NtCreateFile",                   func_NtCreateFile },
     { "NtCancelIoFileEx",               func_NtCancelIoFileEx },
+    { "NtDeleteFile",                   func_NtDeleteFile },
     { "NtCreateKey",                    func_NtCreateKey },
     { "NtCreateKeyCached",              func_NtCreateKeyCached },
     { "NtCreateProfile",                func_NtCreateProfile },
@@ -370,11 +377,14 @@ const struct test winetest_testlist[] =
     { "NtQueryInformationThread",       func_NtQueryInformationThread },
     { "NtQueryInformationToken",        func_NtQueryInformationToken },
     { "NtQueryKey",                     func_NtQueryKey },
+    { "ObjectTypeIndex",                func_ObjectTypeIndex },
     { "NtQueryObject",                  func_NtQueryObject },
     { "NtQueryObjectName",              func_NtQueryObjectName },
+    { "MemoryImageInformation",         func_MemoryImageInformation },
     { "NtQueryOpenSubKeys",             func_NtQueryOpenSubKeys },
     { "NtQuerySection",                 func_NtQuerySection },
     { "NtQuerySecurityObject",          func_NtQuerySecurityObject },
+    { "NtSetSecurityObjectStatus",      func_NtSetSecurityObjectStatus },
     { "NtQuerySystemEnvironmentValue",  func_NtQuerySystemEnvironmentValue },
     { "NtQuerySystemInformation",       func_NtQuerySystemInformation },
     { "NtQuerySystemMemoryInformation", func_NtQuerySystemMemoryInformation },
@@ -491,6 +501,7 @@ const struct test winetest_testlist[] =
     { "TimerResolution",                func_TimerResolution },
     { "SehHandlerLocals",               func_SehHandlerLocals },
     { "UserHiveLinks",                  func_UserHiveLinks },
+    { "WorkingSetWatch",                func_WorkingSetWatch },
 #if defined(_M_IX86) || defined(_M_AMD64)
     { "UserModeException",              func_UserModeException },
 #endif
@@ -507,6 +518,7 @@ const struct test winetest_testlist[] =
     { "ProcessUserModeIopl",            func_ProcessUserModeIopl },
     { "LinkReparseLimit",               func_LinkReparseLimit },
     { "ObjectQuotaLimit",               func_ObjectQuotaLimit },
+    { "ObHandleRace",                   func_ObHandleRace },
     { "RtlWnfAndSqm", func_RtlWnfAndSqm },
     { "WinSqmSession", func_WinSqmSession },
     { "RtlCheckPortableOperatingSystem", func_RtlCheckPortableOperatingSystem },

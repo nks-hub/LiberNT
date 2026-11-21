@@ -196,6 +196,10 @@ MiniIndicateData(
   PLIST_ENTRY CurrentEntry;
   PADAPTER_BINDING AdapterBinding;
 
+  if (Adapter != NULL && !Adapter->IsNdis6)
+      Ndis6LegacyRxIndicateLookahead(Adapter, HeaderBuffer, HeaderBufferSize,
+                                     LookaheadBuffer, LookaheadBufferSize, PacketSize);
+
   NDIS_DbgPrint(DEBUG_MINIPORT, ("Called. Adapter (0x%X)  HeaderBuffer (0x%X)  "
       "HeaderBufferSize (0x%X)  LookaheadBuffer (0x%X)  LookaheadBufferSize (0x%X).\n",
       Adapter, HeaderBuffer, HeaderBufferSize, LookaheadBuffer, LookaheadBufferSize));
@@ -449,6 +453,9 @@ MiniIndicateReceivePacket(
     SIZE_T BindingIndex;
     KIRQL OldIrql;
     UINT i;
+
+    if (!Adapter->IsNdis6 && PacketArray != NULL && NumberOfPackets != 0)
+        Ndis6LegacyRxIndicatePackets(Adapter, PacketArray, NumberOfPackets);
 
     Snapshot = MiniSnapshotReceiveBindings(Adapter,
                                            InlineSnapshot,
@@ -811,6 +818,15 @@ MiniSendComplete(
 
     NDIS_DbgPrint(DEBUG_MINIPORT, ("Called.\n"));
 
+    if (!Adapter->IsNdis6 && Adapter->Ndis6LegacyTxPacketPool != NULL)
+    {
+        BOOLEAN Bridged = Ndis6LegacyTxComplete(Adapter, Packet, Status);
+
+        Ndis6LegacyTxResume(Adapter);
+        if (Bridged)
+            return;
+    }
+
     AdapterBinding = (PADAPTER_BINDING)Packet->Reserved[1];
 
     KeRaiseIrql(DISPATCH_LEVEL, &OldIrql);
@@ -849,6 +865,8 @@ VOID NTAPI
 MiniSendResourcesAvailable(
     IN  NDIS_HANDLE MiniportAdapterHandle)
 {
+    Ndis6LegacyTxResume((PLOGICAL_ADAPTER)MiniportAdapterHandle);
+
     /* Run the work if anything is waiting */
     MiniWorkItemComplete((PLOGICAL_ADAPTER)MiniportAdapterHandle, NdisWorkItemSend);
 }
@@ -1164,10 +1182,13 @@ MiniCheckForHang( PLOGICAL_ADAPTER Adapter )
    return Ret;
 }
 
+static
 VOID
-MiniDoAddressingReset(PLOGICAL_ADAPTER Adapter)
+MiniRestoreAddressing(PLOGICAL_ADAPTER Adapter)
 {
    ULONG BytesRead;
+
+   ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
 
    MiniSetInformation(Adapter,
                       OID_GEN_CURRENT_LOOKAHEAD,
@@ -1176,6 +1197,44 @@ MiniDoAddressingReset(PLOGICAL_ADAPTER Adapter)
                       &BytesRead);
 
    /* FIXME: Set more stuff */
+}
+
+static
+VOID
+NTAPI
+MiniAddressingResetWorker(PDEVICE_OBJECT DeviceObject, PVOID Context)
+{
+   PLOGICAL_ADAPTER Adapter = DeviceObject->DeviceExtension;
+
+   IoFreeWorkItem((PIO_WORKITEM)Context);
+   MiniRestoreAddressing(Adapter);
+   ExReleaseRundownProtection(&Adapter->AddressingResetRundown);
+}
+
+VOID
+MiniDoAddressingReset(PLOGICAL_ADAPTER Adapter)
+{
+   PIO_WORKITEM IoWorkItem;
+
+   if (KeGetCurrentIrql() <= APC_LEVEL)
+   {
+       MiniRestoreAddressing(Adapter);
+       return;
+   }
+
+   /* The set waits for the miniport to complete it, which the hang timer DPC and a reset completed at DISPATCH_LEVEL cannot */
+   if (!ExAcquireRundownProtection(&Adapter->AddressingResetRundown))
+       return;
+
+   IoWorkItem = IoAllocateWorkItem(Adapter->NdisMiniportBlock.DeviceObject);
+   if (IoWorkItem == NULL)
+   {
+       /* FIXME: the lookahead is not restored after this reset */
+       ExReleaseRundownProtection(&Adapter->AddressingResetRundown);
+       return;
+   }
+
+   IoQueueWorkItem(IoWorkItem, MiniAddressingResetWorker, DelayedWorkQueue, IoWorkItem);
 }
 
 NDIS_STATUS
@@ -1806,6 +1865,7 @@ MiniportWorker(IN PDEVICE_OBJECT DeviceObject, IN PVOID Context)
 
             KeLowerIrql(OldIrql);
 
+            /* FIXME: MiniResetComplete bugchecks unless ResetStatus is NDIS_STATUS_PENDING, which the store above just replaced */
             if (NdisStatus != NDIS_STATUS_PENDING)
                MiniResetComplete(Adapter, NdisStatus, AddressingReset);
             break;
@@ -1858,6 +1918,9 @@ MiniStatus(
     PLIST_ENTRY CurrentEntry;
     PADAPTER_BINDING AdapterBinding;
     KIRQL OldIrql;
+
+    if (!Adapter->IsNdis6)
+        Ndis6LegacyIndicateMediaStatus(Adapter, GeneralStatus);
 
     KeAcquireSpinLock(&Adapter->NdisMiniportBlock.Lock, &OldIrql);
 
@@ -1947,6 +2010,7 @@ NdisMCreateLog(
 
     if (Adapter->NdisMiniportBlock.Log)
     {
+        KeReleaseSpinLock(&Adapter->NdisMiniportBlock.Lock, OldIrql);
         *LogHandle = NULL;
         return NDIS_STATUS_FAILURE;
     }
@@ -1954,6 +2018,7 @@ NdisMCreateLog(
     Log = ExAllocatePool(NonPagedPool, Size + sizeof(NDIS_LOG));
     if (!Log)
     {
+        KeReleaseSpinLock(&Adapter->NdisMiniportBlock.Lock, OldIrql);
         *LogHandle = NULL;
         return NDIS_STATUS_RESOURCES;
     }
@@ -2394,6 +2459,11 @@ NdisIPnPStartDevice(
 
   NDIS_DbgPrint(MAX_TRACE, ("Inserting adapter 0x%x into adapter list\n", Adapter));
 
+  InitializeListHead(&Adapter->Ndis6LegacyBindingList);
+  KeInitializeSpinLock(&Adapter->Ndis6LegacyBindingLock);
+  ExInitializeRundownProtection(&Adapter->Ndis6LegacyLifecycleRundown);
+  InterlockedExchange(&Adapter->Ndis6LegacyBindingsClosing, 1);
+
   /* Put adapter in global adapter list */
   ExInterlockedInsertTailList(&AdapterListHead, &Adapter->ListEntry, &AdapterListLock);
 
@@ -2564,6 +2634,8 @@ NdisIPnPStartDevice(
    * Call MiniportInitialize.
    */
 
+  ExInitializeRundownProtection(&Adapter->AddressingResetRundown);
+
   NDIS_DbgPrint(MID_TRACE, ("calling MiniportInitialize\n"));
   NdisStatus = (*Adapter->NdisMiniportBlock.DriverHandle->MiniportCharacteristics.InitializeHandler)(
     &OpenErrorStatus, &SelectedMediumIndex, &MediaArray[0],
@@ -2643,6 +2715,7 @@ NdisIPnPStartDevice(
   if (NdisStatus != NDIS_STATUS_SUCCESS)
     {
       NDIS_DbgPrint(MIN_TRACE, ("couldn't create filter (%x)\n", NdisStatus));
+      ExInterlockedRemoveEntryList(&Adapter->ListEntry, &AdapterListLock);
       return NdisStatus;
     }
 
@@ -2672,6 +2745,14 @@ NdisIPnPStartDevice(
       CurrentEntry = CurrentEntry->Flink;
   }
 
+  if (Ndis6LegacyDatapathStart(Adapter))
+  {
+      InterlockedExchange(&Adapter->Ndis6LegacyBindingsClosing, 0);
+      Ndis6BindAllProtocolsToAdapter(Adapter);
+  }
+  else
+      DbgPrint("NDIS6-LEGACY: datapath unavailable, native NDIS 5 remains enabled\n");
+
   return STATUS_SUCCESS;
 }
 
@@ -2695,21 +2776,29 @@ NdisIPnPStopDevice(
    * pass-through; this legacy path must never run for NDIS 6 adapters. */
   ASSERT(!Adapter->IsNdis6);
 
+  InterlockedExchange(&Adapter->Ndis6LegacyBindingsClosing, 1);
+
   /* Remove adapter from adapter list for this miniport */
   ExInterlockedRemoveEntryList(&Adapter->MiniportListEntry, &Adapter->NdisMiniportBlock.DriverHandle->Lock);
 
   /* Remove adapter from global adapter list */
   ExInterlockedRemoveEntryList(&Adapter->ListEntry, &AdapterListLock);
 
+  Ndis6UnbindAllProtocolsFromAdapter(Adapter);
+  ExWaitForRundownProtectionRelease(&Adapter->Ndis6LegacyLifecycleRundown);
+
   MiniStopHangTimer(Adapter);
 
   ndisUnbindProtocolsFromAdapter(Adapter);
+
+  ExWaitForRundownProtectionRelease(&Adapter->AddressingResetRundown);
 
   /* Set this here so MiniportISR will be forced to run for interrupts generated in MiniportHalt */
   Adapter->NdisMiniportBlock.OldPnPDeviceState = Adapter->NdisMiniportBlock.PnPDeviceState;
   Adapter->NdisMiniportBlock.PnPDeviceState = NdisPnPDeviceStopped;
 
   (*Adapter->NdisMiniportBlock.DriverHandle->MiniportCharacteristics.HaltHandler)(Adapter->NdisMiniportBlock.MiniportAdapterContext);
+  Ndis6LegacyDatapathStop(Adapter);
 
   if (!NT_SUCCESS(IoSetDeviceInterfaceState(&Adapter->NdisMiniportBlock.SymbolicLinkName, FALSE)))
       NDIS_DbgPrint(MIN_TRACE, ("IoSetDeviceInterfaceState(%wZ) failed\n", &Adapter->NdisMiniportBlock.SymbolicLinkName));
@@ -2825,6 +2914,14 @@ NdisIPnPRemoveDevice(
      * This legacy path must never run for NDIS 6 adapters. */
     ASSERT(!Adapter->IsNdis6);
 
+    if (Adapter->NdisMiniportBlock.PnPDeviceState == NdisPnPDeviceStarted)
+    {
+        InterlockedExchange(&Adapter->Ndis6LegacyBindingsClosing, 1);
+        ExInterlockedRemoveEntryList(&Adapter->ListEntry, &AdapterListLock);
+        Ndis6UnbindAllProtocolsFromAdapter(Adapter);
+        ExWaitForRundownProtectionRelease(&Adapter->Ndis6LegacyLifecycleRundown);
+    }
+
     ndisUnbindProtocolsFromAdapter(Adapter);
 
     if (Adapter->NdisMiniportBlock.SymbolicLinkName.Buffer)
@@ -2847,13 +2944,11 @@ NdisIPnPRemoveDevice(
         /* Remove adapter from adapter list for this miniport */
         ExInterlockedRemoveEntryList(&Adapter->MiniportListEntry, &Adapter->NdisMiniportBlock.DriverHandle->Lock);
 
-        /* Remove adapter from global adapter list */
-        ExInterlockedRemoveEntryList(&Adapter->ListEntry, &AdapterListLock);
-
         MiniStopHangTimer(Adapter);
 
         Adapter->NdisMiniportBlock.DriverHandle->MiniportCharacteristics.HaltHandler(Adapter->NdisMiniportBlock.MiniportAdapterContext);
     }
+    Ndis6LegacyDatapathStop(Adapter);
 
     if (Adapter->NdisMiniportBlock.EthDB)
     {
@@ -3091,7 +3186,9 @@ NdisIAddDevice(
 
   NDIS_DbgPrint(MAX_TRACE, ("creating device %wZ\n", &ExportName));
 
-  Status = IoCreateDevice(Miniport->DriverObject, sizeof(LOGICAL_ADAPTER),
+  Status = IoCreateDevice(Miniport->DriverObject,
+    FIELD_OFFSET(LOGICAL_ADAPTER, IndicatedPackets) +
+      KeQueryMaximumProcessorCountEx(ALL_PROCESSOR_GROUPS) * sizeof(PNDIS_PACKET),
     &ExportName, FILE_DEVICE_PHYSICAL_NETCARD,
     0, FALSE, &DeviceObject);
   if (!NT_SUCCESS(Status))
@@ -3106,6 +3203,7 @@ NdisIAddDevice(
    */
 
   Adapter = (PLOGICAL_ADAPTER)DeviceObject->DeviceExtension;
+  Adapter->IndicatedPacketSlots = KeQueryMaximumProcessorCountEx(ALL_PROCESSOR_GROUPS);
   KeInitializeSpinLock(&Adapter->NdisMiniportBlock.Lock);
   InitializeListHead(&Adapter->ProtocolListHead);
 
@@ -3790,30 +3888,48 @@ NdisMRegisterDevice(
         return Status;
     }
 
-    Status = IoCreateSymbolicLink(SymbolicName, DeviceName);
-
-    if (!NT_SUCCESS(Status))
-    {
-        NDIS_DbgPrint(MIN_TRACE, ("IoCreateSymbolicLink failed (%x)\n", Status));
-        IoDeleteDevice(DeviceObject);
-        return Status;
-    }
-
     DeviceBlock = DeviceObject->DeviceExtension;
 
     if (!DeviceBlock)
     {
         NDIS_DbgPrint(MIN_TRACE, ("Insufficient resources\n"));
         IoDeleteDevice(DeviceObject);
-        IoDeleteSymbolicLink(SymbolicName);
         return NDIS_STATUS_RESOURCES;
+    }
+
+    if (!SymbolicName || !SymbolicName->Buffer || !SymbolicName->Length)
+    {
+        IoDeleteDevice(DeviceObject);
+        return NDIS_STATUS_INVALID_PARAMETER;
+    }
+
+    DeviceBlock->SymbolicName.Buffer = ExAllocatePoolWithTag(
+        NonPagedPool, SymbolicName->Length, 'sDdN');
+    if (!DeviceBlock->SymbolicName.Buffer)
+    {
+        IoDeleteDevice(DeviceObject);
+        return NDIS_STATUS_RESOURCES;
+    }
+
+    RtlCopyMemory(DeviceBlock->SymbolicName.Buffer,
+                  SymbolicName->Buffer,
+                  SymbolicName->Length);
+    DeviceBlock->SymbolicName.Length = SymbolicName->Length;
+    DeviceBlock->SymbolicName.MaximumLength = SymbolicName->Length;
+
+    Status = IoCreateSymbolicLink(&DeviceBlock->SymbolicName, DeviceName);
+    if (!NT_SUCCESS(Status))
+    {
+        NDIS_DbgPrint(MIN_TRACE, ("IoCreateSymbolicLink failed (%x)\n", Status));
+        ExFreePoolWithTag(DeviceBlock->SymbolicName.Buffer, 'sDdN');
+        IoDeleteDevice(DeviceObject);
+        return Status;
     }
 
     for (i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; i++)
          DeviceBlock->MajorFunction[i] = MajorFunctions[i];
 
     DeviceBlock->DeviceObject = DeviceObject;
-    DeviceBlock->SymbolicName = SymbolicName;
 
     *pDeviceObject = DeviceObject;
     *NdisDeviceHandle = DeviceBlock;
@@ -3836,10 +3952,15 @@ NdisMDeregisterDevice(
  */
 {
     PNDIS_M_DEVICE_BLOCK DeviceBlock = NdisDeviceHandle;
+    PDEVICE_OBJECT DeviceObject;
 
-    IoDeleteDevice(DeviceBlock->DeviceObject);
+    if (!DeviceBlock)
+        return NDIS_STATUS_INVALID_PARAMETER;
 
-    IoDeleteSymbolicLink(DeviceBlock->SymbolicName);
+    DeviceObject = DeviceBlock->DeviceObject;
+    IoDeleteSymbolicLink(&DeviceBlock->SymbolicName);
+    ExFreePoolWithTag(DeviceBlock->SymbolicName.Buffer, 'sDdN');
+    IoDeleteDevice(DeviceObject);
 
     return NDIS_STATUS_SUCCESS;
 }

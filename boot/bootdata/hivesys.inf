@@ -2097,6 +2097,13 @@ HKLM,"SYSTEM\CurrentControlSet\Services\usbhub","ImagePath",0x00020000,"system32
 HKLM,"SYSTEM\CurrentControlSet\Services\usbhub","Start",0x00010001,0x00000000
 HKLM,"SYSTEM\CurrentControlSet\Services\usbhub","Type",0x00010001,0x00000001
 
+; OHCI controller driver
+HKLM,"SYSTEM\CurrentControlSet\Services\usbohci","ErrorControl",0x00010001,0x00000001
+HKLM,"SYSTEM\CurrentControlSet\Services\usbohci","Group",0x00000000,"Boot Bus Extender"
+HKLM,"SYSTEM\CurrentControlSet\Services\usbohci","ImagePath",0x00020000,"system32\drivers\usbohci.sys"
+HKLM,"SYSTEM\CurrentControlSet\Services\usbohci","Start",0x00010001,0x00000000
+HKLM,"SYSTEM\CurrentControlSet\Services\usbohci","Type",0x00010001,0x00000001
+
 ; XHCI controller driver
 HKLM,"SYSTEM\CurrentControlSet\Services\usbxhci","BootFlags",0x00010001,0x00000010
 HKLM,"SYSTEM\CurrentControlSet\Services\usbxhci","ErrorControl",0x00010001,0x00000001
@@ -2108,6 +2115,7 @@ HKLM,"SYSTEM\CurrentControlSet\Services\usbxhci\Interrupt Management\MessageSign
 HKLM,"SYSTEM\CurrentControlSet\Services\usbxhci","Start",0x00010001,0x00000000
 HKLM,"SYSTEM\CurrentControlSet\Services\usbxhci","Type",0x00010001,0x00000001
 
+; EHCI controller driver
 HKLM,"SYSTEM\CurrentControlSet\Services\usbehci","BootFlags",0x00010001,0x00000004
 HKLM,"SYSTEM\CurrentControlSet\Services\usbehci","ErrorControl",0x00010001,0x00000001
 HKLM,"SYSTEM\CurrentControlSet\Services\usbehci","Group",0x00000000,"Base"
@@ -2235,8 +2243,6 @@ HKLM,"SYSTEM\CurrentControlSet\Services\partmgr","ImagePath",0x00020000,"system3
 HKLM,"SYSTEM\CurrentControlSet\Services\partmgr","Start",0x00010001,0x00000000
 HKLM,"SYSTEM\CurrentControlSet\Services\partmgr","Type",0x00010001,0x00000001
 
-; UniATA: disable legacy detection to avoid pre-PnP IDE claiming
-HKLM,"SYSTEM\CurrentControlSet\Services\UniATA\Parameters","LegacyDetection",0x00010001,0x00000000
 
 ; pci driver (critical for device enumeration)
 HKLM,"SYSTEM\CurrentControlSet\Services\pci","ErrorControl",0x00010001,0x00000001
@@ -2457,7 +2463,7 @@ HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","ErrorControl",0x00010001,0x00
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","Group",0x00000000,"PlugPlay"
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","ImagePath",0x00020000,"%SystemRoot%\system32\svchost.exe -k DcomLaunch"
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","ObjectName",0x00000000,"LocalSystem"
-HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","Start",0x00010001,0x00000003
+HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","Start",0x00010001,0x00000002
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay","Type",0x00010001,0x00000020
 HKLM,"SYSTEM\CurrentControlSet\Services\PlugPlay\Parameters","ServiceDll",0x00020000,"%SystemRoot%\system32\umpnpmgr.dll"
 
@@ -2505,7 +2511,7 @@ HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","ErrorControl",0x00010001,0x00
 HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","Group",0x00000000,"SchedulerGroup"
 HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","ImagePath",0x00020000,"%SystemRoot%\system32\svchost.exe -k netsvcs"
 HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","ObjectName",0x00000000,"LocalSystem"
-HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","Start",0x00010001,0x00000002
+HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","Start",0x00010001,0x00000003
 HKLM,"SYSTEM\CurrentControlSet\Services\Seclogon","Type",0x00010001,0x00000020
 
 ; Windows Time service
@@ -2551,7 +2557,13 @@ HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","Description",0x00000000,"Mana
 HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","ErrorControl",0x00010001,0x00000001
 HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","ImagePath",0x00020000,"%SystemRoot%\system32\scardsvr.exe"
 HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","ObjectName",0x00000000,"LocalSystem"
-HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","Start",0x00010001,0x00000002
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","Start",0x00010001,0x00000003
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr\TriggerInfo\0","Type",0x00010001,0x00000001
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr\TriggerInfo\0","Action",0x00010001,0x00000001
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr\TriggerInfo\0","GUID",0x00000001,30,52,dd,50,8a,ba,d1,11,bf,5d,00,00,f8,05,f5,30
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr\TriggerInfo\1","Type",0x00010001,0x00000001
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr\TriggerInfo\1","Action",0x00010001,0x00000001
+HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr\TriggerInfo\1","GUID",0x00000001,61,81,1d,12,6d,86,24,4a,ba,58,90,58,94,0c,0d,47
 HKLM,"SYSTEM\CurrentControlSet\Services\SCardSvr","Type",0x00010001,0x00000010
 
 ; Simple TCP services
@@ -2617,7 +2629,7 @@ HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","Description",0x00000000,%WUAU
 HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","ErrorControl",0x00010001,0x00000001
 HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","ImagePath",0x00020000,"%SystemRoot%\system32\svchost.exe -k netsvcs"
 HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","ObjectName",0x00000000,"LocalSystem"
-HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","Start",0x00010001,0x00000002
+HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","Start",0x00010001,0x00000003
 HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv","Type",0x00010001,0x00000020
 HKLM,"SYSTEM\CurrentControlSet\Services\wuauserv\Parameters","ServiceDll",0x00020000,"%SystemRoot%\system32\wuauserv.dll"
 

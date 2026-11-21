@@ -15,6 +15,7 @@
 /* Big enough that one transfer costs far more than any in-memory work. */
 #define WRITER_BLOCK    (1024 * 1024)
 #define WRITER_ROUNDS   16
+#define APPEND_LIMIT    24
 
 #define QUERY_COUNT     8
 
@@ -32,6 +33,9 @@ typedef struct _WRITER
     HANDLE Thread;
     LONGLONG Ticks[WRITER_ROUNDS];
     ULONG Samples;
+    ULONG Appended;
+    BOOL Append;
+    BOOL Fresh;
     DWORD Error;
 } WRITER, *PWRITER;
 
@@ -173,10 +177,13 @@ WriterThread(_In_ PVOID Parameter)
     /*
      * Unbuffered, so each transfer is handed to the filesystem whole instead of
      * being broken up by the cache. This is the shape a paging write has.
+     * Appending goes through the cache instead: the flush behind each block is
+     * a paging write past the valid data, which is how a download grows a file.
      */
     File = CreateFileW(Writer->Path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH |
-                       FILE_FLAG_NO_BUFFERING, NULL);
+                       (Writer->Append || Writer->Fresh) ? FILE_ATTRIBUTE_NORMAL :
+                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_WRITE_THROUGH | FILE_FLAG_NO_BUFFERING,
+                       NULL);
     if (File == INVALID_HANDLE_VALUE)
     {
         Writer->Error = GetLastError();
@@ -189,14 +196,38 @@ WriterThread(_In_ PVOID Parameter)
         LARGE_INTEGER Before, After, Zero;
         DWORD Written = 0;
 
+        /* An installer lays each file down with one large write into a file nothing has cached yet */
+        if (Writer->Fresh)
+        {
+            CloseHandle(File);
+            File = CreateFileW(Writer->Path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+            if (File == INVALID_HANDLE_VALUE)
+            {
+                Writer->Error = GetLastError();
+                break;
+            }
+        }
+
+        if (Writer->Append && Writer->Appended == APPEND_LIMIT)
+            break;
         Zero.QuadPart = 0;
-        SetFilePointerEx(File, Zero, NULL, FILE_BEGIN);
+        if (!Writer->Append && !Writer->Fresh)
+            SetFilePointerEx(File, Zero, NULL, FILE_BEGIN);
 
         QueryPerformanceCounter(&Before);
         if (!WriteFile(File, Buffer, WRITER_BLOCK, &Written, NULL) || Written != WRITER_BLOCK)
         {
             Writer->Error = GetLastError();
             break;
+        }
+        if (Writer->Append)
+        {
+            Writer->Appended++;
+            if (!FlushFileBuffers(File))
+            {
+                Writer->Error = GetLastError();
+                break;
+            }
         }
         QueryPerformanceCounter(&After);
 
@@ -248,15 +279,63 @@ QueryRound(_In_ PCWSTR Path, _Out_ PLONGLONG Result)
     return TRUE;
 }
 
+/* Every appended byte must read back from the device, so the valid data moved with each flush */
 static VOID
-MeasureVolume(VOID)
+CheckAppended(_In_ PCWSTR Path, _In_ ULONG Blocks)
+{
+    LARGE_INTEGER Size;
+    HANDLE File;
+    PUCHAR Buffer;
+    ULONG Block, Index, Bad = 0;
+
+    Buffer = VirtualAlloc(NULL, WRITER_BLOCK, MEM_COMMIT, PAGE_READWRITE);
+    if (Buffer == NULL)
+    {
+        skip(FALSE, "VirtualAlloc failed: %lu\n", GetLastError());
+        return;
+    }
+    File = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_NO_BUFFERING, NULL);
+    ok(File != INVALID_HANDLE_VALUE, "reopening %ls failed: %lu\n", Path, GetLastError());
+    if (File == INVALID_HANDLE_VALUE)
+    {
+        VirtualFree(Buffer, 0, MEM_RELEASE);
+        return;
+    }
+    ok(GetFileSizeEx(File, &Size), "GetFileSizeEx failed: %lu\n", GetLastError());
+    ok(Size.QuadPart == (LONGLONG)Blocks * WRITER_BLOCK, "size %I64d, expected %I64d\n",
+       Size.QuadPart, (LONGLONG)Blocks * WRITER_BLOCK);
+    for (Block = 0; Block < Blocks; Block++)
+    {
+        DWORD Read = 0;
+
+        FillMemory(Buffer, WRITER_BLOCK, 0xEE);
+        if (!ReadFile(File, Buffer, WRITER_BLOCK, &Read, NULL) || Read != WRITER_BLOCK)
+        {
+            ok(FALSE, "reading block %lu failed: %lu, %lu bytes\n", Block, GetLastError(), Read);
+            break;
+        }
+        for (Index = 0; Index < WRITER_BLOCK; Index++)
+        {
+            if (Buffer[Index] != 0x5A && Bad++ == 0)
+                ok(FALSE, "block %lu byte %lu reads 0x%02x, expected 0x5a\n", Block, Index, Buffer[Index]);
+        }
+    }
+    ok(Bad == 0, "%lu appended bytes did not read back\n", Bad);
+    CloseHandle(File);
+    VirtualFree(Buffer, 0, MEM_RELEASE);
+}
+
+static VOID
+MeasureVolume(_In_ BOOL Append, _In_ BOOL Fresh)
 {
     WCHAR SmallPath[MAX_PATH];
     WRITER Writer;
     LONGLONG Idle = 0, Loaded = 0, Transfer = 0;
 
     StringCchPrintfW(SmallPath, MAX_PATH, L"%sconcio_small.dat", VolumeRoot);
-    StringCchPrintfW(Writer.Path, MAX_PATH, L"%sconcio_write.dat", VolumeRoot);
+    StringCchPrintfW(Writer.Path, MAX_PATH, Fresh ? L"%sconcio_fresh.dat" : Append ? L"%sconcio_append.dat" : L"%sconcio_write.dat",
+                     VolumeRoot);
 
     if (!MakeFile(SmallPath, 4096))
     {
@@ -275,6 +354,9 @@ MeasureVolume(VOID)
     Writer.Stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     Writer.Ready = CreateEventW(NULL, TRUE, FALSE, NULL);
     Writer.Samples = 0;
+    Writer.Appended = 0;
+    Writer.Append = Append;
+    Writer.Fresh = Fresh;
     Writer.Error = ERROR_SUCCESS;
     Writer.Thread = NULL;
     if (Writer.Stop == NULL || Writer.Ready == NULL)
@@ -308,11 +390,12 @@ MeasureVolume(VOID)
         ok_eq_hex(Writer.Error, ERROR_SUCCESS);
     Transfer = Median(Writer.Ticks, Writer.Samples);
 
-    trace("open %I64d us idle, %I64d us while a %u KB transfer of %I64d us runs\n",
-          Microseconds(Idle), Microseconds(Loaded), WRITER_BLOCK / 1024,
-          Microseconds(Transfer));
-    Report("CONCIO open idle %I64d us loaded %I64d us transfer %I64d us\n",
-           Microseconds(Idle), Microseconds(Loaded), Microseconds(Transfer));
+    trace("%s: open %I64d us idle, %I64d us while a %u KB transfer of %I64d us runs\n",
+          Fresh ? "fresh" : Append ? "append" : "overwrite", Microseconds(Idle), Microseconds(Loaded),
+          WRITER_BLOCK / 1024, Microseconds(Transfer));
+    Report("CONCIO %s open idle %I64d us loaded %I64d us transfer %I64d us\n",
+           Fresh ? "fresh" : Append ? "append" : "overwrite", Microseconds(Idle), Microseconds(Loaded),
+           Microseconds(Transfer));
 
     /*
      * The open needs no device at all, so it must never cost as much as the
@@ -331,6 +414,9 @@ MeasureVolume(VOID)
     {
         skip(FALSE, "the writer produced no timed transfer\n");
     }
+
+    if (Append && Writer.Error == ERROR_SUCCESS)
+        CheckAppended(Writer.Path, Writer.Appended);
 
     CloseHandle(Writer.Thread);
     CloseHandle(Writer.Stop);
@@ -357,5 +443,114 @@ START_TEST(ConcurrentIo)
     }
     trace("testing on %ls\n", VolumeRoot);
 
-    MeasureVolume();
+    MeasureVolume(FALSE, FALSE);
+    MeasureVolume(TRUE, FALSE);
+    MeasureVolume(FALSE, TRUE);
+}
+
+#define RACE_FILES 16
+#define RACE_WAIT_MS 10000
+
+typedef struct
+{
+    PCWSTR Directory;
+    HANDLE Start;
+    HANDLE Ready;
+    BYTE Id;
+    DWORD Results[RACE_FILES];
+} CREATE_WORKER;
+
+static DWORD WINAPI
+CreateSameNames(PVOID Context)
+{
+    CREATE_WORKER *Worker = Context;
+    WCHAR Path[MAX_PATH];
+    DWORD i, Bytes;
+
+    SetEvent(Worker->Ready);
+    if (WaitForSingleObject(Worker->Start, RACE_WAIT_MS) != WAIT_OBJECT_0)
+        return ERROR_TIMEOUT;
+    for (i = 0; i < RACE_FILES; ++i)
+    {
+        HANDLE File;
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%ls\\%u.bin", Worker->Directory, i);
+        File = CreateFileW(Path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, CREATE_NEW, 0, NULL);
+        if (File == INVALID_HANDLE_VALUE)
+        {
+            Worker->Results[i] = GetLastError();
+            continue;
+        }
+        Worker->Results[i] = WriteFile(File, &Worker->Id, 1, &Bytes, NULL) && Bytes == 1 ? ERROR_SUCCESS : ERROR_WRITE_FAULT;
+        CloseHandle(File);
+    }
+    return 0;
+}
+
+START_TEST(CreateRace)
+{
+    WCHAR Directory[MAX_PATH], Path[MAX_PATH];
+    CREATE_WORKER Workers[2] = {0};
+    HANDLE Threads[2] = {NULL}, Ready[2] = {NULL}, Start;
+    DWORD i, Bytes, Count = 0;
+
+    if (!FindTestVolume())
+    {
+        skip("no NTFS volume\n");
+        return;
+    }
+    if (!GetTempFileNameW(VolumeRoot, L"mft", 0, Directory) || !DeleteFileW(Directory) || !CreateDirectoryW(Directory, NULL))
+    {
+        ok(FALSE, "creating test directory failed: %lu\n", GetLastError());
+        return;
+    }
+    Start = CreateEventW(NULL, TRUE, FALSE, NULL);
+    ok(Start != NULL, "creating start event failed\n");
+    for (i = 0; Start && i < ARRAYSIZE(Workers); ++i)
+    {
+        Workers[i].Id = (BYTE)(i + 1);
+        Workers[i].Directory = Directory;
+        Workers[i].Start = Start;
+        Ready[i] = Workers[i].Ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+        if (!Ready[i])
+            break;
+        Threads[i] = CreateThread(NULL, 0, CreateSameNames, &Workers[i], 0, NULL);
+        if (!Threads[i])
+            break;
+        ++Count;
+    }
+    ok(Count == 2, "started %lu creators\n", Count);
+    if (Count)
+    {
+        ok(WaitForMultipleObjects(Count, Ready, TRUE, RACE_WAIT_MS) == WAIT_OBJECT_0, "creators did not start\n");
+        SetEvent(Start);
+        ok(WaitForMultipleObjects(Count, Threads, TRUE, RACE_WAIT_MS) == WAIT_OBJECT_0, "creators did not finish\n");
+    }
+    for (i = 0; Count && i < RACE_FILES; ++i)
+    {
+        HANDLE File;
+        BYTE Data[2];
+        DWORD Winner = Workers[0].Results[i] == ERROR_SUCCESS ? 0 : 1;
+        StringCchPrintfW(Path, ARRAYSIZE(Path), L"%ls\\%u.bin", Directory, i);
+        if (Count == 2)
+        {
+            ok(Workers[Winner].Results[i] == ERROR_SUCCESS && Workers[1 - Winner].Results[i] == ERROR_FILE_EXISTS,
+               "file %lu create results %lu/%lu\n", i, Workers[0].Results[i], Workers[1].Results[i]);
+            File = CreateFileW(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+            ok(File != INVALID_HANDLE_VALUE, "reopening file %lu failed: %lu\n", i, GetLastError());
+            if (File != INVALID_HANDLE_VALUE)
+            {
+                ok(ReadFile(File, Data, sizeof(Data), &Bytes, NULL) && Bytes == 1 && Data[0] == Workers[Winner].Id,
+                   "file %lu lost its creator's data\n", i);
+                CloseHandle(File);
+            }
+        }
+        DeleteFileW(Path);
+    }
+    for (i = 0; i < ARRAYSIZE(Workers); ++i)
+    {
+        if (Threads[i]) CloseHandle(Threads[i]);
+        if (Ready[i]) CloseHandle(Ready[i]);
+    }
+    if (Start) CloseHandle(Start);
+    ok(RemoveDirectoryW(Directory), "removing test directory failed: %lu\n", GetLastError());
 }

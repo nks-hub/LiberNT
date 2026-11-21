@@ -4,7 +4,13 @@ list(APPEND SOURCE
     IndexMetadata.c
     FullBaseGrowth.c
     FreeClusters.c
+    PagingWriteGap.c
     ConcurrentIo.c
+    DirectIo.c
+    CreateSecurity.c
+    DeleteAfterChange.c
+    AppendWrite.c
+    ColdDirectory.c
     testlist.c)
 
 add_executable(ntfs_apitest ${SOURCE})

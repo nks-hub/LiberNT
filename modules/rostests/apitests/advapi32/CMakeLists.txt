@@ -50,11 +50,13 @@ list(APPEND SOURCE
     RegOpenKeyTransacted.c
     RegQueryInfoKey.c
     RegQueryValueExW.c
+    RestrictedTokenUser.c
     RtlEncryptMemory.c
     SaferIdentifyLevel.c
     SaferLevels.c
     SaferRules.c
     SeclogonCaller.c
+    SetSecurityInfoAcl.c
     ServiceArgs.c
     ServiceChangeNotify.c
     ServiceCrash.c

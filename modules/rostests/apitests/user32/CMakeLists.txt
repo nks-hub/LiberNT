@@ -44,6 +44,7 @@ list(APPEND SOURCE
     EditCompositionForm.c
     EmptyClipboard.c
     EnableScrollBar.c
+    EnumDisplayDevices.c
     EnumDisplaySettings.c
     ForegroundAfterHide.c
     ForegroundHideLaunch.c

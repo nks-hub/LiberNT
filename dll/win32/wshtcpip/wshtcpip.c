@@ -1077,6 +1077,17 @@ WSHIoctl(
                                         OutputBufferLength,
                                         NumberOfBytesReturned);
     }
+    else if ((IoControlCode == SIO_UDP_CONNRESET || IoControlCode == SIO_UDP_NETRESET) && Context->SocketType != SOCK_DGRAM)
+    {
+        return WSAEINVAL;
+    }
+    else if (IoControlCode == SIO_UDP_NETRESET)
+    {
+        if (!InputBuffer || InputBufferLength == 0)
+            return WSAEFAULT;
+        /* tcpip reports no expired TTL to datagram sockets, so there is nothing to switch */
+        return 0;
+    }
     else if (IoControlCode == SIO_KEEPALIVE_VALS || IoControlCode == SIO_UDP_CONNRESET)
     {
         ULONG ReportReset = 0;

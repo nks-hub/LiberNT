@@ -197,7 +197,6 @@ PiSetDwordValue(
 #define PI_CAPABILITY_RAW_DEVICE_OK 0x00000040
 
 /* The Capabilities value carries the CM_DEVCAP_* bits of cfgmgr32.h */
-static
 VOID
 PiSaveCapabilities(
     _In_ HANDLE InstanceKey,

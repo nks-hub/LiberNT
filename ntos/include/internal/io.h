@@ -507,6 +507,20 @@ VOID
 PnpSwDeviceParentRemoved(
     _In_ PDEVICE_OBJECT Parent);
 
+NTSTATUS
+PnpSwDeviceCreate(
+    _In_ PDEVICE_NODE ParentNode,
+    _In_ PCUNICODE_STRING InstancePath);
+
+PDEVICE_OBJECT
+PnpSwDeviceWithdraw(
+    _In_ PDEVICE_OBJECT DeviceObject);
+
+NTSTATUS
+PnpSwDeviceSetCapabilities(
+    _In_ PDEVICE_OBJECT DeviceObject,
+    _In_ PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA Capabilities);
+
 VOID
 NTAPI
 IopBootDriverStatusUpdate(

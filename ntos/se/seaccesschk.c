@@ -416,6 +416,15 @@ SepCheckEntry(
         SepSidInTokenEx(Context->Token, Context->PrincipalSelfSid, Owner,
                         FALSE, Context->SidSet);
 
+    /* A restricted token owns only what both its groups and its restricting SIDs own */
+    if (Context->CallerIsOwner && Context->SidSet != SEP_SID_SET_CAPABILITIES &&
+        Context->Token->RestrictedSidCount != 0)
+    {
+        Context->CallerIsOwner =
+            SepSidInTokenEx(Context->Token, Context->PrincipalSelfSid, Owner, FALSE,
+                            Context->SidSet == SEP_SID_SET_GROUPS ? SEP_SID_SET_RESTRICTED : SEP_SID_SET_GROUPS);
+    }
+
     if (Context->CallerIsOwner && !SepDaclNamesOwnerRights(Dacl))
     {
         if (Context->MaximumAllowed)
@@ -553,16 +562,27 @@ SepCheckList(
 
         if (Restricted && NT_SUCCESS(Status))
         {
+            ACCESS_MASK Constrained = ~(ACCESS_MASK)0;
             ACCESS_MASK Second = 0;
             NTSTATUS Status2;
 
-            Context->SidSet = SEP_SID_SET_RESTRICTED;
-            Status2 = SepCheckEntry(Context, Entry, Desired, AlreadyGranted & ~MandatoryDenied,
-                                    &Second);
+            /* The restricting SIDs of a write-restricted token only decide what changes the object */
+            if (Context->Token->TokenFlags & TOKEN_WRITE_RESTRICTED)
+            {
+                Constrained = (Context->GenericMapping->GenericWrite | DELETE | WRITE_DAC | WRITE_OWNER) &
+                              ~(READ_CONTROL | SYNCHRONIZE);
+            }
 
-            if (!NT_SUCCESS(Status2)) Status = Status2;
+            if (Context->MaximumAllowed || (Desired & Constrained) != 0)
+            {
+                Context->SidSet = SEP_SID_SET_RESTRICTED;
+                Status2 = SepCheckEntry(Context, Entry, Desired & Constrained, AlreadyGranted & ~MandatoryDenied,
+                                        &Second);
 
-            Granted &= Second;
+                if (!NT_SUCCESS(Status2) && !Context->MaximumAllowed) Status = Status2;
+
+                Granted &= Second | ~Constrained;
+            }
         }
 
         /* A package may only do what its name, its capabilities or every package are also allowed */

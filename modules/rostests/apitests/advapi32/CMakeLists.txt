@@ -30,6 +30,7 @@ list(APPEND SOURCE
     LookupAccountSid.c
     MachineGuid.c
     NotifyBootConfigStatus.c
+    NsiService.c
     WindowsVersionValues.c
     OpenTrace.c
     PrivilegeNames.c
@@ -57,11 +58,13 @@ list(APPEND SOURCE
     SeclogonCaller.c
     SetSecurityInfoAcl.c
     ServiceArgs.c
+    ServiceChangeNotify.c
     ServiceCrash.c
     ServiceEnv.c
     ServiceRegistryState.c
     ServiceNetwork.c
     ServicePowerSetting.c
+    ServiceSidInfo.c
     StartServiceCtrlDispatcher.c
     TriggerInfo.c
     TokenBnoIsolation.c

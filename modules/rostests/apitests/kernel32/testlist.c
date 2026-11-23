@@ -105,6 +105,7 @@ extern void func_IsDBCSLeadByteEx(void);
 extern void func_JapaneseCalendar(void);
 extern void func_JobObject(void);
 extern void func_JobObjectUI(void);
+extern void func_KernelBaseModuleHandle(void);
 extern void func_KernelBaseRegistry(void);
 extern void func_KernelBaseUrl(void);
 extern void func_KnownDlls(void);
@@ -339,6 +340,7 @@ const struct test winetest_testlist[] =
     { "JapaneseCalendar",            func_JapaneseCalendar },
     { "JobObject",                   func_JobObject },
     { "JobObjectUI",                 func_JobObjectUI },
+    { "KernelBaseModuleHandle",      func_KernelBaseModuleHandle },
     { "KernelBaseRegistry",          func_KernelBaseRegistry },
     { "KernelBaseUrl",               func_KernelBaseUrl },
     { "KnownDlls",                   func_KnownDlls },

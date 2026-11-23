@@ -483,6 +483,7 @@ extern BOOLEAN IopDeviceActionInProgress;
 extern WORK_QUEUE_ITEM IopDeviceActionWorkItem;
 
 VOID PiEnumerationFinished(_In_opt_ PDEVICE_NODE DeviceNode);
+VOID PiSaveCapabilities(_In_ HANDLE InstanceKey, _In_ PDEVICE_CAPABILITIES Capabilities);
 
 /* pnpquery.c */
 
@@ -546,6 +547,7 @@ NTSTATUS IopInterfaceLinkToRegistryName(_In_ PUNICODE_STRING SymbolicLinkName,
 
 /* pnpcontrol.c */
 
+BOOLEAN PiIsDevNodeStarted(_In_ PNP_DEVNODE_STATE State);
 VOID PiQueryDevNodeStatus(_In_ PDEVICE_NODE DeviceNode,
                           _Out_ PULONG DeviceStatus,
                           _Out_ PULONG DeviceProblem);

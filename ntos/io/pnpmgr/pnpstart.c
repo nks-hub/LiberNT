@@ -18,6 +18,8 @@ static const UNICODE_STRING IopRootEnumName = RTL_CONSTANT_STRING(ENUM_ROOT);
 static const UNICODE_STRING IopRootInstancePath =
     RTL_CONSTANT_STRING(L"HTREE\\ROOT\\0");
 
+static const WCHAR IopRootContainerId[] = L"{00000000-0000-0000-FFFF-FFFFFFFFFFFF}";
+
 static const UNICODE_STRING IopControlPnpName = RTL_CONSTANT_STRING(
     L"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\Pnp");
 
@@ -76,6 +78,10 @@ IopUpdateRootKey(VOID)
     ZwClose(Instance);
 
     if (!NT_SUCCESS(Status)) return Status;
+
+    /* Windows 11 places the root device in the container of the machine itself */
+    RtlInitUnicodeString(&Name, L"ContainerID");
+    ZwSetValueKey(RootKey, &Name, 0, REG_SZ, (PVOID)IopRootContainerId, sizeof(IopRootContainerId));
 
     ZwClose(RootKey);
 

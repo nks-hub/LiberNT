@@ -209,7 +209,6 @@ PiReferenceDeviceByInstance(
 
 /* STATUS *********************************************************************/
 
-static
 BOOLEAN
 PiIsDevNodeStarted(
     _In_ PNP_DEVNODE_STATE State)
@@ -435,13 +434,56 @@ PiControlInitializeDevice(
                                      PiActionEnumDeviceTree);
 }
 
+/* A device of the software device API comes from the software device bus below the parent its creator named */
+static
+NTSTATUS
+PiControlInitializeChildDevice(
+    _In_ PPLUGPLAY_CONTROL_CHILD_DEVICE_DATA Data,
+    _In_ KPROCESSOR_MODE PreviousMode)
+{
+    PDEVICE_OBJECT DeviceObject, ParentObject;
+    UNICODE_STRING Captured;
+    NTSTATUS Status;
+
+    Status = PiReferenceDeviceByInstance(&Data->DeviceInstance, PreviousMode, &DeviceObject);
+    if (NT_SUCCESS(Status))
+    {
+        ObDereferenceObject(DeviceObject);
+        return STATUS_SUCCESS;
+    }
+
+    if (Status != STATUS_NO_SUCH_DEVICE) return Status;
+
+    Status = PiReferenceDeviceByInstance(&Data->ParentInstance, PreviousMode, &ParentObject);
+    if (!NT_SUCCESS(Status)) return Status;
+
+    Status = PiCaptureUnicodeString(&Data->DeviceInstance,
+                                    PreviousMode,
+                                    (PI_MAX_DEVICE_ID_CHARS - 1) * sizeof(WCHAR),
+                                    &Captured);
+    if (NT_SUCCESS(Status))
+    {
+        Status = PnpSwDeviceCreate(IopGetDeviceNode(ParentObject), &Captured);
+        PiFreeCapturedString(&Captured);
+    }
+
+    if (NT_SUCCESS(Status))
+    {
+        PiSetDevNodeFlag(IopGetDeviceNode(ParentObject), DNF_REENUMERATE);
+        Status = PiPerformSyncDeviceAction(ParentObject, PiActionEnumDeviceTree);
+    }
+
+    ObDereferenceObject(ParentObject);
+    return Status;
+}
+
 static
 NTSTATUS
 PiControlDeregisterDevice(
     _In_ PPLUGPLAY_CONTROL_DEVICE_CONTROL_DATA Data,
     _In_ KPROCESSOR_MODE PreviousMode)
 {
-    PDEVICE_OBJECT DeviceObject;
+    PDEVICE_OBJECT DeviceObject, ParentObject;
     PDEVICE_NODE DeviceNode;
     BOOLEAN Forget = FALSE;
     NTSTATUS Status;
@@ -449,6 +491,17 @@ PiControlDeregisterDevice(
 
     Status = PiReferenceDeviceByInstance(&Data->DeviceInstance, PreviousMode, &DeviceObject);
     if (!NT_SUCCESS(Status)) return Status;
+
+    /* A device of the software device API leaves as a child its bus no longer reports, without a veto */
+    ParentObject = PnpSwDeviceWithdraw(DeviceObject);
+    if (ParentObject != NULL)
+    {
+        PiSetDevNodeFlag(IopGetDeviceNode(ParentObject), DNF_REENUMERATE);
+        PiPerformSyncDeviceAction(ParentObject, PiActionEnumDeviceTree);
+        ObDereferenceObject(ParentObject);
+        ObDereferenceObject(DeviceObject);
+        return STATUS_SUCCESS;
+    }
 
     DeviceNode = IopGetDeviceNode(DeviceObject);
 
@@ -904,6 +957,24 @@ PiControlDeviceClassAssociation(
     return Status;
 }
 
+static
+NTSTATUS
+PiControlSetDeviceInterfaceState(
+    _In_ PPLUGPLAY_CONTROL_INTERFACE_STATE_DATA Data,
+    _In_ KPROCESSOR_MODE PreviousMode)
+{
+    UNICODE_STRING Link;
+    NTSTATUS Status;
+
+    Status = PiCaptureUnicodeString(&Data->SymbolicLinkName, PreviousMode, MAXUSHORT - sizeof(WCHAR), &Link);
+    if (!NT_SUCCESS(Status)) return Status;
+
+    Status = IoSetDeviceInterfaceState(&Link, Data->Enable != FALSE);
+    PiFreeCapturedString(&Link);
+
+    return Status;
+}
+
 /* PROPERTIES *****************************************************************/
 
 static
@@ -1045,6 +1116,36 @@ PiControlProperty(
     return Status;
 }
 
+/* The capabilities a creator gave its device of the software device API, which the device's bus reports from now on */
+static
+NTSTATUS
+PiControlSetDeviceCapabilities(
+    _In_ PPLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA Data,
+    _In_ KPROCESSOR_MODE PreviousMode)
+{
+    DEVICE_CAPABILITIES Capabilities;
+    PDEVICE_OBJECT DeviceObject;
+    HANDLE InstanceKey;
+    NTSTATUS Status;
+
+    Status = PiReferenceDeviceByInstance(&Data->DeviceInstance, PreviousMode, &DeviceObject);
+    if (!NT_SUCCESS(Status)) return Status;
+
+    Status = PnpSwDeviceSetCapabilities(DeviceObject, Data);
+    if (NT_SUCCESS(Status)) Status = IopQueryDeviceCapabilities(IopGetDeviceNode(DeviceObject), &Capabilities);
+
+    /* A device without a function driver starts only when the Capabilities value of its instance key says RawDeviceOK */
+    if (NT_SUCCESS(Status)) Status = PnpDeviceObjectToDeviceInstance(DeviceObject, &InstanceKey, KEY_SET_VALUE);
+    if (NT_SUCCESS(Status))
+    {
+        PiSaveCapabilities(InstanceKey, &Capabilities);
+        ZwClose(InstanceKey);
+    }
+
+    ObDereferenceObject(DeviceObject);
+    return Status;
+}
+
 /* ENTRY **********************************************************************/
 
 /* Answers a control class whose data the caller already captured; FALSE when the class is not one of these */
@@ -1076,6 +1177,9 @@ PiPlugPlayControlDevice(
         case PlugPlayControlGetInterfaceDeviceAlias: Required = sizeof(PLUGPLAY_CONTROL_INTERFACE_ALIAS_DATA); break;
         case PlugPlayControlDeviceClassAssociation: Required = sizeof(PLUGPLAY_CONTROL_CLASS_ASSOCIATION_DATA); break;
         case PlugPlayControlProperty: Required = sizeof(PLUGPLAY_CONTROL_PROPERTY_DATA); break;
+        case PlugPlayControlSetDeviceInterfaceState: Required = sizeof(PLUGPLAY_CONTROL_INTERFACE_STATE_DATA); break;
+        case PlugPlayControlSetDeviceCapabilities: Required = sizeof(PLUGPLAY_CONTROL_DEVICE_CAPABILITIES_DATA); break;
+        case PlugPlayControlInitializeChildDevice: Required = sizeof(PLUGPLAY_CONTROL_CHILD_DEVICE_DATA); break;
         default: return FALSE;
     }
 
@@ -1099,6 +1203,9 @@ PiPlugPlayControlDevice(
         case PlugPlayControlGetInterfaceDeviceAlias: *Status = PiControlGetInterfaceDeviceAlias(Data, PreviousMode); break;
         case PlugPlayControlDeviceClassAssociation: *Status = PiControlDeviceClassAssociation(Data, PreviousMode); break;
         case PlugPlayControlProperty: *Status = PiControlProperty(Data, PreviousMode); break;
+        case PlugPlayControlSetDeviceInterfaceState: *Status = PiControlSetDeviceInterfaceState(Data, PreviousMode); break;
+        case PlugPlayControlSetDeviceCapabilities: *Status = PiControlSetDeviceCapabilities(Data, PreviousMode); break;
+        case PlugPlayControlInitializeChildDevice: *Status = PiControlInitializeChildDevice(Data, PreviousMode); break;
         default: ASSERT(FALSE); *Status = STATUS_INVALID_PARAMETER; break;
     }
 

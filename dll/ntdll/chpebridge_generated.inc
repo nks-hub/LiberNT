@@ -3989,15 +3989,11 @@ NTSTATUS NTAPI ChpeAutoRtlCreateSecurityDescriptor(PSECURITY_DESCRIPTOR a0, ULON
 }
 _Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlCreateSecurityDescriptor), __typeof__(&RtlCreateSecurityDescriptor)), "RtlCreateSecurityDescriptor bridge signature mismatch");
 
-/* Native definition: dll/ntdll/rtl/capability.c */
-#ifdef RtlCreateServiceSid
-#undef RtlCreateServiceSid
-#endif
-NTSTATUS NTAPI RtlCreateServiceSid(PVOID a0, PVOID a1, PVOID a2);
-NTSTATUS NTAPI ChpeAutoRtlCreateServiceSid(PVOID a0, PVOID a1, PVOID a2)
+NTSTATUS NTAPI ChpeAutoRtlCreateServiceSid(PUNICODE_STRING a0, PSID a1, PULONG a2)
 {
     return RtlCreateServiceSid(a0, a1, a2);
 }
+_Static_assert(__builtin_types_compatible_p(__typeof__(&ChpeAutoRtlCreateServiceSid), __typeof__(&RtlCreateServiceSid)), "RtlCreateServiceSid bridge signature mismatch");
 
 NTSTATUS NTAPI ChpeAutoRtlDeriveCapabilitySidsFromName(PUNICODE_STRING a0, PSID a1, PSID a2)
 {
